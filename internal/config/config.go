@@ -13,6 +13,7 @@ type Config struct {
 	Mesh       MeshConfig       `yaml:"mesh"`
 	Peers      []PeerConfig     `yaml:"peers"`
 	Monitoring MonitoringConfig `yaml:"monitoring"`
+	WebSSH     WebSSHConfig     `yaml:"webssh"`
 	Auth       AuthConfig       `yaml:"auth"`
 }
 
@@ -83,6 +84,35 @@ type AuthConfig struct {
 	WebUsers []WebUser `yaml:"web_users"`
 }
 
+// WebSSHConfig holds settings for the WebSSH bridge.
+type WebSSHConfig struct {
+	// Port is the mesh-internal port for the SSH server on the target node.
+	// Default: 2222.
+	Port int `yaml:"port"`
+
+	// HostKey is the SSH host private key (PEM-encoded). If empty, an
+	// Ed25519 key is auto-generated on startup.
+	HostKey string `yaml:"host_key"`
+
+	// Shell is the default shell to launch. If empty, auto-detected via
+	// /etc/passwd, falling back to /bin/bash then /bin/sh.
+	Shell string `yaml:"shell"`
+
+	// DialTimeout is how long the web server node waits when dialing
+	// the target node's SSH server over the mesh VPN (seconds, default 10).
+	DialTimeout int `yaml:"dial_timeout"`
+
+	// ReadDeadline is the WebSocket read deadline for idle sessions
+	// (seconds, default 300 = 5 minutes).
+	ReadDeadline int `yaml:"read_deadline"`
+
+	// WriteDeadline is the WebSocket write deadline (seconds, default 10).
+	WriteDeadline int `yaml:"write_deadline"`
+
+	// MaxSessions limits concurrent terminal sessions per node (default 256).
+	MaxSessions int `yaml:"max_sessions"`
+}
+
 // WebUser is a web UI login account.
 type WebUser struct {
 	Username     string `yaml:"username"`
@@ -100,6 +130,13 @@ func Default() *Config {
 		},
 		Monitoring: MonitoringConfig{
 			Interval: 15,
+		},
+		WebSSH: WebSSHConfig{
+			Port:         2222,
+			DialTimeout:  10,
+			ReadDeadline: 300,
+			WriteDeadline: 10,
+			MaxSessions:  256,
 		},
 	}
 }
@@ -122,6 +159,21 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Monitoring.Port == 0 {
 		cfg.Monitoring.Port = 4191
+	}
+	if cfg.WebSSH.Port == 0 {
+		cfg.WebSSH.Port = 2222
+	}
+	if cfg.WebSSH.DialTimeout == 0 {
+		cfg.WebSSH.DialTimeout = 10
+	}
+	if cfg.WebSSH.ReadDeadline == 0 {
+		cfg.WebSSH.ReadDeadline = 300
+	}
+	if cfg.WebSSH.WriteDeadline == 0 {
+		cfg.WebSSH.WriteDeadline = 10
+	}
+	if cfg.WebSSH.MaxSessions == 0 {
+		cfg.WebSSH.MaxSessions = 256
 	}
 	return cfg, nil
 }
