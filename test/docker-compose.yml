@@ -1,0 +1,102 @@
+# MeshDesk 3-Node Test Cluster
+#
+# Simulates a real-world deployment with 3 distinct node profiles:
+#   node1 — Public VPS (collector + web UI, clean internet)
+#   node2 — Behind NAT / restrictive firewall (agent only)
+#   node3 — Cross-region / high-latency (agent, stress-tests resilience)
+#
+# Usage:
+#   # Build the binary first
+#   cd .. && go build -o meshdesk ./cmd/meshdesk/
+#
+#   # Start the cluster
+#   docker compose -f test/docker-compose.yml up --build -d
+#
+#   # View logs
+#   docker compose -f test/docker-compose.yml logs -f
+#
+#   # Stop and clean up
+#   docker compose -f test/docker-compose.yml down -v
+
+version: "3.9"
+
+services:
+  node1:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: meshdesk-node1
+    hostname: node1-public
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      MESHDESK_ROLE: public-vps
+      MESHDESK_HOSTNAME: node1-public
+      MESHDESK_PORT: "51820"
+      MESHDESK_WEB: ":8080"
+      # No extra latency for public VPS
+    networks:
+      meshnet:
+        ipv4_address: 10.100.0.2
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../meshdesk:/usr/local/bin/meshdesk:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  node2:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: meshdesk-node2
+    hostname: node2-nat
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      MESHDESK_ROLE: behind-nat
+      MESHDESK_HOSTNAME: node2-nat
+      MESHDESK_PORT: "51821"
+      # Simulate moderate latency (20ms) — typical NAT scenario
+      SIM_LATENCY_MS: "20"
+      SIM_PACKET_LOSS: "0"
+    networks:
+      meshnet:
+        ipv4_address: 10.100.0.3
+    volumes:
+      - ../meshdesk:/usr/local/bin/meshdesk:ro
+
+  node3:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: meshdesk-node3
+    hostname: node3-remote
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+    environment:
+      MESHDESK_ROLE: cross-region
+      MESHDESK_HOSTNAME: node3-remote
+      MESHDESK_PORT: "51822"
+      # Simulate high cross-region latency (150ms) + 1% packet loss
+      SIM_LATENCY_MS: "150"
+      SIM_PACKET_LOSS: "1"
+    networks:
+      meshnet:
+        ipv4_address: 10.100.0.4
+    volumes:
+      - ../meshdesk:/usr/local/bin/meshdesk:ro
+
+networks:
+  meshnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.100.0.0/24

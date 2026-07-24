@@ -1,0 +1,31 @@
+# MeshDesk Test Container
+FROM ubuntu:24.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    curl \
+    iproute2 \
+    iptables \
+    jq \
+    net-tools \
+    openssh-client \
+    openssh-server \
+    tcpdump \
+    wireguard-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create meshdesk user (tests run as non-root for capability verification)
+RUN useradd -m -s /bin/bash meshdesk && \
+    mkdir -p /etc/meshdesk /var/lib/meshdesk && \
+    chown -R meshdesk:meshdesk /etc/meshdesk /var/lib/meshdesk
+
+# Copy the meshdesk binary (mounted at runtime)
+# The binary is expected at /usr/local/bin/meshdesk
+
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
