@@ -30,34 +30,6 @@ Every node runs the same binary. Any node can become the control panel with `--w
 
 Nezha has monitoring and WebSSH but no mesh networking — if the dashboard is down, you lose everything. EasyTier has mesh VPN but no monitoring or web terminal. MeshDesk does it all in one binary.
 
-## Architecture
-
-```
-┌──────────────────────────────────────────┐
-│            Single Binary (Go)            │
-│                                          │
-│  ┌──────────┐   ┌─────────────────────┐  │
-│  │  Agent   │   │   WebUI (--web)     │  │
-│  │          │   │                     │  │
-│  │ • System │   │ • Server overview   │  │
-│  │   stats  │   │ • Network topology  │  │
-│  │ • Cmd    │   │ • Web terminal      │  │
-│  │   exec   │   │ • File transfer     │  │
-│  │ • Mesh   │   │ • Service mgmt      │  │
-│  │   node   │   │                     │  │
-│  └────┬─────┘   └─────────┬───────────┘  │
-│       │                    │              │
-│       └─── mesh layer ────┘              │
-│           P2P / relay auto-select         │
-└──────────────────────────────────────────┘
-```
-
-- **Every node** runs the same binary as root
-- **Agent mode** (default): collects metrics, accepts commands, participates in mesh
-- **Web mode** (`--web`): serves the web UI on a configurable port
-- **Mesh layer**: P2P direct connection when possible, relay fallback when behind NAT
-- **No central server**: any node can be the panel, any node can go down without affecting others
-
 ## Features
 
 ### Mesh VPN
@@ -129,16 +101,6 @@ hostname: ""            # display name (auto-detected if empty)
 tun: true               # enable TUN interface for VPN
 tun_ip: ""              # auto-assigned if empty
 ```
-
-## Tech Stack
-
-- **Language:** Go (single binary, cross-platform)
-- **Frontend:** React + TypeScript (embedded in binary via `embed.FS`)
-- **Terminal:** xterm.js + WebSocket
-- **VPN:** TUN device + ChaCha20-Poly1305
-- **Transport:** KCP / QUIC / TCP (auto-negotiated)
-- **Database:** SQLite (embedded, for metrics history)
-- **Protocol:** gRPC / Protobuf (mesh communication)
 
 ## License
 
