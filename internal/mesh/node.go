@@ -153,7 +153,38 @@ func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 
 	// Set up obfuscation for this peer.
 	mode := ParseObfuscationMode(cfg.Obfuscation)
-	n.bind.SetObfuscator(cfg.PublicKey, mode)
+	if cfg.ObfConfig != nil {
+		obfCfg := ObfuscationConfig{
+			H1:          cfg.ObfConfig.H1,
+			H2:          cfg.ObfConfig.H2,
+			H3:          cfg.ObfConfig.H3,
+			H4:          cfg.ObfConfig.H4,
+			S1:          cfg.ObfConfig.S1,
+			S2:          cfg.ObfConfig.S2,
+			S3:          cfg.ObfConfig.S3,
+			S4:          cfg.ObfConfig.S4,
+			Jc:          cfg.ObfConfig.Jc,
+			Jmin:        cfg.ObfConfig.Jmin,
+			Jmax:        cfg.ObfConfig.Jmax,
+			PSK:         cfg.ObfConfig.PSK,
+			JitterMaxMs: cfg.ObfConfig.JitterMaxMs,
+		}
+		// Apply defaults for zero-valued fields.
+		if !obfCfg.hasHeaderRandomization() {
+			def := DefaultObfuscationConfig()
+			obfCfg.H1, obfCfg.H2, obfCfg.H3, obfCfg.H4 = def.H1, def.H2, def.H3, def.H4
+		}
+		if obfCfg.S1 == 0 && obfCfg.S2 == 0 && obfCfg.S3 == 0 && obfCfg.S4 == 0 {
+			def := DefaultObfuscationConfig()
+			obfCfg.S1, obfCfg.S2, obfCfg.S3, obfCfg.S4 = def.S1, def.S2, def.S3, def.S4
+		}
+		if obfCfg.JitterMaxMs == 0 {
+			obfCfg.JitterMaxMs = DefaultObfuscationConfig().JitterMaxMs
+		}
+		n.bind.SetObfuscatorWithConfig(cfg.PublicKey, mode, obfCfg, true)
+	} else {
+		n.bind.SetObfuscator(cfg.PublicKey, mode)
+	}
 
 	// Add to routing table.
 	entry := &PeerEntry{

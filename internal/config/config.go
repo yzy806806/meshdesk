@@ -30,12 +30,45 @@ type MeshConfig struct {
 
 // PeerConfig describes a single mesh peer.
 type PeerConfig struct {
-	PublicKey    string   `yaml:"public_key"`
-	Endpoint     string   `yaml:"endpoint"`     // host:port; empty for roaming
-	AllowedIPs   []string `yaml:"allowed_ips"`   // mesh IPs routed to this peer
-	Capabilities []string `yaml:"capabilities"`  // what this peer can do on us
-	Obfuscation  string   `yaml:"obfuscation"`   // none | padded | websocket
-	PresharedKey string   `yaml:"preshared_key"` // optional WireGuard PSK
+	PublicKey    string            `yaml:"public_key"`
+	Endpoint     string            `yaml:"endpoint"`     // host:port; empty for roaming
+	AllowedIPs   []string          `yaml:"allowed_ips"`   // mesh IPs routed to this peer
+	Capabilities []string          `yaml:"capabilities"`  // what this peer can do on us
+	Obfuscation  string            `yaml:"obfuscation"`   // none | padded | websocket
+	PresharedKey string            `yaml:"preshared_key"` // optional WireGuard PSK
+	ObfConfig    *ObfuscationOpts  `yaml:"obf_config,omitempty"` // per-peer obfuscation parameters
+}
+
+// ObfuscationOpts holds per-peer obfuscation parameters (AmneziaWG-style).
+// These are only used when the peer's obfuscation mode is "padded".
+type ObfuscationOpts struct {
+	// H1-H4: non-overlapping ranges for WireGuard message type fields.
+	// Format: [min, max]. Zero values mean "use defaults".
+	H1 [2]uint32 `yaml:"h1"`
+	H2 [2]uint32 `yaml:"h2"`
+	H3 [2]uint32 `yaml:"h3"`
+	H4 [2]uint32 `yaml:"h4"`
+
+	// S1-S4: maximum random padding bytes for each message type.
+	S1 int `yaml:"s1"`
+	S2 int `yaml:"s2"`
+	S3 int `yaml:"s3"`
+	S4 int `yaml:"s4"`
+
+	// Jc: junk train count (v2 feature, 0=disabled).
+	Jc   int `yaml:"jc"`
+	Jmin int `yaml:"jmin"`
+	Jmax int `yaml:"jmax"`
+
+	// PSK: hex-encoded pre-shared key for anti-probe challenge (32 bytes).
+	// If set, handshake initiation packets must include a valid HMAC tag.
+	PSK string `yaml:"psk"`
+
+	// JitterMaxMs: maximum timing jitter in milliseconds (0=disabled).
+	JitterMaxMs int `yaml:"jitter_max_ms"`
+
+	// WSUseTLS: for websocket mode, whether to use wss:// (TLS).
+	WSUseTLS bool `yaml:"ws_use_tls"`
 }
 
 // MonitoringConfig holds monitoring/push settings.
