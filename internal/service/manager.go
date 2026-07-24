@@ -58,11 +58,13 @@ type ExecBackend struct {
 
 // NewExecBackend creates a ServiceManager backed by systemctl.
 // The systemctl binary is auto-detected if systemctlPath is empty.
+// If systemctl is not found in PATH, returns ErrNoSystemd so callers
+// can gracefully fall back to NullBackend (Gap 5 fix).
 func NewExecBackend(systemctlPath string, timeout time.Duration) (*ExecBackend, error) {
 	if systemctlPath == "" {
 		path, err := exec.LookPath("systemctl")
 		if err != nil {
-			return nil, fmt.Errorf("systemctl not found in PATH: %w", err)
+			return nil, ErrNoSystemd
 		}
 		systemctlPath = path
 	}

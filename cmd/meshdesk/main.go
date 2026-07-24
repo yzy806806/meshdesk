@@ -85,32 +85,48 @@ func main() {
 	// Wrap the service manager with AuthorizedServiceManager for capability enforcement.
 	var remoteSvcMgr service.ServiceManager
 	if execBackend, err := service.NewExecBackend("", 30*time.Second); err != nil {
-		log.Printf("Warning: systemctl not available for remote service server: %v", err)
+		// Graceful degradation: use NullBackend when systemd is unavailable (Gap 5 fix).
+		log.Printf("Warning: systemctl not available for remote service server: %v — using null backend", err)
+		remoteSvcMgr = service.NewNullBackend()
 	} else {
 		remoteSvcMgr = execBackend
-		if authEngine := auth.NewCapabilityEngine(cfg, auth.NewAuditLogger(log.Writer())); authEngine != nil {
-			// The remote server uses the source peer ID from the connection
-			// (set by the RPC layer). For now, we pass a placeholder that
-			// the handler will override with the actual source peer.
-			remoteSvcMgr = service.NewAuthorizedServiceManager(remoteSvcMgr, authEngine, "")
-		}
-		remoteSvcServer := service.NewRemoteServer(remoteSvcMgr, remoteSvcListener, service.DefaultServicePort)
-		if err := remoteSvcServer.Start(); err != nil {
-			log.Printf("Warning: failed to start remote service server: %v", err)
-		} else {
-			log.Printf("  Service RPC: listening on mesh port %d", service.DefaultServicePort)
-		}
-		defer remoteSvcServer.Stop()
 	}
+	if authEngine := auth.NewCapabilityEngine(cfg, auth.NewAuditLogger(log.Writer())); authEngine != nil {
+		// The remote server uses the source peer ID from the connection
+		// (set by the RPC layer). For now, we pass a placeholder that
+		// the handler will override with the actual source peer.
+		remoteSvcMgr = service.NewAuthorizedServiceManager(remoteSvcMgr, authEngine, "")
+	}
+	remoteSvcServer := service.NewRemoteServer(remoteSvcMgr, remoteSvcListener, service.DefaultServicePort)
+	if err := remoteSvcServer.Start(); err != nil {
+		log.Printf("Warning: failed to start remote service server: %v", err)
+	} else {
+		log.Printf("  Service RPC: listening on mesh port %d", service.DefaultServicePort)
+	}
+	defer remoteSvcServer.Stop()
 
 	// Start the file transfer receiver (listens on mesh).
 	// Every node accepts incoming file transfers from authorized peers.
+	// The receiver is wired with capability enforcement (Gap 2 fix) and
+	// file size limits from config (Gap 4 fix).
 	transferListener := &meshListenerAdapter{node: node}
-	transferServer := transfer.NewReceiver(transferListener, web.TransferPort, "/tmp/meshdesk-uploads/")
+	transferAuthEngine := auth.NewCapabilityEngine(cfg, auth.NewAuditLogger(log.Writer()))
+	var transferAuthChecker transfer.AuthChecker
+	if transferAuthEngine != nil {
+		transferAuthChecker = auth.NewTransferAuthChecker(transferAuthEngine)
+	}
+	uploadDir := cfg.Transfer.UploadDir
+	if uploadDir == "" {
+		uploadDir = config.DefaultUploadDir
+	}
+	transferServer := transfer.NewReceiverWithAuth(
+		transferListener, web.TransferPort, uploadDir,
+		cfg.Transfer.MaxFileSize, transferAuthChecker,
+	)
 	if err := transferServer.Start(); err != nil {
 		log.Printf("Warning: failed to start file transfer receiver: %v", err)
 	} else {
-		log.Printf("  File transfer: listening on mesh port %d", web.TransferPort)
+		log.Printf("  File transfer: listening on mesh port %d (max %d bytes)", web.TransferPort, cfg.Transfer.MaxFileSize)
 	}
 	defer transferServer.Stop()
 
@@ -181,10 +197,11 @@ func main() {
 			time.Duration(cfg.WebSSH.WriteDeadline)*time.Second,
 		)
 
-		// Create the service manager (systemctl backend).
+		// Create the service manager (systemctl backend, with NullBackend fallback).
 		var svcMgr service.ServiceManager
 		if execBackend, err := service.NewExecBackend("", 30*time.Second); err != nil {
-			log.Printf("Warning: systemctl not available: %v", err)
+			log.Printf("Warning: systemctl not available: %v — service management disabled", err)
+			svcMgr = service.NewNullBackend()
 		} else {
 			svcMgr = execBackend
 		}

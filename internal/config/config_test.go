@@ -110,3 +110,71 @@ func TestLoadDefaultsApplied(t *testing.T) {
 		t.Errorf("Hostname = %q, want %q", cfg.Node.Hostname, "minimal")
 	}
 }
+
+// TestTransferConfigDefaults verifies that TransferConfig defaults
+// are applied when not explicitly set (Gap 4).
+func TestTransferConfigDefaults(t *testing.T) {
+	cfg := Default()
+	if cfg.Transfer.MaxFileSize != DefaultMaxFileSize {
+		t.Errorf("default MaxFileSize = %d, want %d", cfg.Transfer.MaxFileSize, DefaultMaxFileSize)
+	}
+	if cfg.Transfer.UploadDir != DefaultUploadDir {
+		t.Errorf("default UploadDir = %q, want %q", cfg.Transfer.UploadDir, DefaultUploadDir)
+	}
+}
+
+// TestTransferConfigLoadDefaults verifies that loading a config without
+// a transfer section applies the default MaxFileSize and UploadDir.
+func TestTransferConfigLoadDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	minimal := []byte("node:\n  hostname: test\n")
+	if err := os.WriteFile(path, minimal, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if cfg.Transfer.MaxFileSize != DefaultMaxFileSize {
+		t.Errorf("MaxFileSize = %d, want %d", cfg.Transfer.MaxFileSize, DefaultMaxFileSize)
+	}
+	if cfg.Transfer.UploadDir != DefaultUploadDir {
+		t.Errorf("UploadDir = %q, want %q", cfg.Transfer.UploadDir, DefaultUploadDir)
+	}
+}
+
+// TestTransferConfigCustomValues verifies that custom transfer config
+// values are preserved through save/load.
+func TestTransferConfigCustomValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	original := &Config{
+		Node: NodeConfig{Hostname: "test"},
+		Mesh: MeshConfig{Port: 51820},
+		Transfer: TransferConfig{
+			MaxFileSize: 500 * 1024 * 1024, // 500 MB
+			UploadDir:   "/custom/uploads",
+		},
+	}
+
+	if err := Save(path, original); err != nil {
+		t.Fatalf("Save error: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if loaded.Transfer.MaxFileSize != 500*1024*1024 {
+		t.Errorf("MaxFileSize = %d, want %d", loaded.Transfer.MaxFileSize, 500*1024*1024)
+	}
+	if loaded.Transfer.UploadDir != "/custom/uploads" {
+		t.Errorf("UploadDir = %q, want %q", loaded.Transfer.UploadDir, "/custom/uploads")
+	}
+}

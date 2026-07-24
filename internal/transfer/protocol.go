@@ -47,6 +47,10 @@ const DefaultChunkSize = 64 * 1024 // 64 KB
 // DefaultTimeout is the default I/O timeout for transfer operations.
 const DefaultTimeout = 300 * time.Second
 
+// DefaultMaxFileSize is the default maximum file size for incoming transfers
+// (1 GB). Used when no explicit limit is configured.
+const DefaultMaxFileSize int64 = 1 << 30
+
 // FileType enumerates the types of transfers supported.
 type FileType string
 
@@ -165,13 +169,25 @@ func SendWithContext(ctx context.Context, conn io.ReadWriter, reader io.Reader, 
 // after the file is written. A mismatch results in a NACK and the
 // file is deleted.
 //
+// The file size is checked against DefaultMaxFileSize before any data
+// is read. Use ReceiveWithMaxSize for a custom limit.
+//
 // Returns the FileHeader that was received and the number of bytes written.
 func Receive(conn io.ReadWriter, destDir string) (*FileHeader, int64, error) {
-	return ReceiveWithContext(context.Background(), conn, destDir)
+	return ReceiveWithMaxSize(context.Background(), conn, destDir, DefaultMaxFileSize)
 }
 
 // ReceiveWithContext is like Receive but with a context for cancellation.
 func ReceiveWithContext(ctx context.Context, conn io.ReadWriter, destDir string) (*FileHeader, int64, error) {
+	return ReceiveWithMaxSize(ctx, conn, destDir, DefaultMaxFileSize)
+}
+
+// ReceiveWithMaxSize is like ReceiveWithContext but accepts a custom
+// maximum file size. If maxFileSize is 0, no size limit is enforced
+// (not recommended for production). If the header declares a size
+// exceeding the limit, the transfer is rejected before any file data
+// is read, and a NACK with the configured limit is sent back.
+func ReceiveWithMaxSize(ctx context.Context, conn io.ReadWriter, destDir string, maxFileSize int64) (*FileHeader, int64, error) {
 	// Apply deadline to the connection if possible.
 	applyDeadline(ctx, conn)
 
@@ -186,6 +202,14 @@ func ReceiveWithContext(ctx context.Context, conn io.ReadWriter, destDir string)
 	if header.Version != ProtocolVersion {
 		sendResult(conn, TransferResult{OK: false, Message: fmt.Sprintf("unsupported protocol version %d", header.Version)})
 		return header, 0, fmt.Errorf("unsupported protocol version %d", header.Version)
+	}
+
+	// Enforce max file size before reading any data (Gap 4 fix).
+	// This prevents disk exhaustion from oversized or malicious transfers.
+	if maxFileSize > 0 && header.Size > maxFileSize {
+		msg := fmt.Sprintf("file size %d exceeds maximum %d", header.Size, maxFileSize)
+		sendResult(conn, TransferResult{OK: false, Message: msg})
+		return header, 0, fmt.Errorf("transfer rejected: %s", msg)
 	}
 
 	// Sanitize filename to prevent path traversal
@@ -401,19 +425,35 @@ func applyDeadline(ctx context.Context, conn io.ReadWriter) {
 	nc.SetDeadline(deadline)
 }
 
+// AuthChecker is the interface for capability-based authorization of
+// incoming file transfers. In production this is implemented by
+// wrapping *auth.CapabilityEngine. The receiver calls AuthorizeFileTransfer
+// before accepting any file data, enforcing Decision E (zero-trust).
+type AuthChecker interface {
+	// AuthorizeFileTransfer checks whether sourcePeer is authorized to
+	// transfer files. Returns true if allowed, false otherwise.
+	// Every call should produce an audit log entry.
+	AuthorizeFileTransfer(sourcePeer string) bool
+}
+
 // Receiver listens on a mesh-internal port and accepts incoming file
 // transfers. Each incoming connection is handled in a goroutine that
 // calls Receive to read the file and write it to the destination directory.
 //
-// The receiver enforces path traversal prevention via sanitizeFilename.
-// Capability checks should be performed by the caller before the
-// connection reaches the receiver (the mesh layer authenticates peers
-// by WireGuard key, and the auth layer checks file_transfer capability).
+// The receiver enforces:
+//   - Path traversal prevention via sanitizeFilename
+//   - File size limits via maxFileSize (Gap 4)
+//   - Capability checks via authChecker (Gap 2 — Decision E compliance)
+//
+// If authChecker is nil, all transfers are accepted (for testing only).
+// In production, always set an authChecker.
 type Receiver struct {
-	listener MeshListener
-	port     int
-	destDir  string
-	stopCh   chan struct{}
+	listener   MeshListener
+	port       int
+	destDir    string
+	maxFileSize int64
+	authChecker AuthChecker
+	stopCh     chan struct{}
 }
 
 // MeshListener abstracts mesh-internal listening.
@@ -422,13 +462,32 @@ type MeshListener interface {
 }
 
 // NewReceiver creates a file transfer receiver that writes incoming
-// files to destDir.
+// files to destDir. Uses the default max file size (1 GB).
 func NewReceiver(listener MeshListener, port int, destDir string) *Receiver {
 	return &Receiver{
-		listener: listener,
-		port:     port,
-		destDir:  destDir,
-		stopCh:   make(chan struct{}),
+		listener:    listener,
+		port:        port,
+		destDir:     destDir,
+		maxFileSize: DefaultMaxFileSize,
+		stopCh:      make(chan struct{}),
+	}
+}
+
+// NewReceiverWithAuth creates a file transfer receiver with capability
+// enforcement and a custom max file size. The authChecker is called
+// for every incoming transfer to verify the source peer has the
+// file_transfer capability (Decision E compliance).
+func NewReceiverWithAuth(listener MeshListener, port int, destDir string, maxFileSize int64, authChecker AuthChecker) *Receiver {
+	if maxFileSize == 0 {
+		maxFileSize = DefaultMaxFileSize
+	}
+	return &Receiver{
+		listener:    listener,
+		port:        port,
+		destDir:     destDir,
+		maxFileSize: maxFileSize,
+		authChecker: authChecker,
+		stopCh:      make(chan struct{}),
 	}
 }
 
@@ -475,11 +534,116 @@ func (r *Receiver) acceptLoop(ln net.Listener) {
 func (r *Receiver) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	// Receive the file into the destination directory.
-	_, _, err := Receive(conn, r.destDir)
+	// If an auth checker is configured, read the header first to extract
+	// the source peer ID, then authorize before accepting any file data.
+	// This implements Decision E: unauthorized transfers are rejected
+	// before touching the filesystem.
+	if r.authChecker != nil {
+		// We need to read the header to get SrcPeerID, but ReceiveWithMaxSize
+		// reads the header internally. To avoid duplicating logic, we use a
+		// peeking approach: read the framed header, check auth, then pass
+		// a combined reader (header bytes + remaining conn) to Receive.
+		header, headerBytes, err := peekFileHeader(conn)
+		if err != nil {
+			sendResult(conn, TransferResult{OK: false, Message: fmt.Sprintf("header read: %v", err)})
+			return
+		}
+
+		// Authorize the source peer for file_transfer capability.
+		if !r.authChecker.AuthorizeFileTransfer(header.SrcPeerID) {
+			sendResult(conn, TransferResult{OK: false, Message: "unauthorized: file_transfer capability denied"})
+			return
+		}
+
+		// Re-create a reader that presents the header bytes followed by
+		// the remaining connection data, so ReceiveWithMaxSize can re-read
+		// the header seamlessly.
+		combined := newPrefixReader(headerBytes, conn)
+		_, _, err = ReceiveWithMaxSize(context.Background(), combined, r.destDir, r.maxFileSize)
+		if err != nil {
+			return
+		}
+		return
+	}
+
+	// No auth checker — use ReceiveWithMaxSize directly (testing mode).
+	_, _, err := ReceiveWithMaxSize(context.Background(), conn, r.destDir, r.maxFileSize)
 	if err != nil {
 		// Error is already sent as NACK to the sender; just log locally.
-		// In production, this would go to the structured logger.
 		return
 	}
 }
+
+// peekFileHeader reads the framed JSON header from conn without consuming
+// the rest of the stream. Returns the parsed header and the raw bytes
+// that were read (length prefix + JSON), so the caller can reconstruct
+// the stream by prepending these bytes.
+func peekFileHeader(conn net.Conn) (*FileHeader, []byte, error) {
+	// Read the 4-byte length prefix
+	var length uint32
+	if err := binary.Read(conn, binary.BigEndian, &length); err != nil {
+		return nil, nil, fmt.Errorf("read length: %w", err)
+	}
+	if length > 1<<20 {
+		return nil, nil, fmt.Errorf("header too large: %d bytes", length)
+	}
+
+	// Read the JSON header body
+	jsonBuf := make([]byte, length)
+	if _, err := io.ReadFull(conn, jsonBuf); err != nil {
+		return nil, nil, fmt.Errorf("read json: %w", err)
+	}
+
+	// Parse the header
+	var header FileHeader
+	if err := json.Unmarshal(jsonBuf, &header); err != nil {
+		return nil, nil, fmt.Errorf("unmarshal json: %w", err)
+	}
+
+	// Reconstruct the raw framed bytes (length prefix + JSON)
+	raw := make([]byte, 4+length)
+	binary.BigEndian.PutUint32(raw[:4], length)
+	copy(raw[4:], jsonBuf)
+
+	return &header, raw, nil
+}
+
+// prefixReader wraps an io.Reader by prepending a fixed byte buffer.
+// Reads first drain the prefix, then delegate to the underlying reader.
+// This is used to reconstruct a stream after peeking at the header.
+type prefixReader struct {
+	prefix  []byte
+	offset  int
+	rest    io.Reader
+}
+
+func newPrefixReader(prefix []byte, rest io.Reader) *prefixReader {
+	return &prefixReader{prefix: prefix, rest: rest}
+}
+
+func (pr *prefixReader) Read(p []byte) (int, error) {
+	if pr.offset < len(pr.prefix) {
+		n := copy(p, pr.prefix[pr.offset:])
+		pr.offset += n
+		return n, nil
+	}
+	return pr.rest.Read(p)
+}
+
+// Ensure prefixReader satisfies io.Reader
+var _ io.Reader = (*prefixReader)(nil)
+
+// Ensure prefixReader satisfies io.ReadWriter via the underlying conn
+// (writes go through to conn when prefix is exhausted). We need this
+// because ReceiveWithMaxSize writes ACK/NACK back through the same conn.
+func (pr *prefixReader) Write(p []byte) (int, error) {
+	type writer interface{ Write([]byte) (int, error) }
+	w, ok := pr.rest.(writer)
+	if !ok {
+		return 0, fmt.Errorf("underlying reader is not writable")
+	}
+	return w.Write(p)
+}
+
+// Ensure prefixReader satisfies io.ReadWriter
+var _ io.ReadWriter = (*prefixReader)(nil)

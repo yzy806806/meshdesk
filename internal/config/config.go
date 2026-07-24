@@ -15,6 +15,19 @@ type Config struct {
 	Monitoring MonitoringConfig `yaml:"monitoring"`
 	WebSSH     WebSSHConfig     `yaml:"webssh"`
 	Auth       AuthConfig       `yaml:"auth"`
+	Transfer   TransferConfig   `yaml:"transfer"`
+}
+
+// TransferConfig holds file transfer settings.
+type TransferConfig struct {
+	// MaxFileSize is the maximum size in bytes for a single incoming file
+	// transfer. A value of 0 means no limit (not recommended for production).
+	// Defaults to 1 GB (1 << 30) when unset.
+	MaxFileSize int64 `yaml:"max_file_size"`
+
+	// UploadDir is the directory where incoming file transfers are written.
+	// Defaults to /tmp/meshdesk-uploads/ when empty.
+	UploadDir string `yaml:"upload_dir"`
 }
 
 // NodeConfig holds local node identity settings.
@@ -134,6 +147,12 @@ type WebUser struct {
 	PasswordHash string `yaml:"password_hash"`
 }
 
+// DefaultMaxFileSize is the default limit for incoming file transfers (1 GB).
+const DefaultMaxFileSize int64 = 1 << 30
+
+// DefaultUploadDir is the default directory for incoming file transfers.
+const DefaultUploadDir = "/tmp/meshdesk-uploads/"
+
 // Default returns a config with sensible defaults.
 func Default() *Config {
 	return &Config{
@@ -152,6 +171,10 @@ func Default() *Config {
 			ReadDeadline: 300,
 			WriteDeadline: 10,
 			MaxSessions:  256,
+		},
+		Transfer: TransferConfig{
+			MaxFileSize: DefaultMaxFileSize,
+			UploadDir:   DefaultUploadDir,
 		},
 	}
 }
@@ -189,6 +212,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.WebSSH.MaxSessions == 0 {
 		cfg.WebSSH.MaxSessions = 256
+	}
+	if cfg.Transfer.MaxFileSize == 0 {
+		cfg.Transfer.MaxFileSize = DefaultMaxFileSize
+	}
+	if cfg.Transfer.UploadDir == "" {
+		cfg.Transfer.UploadDir = DefaultUploadDir
 	}
 	return cfg, nil
 }
