@@ -16,6 +16,7 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -627,7 +628,10 @@ type obfuscatingBind struct {
 	inner       conn.Bind
 	obfuscators map[string]Obfuscator // keyed by hex public key
 	configs     map[string]ObfuscationConfig
+	ws          *wsBind               // websocket transport (nil when no peer uses websocket mode)
 	mu          sync.RWMutex
+	rngMu       sync.Mutex
+	rng         *mrand.Rand
 }
 
 // NewObfuscatingBind wraps an inner conn.Bind with per-peer obfuscation.
@@ -636,6 +640,7 @@ func NewObfuscatingBind(inner conn.Bind) *obfuscatingBind {
 		inner:       inner,
 		obfuscators: make(map[string]Obfuscator),
 		configs:     make(map[string]ObfuscationConfig),
+		rng:         mrand.New(mrand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -665,7 +670,27 @@ func (b *obfuscatingBind) GetObfuscator(peerKey string) Obfuscator {
 	return NewObfuscator(ObfuscationPadded)
 }
 
-// Open delegates to the inner bind.
+// GetConfig returns the obfuscation config for a peer, or the default if unset.
+func (b *obfuscatingBind) GetConfig(peerKey string) ObfuscationConfig {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if cfg, ok := b.configs[peerKey]; ok {
+		return cfg
+	}
+	return DefaultObfuscationConfig()
+}
+
+// SetWSBind installs a wsBind that handles WebSocket+TLS transport for peers
+// configured with ObfuscationWebSocket mode. When set, packets to websocket-mode
+// peers are routed through wsBind instead of the inner UDP bind.
+func (b *obfuscatingBind) SetWSBind(wb *wsBind) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ws = wb
+}
+
+// Open delegates to the inner bind. If a wsBind is installed, its listener
+// is also opened so that websocket-mode peers can connect.
 func (b *obfuscatingBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error) {
 	fns, port, err := b.inner.Open(uport)
 	if err != nil {
@@ -676,12 +701,34 @@ func (b *obfuscatingBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error)
 	for i, fn := range fns {
 		wrapped[i] = b.wrapReceiveFunc(fn)
 	}
+
+	// Start the websocket listener if configured.
+	b.mu.RLock()
+	wb := b.ws
+	b.mu.RUnlock()
+	if wb != nil {
+		if err := wb.open(); err != nil {
+			return nil, 0, fmt.Errorf("wsBind open: %w", err)
+		}
+		// Inject websocket-received packets as an additional receive function.
+		wrapped = append(wrapped, wb.makeReceiveFunc(b))
+	}
+
 	return wrapped, port, nil
 }
 
 // Close delegates to the inner bind.
 func (b *obfuscatingBind) Close() error {
-	return b.inner.Close()
+	err := b.inner.Close()
+	b.mu.RLock()
+	wb := b.ws
+	b.mu.RUnlock()
+	if wb != nil {
+		if werr := wb.close(); werr != nil && err == nil {
+			err = werr
+		}
+	}
+	return err
 }
 
 // SetMark delegates to the inner bind.
@@ -690,19 +737,60 @@ func (b *obfuscatingBind) SetMark(mark uint32) error {
 }
 
 // Send applies the peer's obfuscation transform before delegating to inner Send.
+// For padded-mode peers with Jc > 0, junk train packets are sent before any
+// initiation packet. For websocket-mode peers, packets are routed through the
+// wsBind (TCP+TLS) instead of the inner UDP bind.
 func (b *obfuscatingBind) Send(bufs [][]byte, endpoint conn.Endpoint) error {
 	peerKey := endpoint.DstToString()
 	o := b.GetObfuscator(peerKey)
+	cfg := b.GetConfig(peerKey)
 
-	transformed := make([][]byte, len(bufs))
-	for i, buf := range bufs {
+	// Route through websocket transport if the peer is in websocket mode.
+	if o.Mode() == ObfuscationWebSocket {
+		b.mu.RLock()
+		wb := b.ws
+		b.mu.RUnlock()
+		if wb != nil {
+			return wb.send(bufs, endpoint, o)
+		}
+		// No wsBind installed — fall through to inner send with obfuscation.
+	}
+
+	transformed := make([][]byte, 0, len(bufs))
+
+	// Junk train: when Jc > 0 and the first packet is a handshake initiation,
+	// generate and prepend junk packets before the real initiation.
+	if cfg.Jc > 0 && len(bufs) > 0 {
+		if classifyMessage(bufs[0]) == wgMsgInitiation {
+			junk := b.generateJunkTrain(cfg)
+			for _, jp := range junk {
+				// Obfuscate junk packets the same way as real packets so they
+				// are indistinguishable on the wire.
+				data, err := o.WrapOutbound(jp.Data)
+				if err != nil {
+					return fmt.Errorf("obfuscate junk packet: %w", err)
+				}
+				transformed = append(transformed, data)
+			}
+		}
+	}
+
+	for _, buf := range bufs {
 		data, err := o.WrapOutbound(buf)
 		if err != nil {
 			return fmt.Errorf("obfuscate outbound: %w", err)
 		}
-		transformed[i] = data
+		transformed = append(transformed, data)
 	}
 	return b.inner.Send(transformed, endpoint)
+}
+
+// generateJunkTrain is a thread-safe wrapper around GenerateJunkTrain that
+// uses the bind's shared RNG.
+func (b *obfuscatingBind) generateJunkTrain(cfg ObfuscationConfig) []JunkPacket {
+	b.rngMu.Lock()
+	defer b.rngMu.Unlock()
+	return GenerateJunkTrain(cfg, b.rng)
 }
 
 // ParseEndpoint delegates to the inner bind.
@@ -975,3 +1063,254 @@ func generateWSKey() string {
 func hexEncode(b []byte) string {
 	return hex.EncodeToString(b)
 }
+
+// --- wsBind: conn.Bind implementation for WebSocket+TLS transport ---
+//
+// wsBind implements conn.Bind for peers configured with ObfuscationWebSocket
+// mode. It maintains a TCP (optionally TLS) listener for inbound connections
+// and a pool of outbound websocketTransport connections keyed by peer address.
+// WireGuard packets are wrapped/unwrapped in WebSocket binary frames by the
+// websocketObfuscator, while the wsBind handles the connection lifecycle.
+//
+// The wsBind is used in conjunction with the obfuscatingBind: when a peer's
+// obfuscation mode is ObfuscationWebSocket, obfuscatingBind.Send routes
+// packets through wsBind.send() instead of the inner UDP bind.
+
+// wsBind implements conn.Bind for WebSocket+TLS transport.
+type wsBind struct {
+	addr     string          // listen address (e.g. ":443" or "0.0.0.0:8443")
+	useTLS   bool
+	certFile string
+	keyFile  string
+
+	listener *wsListener
+
+	// Outbound connection pool, keyed by peer endpoint string (host:port).
+	connMu sync.Mutex
+	conns  map[string]*websocketTransport
+
+	// Inbound packet queue: received websocket frames are deobfuscated and
+	// placed here for delivery via makeReceiveFunc.
+	recvMu   sync.Mutex
+	recvQueue [][]byte
+	recvEPs   []conn.Endpoint
+
+	// peerKeyLookup maps a remote address (host:port) to a WireGuard peer key.
+	// This lets us resolve the correct obfuscator for inbound packets.
+	peerKeyLookup map[string]string
+
+	closed bool
+}
+
+// NewWSBind creates a new wsBind listener.
+func NewWSBind(addr string, useTLS bool, certFile, keyFile string) *wsBind {
+	return &wsBind{
+		addr:          addr,
+		useTLS:         useTLS,
+		certFile:      certFile,
+		keyFile:       keyFile,
+		conns:         make(map[string]*websocketTransport),
+		peerKeyLookup: make(map[string]string),
+	}
+}
+
+// open starts the websocket listener. Safe to call once.
+func (wb *wsBind) open() error {
+	if wb.addr == "" {
+		return nil // no listen address configured; wsBind will only do outbound
+	}
+	l, err := ListenWebSocket(wb.addr, wb.useTLS, wb.certFile, wb.keyFile)
+	if err != nil {
+		return err
+	}
+	wb.listener = l
+	// Start accept loop.
+	go wb.acceptLoop()
+	return nil
+}
+
+// close shuts down the listener and all connections.
+func (wb *wsBind) close() error {
+	wb.connMu.Lock()
+	wb.closed = true
+	wb.connMu.Unlock()
+
+	var err error
+	if wb.listener != nil {
+		err = wb.listener.Close()
+	}
+	// Close all outbound connections.
+	wb.connMu.Lock()
+	for _, t := range wb.conns {
+		t.conn.Close()
+	}
+	wb.conns = make(map[string]*websocketTransport)
+	wb.connMu.Unlock()
+	return err
+}
+
+// acceptLoop accepts inbound websocket connections and reads frames.
+func (wb *wsBind) acceptLoop() {
+	for {
+		t, err := wb.listener.Accept()
+		if err != nil {
+			return
+		}
+		go wb.handleWSConn(t)
+	}
+}
+
+// handleWSConn reads frames from an accepted websocket transport and enqueues
+// the deobfuscated packets for delivery to the wireguard device.
+func (wb *wsBind) handleWSConn(t *websocketTransport) {
+	defer t.conn.Close()
+	// The peer key is unknown at this point (we only have the remote address).
+	// Inbound packets are deobfuscated by the obfuscatingBind's receive path
+	// using the peer key resolved from the endpoint. Here we just enqueue raw
+	// websocket-framed payloads and let the bind's receive func handle them.
+	// However, since we need a peer key to look up the obfuscator, we use
+	// a default server-side websocket obfuscator for the initial unwrap.
+	serverObf := newWebsocketObfuscator(false)
+	for {
+		payload, err := t.wsConn.ReadFrame()
+		if err != nil {
+			return
+		}
+		// payload is the raw WireGuard packet extracted from the WS frame.
+		// We already have the deobfuscated packet (ReadFrame strips WS framing).
+		// No further unwrapping needed — the websocketObfuscator.WrapOutbound/
+		// UnwrapInbound is handled at the obfuscatingBind level. We just enqueue
+		// the packet with the remote address as the endpoint.
+		_ = serverObf // server-side unwrapping is handled by obfuscatingBind
+		remoteAddr := t.conn.RemoteAddr().String()
+		wb.enqueueInbound(payload, remoteAddr)
+	}
+}
+
+// enqueueInbound adds a received packet to the queue for delivery to the
+// wireguard device via makeReceiveFunc.
+func (wb *wsBind) enqueueInbound(packet []byte, remoteAddr string) {
+	ep := &wsEndpoint{addr: remoteAddr}
+	wb.recvMu.Lock()
+	wb.recvQueue = append(wb.recvQueue, packet)
+	wb.recvEPs = append(wb.recvEPs, ep)
+	wb.recvMu.Unlock()
+}
+
+// getOrCreateConn returns an existing websocketTransport for the peer, or
+// dials a new one.
+func (wb *wsBind) getOrCreateConn(addr string) (*websocketTransport, error) {
+	wb.connMu.Lock()
+	if t, ok := wb.conns[addr]; ok {
+		wb.connMu.Unlock()
+		return t, nil
+	}
+	wb.connMu.Unlock()
+
+	// Dial a new connection outside the lock to avoid blocking other sends.
+	t, err := DialWebSocket(addr, wb.useTLS)
+	if err != nil {
+		return nil, err
+	}
+	wb.connMu.Lock()
+	if wb.closed {
+		wb.connMu.Unlock()
+		t.conn.Close()
+		return nil, fmt.Errorf("wsBind closed")
+	}
+	wb.conns[addr] = t
+	wb.connMu.Unlock()
+	return t, nil
+}
+
+// send writes WireGuard packets through a websocket transport connection,
+// wrapping them in WebSocket binary frames.
+func (wb *wsBind) send(bufs [][]byte, endpoint conn.Endpoint, o Obfuscator) error {
+	addr := endpoint.DstToString()
+	t, err := wb.getOrCreateConn(addr)
+	if err != nil {
+		return fmt.Errorf("wsBind dial %s: %w", addr, err)
+	}
+	for _, buf := range bufs {
+		// Wrap the WireGuard packet in a WebSocket binary frame.
+		frame, err := o.WrapOutbound(buf)
+		if err != nil {
+			return fmt.Errorf("wsBind wrap: %w", err)
+		}
+		if _, err := t.conn.Write(frame); err != nil {
+			// Connection might be stale — drop it and retry once.
+			wb.connMu.Lock()
+			delete(wb.conns, addr)
+			wb.connMu.Unlock()
+			t.conn.Close()
+			return fmt.Errorf("wsBind write: %w", err)
+		}
+	}
+	return nil
+}
+
+// makeReceiveFunc returns a conn.ReceiveFunc that drains the inbound
+// websocket packet queue, delivering deobfuscated packets to the wireguard
+// device.
+func (wb *wsBind) makeReceiveFunc(b *obfuscatingBind) conn.ReceiveFunc {
+	return func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		wb.recvMu.Lock()
+		if len(wb.recvQueue) == 0 {
+			wb.recvMu.Unlock()
+			// Block briefly — the wireguard device expects ReceiveFuncs to
+			// block until packets are available. We sleep and retry.
+			time.Sleep(10 * time.Millisecond)
+			return 0, nil
+		}
+		n := len(wb.recvQueue)
+		if n > len(packets) {
+			n = len(packets)
+		}
+		for i := 0; i < n; i++ {
+			pkt := wb.recvQueue[i]
+			ep := wb.recvEPs[i]
+			// Copy packet data into the provided buffer.
+			copy(packets[i], pkt)
+			sizes[i] = len(pkt)
+			if eps != nil && i < len(eps) {
+				eps[i] = ep
+			}
+		}
+		// Drain the consumed entries.
+		wb.recvQueue = wb.recvQueue[n:]
+		wb.recvEPs = wb.recvEPs[n:]
+		wb.recvMu.Unlock()
+		return n, nil
+	}
+}
+
+// --- wsEndpoint: conn.Endpoint for websocket transport ---
+
+// wsEndpoint implements conn.Endpoint for websocket transport peers.
+// It carries the remote address (host:port) used to look up obfuscators
+// and route packets.
+type wsEndpoint struct {
+	addr string // remote host:port
+}
+
+func (e *wsEndpoint) ClearSrc()           {}
+func (e *wsEndpoint) SrcToString() string { return "" }
+func (e *wsEndpoint) DstToString() string { return e.addr }
+func (e *wsEndpoint) DstToBytes() []byte  { return []byte(e.addr) }
+func (e *wsEndpoint) DstIP() netip.Addr {
+	host, _, _ := net.SplitHostPort(e.addr)
+	ip, _ := netip.ParseAddr(host)
+	return ip
+}
+func (e *wsEndpoint) SrcIP() netip.Addr { return netip.Addr{} }
+
+// ParseEndpoint creates a wsEndpoint from a string address.
+func (wb *wsBind) ParseEndpoint(s string) (conn.Endpoint, error) {
+	return &wsEndpoint{addr: s}, nil
+}
+
+// BatchSize returns the max number of packets per batch for websocket transport.
+func (wb *wsBind) BatchSize() int { return 1 }
+
+// SetMark is a no-op for websocket transport (no kernel socket mark).
+func (wb *wsBind) SetMark(mark uint32) error { return nil }

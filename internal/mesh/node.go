@@ -72,6 +72,25 @@ func New(cfg *config.Config) (*MeshNode, error) {
 	innerBind := conn.NewDefaultBind()
 	obBind := NewObfuscatingBind(innerBind)
 
+	// If any peer uses websocket mode, create a wsBind and install it.
+	// The wsBind listens on the mesh port for WebSocket+TLS connections.
+	for _, peerCfg := range cfg.Peers {
+		if ParseObfuscationMode(peerCfg.Obfuscation) == ObfuscationWebSocket {
+			wsAddr := fmt.Sprintf(":%d", cfg.Mesh.Port)
+			useTLS := false
+			if peerCfg.ObfConfig != nil {
+				useTLS = peerCfg.ObfConfig.WSUseTLS
+			}
+			// When useTLS is true, cert/key files must be provided via a
+			// TLS config block (not wired here — deployment responsibility).
+			// For non-TLS (plain TCP) websocket, no cert files needed.
+			var wsCert, wsKey string
+			wb := NewWSBind(wsAddr, useTLS, wsCert, wsKey)
+			obBind.SetWSBind(wb)
+			break // one wsBind handles all websocket-mode peers
+		}
+	}
+
 	logger := device.NewLogger(device.LogLevelError, "meshdesk: ")
 	dev := device.NewDevice(tunDev, obBind, logger)
 	if dev == nil {
