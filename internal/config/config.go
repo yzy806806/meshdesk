@@ -75,6 +75,7 @@ type ObfuscationOpts struct {
 type MonitoringConfig struct {
 	Collectors []string `yaml:"collectors"` // peer IDs of collector nodes
 	Interval   int      `yaml:"interval"`   // push interval in seconds
+	Port       int      `yaml:"port"`       // mesh-internal port for metric pushes (default 4191)
 }
 
 // AuthConfig holds web UI auth settings.
@@ -118,6 +119,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Monitoring.Interval == 0 {
 		cfg.Monitoring.Interval = 15
+	}
+	if cfg.Monitoring.Port == 0 {
+		cfg.Monitoring.Port = 4191
 	}
 	return cfg, nil
 }
