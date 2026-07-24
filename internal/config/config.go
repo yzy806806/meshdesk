@@ -38,6 +38,21 @@ type PeerConfig struct {
 	Obfuscation  string            `yaml:"obfuscation"`   // none | padded | websocket
 	PresharedKey string            `yaml:"preshared_key"` // optional WireGuard PSK
 	ObfConfig    *ObfuscationOpts  `yaml:"obf_config,omitempty"` // per-peer obfuscation parameters
+
+	// ServiceManage holds the list of service names this peer is allowed to
+	// manage (start/stop/restart). Only meaningful when "service_manage"
+	// appears in Capabilities. If empty with service_manage present, the
+	// peer can manage all services (not recommended).
+	ServiceManage []string `yaml:"service_manage,omitempty"`
+
+	// FileTransferPaths restricts file_transfer capability to specific
+	// directory prefixes. If empty with file_transfer present, no path
+	// restriction is enforced (peer can access any path).
+	FileTransferPaths []string `yaml:"file_transfer_paths,omitempty"`
+
+	// MonitorScopes restricts monitor_read/monitor_write to specific
+	// metric categories. If empty, all metrics are accessible.
+	MonitorScopes []string `yaml:"monitor_scopes,omitempty"`
 }
 
 // ObfuscationOpts holds per-peer obfuscation parameters (AmneziaWG-style).
