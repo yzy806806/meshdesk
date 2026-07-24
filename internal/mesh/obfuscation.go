@@ -120,6 +120,13 @@ type ObfuscationConfig struct {
 	// "safari", "edge", "ios", "android"). Defaults to "chrome" when empty.
 	// Used only in WebSocket+TLS mode.
 	TLSFingerprint string
+
+	// IsClient controls WebSocket frame masking. When true, outbound frames
+	// are masked per RFC 6455 (client side). When false, frames are unmasked
+	// (server side). Used only in WebSocket mode. The registry factory reads
+	// this field so that RegisterObfuscator can create the correct variant
+	// without a separate parameter.
+	IsClient bool
 }
 
 // DefaultObfuscationConfig returns a config with AmneziaWG-style defaults
@@ -599,36 +606,112 @@ func (w *websocketObfuscator) UnwrapInbound(data []byte) ([]byte, error) {
 
 func (w *websocketObfuscator) Mode() ObfuscationMode { return ObfuscationWebSocket }
 
-// --- Obfuscator factory ---
+// --- Obfuscator registry ---
+
+// obfuscatorFactory is a constructor that builds an Obfuscator from a config.
+type obfuscatorFactory func(cfg ObfuscationConfig) Obfuscator
+
+// ObfuscatorRegistry is the global registry of obfuscation-mode factories.
+// Modes self-register via init() calling RegisterObfuscator. The factory
+// lookup replaces the former hard-coded switch statement, so adding a new
+// obfuscation mode no longer requires modifying core factory code.
+var ObfuscatorRegistry = &obfuscatorRegistry{
+	factories: &sync.Map{},
+}
+
+// obfuscatorRegistry wraps a sync.Map of mode-name → factory.
+type obfuscatorRegistry struct {
+	factories *sync.Map
+}
+
+// RegisterObfuscator registers a factory for the named obfuscation mode.
+// Each mode (none, padded, websocket, etc.) calls this from an init()
+// function to self-register. Registering the same name twice panics,
+// which catches duplicate registrations at program start.
+func RegisterObfuscator(name string, factory obfuscatorFactory) {
+	if _, loaded := ObfuscatorRegistry.factories.LoadOrStore(name, factory); loaded {
+		panic(fmt.Sprintf("mesh: duplicate obfuscator registration for %q", name))
+	}
+}
+
+// Get looks up the factory for the named mode. Returns the factory and true
+// if found, or nil and false if no mode is registered under that name.
+func (r *obfuscatorRegistry) Get(name string) (obfuscatorFactory, bool) {
+	v, ok := r.factories.Load(name)
+	if !ok {
+		return nil, false
+	}
+	return v.(obfuscatorFactory), true
+}
+
+// MustGet is like Get but panics if the mode is not registered. Useful in
+// init-time paths where a missing registration indicates a programming error.
+func (r *obfuscatorRegistry) MustGet(name string) obfuscatorFactory {
+	f, ok := r.Get(name)
+	if !ok {
+		panic(fmt.Sprintf("mesh: obfuscator mode %q not registered", name))
+	}
+	return f
+}
+
+// Names returns all registered obfuscation mode names. The order is
+// non-deterministic (sync.Map iteration).
+func (r *obfuscatorRegistry) Names() []string {
+	var names []string
+	r.factories.Range(func(key, _ any) bool {
+		names = append(names, key.(string))
+		return true
+	})
+	return names
+}
+
+// --- Obfuscator factory (registry-backed) ---
 
 // NewObfuscator creates an Obfuscator for the given mode with default config.
+// The mode is resolved through the ObfuscatorRegistry, so new modes can be
+// added by calling RegisterObfuscator without modifying this function.
 func NewObfuscator(mode ObfuscationMode) Obfuscator {
-	switch mode {
-	case ObfuscationNone:
-		return noneObfuscator{}
-	case ObfuscationPadded:
-		return newPaddedObfuscator(DefaultObfuscationConfig())
-	case ObfuscationWebSocket:
-		return newWebsocketObfuscator(true)
-	default:
-		return newPaddedObfuscator(DefaultObfuscationConfig())
-	}
+	return NewObfuscatorWithConfig(mode, DefaultObfuscationConfig(), true)
 }
 
 // NewObfuscatorWithConfig creates an Obfuscator with a specific config.
 // For padded mode, the config controls H1-H4/S1-S4/Jc/PSK/jitter.
-// For websocket mode, isClient controls frame masking.
+// For websocket mode, cfg.IsClient controls frame masking.
+//
+// The mode is resolved through the ObfuscatorRegistry. If the mode has not
+// been registered, it falls back to padded mode (fail-safe for GFW resistance).
 func NewObfuscatorWithConfig(mode ObfuscationMode, cfg ObfuscationConfig, isClient bool) Obfuscator {
-	switch mode {
-	case ObfuscationNone:
-		return noneObfuscator{}
-	case ObfuscationPadded:
-		return newPaddedObfuscator(cfg)
-	case ObfuscationWebSocket:
-		return newWebsocketObfuscator(isClient)
-	default:
-		return newPaddedObfuscator(cfg)
+	cfg.IsClient = isClient
+	name := mode.String()
+	factory, ok := ObfuscatorRegistry.Get(name)
+	if !ok {
+		// Fail-safe: fall back to padded mode for unrecognized modes.
+		factory, ok = ObfuscatorRegistry.Get(ObfuscationPadded.String())
+		if !ok {
+			panic("mesh: padded obfuscator not registered (init order bug)")
+		}
 	}
+	return factory(cfg)
+}
+
+// --- self-registration of built-in obfuscation modes ---
+
+func init() {
+	RegisterObfuscator("none", func(cfg ObfuscationConfig) Obfuscator {
+		return noneObfuscator{}
+	})
+}
+
+func init() {
+	RegisterObfuscator("padded", func(cfg ObfuscationConfig) Obfuscator {
+		return newPaddedObfuscator(cfg)
+	})
+}
+
+func init() {
+	RegisterObfuscator("websocket", func(cfg ObfuscationConfig) Obfuscator {
+		return newWebsocketObfuscator(cfg.IsClient)
+	})
 }
 
 // --- Obfuscating Bind (conn.Bind wrapper) ---
