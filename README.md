@@ -140,17 +140,6 @@ tun_ip: ""              # auto-assigned if empty
 - **Database:** SQLite (embedded, for metrics history)
 - **Protocol:** gRPC / Protobuf (mesh communication)
 
-## Roadmap
-
-- [ ] v0.1 — Mesh networking + basic agent (mesh connect, heartbeat, metrics)
-- [ ] v0.2 — Web UI + server overview
-- [ ] v0.3 — Web Terminal (WebSSH)
-- [ ] v0.4 — File transfer
-- [ ] v0.5 — Service management
-- [ ] v0.6 — Network topology visualization
-- [ ] v0.7 — Alerting & notifications
-- [ ] v1.0 — Production release
-
 ## License
 
 MIT
