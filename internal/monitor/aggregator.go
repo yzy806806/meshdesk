@@ -8,6 +8,20 @@ import (
 	"sync"
 )
 
+// AuthChecker is the interface for capability-based authorization of
+// incoming metric pushes. In production this is implemented by wrapping
+// *auth.CapabilityEngine. The aggregator calls AuthorizeMonitorWrite
+// before accepting any metric data, enforcing Decision E (zero-trust).
+//
+// If the checker is nil, all peers are accepted (for testing only).
+// In production, always set an auth checker.
+type AuthChecker interface {
+	// AuthorizeMonitorWrite checks whether sourcePeer is authorized to
+	// push monitoring data. Returns true if allowed, false otherwise.
+	// Every call should produce an audit log entry.
+	AuthorizeMonitorWrite(sourcePeer string) bool
+}
+
 // Aggregator runs on collector nodes (nodes with --web or designated aggregators).
 // It listens on a mesh-internal port for incoming metric pushes from agents,
 // validates them, and stores them in the local Store for dashboard consumption.
@@ -15,6 +29,8 @@ type Aggregator struct {
 	store   *Store
 	dialer  MeshListener // listens for mesh-internal connections
 	port    int
+
+	authChecker AuthChecker
 
 	mu      sync.Mutex
 	running bool
@@ -35,6 +51,11 @@ type AggregatorConfig struct {
 	Store  *Store
 	Dialer MeshListener
 	Port   int
+
+	// AuthChecker, if set, requires every incoming metric push to
+	// pass a capability check (Decision E). If nil, all pushes are
+	// accepted (testing mode only).
+	AuthChecker AuthChecker
 }
 
 // NewAggregator creates an aggregator that receives metric pushes.
@@ -48,10 +69,11 @@ func NewAggregator(cfg AggregatorConfig) *Aggregator {
 		store = NewStore()
 	}
 	return &Aggregator{
-		store:  store,
-		dialer: cfg.Dialer,
-		port:   port,
-		stopCh: make(chan struct{}),
+		store:       store,
+		dialer:      cfg.Dialer,
+		port:        port,
+		authChecker: cfg.AuthChecker,
+		stopCh:      make(chan struct{}),
 	}
 }
 
@@ -123,6 +145,9 @@ func (a *Aggregator) acceptLoop(ln net.Listener) {
 }
 
 // handlePush reads a metric envelope from a connection and stores it.
+// If an auth checker is configured, the source peer must have the
+// monitor_write capability (Decision E). Unauthorized pushes are
+// silently dropped after the check (an audit entry is produced).
 func (a *Aggregator) handlePush(conn net.Conn) {
 	defer conn.Close()
 
@@ -134,6 +159,16 @@ func (a *Aggregator) handlePush(conn net.Conn) {
 
 	if env.Metrics == nil || env.SourceID == "" {
 		return
+	}
+
+	// Capability check: verify the source peer is authorized to push
+	// monitoring data (Decision E — zero-trust). This runs before
+	// storing any metrics from the peer.
+	if a.authChecker != nil {
+		if !a.authChecker.AuthorizeMonitorWrite(env.SourceID) {
+			log.Printf("monitor: rejected metric push from unauthorized peer %s", env.SourceID)
+			return
+		}
 	}
 
 	// Store the metrics. The Store handles deduplication naturally
