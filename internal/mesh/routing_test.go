@@ -98,9 +98,9 @@ func TestRoutingTableUpdatePeer(t *testing.T) {
 func TestRoutingTableResolvePeerByIP(t *testing.T) {
 	rt := NewRoutingTable()
 	peer1 := &PeerEntry{
-		ID:         "aaaa1111",
-		Endpoint:   "1.2.3.4:51820",
-		AllowedIPs: []string{"10.10.1.1/32"},
+		ID:          "aaaa1111",
+		Endpoint:    "1.2.3.4:51820",
+		AllowedIPs:  []string{"10.10.1.1/32"},
 		Obfuscation: ObfuscationPadded,
 	}
 	rt.AddPeer(peer1)

@@ -9,12 +9,12 @@ import (
 func TestMetricsEncodeDecode(t *testing.T) {
 	original := &Metrics{
 		Timestamp: time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC),
-		NodeID:   "abc123",
-		Hostname: "test-node",
+		NodeID:    "abc123",
+		Hostname:  "test-node",
 		CPU: CPUMetrics{
 			UsagePercent: 45.5,
 			PerCore:      []float64{40.0, 51.0},
-			CoreCount:     2,
+			CoreCount:    2,
 		},
 		Memory: MemoryMetrics{
 			Total:     8589934592, // 8 GB

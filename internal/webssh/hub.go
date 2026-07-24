@@ -48,9 +48,9 @@ type Hub struct {
 	maxSessions int
 
 	// Dependencies (injected)
-	sshClient  *SSHClient
-	resolver   PeerResolver
-	sshPort    int
+	sshClient *SSHClient
+	resolver  PeerResolver
+	sshPort   int
 
 	// Timeouts
 	readDeadline  time.Duration
@@ -90,17 +90,17 @@ func (h *Hub) SessionCount() int {
 
 // Session represents a single WebSSH terminal session.
 type Session struct {
-	ID          string
-	PeerID      string
-	MeshIP      string
-	ws          *websocket.Conn
-	remote      *RemoteSession
-	hub         *Hub
-	cancel      context.CancelFunc
-	closeOnce   sync.Once
-	mu          sync.Mutex
-	cols        int
-	rows        int
+	ID        string
+	PeerID    string
+	MeshIP    string
+	ws        *websocket.Conn
+	remote    *RemoteSession
+	hub       *Hub
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	mu        sync.Mutex
+	cols      int
+	rows      int
 }
 
 // HandleWebSocket upgrades the HTTP connection to a WebSocket and starts

@@ -92,7 +92,7 @@ func (l *inProcWebListener) Addr() net.Addr {
 type webDummyAddr struct{}
 
 func (d *webDummyAddr) String() string  { return "test" }
-func (d *webDummyAddr) Network() string  { return "test" }
+func (d *webDummyAddr) Network() string { return "test" }
 
 var errWebAlreadyListening = &webTestError{"port already in use"}
 var errWebNoListener = &webTestError{"no listener"}
@@ -104,6 +104,7 @@ func (e *webTestError) Error() string { return e.msg }
 
 // Ensure inProcWebMesh satisfies transfer.MeshListener
 var _ transfer.MeshListener = (*inProcWebMesh)(nil)
+
 func (m *inProcWebMesh) ListenMesh(port int) (net.Listener, error) {
 	return m.Listen(port)
 }

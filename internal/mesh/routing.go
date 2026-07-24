@@ -10,16 +10,16 @@ import (
 // It's the core data structure that the mesh routing layer uses to
 // decide which peer to send a packet to.
 type RoutingTable struct {
-	mu      sync.RWMutex
-	routes  map[string]string   // mesh IP (string) → peer ID (hex public key)
-	peers   map[string]*PeerEntry // peer ID → peer entry
+	mu     sync.RWMutex
+	routes map[string]string     // mesh IP (string) → peer ID (hex public key)
+	peers  map[string]*PeerEntry // peer ID → peer entry
 }
 
 // PeerEntry holds the state for a single mesh peer.
 type PeerEntry struct {
-	ID         string         // hex public key
-	Endpoint   string         // host:port
-	AllowedIPs []string       // mesh IPs
+	ID          string   // hex public key
+	Endpoint    string   // host:port
+	AllowedIPs  []string // mesh IPs
 	Obfuscation ObfuscationMode
 }
 

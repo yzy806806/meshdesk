@@ -170,8 +170,8 @@ func newAuthTestEngine(t *testing.T) *auth.CapabilityEngine {
 				ServiceManage: []string{"nginx", "meshdesk"},
 			},
 			{
-				PublicKey:     "auth-peer-2",
-				Capabilities:  []string{auth.CapMonitorRead}, // no service_manage
+				PublicKey:    "auth-peer-2",
+				Capabilities: []string{auth.CapMonitorRead}, // no service_manage
 			},
 		},
 	}

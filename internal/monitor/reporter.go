@@ -18,16 +18,16 @@ import (
 // survive a collector outage and can be replayed once connectivity is restored.
 type Reporter struct {
 	collector  *SystemCollector
-	store      *Store          // local ring buffer store (self-metrics + buffer during outage)
-	dialer     MeshDialer     // dials mesh-internal connections to collectors
-	collectors []string        // peer IDs of collector nodes
+	store      *Store     // local ring buffer store (self-metrics + buffer during outage)
+	dialer     MeshDialer // dials mesh-internal connections to collectors
+	collectors []string   // peer IDs of collector nodes
 	interval   time.Duration
-	port       int             // mesh-internal port that collectors listen on
+	port       int // mesh-internal port that collectors listen on
 
-	mu       sync.Mutex
-	running  bool
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	mu      sync.Mutex
+	running bool
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
 
 	// sequence is a monotonically increasing counter per source.
 	sequence uint64

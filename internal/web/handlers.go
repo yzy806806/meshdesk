@@ -118,16 +118,16 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	nodes := s.buildNodeCards()
 	data := struct {
 		PageData
-		Nodes         []NodeCardData
-		NodeCount     int
+		Nodes          []NodeCardData
+		NodeCount      int
 		ActiveSessions int
-		Collecting    bool
+		Collecting     bool
 	}{
-		PageData:      PageData{Title: "Dashboard", ActivePage: "dashboard"},
-		Nodes:         nodes,
-		NodeCount:     len(nodes),
+		PageData:       PageData{Title: "Dashboard", ActivePage: "dashboard"},
+		Nodes:          nodes,
+		NodeCount:      len(nodes),
 		ActiveSessions: s.activeSessionCount(),
-		Collecting:    s.monitorStore != nil && s.monitorStore.NodeCount() > 0,
+		Collecting:     s.monitorStore != nil && s.monitorStore.NodeCount() > 0,
 	}
 
 	if isHTMXRequest(r) {
@@ -140,15 +140,15 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashboardPartial(w http.ResponseWriter, r *http.Request) {
 	nodes := s.buildNodeCards()
 	data := struct {
-		Nodes         []NodeCardData
-		NodeCount     int
+		Nodes          []NodeCardData
+		NodeCount      int
 		ActiveSessions int
-		Collecting    bool
+		Collecting     bool
 	}{
-		Nodes:         nodes,
-		NodeCount:     len(nodes),
+		Nodes:          nodes,
+		NodeCount:      len(nodes),
 		ActiveSessions: s.activeSessionCount(),
-		Collecting:    s.monitorStore != nil && s.monitorStore.NodeCount() > 0,
+		Collecting:     s.monitorStore != nil && s.monitorStore.NodeCount() > 0,
 	}
 	s.renderPartial(w, "node-cards", data)
 }
@@ -205,12 +205,12 @@ func (s *Server) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
 
 	data := struct {
 		PageData
-		PeerID       string
-		PeerShortID  string
+		PeerID      string
+		PeerShortID string
 	}{
-		PageData:     PageData{Title: "Terminal", ActivePage: ""},
-		PeerID:       peerID,
-		PeerShortID:  shortIDDisplay(peerID),
+		PageData:    PageData{Title: "Terminal", ActivePage: ""},
+		PeerID:      peerID,
+		PeerShortID: shortIDDisplay(peerID),
 	}
 	s.renderPage(w, "terminal.html", data)
 }
@@ -379,9 +379,9 @@ func (s *Server) handleServicesPage(w http.ResponseWriter, r *http.Request) {
 		Nodes    []NodeCardData
 		Services []serviceStatusDisplay
 	}{
-		PageData:  PageData{Title: "Services", ActivePage: "services"},
-		Nodes:     nodes,
-		Services:  services,
+		PageData: PageData{Title: "Services", ActivePage: "services"},
+		Nodes:    nodes,
+		Services: services,
 	}
 	s.renderPage(w, "services.html", data)
 }
@@ -710,16 +710,16 @@ func (s *Server) buildDashboardJSON() string {
 	}
 
 	type jsonNode struct {
-		NodeID      string  `json:"node_id"`
-		Hostname    string  `json:"hostname"`
-		CPUUsage    float64 `json:"cpu_usage"`
-		MemUsed     uint64  `json:"mem_used"`
-		MemTotal    uint64  `json:"mem_total"`
-		Load1       float64 `json:"load1"`
-		Load5       float64 `json:"load5"`
-		Load15      float64 `json:"load15"`
-		Uptime      int64   `json:"uptime_seconds"`
-		CoreCount   int     `json:"core_count"`
+		NodeID    string  `json:"node_id"`
+		Hostname  string  `json:"hostname"`
+		CPUUsage  float64 `json:"cpu_usage"`
+		MemUsed   uint64  `json:"mem_used"`
+		MemTotal  uint64  `json:"mem_total"`
+		Load1     float64 `json:"load1"`
+		Load5     float64 `json:"load5"`
+		Load15    float64 `json:"load15"`
+		Uptime    int64   `json:"uptime_seconds"`
+		CoreCount int     `json:"core_count"`
 	}
 
 	type dashboardData struct {
@@ -758,24 +758,24 @@ func (s *Server) buildDashboardJSON() string {
 
 // NodeDetailData holds display-ready metrics for the node detail page.
 type NodeDetailData struct {
-	NodeID      string
-	ShortID     string
-	Hostname    string
-	CPUUsage    float64
-	CoreCount   int
-	PerCore     []float64
-	MemUsage    float64
-	MemUsed     uint64
-	MemTotal    uint64
-	SwapTotal   uint64
-	SwapUsed    uint64
-	Load1       float64
-	Load5       float64
-	Load15      float64
-	Uptime      int64
-	BootTime    string
-	Disks       []diskDetail
-	Networks    []networkDetail
+	NodeID    string
+	ShortID   string
+	Hostname  string
+	CPUUsage  float64
+	CoreCount int
+	PerCore   []float64
+	MemUsage  float64
+	MemUsed   uint64
+	MemTotal  uint64
+	SwapTotal uint64
+	SwapUsed  uint64
+	Load1     float64
+	Load5     float64
+	Load15    float64
+	Uptime    int64
+	BootTime  string
+	Disks     []diskDetail
+	Networks  []networkDetail
 }
 
 type diskDetail struct {
@@ -789,14 +789,14 @@ type diskDetail struct {
 }
 
 type networkDetail struct {
-	Name       string
-	RxBytes    uint64
-	TxBytes    uint64
-	RxPackets  uint64
-	TxPackets  uint64
-	RxErrors   uint64
-	TxErrors   uint64
-	SpeedMbps  int
+	Name      string
+	RxBytes   uint64
+	TxBytes   uint64
+	RxPackets uint64
+	TxPackets uint64
+	RxErrors  uint64
+	TxErrors  uint64
+	SpeedMbps int
 }
 
 // buildNodeDetail converts monitor.Metrics into display-ready detail data.
@@ -843,11 +843,11 @@ func buildNodeDetail(m *monitor.Metrics) NodeDetailData {
 			Name:      net.Name,
 			RxBytes:   net.RxBytes,
 			TxBytes:   net.TxBytes,
-			RxPackets:  net.RxPackets,
-			TxPackets:  net.TxPackets,
-			RxErrors:   net.RxErrors,
-			TxErrors:   net.TxErrors,
-			SpeedMbps:  net.SpeedMbps,
+			RxPackets: net.RxPackets,
+			TxPackets: net.TxPackets,
+			RxErrors:  net.RxErrors,
+			TxErrors:  net.TxErrors,
+			SpeedMbps: net.SpeedMbps,
 		})
 	}
 
@@ -873,9 +873,9 @@ type serviceStatusDisplay struct {
 // --- File helpers ---
 
 type fileEntry struct {
-	Name     string
-	Size     int64
-	ModTime  time.Time
+	Name    string
+	Size    int64
+	ModTime time.Time
 }
 
 func saveUploadedFile(src interface{ Read([]byte) (int, error) }, filename, dir string) (string, error) {
@@ -976,11 +976,6 @@ func writeFile(path string, src interface{ Read([]byte) (int, error) }) error {
 
 // bcryptCompare checks a bcrypt hash against a plaintext password.
 func bcryptCompare(hash, password string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
-}
-
-// bcryptCompareHash is the actual bcrypt comparison.
-func bcryptCompareHash(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 

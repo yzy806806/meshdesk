@@ -32,8 +32,8 @@ type RingBuffer struct {
 }
 
 const (
-	highResSlots = 24 * 60 // 1440 — one per minute for 24 hours
-	lowResSlots  = 7 * 24 * 12 // 2016 — one per 5 min for 7 days
+	highResSlots      = 24 * 60     // 1440 — one per minute for 24 hours
+	lowResSlots       = 7 * 24 * 12 // 2016 — one per 5 min for 7 days
 	highResResolution = 1 * time.Minute
 	lowResResolution  = 5 * time.Minute
 )

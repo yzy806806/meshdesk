@@ -18,7 +18,7 @@ type Metrics struct {
 	Disk    []DiskMetrics  `json:"disk"`
 	Network []NetMetrics   `json:"network"`
 	LoadAvg LoadAvgMetrics `json:"load_avg"`
-	Uptime  int64           `json:"uptime_seconds"`
+	Uptime  int64          `json:"uptime_seconds"`
 }
 
 // CPUMetrics holds CPU utilisation as percentages.
@@ -55,13 +55,13 @@ type DiskMetrics struct {
 
 // NetMetrics holds per-interface network statistics.
 type NetMetrics struct {
-	Name         string `json:"name"`
-	RxBytes      uint64 `json:"rx_bytes"`
-	TxBytes      uint64 `json:"tx_bytes"`
-	RxPackets    uint64 `json:"rx_packets"`
-	TxPackets    uint64 `json:"tx_packets"`
-	RxErrors     uint64 `json:"rx_errors"`
-	TxErrors     uint64 `json:"tx_errors"`
+	Name      string `json:"name"`
+	RxBytes   uint64 `json:"rx_bytes"`
+	TxBytes   uint64 `json:"tx_bytes"`
+	RxPackets uint64 `json:"rx_packets"`
+	TxPackets uint64 `json:"tx_packets"`
+	RxErrors  uint64 `json:"rx_errors"`
+	TxErrors  uint64 `json:"tx_errors"`
 	// SpeedMbps is the interface link speed (0 if unknown).
 	SpeedMbps int `json:"speed_mbps"`
 }

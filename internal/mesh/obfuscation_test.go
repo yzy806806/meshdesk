@@ -71,7 +71,7 @@ func TestPaddedObfuscatorRoundTrip(t *testing.T) {
 func TestPaddedHeaderRandomization(t *testing.T) {
 	cfg := DefaultObfuscationConfig()
 	cfg.S1, cfg.S2, cfg.S3, cfg.S4 = 0, 0, 0, 0 // disable padding to isolate header test
-	cfg.JitterMaxMs = 0                          // disable jitter for deterministic test
+	cfg.JitterMaxMs = 0                         // disable jitter for deterministic test
 	o := newPaddedObfuscator(cfg)
 
 	original := makeInitiationPacket()

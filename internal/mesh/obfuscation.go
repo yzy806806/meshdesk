@@ -31,8 +31,8 @@ import (
 // These are the first 4 bytes of every WireGuard packet.
 const (
 	wgMsgInitiation  uint32 = 0x01
-	wgMsgResponse     uint32 = 0x02
-	wgMsgCookie       uint32 = 0x03
+	wgMsgResponse    uint32 = 0x02
+	wgMsgCookie      uint32 = 0x03
 	wgMsgTransport   uint32 = 0x04
 	wgInitiationSize        = 148 // 4 type + 32 sender + 32 ephemeral + 16 + 16 + 12 + 16 + 16 + 4 = 148
 	wgResponseSize          = 92
@@ -43,9 +43,9 @@ const (
 type ObfuscationMode int
 
 const (
-	ObfuscationNone       ObfuscationMode = iota // pass-through, no transformation
-	ObfuscationPadded                            // AmneziaWG-style header randomization + padding + anti-probe
-	ObfuscationWebSocket                         // wrap in WebSocket frames over TCP+TLS
+	ObfuscationNone      ObfuscationMode = iota // pass-through, no transformation
+	ObfuscationPadded                           // AmneziaWG-style header randomization + padding + anti-probe
+	ObfuscationWebSocket                        // wrap in WebSocket frames over TCP+TLS
 )
 
 // ParseObfuscationMode converts a string to an ObfuscationMode.
@@ -133,18 +133,18 @@ type ObfuscationConfig struct {
 // suitable for basic GFW resistance (v1 level).
 func DefaultObfuscationConfig() ObfuscationConfig {
 	return ObfuscationConfig{
-		H1: [2]uint32{0x10000000, 0x1FFFFFFF},
-		H2: [2]uint32{0x20000000, 0x2FFFFFFF},
-		H3: [2]uint32{0x30000000, 0x3FFFFFFF},
-		H4: [2]uint32{0x40000000, 0x4FFFFFFF},
-		S1: 64,
-		S2: 64,
-		S3: 32,
-		S4: 16,
-		Jc:   0,   // disabled by default (v2 feature)
-		Jmin: 64,
-		Jmax: 256,
-		PSK:  "",
+		H1:          [2]uint32{0x10000000, 0x1FFFFFFF},
+		H2:          [2]uint32{0x20000000, 0x2FFFFFFF},
+		H3:          [2]uint32{0x30000000, 0x3FFFFFFF},
+		H4:          [2]uint32{0x40000000, 0x4FFFFFFF},
+		S1:          64,
+		S2:          64,
+		S3:          32,
+		S4:          16,
+		Jc:          0, // disabled by default (v2 feature)
+		Jmin:        64,
+		Jmax:        256,
+		PSK:         "",
 		JitterMaxMs: 20,
 	}
 }
@@ -172,9 +172,9 @@ type Obfuscator interface {
 // noneObfuscator passes packets through unchanged.
 type noneObfuscator struct{}
 
-func (noneObfuscator) WrapOutbound(packet []byte) ([]byte, error)  { return packet, nil }
-func (noneObfuscator) UnwrapInbound(data []byte) ([]byte, error)    { return data, nil }
-func (noneObfuscator) Mode() ObfuscationMode                          { return ObfuscationNone }
+func (noneObfuscator) WrapOutbound(packet []byte) ([]byte, error) { return packet, nil }
+func (noneObfuscator) UnwrapInbound(data []byte) ([]byte, error)  { return data, nil }
+func (noneObfuscator) Mode() ObfuscationMode                      { return ObfuscationNone }
 
 // --- padded mode (AmneziaWG-style) ---
 
@@ -187,7 +187,8 @@ func (noneObfuscator) Mode() ObfuscationMode                          { return O
 //   - Timing jitter: random delay before sending to disrupt timing analysis.
 //
 // The frame format on the wire is:
-//   [4-byte obfuscated type][original packet minus type field][S_n random padding]
+//
+//	[4-byte obfuscated type][original packet minus type field][S_n random padding]
 //
 // For anti-probe: the first 32 bytes of the original packet (after the type
 // field) are the sender ephemeral. We append a 16-byte HMAC tag derived
@@ -723,7 +724,7 @@ type obfuscatingBind struct {
 	inner       conn.Bind
 	obfuscators map[string]Obfuscator // keyed by hex public key
 	configs     map[string]ObfuscationConfig
-	ws          *wsBind               // websocket transport (nil when no peer uses websocket mode)
+	ws          *wsBind // websocket transport (nil when no peer uses websocket mode)
 	mu          sync.RWMutex
 	rngMu       sync.Mutex
 	rng         *mrand.Rand
@@ -933,14 +934,6 @@ func (b *obfuscatingBind) wrapReceiveFunc(fn conn.ReceiveFunc) conn.ReceiveFunc 
 type wsConn struct {
 	conn   net.Conn
 	reader *bufio.Reader
-}
-
-// newWSConn wraps a TCP connection for WebSocket-frame streaming.
-func newWSConn(c net.Conn) *wsConn {
-	return &wsConn{
-		conn:   c,
-		reader: bufio.NewReader(c),
-	}
 }
 
 // ReadFrame reads a single WebSocket binary frame from the stream.
@@ -1229,11 +1222,11 @@ func dialUTLS(addr, tlsSni, fingerprint string, useTLS bool) (net.Conn, error) {
 
 // wsBind implements conn.Bind for WebSocket+TLS transport.
 type wsBind struct {
-	addr          string          // listen address (e.g. ":443" or "0.0.0.0:8443")
-	useTLS        bool
-	certFile      string
-	keyFile       string
-	tlsSni        string // SNI sent in the TLS ClientHello (client-side dialing)
+	addr           string // listen address (e.g. ":443" or "0.0.0.0:8443")
+	useTLS         bool
+	certFile       string
+	keyFile        string
+	tlsSni         string // SNI sent in the TLS ClientHello (client-side dialing)
 	tlsFingerprint string // browser fingerprint to mimic ("chrome", "firefox", etc.)
 
 	listener *wsListener
@@ -1244,7 +1237,7 @@ type wsBind struct {
 
 	// Inbound packet queue: received websocket frames are deobfuscated and
 	// placed here for delivery via makeReceiveFunc.
-	recvMu   sync.Mutex
+	recvMu    sync.Mutex
 	recvQueue [][]byte
 	recvEPs   []conn.Endpoint
 

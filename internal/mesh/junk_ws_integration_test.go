@@ -29,7 +29,7 @@ func (c *capturingBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return 0, nil
 	}}, port, nil
 }
-func (c *capturingBind) Close() error             { return nil }
+func (c *capturingBind) Close() error              { return nil }
 func (c *capturingBind) SetMark(mark uint32) error { return nil }
 func (c *capturingBind) Send(bufs [][]byte, ep conn.Endpoint) error {
 	c.mu.Lock()
@@ -58,12 +58,12 @@ type testEndpoint struct {
 	addr string
 }
 
-func (e *testEndpoint) ClearSrc()             {}
-func (e *testEndpoint) SrcToString() string    { return "" }
-func (e *testEndpoint) DstToString() string    { return e.addr }
-func (e *testEndpoint) DstToBytes() []byte     { return []byte(e.addr) }
-func (e *testEndpoint) DstIP() netip.Addr      { return netip.Addr{} }
-func (e *testEndpoint) SrcIP() netip.Addr      { return netip.Addr{} }
+func (e *testEndpoint) ClearSrc()           {}
+func (e *testEndpoint) SrcToString() string { return "" }
+func (e *testEndpoint) DstToString() string { return e.addr }
+func (e *testEndpoint) DstToBytes() []byte  { return []byte(e.addr) }
+func (e *testEndpoint) DstIP() netip.Addr   { return netip.Addr{} }
+func (e *testEndpoint) SrcIP() netip.Addr   { return netip.Addr{} }
 
 // TestJunkTrainWiredInSend verifies that when Jc > 0 and the first packet is
 // a handshake initiation, junk packets are sent before the real packet.

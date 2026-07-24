@@ -10,9 +10,9 @@ import (
 // mockMonitorAuthChecker is a test AuthChecker that allows/denies
 // based on a preset map. It is safe for concurrent use.
 type mockMonitorAuthChecker struct {
-	mu          sync.Mutex
+	mu           sync.Mutex
 	allowedPeers map[string]bool
-	called      bool
+	called       bool
 }
 
 func (m *mockMonitorAuthChecker) AuthorizeMonitorWrite(sourcePeer string) bool {

@@ -26,19 +26,19 @@ import (
 // terminal endpoint (delegated to webssh.Handler), an SSE stream for live
 // dashboard metrics, and JSON API endpoints for file/service operations.
 type Server struct {
-	cfg         *config.Config
-	node        *mesh.MeshNode
+	cfg          *config.Config
+	node         *mesh.MeshNode
 	monitorStore *monitor.Store
-	sshHub      *webssh.Hub
-	authEngine  *auth.CapabilityEngine
-	svcMgr      service.ServiceManager
-	meshDialer  MeshDialer // for remote file transfer + remote service management
+	sshHub       *webssh.Hub
+	authEngine   *auth.CapabilityEngine
+	svcMgr       service.ServiceManager
+	meshDialer   MeshDialer // for remote file transfer + remote service management
 
-	tmpl    *template.Template
-	pages   map[string]*template.Template
+	tmpl  *template.Template
+	pages map[string]*template.Template
 
-	sessions  *SessionStore
-	sseHub    *SSEHub
+	sessions *SessionStore
+	sseHub   *SSEHub
 
 	httpServer *http.Server
 }
@@ -51,13 +51,13 @@ type MeshDialer interface {
 
 // Deps holds the injectable dependencies for the web server.
 type Deps struct {
-	Config      *config.Config
-	Node        *mesh.MeshNode
+	Config       *config.Config
+	Node         *mesh.MeshNode
 	MonitorStore *monitor.Store
-	SSHHub      *webssh.Hub
-	AuthEngine  *auth.CapabilityEngine
-	ServiceMgr  service.ServiceManager
-	MeshDialer  MeshDialer
+	SSHHub       *webssh.Hub
+	AuthEngine   *auth.CapabilityEngine
+	ServiceMgr   service.ServiceManager
+	MeshDialer   MeshDialer
 }
 
 // New creates a new web server from the given dependencies.
@@ -671,19 +671,19 @@ var _ = peer.Identity{}
 
 // NodeCardData holds display-ready node metrics for dashboard cards.
 type NodeCardData struct {
-	NodeID      string
-	ShortID     string
-	Hostname    string
-	CPUUsage    float64
-	MemUsage    float64
-	MemUsed     uint64
-	MemTotal    uint64
-	Load1       float64
-	Load5       float64
-	Load15      float64
-	Uptime      int64
-	HasDisk     bool
-	DiskUsage   float64
-	CoreCount   int
-	PerCore     []float64
+	NodeID    string
+	ShortID   string
+	Hostname  string
+	CPUUsage  float64
+	MemUsage  float64
+	MemUsed   uint64
+	MemTotal  uint64
+	Load1     float64
+	Load5     float64
+	Load15    float64
+	Uptime    int64
+	HasDisk   bool
+	DiskUsage float64
+	CoreCount int
+	PerCore   []float64
 }

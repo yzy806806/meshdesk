@@ -18,9 +18,9 @@ import (
 // all operations to it. Unauthorized calls return an error before
 // touching the underlying ServiceManager.
 type AuthorizedServiceManager struct {
-	backend  ServiceManager
-	engine   *auth.CapabilityEngine
-	peerID   string // the requesting peer's identity
+	backend ServiceManager
+	engine  *auth.CapabilityEngine
+	peerID  string // the requesting peer's identity
 }
 
 // NewAuthorizedServiceManager wraps a backend with capability enforcement.

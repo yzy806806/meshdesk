@@ -44,13 +44,13 @@ type MeshConfig struct {
 
 // PeerConfig describes a single mesh peer.
 type PeerConfig struct {
-	PublicKey    string            `yaml:"public_key"`
-	Endpoint     string            `yaml:"endpoint"`     // host:port; empty for roaming
-	AllowedIPs   []string          `yaml:"allowed_ips"`   // mesh IPs routed to this peer
-	Capabilities []string          `yaml:"capabilities"`  // what this peer can do on us
-	Obfuscation  string            `yaml:"obfuscation"`   // none | padded | websocket
-	PresharedKey string            `yaml:"preshared_key"` // optional WireGuard PSK
-	ObfConfig    *ObfuscationOpts  `yaml:"obf_config,omitempty"` // per-peer obfuscation parameters
+	PublicKey    string           `yaml:"public_key"`
+	Endpoint     string           `yaml:"endpoint"`             // host:port; empty for roaming
+	AllowedIPs   []string         `yaml:"allowed_ips"`          // mesh IPs routed to this peer
+	Capabilities []string         `yaml:"capabilities"`         // what this peer can do on us
+	Obfuscation  string           `yaml:"obfuscation"`          // none | padded | websocket
+	PresharedKey string           `yaml:"preshared_key"`        // optional WireGuard PSK
+	ObfConfig    *ObfuscationOpts `yaml:"obf_config,omitempty"` // per-peer obfuscation parameters
 
 	// ServiceManage holds the list of service names this peer is allowed to
 	// manage (start/stop/restart). Only meaningful when "service_manage"
@@ -178,11 +178,11 @@ func Default() *Config {
 			Interval: 15,
 		},
 		WebSSH: WebSSHConfig{
-			Port:         2222,
-			DialTimeout:  10,
-			ReadDeadline: 300,
+			Port:          2222,
+			DialTimeout:   10,
+			ReadDeadline:  300,
 			WriteDeadline: 10,
-			MaxSessions:  256,
+			MaxSessions:   256,
 		},
 		Transfer: TransferConfig{
 			MaxFileSize: DefaultMaxFileSize,

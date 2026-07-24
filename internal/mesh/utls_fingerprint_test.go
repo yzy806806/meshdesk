@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -87,10 +86,10 @@ func (s *rawClientHelloServer) Close() {
 // TestDialUTLSProducesBrowserFingerprint verifies that dialUTLS sends a
 // ClientHello that is NOT the Go standard library fingerprint. We do this
 // by capturing the raw ClientHello bytes and checking:
-// 1. It's a valid TLS handshake record (content type 0x16, handshake type 0x01).
-// 2. The SNI extension contains our configured domain.
-// 3. The ClientHello is large enough to contain browser extensions (Go's
-//    default ClientHello is ~200 bytes; Chrome's is ~500+).
+//  1. It's a valid TLS handshake record (content type 0x16, handshake type 0x01).
+//  2. The SNI extension contains our configured domain.
+//  3. The ClientHello is large enough to contain browser extensions (Go's
+//     default ClientHello is ~200 bytes; Chrome's is ~500+).
 func TestDialUTLSProducesBrowserFingerprint(t *testing.T) {
 	server, err := newRawClientHelloServer()
 	if err != nil {
@@ -322,19 +321,4 @@ func TestWSBindCarriesTLSConfig(t *testing.T) {
 	if wb.certFile != "cert.pem" {
 		t.Errorf("certFile = %q, want %q", wb.certFile, "cert.pem")
 	}
-}
-
-// writeTempFile writes data to a temp file and returns the path.
-func writeTempFile(t *testing.T, data []byte) string {
-	t.Helper()
-	f, err := os.CreateTemp("", "meshdesk-test-*")
-	if err != nil {
-		t.Fatalf("create temp file: %v", err)
-	}
-	if _, err := f.Write(data); err != nil {
-		t.Fatalf("write temp file: %v", err)
-	}
-	f.Close()
-	t.Cleanup(func() { os.Remove(f.Name()) })
-	return f.Name()
 }

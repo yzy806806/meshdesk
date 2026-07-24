@@ -29,7 +29,7 @@ type ServiceStatus struct {
 	Name        string    `json:"name"`
 	LoadState   string    `json:"load_state"`   // "loaded", "masked", "not-found"
 	ActiveState string    `json:"active_state"` // "active", "inactive", "failed", "activating"
-	SubState    string    `json:"sub_state"`     // "running", "dead", "exited", etc.
+	SubState    string    `json:"sub_state"`    // "running", "dead", "exited", etc.
 	Description string    `json:"description"`
 	ExecMainPID int       `json:"exec_main_pid"`
 	MemoryBytes uint64    `json:"memory_bytes"`

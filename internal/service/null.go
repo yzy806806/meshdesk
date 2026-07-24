@@ -30,8 +30,8 @@ type NullBackend struct{}
 // NewNullBackend creates a ServiceManager that rejects all operations.
 func NewNullBackend() *NullBackend { return &NullBackend{} }
 
-func (NullBackend) Start(name string) error  { return ErrNoSystemd }
-func (NullBackend) Stop(name string) error   { return ErrNoSystemd }
+func (NullBackend) Start(name string) error   { return ErrNoSystemd }
+func (NullBackend) Stop(name string) error    { return ErrNoSystemd }
 func (NullBackend) Restart(name string) error { return ErrNoSystemd }
 
 func (NullBackend) Status(name string) (*ServiceStatus, error) {

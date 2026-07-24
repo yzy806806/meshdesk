@@ -25,14 +25,14 @@ const defaultMTU = 1420
 //   - A routing table for peer-to-peer mesh routing
 //   - An obfuscating bind for per-peer GFW resistance
 type MeshNode struct {
-	identity   *peer.Identity
-	dev        *device.Device
-	tnet       *netstack.Net
-	routes     *RoutingTable
-	bind       *obfuscatingBind
-	cfg        *config.Config
-	mu         sync.RWMutex
-	closed     bool
+	identity *peer.Identity
+	dev      *device.Device
+	tnet     *netstack.Net
+	routes   *RoutingTable
+	bind     *obfuscatingBind
+	cfg      *config.Config
+	mu       sync.RWMutex
+	closed   bool
 }
 
 // New creates a new MeshNode from a config. If the config has no identity,

@@ -26,9 +26,9 @@ type AuthChecker interface {
 // It listens on a mesh-internal port for incoming metric pushes from agents,
 // validates them, and stores them in the local Store for dashboard consumption.
 type Aggregator struct {
-	store   *Store
-	dialer  MeshListener // listens for mesh-internal connections
-	port    int
+	store  *Store
+	dialer MeshListener // listens for mesh-internal connections
+	port   int
 
 	authChecker AuthChecker
 

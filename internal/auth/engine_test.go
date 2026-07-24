@@ -10,11 +10,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/config"
 )
 
-// testPeerID returns a deterministic hex string of the right length for testing.
-func testPeerID(n int) string {
-	return strings.Repeat("a", 64)[:min(64, n)]
-}
-
 // --- Capability constant tests ---
 
 func TestIsValidCapability(t *testing.T) {
@@ -64,8 +59,8 @@ func newTestEngine(t *testing.T) (*CapabilityEngine, *bytes.Buffer) {
 				Capabilities: []string{CapMonitorRead},
 			},
 			{
-				PublicKey:    "peer-c-key-0987654321fedcba",
-				Capabilities: []string{CapServiceManage},
+				PublicKey:     "peer-c-key-0987654321fedcba",
+				Capabilities:  []string{CapServiceManage},
 				ServiceManage: []string{"nginx", "meshdesk"},
 			},
 			{
@@ -155,8 +150,8 @@ func TestAuthorizeFileTransferPathScope(t *testing.T) {
 	cfg := &config.Config{
 		Peers: []config.PeerConfig{
 			{
-				PublicKey:        "peer-ft",
-				Capabilities:     []string{CapFileTransfer},
+				PublicKey:         "peer-ft",
+				Capabilities:      []string{CapFileTransfer},
 				FileTransferPaths: []string{"/var/log/", "/tmp/"},
 			},
 		},
@@ -185,9 +180,9 @@ func TestAuthorizeMonitorScope(t *testing.T) {
 	cfg := &config.Config{
 		Peers: []config.PeerConfig{
 			{
-				PublicKey:      "peer-mon",
-				Capabilities:   []string{CapMonitorRead},
-				MonitorScopes:  []string{"cpu", "memory"},
+				PublicKey:     "peer-mon",
+				Capabilities:  []string{CapMonitorRead},
+				MonitorScopes: []string{"cpu", "memory"},
 			},
 		},
 	}

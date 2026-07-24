@@ -70,7 +70,7 @@ func (l *inProcServiceListener) Addr() net.Addr {
 type serviceDummyAddr struct{}
 
 func (d *serviceDummyAddr) String() string  { return "test" }
-func (d *serviceDummyAddr) Network() string  { return "test" }
+func (d *serviceDummyAddr) Network() string { return "test" }
 
 var errServiceAlreadyListening = &serviceTestError{"port already in use"}
 var errServiceNoListener = &serviceTestError{"no listener"}

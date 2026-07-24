@@ -22,9 +22,9 @@ import (
 // a fresh nonce challenge, and the requesting node must prove it holds
 // the private key corresponding to its registered public key.
 type NonceChallenge struct {
-	mu       sync.Mutex
-	pending  map[string]*pendingChallenge // requesterPeerID → challenge
-	ttl      time.Duration
+	mu      sync.Mutex
+	pending map[string]*pendingChallenge // requesterPeerID → challenge
+	ttl     time.Duration
 }
 
 type pendingChallenge struct {

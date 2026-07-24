@@ -37,8 +37,8 @@ type PeerGrant struct {
 
 // AuthResult is the outcome of an authorization check.
 type AuthResult struct {
-	Allowed   bool
-	Reason    string // "explicit_allow", "no_capability", "revoked", "path_denied", "service_not_scoped"
+	Allowed    bool
+	Reason     string // "explicit_allow", "no_capability", "revoked", "path_denied", "service_not_scoped"
 	Capability string
 	Resource   string
 	SourcePeer string
@@ -67,11 +67,11 @@ type CapabilityEngine struct {
 
 // RevocationEntry records a key revocation.
 type RevocationEntry struct {
-	PeerID      string
-	RevokedBy   string // the peer ID that issued the revocation
-	RevokedAt   time.Time
-	Signature   string // hex-encoded signature from the revoking node
-	Reason      string
+	PeerID    string
+	RevokedBy string // the peer ID that issued the revocation
+	RevokedAt time.Time
+	Signature string // hex-encoded signature from the revoking node
+	Reason    string
 }
 
 // NewCapabilityEngine creates an engine from a config. All peers in

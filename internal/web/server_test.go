@@ -294,7 +294,7 @@ func TestBuildDashboardJSON(t *testing.T) {
 	}
 
 	var data struct {
-		Nodes          []struct {
+		Nodes []struct {
 			NodeID   string  `json:"node_id"`
 			Hostname string  `json:"hostname"`
 			CPUUsage float64 `json:"cpu_usage"`

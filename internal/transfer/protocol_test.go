@@ -22,11 +22,11 @@ func TestSendAndReceive(t *testing.T) {
 	clientConn, serverConn := newPipeConn()
 
 	header := &FileHeader{
-		Filename: "test.txt",
-		Size:     int64(len(content)),
-		Mode:     0644,
-		FileType: FileTypeRegular,
-		ModTime:  time.Now().Format(time.RFC3339),
+		Filename:  "test.txt",
+		Size:      int64(len(content)),
+		Mode:      0644,
+		FileType:  FileTypeRegular,
+		ModTime:   time.Now().Format(time.RFC3339),
 		SrcPeerID: "peer-sender",
 	}
 

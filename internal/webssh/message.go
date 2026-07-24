@@ -28,18 +28,18 @@ type MsgType string
 const (
 	// Client → Server messages
 
-	MsgInput     MsgType = "input"      // keystrokes from the browser terminal
-	MsgResize    MsgType = "resize"     // terminal dimensions changed (SIGWINCH)
-	MsgClipboard MsgType = "clipboard"  // paste content from browser clipboard
-	MsgClose     MsgType = "close"      // client explicitly closing the session
+	MsgInput     MsgType = "input"     // keystrokes from the browser terminal
+	MsgResize    MsgType = "resize"    // terminal dimensions changed (SIGWINCH)
+	MsgClipboard MsgType = "clipboard" // paste content from browser clipboard
+	MsgClose     MsgType = "close"     // client explicitly closing the session
 
 	// Server → Client messages
 
-	MsgOutput    MsgType = "output"     // PTY output to display in the terminal
-	MsgStatus    MsgType = "status"     // connection state update (status bar)
+	MsgOutput       MsgType = "output"        // PTY output to display in the terminal
+	MsgStatus       MsgType = "status"        // connection state update (status bar)
 	MsgClipboardOut MsgType = "clipboard_out" // clipboard content from remote (OSC 52)
-	MsgError     MsgType = "error"      // error message (fatal)
-	MsgConnected MsgType = "connected"  // session successfully established
+	MsgError        MsgType = "error"         // error message (fatal)
+	MsgConnected    MsgType = "connected"     // session successfully established
 )
 
 // SessionStatus represents the connection state shown in the status bar.
@@ -48,8 +48,8 @@ type SessionStatus string
 const (
 	StatusConnecting   SessionStatus = "connecting"   // dialing target SSH server
 	StatusConnected    SessionStatus = "connected"    // SSH session active, PTY allocated
-	StatusDisconnected SessionStatus = "disconnected"  // session ended (network or client)
-	StatusError        SessionStatus = "error"         // session failed to start or errored
+	StatusDisconnected SessionStatus = "disconnected" // session ended (network or client)
+	StatusError        SessionStatus = "error"        // session failed to start or errored
 )
 
 // Message is the envelope for all WebSocket communication.
@@ -61,7 +61,7 @@ const (
 //   - connected: JSON-encoded {peer_id, mesh_ip, cols, rows}
 type Message struct {
 	Type MsgType `json:"type"`
-	Data string `json:"data,omitempty"`
+	Data string  `json:"data,omitempty"`
 }
 
 // ResizeData is the payload for resize messages.

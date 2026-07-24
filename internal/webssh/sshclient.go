@@ -25,8 +25,8 @@ type MeshDialer interface {
 // already encrypted at the network layer — SSH provides the PTY
 // negotiation, window-change propagation, and session lifecycle.
 type SSHClient struct {
-	dialer       MeshDialer
-	dialTimeout  time.Duration
+	dialer          MeshDialer
+	dialTimeout     time.Duration
 	hostKeyCallback ssh.HostKeyCallback
 }
 
@@ -55,9 +55,9 @@ func NewSSHClient(dialer MeshDialer, dialTimeout time.Duration, hostKeyCallback 
 type RemoteSession struct {
 	client  *ssh.Client
 	session *ssh.Session
-	stdout  io.Reader // obtained before Shell() via session.StdoutPipe()
+	stdout  io.Reader      // obtained before Shell() via session.StdoutPipe()
 	stdin   io.WriteCloser // obtained before Shell() via session.StdinPipe()
-	ptyCh   ssh.Channel // direct channel access for I/O (optional)
+	ptyCh   ssh.Channel    // direct channel access for I/O (optional)
 }
 
 // Connect dials the target node and requests a PTY.
@@ -169,7 +169,7 @@ func (r *RemoteSession) Wait() error {
 
 // RemotePID returns the remote process PID if available.
 func (r *RemoteSession) RemotePID() int {
-	// x/crypto/ssh doesn't expose remote PID directly; 
+	// x/crypto/ssh doesn't expose remote PID directly;
 	// we track liveness via Wait()
 	return 0
 }

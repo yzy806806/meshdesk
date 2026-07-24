@@ -55,7 +55,7 @@ const DefaultMaxFileSize int64 = 1 << 30
 type FileType string
 
 const (
-	FileTypeRegular  FileType = "regular"
+	FileTypeRegular   FileType = "regular"
 	FileTypeDirectory FileType = "directory" // future: recursive directory transfer
 )
 
@@ -66,11 +66,11 @@ type FileHeader struct {
 	Version   int      `json:"version"`
 	Filename  string   `json:"filename"`
 	Size      int64    `json:"size"`
-	Mode      uint32   `json:"mode"`          // file permissions (e.g. 0644)
+	Mode      uint32   `json:"mode"` // file permissions (e.g. 0644)
 	FileType  FileType `json:"file_type"`
-	ModTime   string   `json:"mod_time"`     // RFC3339
+	ModTime   string   `json:"mod_time"`           // RFC3339
 	Checksum  string   `json:"checksum,omitempty"` // hex SHA-256 (optional, v1.1)
-	SrcPeerID string   `json:"src_peer_id"`   // requesting peer identity
+	SrcPeerID string   `json:"src_peer_id"`        // requesting peer identity
 }
 
 // TransferResult is the ACK/NACK sent back from the receiver.
@@ -448,12 +448,12 @@ type AuthChecker interface {
 // If authChecker is nil, all transfers are accepted (for testing only).
 // In production, always set an authChecker.
 type Receiver struct {
-	listener   MeshListener
-	port       int
-	destDir    string
+	listener    MeshListener
+	port        int
+	destDir     string
 	maxFileSize int64
 	authChecker AuthChecker
-	stopCh     chan struct{}
+	stopCh      chan struct{}
 }
 
 // MeshListener abstracts mesh-internal listening.
@@ -612,9 +612,9 @@ func peekFileHeader(conn net.Conn) (*FileHeader, []byte, error) {
 // Reads first drain the prefix, then delegate to the underlying reader.
 // This is used to reconstruct a stream after peeking at the header.
 type prefixReader struct {
-	prefix  []byte
-	offset  int
-	rest    io.Reader
+	prefix []byte
+	offset int
+	rest   io.Reader
 }
 
 func newPrefixReader(prefix []byte, rest io.Reader) *prefixReader {

@@ -16,17 +16,17 @@ const DefaultServicePort = 4192
 
 // ServiceRequest is a JSON command sent from the web server to a remote node.
 type ServiceRequest struct {
-	Action    string `json:"action"`     // "start", "stop", "restart", "status", "list"
-	Service   string `json:"service"`    // service name (empty for "list")
+	Action     string `json:"action"`           // "start", "stop", "restart", "status", "list"
+	Service    string `json:"service"`          // service name (empty for "list")
 	FollowLogs bool   `json:"follow,omitempty"` // for "logs" action
 }
 
 // ServiceResponse is the JSON response from the remote node.
 type ServiceResponse struct {
-	OK       bool            `json:"ok"`
-	Message  string          `json:"message,omitempty"`
-	Status   *ServiceStatus  `json:"status,omitempty"`
-	List     []ServiceStatus `json:"list,omitempty"`
+	OK      bool            `json:"ok"`
+	Message string          `json:"message,omitempty"`
+	Status  *ServiceStatus  `json:"status,omitempty"`
+	List    []ServiceStatus `json:"list,omitempty"`
 }
 
 // RemoteClient calls service management operations on a remote mesh node.
@@ -89,9 +89,9 @@ func (c *RemoteClient) Call(ctx context.Context, peerID string, req *ServiceRequ
 // management requests. It wraps a ServiceManager with capability checks
 // via AuthorizedServiceManager before executing any command.
 type RemoteServer struct {
-	mgr     ServiceManager
+	mgr      ServiceManager
 	listener MeshListener
-	port    int
+	port     int
 
 	stopCh chan struct{}
 }

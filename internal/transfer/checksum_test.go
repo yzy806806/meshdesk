@@ -302,7 +302,7 @@ func (l *inProcTransferListener) Addr() net.Addr {
 type dummyAddr struct{}
 
 func (d *dummyAddr) String() string  { return "test" }
-func (d *dummyAddr) Network() string  { return "test" }
+func (d *dummyAddr) Network() string { return "test" }
 
 var errTransferAlreadyListening = &transferTestError{"port already in use"}
 var errTransferNoListener = &transferTestError{"no listener"}
