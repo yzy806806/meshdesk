@@ -32,6 +32,7 @@ type Server struct {
 	sshHub      *webssh.Hub
 	authEngine  *auth.CapabilityEngine
 	svcMgr      service.ServiceManager
+	meshDialer  MeshDialer // for remote file transfer + remote service management
 
 	tmpl    *template.Template
 	pages   map[string]*template.Template
@@ -42,6 +43,12 @@ type Server struct {
 	httpServer *http.Server
 }
 
+// MeshDialer abstracts mesh-internal dialing for remote file transfer
+// and remote service management. In production this wraps mesh.MeshNode.Dial().
+type MeshDialer interface {
+	DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error)
+}
+
 // Deps holds the injectable dependencies for the web server.
 type Deps struct {
 	Config      *config.Config
@@ -50,6 +57,7 @@ type Deps struct {
 	SSHHub      *webssh.Hub
 	AuthEngine  *auth.CapabilityEngine
 	ServiceMgr  service.ServiceManager
+	MeshDialer  MeshDialer
 }
 
 // New creates a new web server from the given dependencies.
@@ -105,6 +113,7 @@ func New(deps Deps) (*Server, error) {
 		sshHub:       deps.SSHHub,
 		authEngine:   deps.AuthEngine,
 		svcMgr:       deps.ServiceMgr,
+		meshDialer:   deps.MeshDialer,
 		tmpl:         layoutTmpl,
 		pages:        pages,
 		sessions:     NewSessionStore(),
@@ -533,18 +542,49 @@ func NewPeerResolver(routes *mesh.RoutingTable) webssh.PeerResolver {
 
 // --- MeshDialer adapter for webssh ---
 
-// meshDialer adapts mesh.MeshNode.Dial to the webssh.MeshDialer interface.
-type meshDialer struct {
+// sshMeshDialer adapts mesh.MeshNode.Dial to the webssh.MeshDialer interface.
+type sshMeshDialer struct {
 	node *mesh.MeshNode
 }
 
-func (d *meshDialer) DialMesh(ctx context.Context, network, addr string) (net.Conn, error) {
+func (d *sshMeshDialer) DialMesh(ctx context.Context, network, addr string) (net.Conn, error) {
 	return d.node.Dial(ctx, network, addr)
 }
 
 // NewMeshDialer creates a webssh.MeshDialer backed by the mesh node.
 func NewMeshDialer(node *mesh.MeshNode) webssh.MeshDialer {
-	return &meshDialer{node: node}
+	return &sshMeshDialer{node: node}
+}
+
+// --- PeerMeshDialer adapter for service/transfer ---
+
+// peerMeshDialer adapts mesh.MeshNode to the service.MeshDialer interface,
+// which resolves a peer ID to a mesh IP and dials a specific port.
+type peerMeshDialer struct {
+	node *mesh.MeshNode
+}
+
+func (d *peerMeshDialer) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {
+	entry, ok := d.node.RoutingTable().GetPeer(peerID)
+	if !ok {
+		return nil, fmt.Errorf("peer %s not found in routing table", peerID)
+	}
+	if len(entry.AllowedIPs) == 0 {
+		return nil, fmt.Errorf("peer %s has no mesh IP", peerID)
+	}
+	meshIP := entry.AllowedIPs[0]
+	// Strip CIDR if present
+	if idx := strings.IndexByte(meshIP, '/'); idx >= 0 {
+		meshIP = meshIP[:idx]
+	}
+	addr := fmt.Sprintf("%s:%d", meshIP, port)
+	return d.node.Dial(ctx, "tcp", addr)
+}
+
+// NewPeerMeshDialer creates a MeshDialer (service.MeshDialer compatible)
+// backed by the mesh node's routing table and dialer.
+func NewPeerMeshDialer(node *mesh.MeshNode) MeshDialer {
+	return &peerMeshDialer{node: node}
 }
 
 // --- Template helper functions ---

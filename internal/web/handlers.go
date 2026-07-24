@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,9 +16,15 @@ import (
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
+	"github.com/yzy806806/meshdesk/internal/service"
+	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/webssh"
 	"golang.org/x/crypto/bcrypt"
 )
+
+// TransferPort is the mesh-internal port for the file transfer server.
+// This must match the listener on the target node.
+const TransferPort = 4193
 
 // --- Login / Logout ---
 
@@ -267,15 +274,57 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		destPath = "/tmp/"
 	}
 
-	// For local uploads, save to destPath on this node
-	// For remote uploads, transfer over mesh (not yet wired — needs transfer.Send)
-	// For now, store in a local uploads directory
-	uploadDir := "/tmp/meshdesk-uploads/"
-	if targetNode == "" {
-		uploadDir = destPath
+	// If a target node is specified and is not "local", transfer over the mesh.
+	if targetNode != "" && targetNode != "local" {
+		if s.meshDialer == nil {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, "<p class='error'>Mesh dialer not configured — cannot transfer to remote node.</p>")
+			return
+		}
+
+		// Dial the target node's transfer port on the mesh.
+		ctx, cancel := context.WithTimeout(r.Context(), transfer.DefaultTimeout)
+		defer cancel()
+
+		conn, err := s.meshDialer.DialMesh(ctx, targetNode, TransferPort)
+		if err != nil {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, "<p class='error'>Failed to connect to node %s: %v</p>", shortIDDisplay(targetNode), err)
+			return
+		}
+		defer conn.Close()
+
+		// Create a file header from the uploaded file info.
+		fileHeader := &transfer.FileHeader{
+			Version:   transfer.ProtocolVersion,
+			Filename:  header.Filename,
+			Size:      header.Size,
+			Mode:      0644,
+			FileType:  transfer.FileTypeRegular,
+			ModTime:   time.Now().Format(time.RFC3339),
+			SrcPeerID: "local",
+		}
+
+		// Send the file over the mesh.
+		result, err := transfer.SendWithContext(ctx, conn, file, fileHeader)
+		if err != nil {
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, "<p class='error'>Transfer to %s failed: %v</p>", shortIDDisplay(targetNode), err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/html")
+		if result.OK {
+			fmt.Fprintf(w, "<p>Transferred: <code>%s</code> (%d bytes) → node %s:%s</p>",
+				header.Filename, header.Size, shortIDDisplay(targetNode), destPath)
+		} else {
+			fmt.Fprintf(w, "<p class='error'>Remote node rejected transfer: %s</p>", result.Message)
+		}
+		return
 	}
 
-	// Write to disk (local only for now)
+	// Local upload: save to destPath on this node
+	uploadDir := destPath
 	savedPath, err := saveUploadedFile(file, header.Filename, uploadDir)
 	if err != nil {
 		w.Header().Set("Content-Type", "text/html")
@@ -391,14 +440,22 @@ func (s *Server) handleServiceAction(action string) http.HandlerFunc {
 				return
 			}
 
+			// Use AuthorizedServiceManager if auth engine is available,
+			// to enforce capability checks and produce audit entries
+			// even for local operations.
+			mgr := s.svcMgr
+			if s.authEngine != nil {
+				mgr = service.NewAuthorizedServiceManager(s.svcMgr, s.authEngine, "local-web-ui")
+			}
+
 			var err error
 			switch action {
 			case "start":
-				err = s.svcMgr.Start(serviceName)
+				err = mgr.Start(serviceName)
 			case "stop":
-				err = s.svcMgr.Stop(serviceName)
+				err = mgr.Stop(serviceName)
 			case "restart":
-				err = s.svcMgr.Restart(serviceName)
+				err = mgr.Restart(serviceName)
 			}
 
 			if err != nil {
@@ -413,8 +470,36 @@ func (s *Server) handleServiceAction(action string) http.HandlerFunc {
 			return
 		}
 
-		// Remote node service management would go through the mesh + auth layer
-		http.Error(w, "Remote service management not yet implemented", http.StatusNotImplemented)
+		// Remote node service management: dial the mesh, send command, receive response.
+		if s.meshDialer == nil {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "Mesh dialer not configured — cannot manage remote services")
+			return
+		}
+
+		client := service.NewRemoteClient(s.meshDialer, 0, 30*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		resp, err := client.Call(ctx, node, &service.ServiceRequest{
+			Action:  action,
+			Service: serviceName,
+		})
+		if err != nil {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, "Failed to reach node %s: %v", shortIDDisplay(node), err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain")
+		if resp.OK {
+			fmt.Fprintf(w, "Service %s %sed successfully on node %s", serviceName, action, shortIDDisplay(node))
+		} else {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Remote node error: %s", resp.Message)
+		}
 	}
 }
 

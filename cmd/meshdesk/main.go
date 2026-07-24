@@ -20,6 +20,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/service"
+	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
 	"github.com/yzy806806/meshdesk/internal/webssh"
 )
@@ -77,6 +78,41 @@ func main() {
 	log.Printf("  Public key: %s", node.Identity().PublicKey)
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 	log.Printf("  Peers:      %d", node.RoutingTable().PeerCount())
+
+	// Start the remote service management server (listens on mesh).
+	// Every node accepts service management commands from authorized peers.
+	remoteSvcListener := &meshListenerAdapter{node: node}
+	// Wrap the service manager with AuthorizedServiceManager for capability enforcement.
+	var remoteSvcMgr service.ServiceManager
+	if execBackend, err := service.NewExecBackend("", 30*time.Second); err != nil {
+		log.Printf("Warning: systemctl not available for remote service server: %v", err)
+	} else {
+		remoteSvcMgr = execBackend
+		if authEngine := auth.NewCapabilityEngine(cfg, auth.NewAuditLogger(log.Writer())); authEngine != nil {
+			// The remote server uses the source peer ID from the connection
+			// (set by the RPC layer). For now, we pass a placeholder that
+			// the handler will override with the actual source peer.
+			remoteSvcMgr = service.NewAuthorizedServiceManager(remoteSvcMgr, authEngine, "")
+		}
+		remoteSvcServer := service.NewRemoteServer(remoteSvcMgr, remoteSvcListener, service.DefaultServicePort)
+		if err := remoteSvcServer.Start(); err != nil {
+			log.Printf("Warning: failed to start remote service server: %v", err)
+		} else {
+			log.Printf("  Service RPC: listening on mesh port %d", service.DefaultServicePort)
+		}
+		defer remoteSvcServer.Stop()
+	}
+
+	// Start the file transfer receiver (listens on mesh).
+	// Every node accepts incoming file transfers from authorized peers.
+	transferListener := &meshListenerAdapter{node: node}
+	transferServer := transfer.NewReceiver(transferListener, web.TransferPort, "/tmp/meshdesk-uploads/")
+	if err := transferServer.Start(); err != nil {
+		log.Printf("Warning: failed to start file transfer receiver: %v", err)
+	} else {
+		log.Printf("  File transfer: listening on mesh port %d", web.TransferPort)
+	}
+	defer transferServer.Stop()
 
 	// Start monitoring reporter (runs on every node — agent or web mode).
 	var monitorStore *monitor.Store
@@ -161,6 +197,7 @@ func main() {
 			SSHHub:       sshHub,
 			AuthEngine:   authEngine,
 			ServiceMgr:   svcMgr,
+			MeshDialer:   web.NewPeerMeshDialer(node),
 		})
 		if err != nil {
 			log.Fatalf("Failed to create web server: %v", err)

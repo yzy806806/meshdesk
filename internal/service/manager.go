@@ -15,6 +15,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os/exec"
@@ -167,23 +168,35 @@ func (e *ExecBackend) List() ([]ServiceStatus, error) {
 }
 
 // runSystemctl executes a systemctl command and returns any error.
+// The backend's configured timeout is enforced via context cancellation.
 func (e *ExecBackend) runSystemctl(action, name string) error {
-	cmd := exec.Command(e.systemctlPath, action, name)
+	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, e.systemctlPath, action, name)
 	cmd.Env = []string{"LC_ALL=C"} // ensure consistent output parsing
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("systemctl %s %s: timed out after %s", action, name, e.timeout)
+		}
 		return fmt.Errorf("systemctl %s %s: %w (output: %s)", action, name, err, string(output))
 	}
 	return nil
 }
 
 // runSystemctlOutput executes a systemctl command and returns stdout.
+// The backend's configured timeout is enforced via context cancellation.
 func (e *ExecBackend) runSystemctlOutput(action string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
+	defer cancel()
 	fullArgs := append([]string{action}, args...)
-	cmd := exec.Command(e.systemctlPath, fullArgs...)
+	cmd := exec.CommandContext(ctx, e.systemctlPath, fullArgs...)
 	cmd.Env = []string{"LC_ALL=C"}
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("systemctl %s: timed out after %s", action, e.timeout)
+		}
 		return "", fmt.Errorf("systemctl %s: %w (output: %s)", action, err, string(output))
 	}
 	return string(output), nil
