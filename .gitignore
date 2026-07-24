@@ -1,0 +1,40 @@
+# Dependencies
+*.o
+*.a
+*.so
+
+# Go binaries
+meshdesk
+meshdesk-*
+/bin/
+/dist/
+
+# Build artifacts
+/build/
+/frontend/build/
+/frontend/node_modules/
+/frontend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (local dev)
+config.local.yaml
+*.local
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
