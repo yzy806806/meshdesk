@@ -98,6 +98,18 @@ type ObfuscationOpts struct {
 
 	// WSUseTLS: for websocket mode, whether to use wss:// (TLS).
 	WSUseTLS bool `yaml:"ws_use_tls"`
+
+	// TLSSni: Server Name Indication sent in the TLS ClientHello. When
+	// non-empty, the TLS handshake includes this SNI, making the connection
+	// look like normal HTTPS to the configured domain. Used only in
+	// WebSocket+TLS mode (ws_use_tls: true).
+	TLSSni string `yaml:"tls_sni,omitempty"`
+
+	// TLSFingerprint: which browser ClientHello to mimic to evade JA4
+	// fingerprinting by the GFW. Supported: "chrome", "firefox", "safari",
+	// "edge", "ios", "android". Defaults to "chrome" when empty.
+	// Used only in WebSocket+TLS mode.
+	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
 }
 
 // MonitoringConfig holds monitoring/push settings.

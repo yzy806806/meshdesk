@@ -78,14 +78,18 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		if ParseObfuscationMode(peerCfg.Obfuscation) == ObfuscationWebSocket {
 			wsAddr := fmt.Sprintf(":%d", cfg.Mesh.Port)
 			useTLS := false
+			tlsSni := ""
+			tlsFingerprint := ""
 			if peerCfg.ObfConfig != nil {
 				useTLS = peerCfg.ObfConfig.WSUseTLS
+				tlsSni = peerCfg.ObfConfig.TLSSni
+				tlsFingerprint = peerCfg.ObfConfig.TLSFingerprint
 			}
 			// When useTLS is true, cert/key files must be provided via a
 			// TLS config block (not wired here — deployment responsibility).
 			// For non-TLS (plain TCP) websocket, no cert files needed.
 			var wsCert, wsKey string
-			wb := NewWSBind(wsAddr, useTLS, wsCert, wsKey)
+			wb := NewWSBind(wsAddr, useTLS, wsCert, wsKey, tlsSni, tlsFingerprint)
 			obBind.SetWSBind(wb)
 			break // one wsBind handles all websocket-mode peers
 		}

@@ -173,7 +173,7 @@ func TestWSBindSendReceive(t *testing.T) {
 	addr := wsListener.listener.Addr().String()
 
 	// Server-side: create a wsBind to hold received packets.
-	serverWB := NewWSBind("", false, "", "")
+	serverWB := NewWSBind("", false, "", "", "", "")
 
 	// Server goroutine: accept connections, read frames, enqueue packets.
 	go func() {
@@ -196,7 +196,7 @@ func TestWSBindSendReceive(t *testing.T) {
 	}()
 
 	// Client-side: create a wsBind and wire it into an obfuscatingBind.
-	clientWB := NewWSBind("", false, "", "")
+	clientWB := NewWSBind("", false, "", "", "", "")
 	cb := &capturingBind{}
 	ob := NewObfuscatingBind(cb)
 	ob.SetWSBind(clientWB)
@@ -246,7 +246,7 @@ func TestWSBindMultiplePackets(t *testing.T) {
 	defer wsListener.Close()
 	addr := wsListener.listener.Addr().String()
 
-	serverWB := NewWSBind("", false, "", "")
+	serverWB := NewWSBind("", false, "", "", "", "")
 
 	go func() {
 		for {
@@ -267,7 +267,7 @@ func TestWSBindMultiplePackets(t *testing.T) {
 		}
 	}()
 
-	clientWB := NewWSBind("", false, "", "")
+	clientWB := NewWSBind("", false, "", "", "", "")
 	cb := &capturingBind{}
 	ob := NewObfuscatingBind(cb)
 	ob.SetWSBind(clientWB)
@@ -329,7 +329,7 @@ func TestWSEndpointMethods(t *testing.T) {
 
 // TestWSBindParseEndpoint verifies wsBind.ParseEndpoint creates a wsEndpoint.
 func TestWSBindParseEndpoint(t *testing.T) {
-	wb := NewWSBind("", false, "", "")
+	wb := NewWSBind("", false, "", "", "", "")
 	ep, err := wb.ParseEndpoint("1.2.3.4:443")
 	if err != nil {
 		t.Fatalf("ParseEndpoint: %v", err)
@@ -341,7 +341,7 @@ func TestWSBindParseEndpoint(t *testing.T) {
 
 // TestWSBindBatchSizeAndSetMark verifies basic conn.Bind interface methods.
 func TestWSBindBatchSizeAndSetMark(t *testing.T) {
-	wb := NewWSBind("", false, "", "")
+	wb := NewWSBind("", false, "", "", "", "")
 	if wb.BatchSize() != 1 {
 		t.Errorf("BatchSize = %d, want 1", wb.BatchSize())
 	}

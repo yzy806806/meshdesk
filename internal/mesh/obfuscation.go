@@ -23,6 +23,8 @@ import (
 
 	"golang.org/x/crypto/hkdf"
 	"golang.zx2c4.com/wireguard/conn"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 // WireGuard message type constants (from wireguard.com/protocol).
@@ -108,6 +110,16 @@ type ObfuscationConfig struct {
 	// JitterMaxMs: maximum timing jitter in milliseconds before sending packets.
 	// 0 means no jitter.
 	JitterMaxMs int
+
+	// TLSSni: Server Name Indication for the TLS ClientHello. When non-empty,
+	// the TLS handshake sends this SNI, making the connection look like normal
+	// HTTPS traffic to the configured domain. Used only in WebSocket+TLS mode.
+	TLSSni string
+
+	// TLSFingerprint: which browser ClientHello to mimic ("chrome", "firefox",
+	// "safari", "edge", "ios", "android"). Defaults to "chrome" when empty.
+	// Used only in WebSocket+TLS mode.
+	TLSFingerprint string
 }
 
 // DefaultObfuscationConfig returns a config with AmneziaWG-style defaults
@@ -930,16 +942,12 @@ type websocketTransport struct {
 
 // DialWebSocket performs an HTTP upgrade handshake and returns a websocketTransport
 // for sending/receiving WebSocket-framed data over a (optionally TLS) TCP connection.
-// If tlsConfig is non-nil, the connection is wrapped in TLS.
-func DialWebSocket(addr string, useTLS bool) (*websocketTransport, error) {
-	var conn net.Conn
-	var err error
-
-	if useTLS {
-		conn, err = tls.Dial("tcp", addr, &tls.Config{})
-	} else {
-		conn, err = net.Dial("tcp", addr)
-	}
+// When useTLS is true, the connection uses utls (github.com/refraction-networking/utls)
+// to mimic a browser TLS fingerprint instead of Go's standard crypto/tls, defeating
+// JA4-based fingerprinting by the GFW. tlsSni controls the SNI sent in the
+// ClientHello; tlsFingerprint selects which browser profile to mimic.
+func DialWebSocket(addr string, useTLS bool, tlsSni string, tlsFingerprint string) (*websocketTransport, error) {
+	conn, err := dialUTLS(addr, tlsSni, tlsFingerprint, useTLS)
 	if err != nil {
 		return nil, fmt.Errorf("ws dial: %w", err)
 	}
@@ -1064,6 +1072,66 @@ func hexEncode(b []byte) string {
 	return hex.EncodeToString(b)
 }
 
+// --- utls fingerprint helpers ---
+
+// fingerprintToHelloID maps a string fingerprint name to a utls ClientHelloID.
+// Defaults to Chrome when empty or unrecognized.
+func fingerprintToHelloID(fp string) utls.ClientHelloID {
+	switch strings.ToLower(fp) {
+	case "", "chrome":
+		return utls.HelloChrome_Auto
+	case "firefox":
+		return utls.HelloFirefox_Auto
+	case "safari":
+		return utls.HelloSafari_Auto
+	case "edge":
+		return utls.HelloEdge_Auto
+	case "ios":
+		return utls.HelloIOS_Auto
+	case "android":
+		return utls.HelloAndroid_11_OkHttp
+	default:
+		return utls.HelloChrome_Auto
+	}
+}
+
+// dialUTLS dials a TCP connection and wraps it in a utls TLS handshake that
+// mimics the specified browser ClientHello. If tlsSni is non-empty, it is
+// sent as the SNI in the ClientHello. When useTLS is false, a plain TCP
+// connection is returned (no TLS wrapping).
+func dialUTLS(addr, tlsSni, fingerprint string, useTLS bool) (net.Conn, error) {
+	if !useTLS {
+		return net.Dial("tcp", addr)
+	}
+
+	// Dial the underlying TCP connection first.
+	rawConn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("utls tcp dial: %w", err)
+	}
+
+	// Build the utls config with the specified SNI.
+	sni := tlsSni
+	if sni == "" {
+		// Fall back to the host portion of addr.
+		host, _, err := net.SplitHostPort(addr)
+		if err == nil {
+			sni = host
+		}
+	}
+
+	helloID := fingerprintToHelloID(fingerprint)
+	tlsConn := utls.UClient(rawConn, &utls.Config{ServerName: sni}, helloID)
+
+	// Perform the utls handshake — this sends the browser-mimicking ClientHello.
+	if err := tlsConn.Handshake(); err != nil {
+		rawConn.Close()
+		return nil, fmt.Errorf("utls handshake: %w", err)
+	}
+
+	return tlsConn, nil
+}
+
 // --- wsBind: conn.Bind implementation for WebSocket+TLS transport ---
 //
 // wsBind implements conn.Bind for peers configured with ObfuscationWebSocket
@@ -1078,10 +1146,12 @@ func hexEncode(b []byte) string {
 
 // wsBind implements conn.Bind for WebSocket+TLS transport.
 type wsBind struct {
-	addr     string          // listen address (e.g. ":443" or "0.0.0.0:8443")
-	useTLS   bool
-	certFile string
-	keyFile  string
+	addr          string          // listen address (e.g. ":443" or "0.0.0.0:8443")
+	useTLS        bool
+	certFile      string
+	keyFile       string
+	tlsSni        string // SNI sent in the TLS ClientHello (client-side dialing)
+	tlsFingerprint string // browser fingerprint to mimic ("chrome", "firefox", etc.)
 
 	listener *wsListener
 
@@ -1102,15 +1172,20 @@ type wsBind struct {
 	closed bool
 }
 
-// NewWSBind creates a new wsBind listener.
-func NewWSBind(addr string, useTLS bool, certFile, keyFile string) *wsBind {
+// NewWSBind creates a new wsBind listener with TLS configuration.
+// tlsSni and tlsFingerprint control the utls ClientHello used for outbound
+// TLS connections (client-side). The server-side listener uses crypto/tls
+// with the provided cert/key files.
+func NewWSBind(addr string, useTLS bool, certFile, keyFile string, tlsSni string, tlsFingerprint string) *wsBind {
 	return &wsBind{
-		addr:          addr,
+		addr:           addr,
 		useTLS:         useTLS,
-		certFile:      certFile,
-		keyFile:       keyFile,
-		conns:         make(map[string]*websocketTransport),
-		peerKeyLookup: make(map[string]string),
+		certFile:       certFile,
+		keyFile:        keyFile,
+		tlsSni:         tlsSni,
+		tlsFingerprint: tlsFingerprint,
+		conns:          make(map[string]*websocketTransport),
+		peerKeyLookup:  make(map[string]string),
 	}
 }
 
@@ -1208,7 +1283,7 @@ func (wb *wsBind) getOrCreateConn(addr string) (*websocketTransport, error) {
 	wb.connMu.Unlock()
 
 	// Dial a new connection outside the lock to avoid blocking other sends.
-	t, err := DialWebSocket(addr, wb.useTLS)
+	t, err := DialWebSocket(addr, wb.useTLS, wb.tlsSni, wb.tlsFingerprint)
 	if err != nil {
 		return nil, err
 	}
