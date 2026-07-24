@@ -1,0 +1,25 @@
+{{define "head"}}
+<link rel="stylesheet" href="/static/css/terminal.css">
+{{end}}
+{{define "content"}}
+<div class="terminal-view">
+  <div class="terminal-toolbar">
+    <span id="term-status" class="term-status disconnected">● Disconnected</span>
+    <span class="term-target">Target: {{.PeerShortID}}</span>
+    <div class="term-actions">
+      <button id="term-paste" title="Paste (Ctrl+Shift+V)">📋 Paste</button>
+      <button id="term-fit" title="Fit to window">⤢ Fit</button>
+      <button id="term-clear" title="Clear screen">✕ Clear</button>
+      <button id="term-reconnect" title="Reconnect">↻ Reconnect</button>
+    </div>
+  </div>
+  <div id="terminal-container" data-peer="{{.PeerID}}"></div>
+</div>
+{{end}}
+{{define "scripts"}}
+<script src="/static/js/xterm.js"></script>
+<script src="/static/js/xterm-addon-fit.js"></script>
+<script src="/static/js/xterm-addon-web-links.js"></script>
+<script src="/static/js/xterm-addon-search.js"></script>
+<script src="/static/js/terminal.js"></script>
+{{end}}

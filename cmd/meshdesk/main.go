@@ -4,15 +4,24 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
+	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/mesh"
+	"github.com/yzy806806/meshdesk/internal/monitor"
+	"github.com/yzy806806/meshdesk/internal/service"
+	"github.com/yzy806806/meshdesk/internal/web"
+	"github.com/yzy806806/meshdesk/internal/webssh"
 )
 
 func main() {
@@ -68,7 +77,99 @@ func main() {
 	log.Printf("  Public key: %s", node.Identity().PublicKey)
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 	log.Printf("  Peers:      %d", node.RoutingTable().PeerCount())
+
+	// Start monitoring reporter (runs on every node — agent or web mode).
+	var monitorStore *monitor.Store
+	var reporter *monitor.Reporter
+	nodeID := node.Identity().PublicKey
+	hostname := cfg.Node.Hostname
+
+	reporter = monitor.NewReporter(monitor.ReporterConfig{
+		NodeID:     nodeID,
+		Hostname:   hostname,
+		Dialer:     &meshDialerAdapter{node: node},
+		Collectors: cfg.Monitoring.Collectors,
+		Interval:   cfg.Monitoring.Interval,
+		Port:       cfg.Monitoring.Port,
+	})
+	if err := reporter.Start(); err != nil {
+		log.Printf("Warning: failed to start monitoring reporter: %v", err)
+	} else {
+		monitorStore = reporter.LocalStore()
+		log.Printf("  Monitor:   reporter active (interval=%ds)", cfg.Monitoring.Interval)
+	}
+	defer reporter.Stop()
+
+	var webServer *web.Server
 	if webMode {
+		// On web nodes, also run the aggregator to receive metric pushes.
+		aggregator := monitor.NewAggregator(monitor.AggregatorConfig{
+			Store:  monitorStore,
+			Dialer: &meshListenerAdapter{node: node},
+			Port:   cfg.Monitoring.Port,
+		})
+		if err := aggregator.Start(); err != nil {
+			log.Printf("Warning: failed to start metric aggregator: %v", err)
+		} else {
+			log.Printf("  Aggregator: listening on mesh port %d", cfg.Monitoring.Port)
+		}
+		defer aggregator.Stop()
+
+		// Use the aggregator's store (which may have collected metrics from other nodes).
+		if aggregator.Store() != nil {
+			monitorStore = aggregator.Store()
+		}
+
+		// Create the auth capability engine.
+		auditLogger, err := auth.NewAuditFileLogger("/var/log/meshdesk-audit.jsonl")
+		if err != nil {
+			log.Printf("Warning: could not open audit log file: %v — using stderr", err)
+			auditLogger = auth.NewAuditLogger(log.Writer())
+		}
+		defer auditLogger.Close()
+
+		authEngine := auth.NewCapabilityEngine(cfg, auditLogger)
+
+		// Create the WebSSH hub for terminal sessions.
+		sshClient := webssh.NewSSHClient(
+			web.NewMeshDialer(node),
+			time.Duration(cfg.WebSSH.DialTimeout)*time.Second,
+			nil, // accept-first-key for now; TODO: known-hosts store
+		)
+		sshHub := webssh.NewHub(
+			sshClient,
+			web.NewPeerResolver(node.RoutingTable()),
+			cfg.WebSSH.Port,
+			cfg.WebSSH.MaxSessions,
+			time.Duration(cfg.WebSSH.ReadDeadline)*time.Second,
+			time.Duration(cfg.WebSSH.WriteDeadline)*time.Second,
+		)
+
+		// Create the service manager (systemctl backend).
+		var svcMgr service.ServiceManager
+		if execBackend, err := service.NewExecBackend("", 30*time.Second); err != nil {
+			log.Printf("Warning: systemctl not available: %v", err)
+		} else {
+			svcMgr = execBackend
+		}
+
+		// Create and start the web server.
+		webServer, err = web.New(web.Deps{
+			Config:       cfg,
+			Node:         node,
+			MonitorStore: monitorStore,
+			SSHHub:       sshHub,
+			AuthEngine:   authEngine,
+			ServiceMgr:   svcMgr,
+		})
+		if err != nil {
+			log.Fatalf("Failed to create web server: %v", err)
+		}
+		if err := webServer.Start(cfg.Node.WebAddr); err != nil {
+			log.Fatalf("Failed to start web server: %v", err)
+		}
+		defer webServer.Stop()
+
 		log.Printf("  Web UI:     http://%s", cfg.Node.WebAddr)
 	} else {
 		log.Printf("  Mode:       agent-only")
@@ -85,4 +186,37 @@ func main() {
 	<-sigCh
 
 	log.Printf("Shutting down...")
+	_ = webServer // silence unused warning if not web mode
+}
+
+// meshDialerAdapter adapts mesh.MeshNode to the monitor.MeshDialer interface.
+type meshDialerAdapter struct {
+	node *mesh.MeshNode
+}
+
+func (d *meshDialerAdapter) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {
+	// Resolve peer ID to mesh IP via routing table.
+	entry, ok := d.node.RoutingTable().GetPeer(peerID)
+	if !ok {
+		return nil, fmt.Errorf("peer %s not found in routing table", peerID)
+	}
+	if len(entry.AllowedIPs) == 0 {
+		return nil, fmt.Errorf("peer %s has no mesh IP", peerID)
+	}
+	meshIP := entry.AllowedIPs[0]
+	// Strip CIDR if present
+	if idx := strings.IndexByte(meshIP, '/'); idx >= 0 {
+		meshIP = meshIP[:idx]
+	}
+	addr := fmt.Sprintf("%s:%d", meshIP, port)
+	return d.node.Dial(ctx, "tcp", addr)
+}
+
+// meshListenerAdapter adapts mesh.MeshNode to the monitor.MeshListener interface.
+type meshListenerAdapter struct {
+	node *mesh.MeshNode
+}
+
+func (a *meshListenerAdapter) ListenMesh(port int) (net.Listener, error) {
+	return a.node.Net().ListenTCP(&net.TCPAddr{Port: port})
 }

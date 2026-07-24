@@ -1,0 +1,55 @@
+{{define "content"}}
+<div class="dashboard">
+  <header>
+    <h2>Mesh Overview</h2>
+    <div class="cluster-stats">
+      <span class="badge"><strong id="node-count">{{.NodeCount}}</strong> nodes</span>
+      <span class="badge"><strong id="session-count">{{.ActiveSessions}}</strong> sessions</span>
+      <span class="badge" id="collector-status">{{if .Collecting}}collector active{{else}}agent-only{{end}}</span>
+    </div>
+  </header>
+
+  <div class="grid" id="node-grid" hx-get="/api/dashboard/partial" hx-trigger="sse:metrics" hx-swap="innerHTML">
+    {{template "node-cards" .}}
+  </div>
+</div>
+{{end}}
+
+{{define "node-cards"}}
+{{range .Nodes}}
+<article class="node-card" data-node="{{.NodeID}}" data-short="{{.ShortID}}">
+  <header>
+    <a href="/nodes/{{.NodeID}}"><strong>{{.Hostname}}</strong></a>
+    <small>{{.ShortID}}</small>
+  </header>
+  <div class="metrics-grid">
+    <div class="metric">
+      <label>CPU</label>
+      <div class="bar"><div class="bar-fill {{cpuClass .CPUUsage}}" style="width:{{printf "%.0f" .CPUUsage}}%"></div></div>
+      <span>{{printf "%.1f" .CPUUsage}}%</span>
+    </div>
+    <div class="metric">
+      <label>Memory</label>
+      <div class="bar"><div class="bar-fill {{memClass .MemUsage}}" style="width:{{printf "%.0f" .MemUsage}}%"></div></div>
+      <span>{{humanBytes .MemUsed}} / {{humanBytes .MemTotal}}</span>
+    </div>
+    <div class="metric">
+      <label>Load</label>
+      <span class="load-avg">{{printf "%.2f" .Load1}} / {{printf "%.2f" .Load5}} / {{printf "%.2f" .Load15}}</span>
+    </div>
+    <div class="metric">
+      <label>Uptime</label>
+      <span>{{humanDuration .Uptime}}</span>
+    </div>
+  </div>
+  <footer>
+    <a href="/terminal?node={{.NodeID}}" role="button" class="small">Terminal</a>
+    {{if .HasDisk}}
+    <span class="disk-info">Disk: {{printf "%.0f" .DiskUsage}}%</span>
+    {{end}}
+  </footer>
+</article>
+{{else}}
+<p class="placeholder">No nodes reporting metrics yet. Check back shortly.</p>
+{{end}}
+{{end}}

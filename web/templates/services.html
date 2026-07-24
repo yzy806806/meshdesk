@@ -1,0 +1,50 @@
+{{define "content"}}
+<div class="services-view">
+  <h2>Service Management</h2>
+
+  <form id="service-action-form" class="form-inline">
+    <label for="service-node">Node
+      <select id="service-node" name="node">
+        <option value="local">Local</option>
+        {{range .Nodes}}
+        <option value="{{.NodeID}}">{{.Hostname}}</option>
+        {{end}}
+      </select>
+    </label>
+    <label for="service-name">Service
+      <input type="text" id="service-name" name="service" placeholder="nginx" list="service-list">
+      <datalist id="service-list">
+        {{range .Services}}
+        <option value="{{.Name}}">
+        {{end}}
+      </datalist>
+    </label>
+    <div class="button-group">
+      <button type="button" onclick="serviceAction('start')">Start</button>
+      <button type="button" onclick="serviceAction('stop')" class="secondary">Stop</button>
+      <button type="button" onclick="serviceAction('restart')" class="contrast">Restart</button>
+    </div>
+  </form>
+
+  <h3>Services</h3>
+  <div id="service-list" hx-get="/api/services/list" hx-trigger="load, refresh from:body" hx-swap="innerHTML">
+    <p class="placeholder">Loading services...</p>
+  </div>
+</div>
+
+<script>
+function serviceAction(action) {
+  const node = document.getElementById('service-node').value;
+  const service = document.getElementById('service-name').value;
+  if (!service) { alert('Enter a service name'); return; }
+  fetch('/api/services/' + action, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: 'node=' + encodeURIComponent(node) + '&service=' + encodeURIComponent(service)
+  }).then(r => r.text()).then(msg => {
+    htmx.trigger(document.body, 'refresh');
+    alert(msg);
+  });
+}
+</script>
+{{end}}

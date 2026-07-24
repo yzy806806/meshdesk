@@ -1,0 +1,132 @@
+/* MeshDesk custom styles — extends Pico.css */
+
+:root {
+  --md-green: #2ea043;
+  --md-yellow: #d29922;
+  --md-red: #f85149;
+  --md-blue: #388bfd;
+}
+
+/* Top navigation */
+.topnav {
+  display: flex;
+  align-items: center;
+  padding: 0.5rem 1rem;
+  background: var(--pico-card-background-color);
+  border-bottom: 1px solid var(--pico-muted-border-color);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.topnav ul { margin: 0; padding: 0; list-style: none; }
+.topnav ul li { display: inline-block; margin-right: 0.5rem; }
+.topnav ul li a { padding: 0.4rem 0.8rem; text-decoration: none; border-radius: 4px; font-size: 0.9rem; }
+.topnav ul li a.active { background: var(--pico-primary); color: var(--pico-primary-inverse); }
+.topnav ul:last-child { margin-left: auto; }
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  font-size: 0.8rem;
+  background: var(--pico-secondary-background);
+  color: var(--pico-secondary-inverse);
+}
+.badge.small { font-size: 0.7rem; padding: 0.1rem 0.3rem; }
+
+/* Dashboard */
+.dashboard header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.cluster-stats { display: flex; gap: 0.5rem; }
+
+.node-card {
+  padding: 1rem;
+  border-radius: 6px;
+  background: var(--pico-card-background-color);
+  border: 1px solid var(--pico-card-border-color);
+  margin-bottom: 0;
+  transition: border-color 0.2s;
+}
+.node-card:hover { border-color: var(--pico-primary); }
+.node-card header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; }
+.node-card header a { text-decoration: none; }
+
+.metrics-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; }
+.metric label { font-size: 0.75rem; color: var(--pico-muted-color); display: block; margin-bottom: 0.2rem; }
+.metric span { font-size: 0.8rem; }
+
+/* Progress bars */
+.bar { height: 6px; background: var(--pico-secondary-background); border-radius: 3px; overflow: hidden; margin-bottom: 0.2rem; }
+.bar-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; background: var(--md-green); }
+.bar-fill.warn { background: var(--md-yellow); }
+.bar-fill.crit { background: var(--md-red); }
+
+/* Big metrics */
+.big-metric { text-align: center; padding: 0.5rem; }
+.big-number { font-size: 1.8rem; font-weight: bold; display: block; }
+.big-metric small { color: var(--pico-muted-color); font-size: 0.8rem; }
+
+/* Per-core bars */
+.per-core { display: flex; gap: 2px; margin-top: 0.5rem; }
+.per-core .core-bar { flex: 1; height: 12px; background: var(--pico-secondary-background); border-radius: 2px; overflow: hidden; }
+.per-core .core-bar .bar-fill { height: 100%; }
+
+/* Node detail */
+.node-detail header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
+.node-meta { display: flex; align-items: center; gap: 0.5rem; }
+
+/* Terminal */
+.terminal-view { padding: 0; }
+.terminal-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--pico-card-background-color);
+  border-bottom: 1px solid var(--pico-muted-border-color);
+}
+.term-status { font-size: 0.85rem; font-weight: bold; }
+.term-status.connected { color: var(--md-green); }
+.term-status.connecting { color: var(--md-yellow); }
+.term-status.disconnected, .term-status.error { color: var(--md-red); }
+.term-target { font-size: 0.85rem; color: var(--pico-muted-color); }
+.term-actions { margin-left: auto; display: flex; gap: 0.3rem; }
+.term-actions button { padding: 0.25rem 0.5rem; font-size: 0.8rem; cursor: pointer; }
+
+#terminal-container {
+  padding: 0.5rem;
+  height: calc(100vh - 120px);
+  min-height: 400px;
+}
+#terminal-container .xterm { height: 100%; }
+
+/* Login */
+.login-view { display: flex; justify-content: center; align-items: center; min-height: 70vh; }
+.login-card { max-width: 380px; width: 100%; }
+.login-card .error { border-left: 3px solid var(--md-red); }
+
+/* Files */
+.files-view form { margin-bottom: 1rem; }
+.form-inline { display: flex; gap: 0.5rem; align-items: flex-end; flex-wrap: wrap; }
+.form-inline label { flex: 1; min-width: 150px; }
+.button-group { display: flex; gap: 0.3rem; }
+.button-group button { padding: 0.4rem 0.8rem; }
+
+/* Tables */
+table code { font-size: 0.8rem; }
+.placeholder { color: var(--pico-muted-color); font-style: italic; text-align: center; padding: 1rem; }
+
+/* SSE update flash */
+.node-card.updated { animation: flash 0.5s ease; }
+@keyframes flash { 0% { background: var(--pico-primary-background); } 100% { background: var(--pico-card-background-color); } }
+
+/* History chart */
+#history-chart { height: 200px; border: 1px solid var(--pico-muted-border-color); border-radius: 6px; padding: 1rem; overflow: hidden; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .topnav { flex-direction: column; gap: 0.3rem; }
+  .topnav ul { margin: 0; }
+  .metrics-grid { grid-template-columns: 1fr; }
+  .form-inline { flex-direction: column; }
+}

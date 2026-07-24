@@ -1,0 +1,94 @@
+{{define "content"}}
+<div class="peers-view">
+  <h2>Mesh Peers</h2>
+  <p>Known peers from the routing table and their configured capabilities.</p>
+
+  <div class="grid">
+    <article>
+      <h4>Local Node</h4>
+      <table>
+        <tbody>
+          <tr><td>Public Key</td><td><code>{{.LocalKey}}</code></td></tr>
+          <tr><td>Mesh IP</td><td><code>{{.LocalMeshIP}}</code></td></tr>
+          <tr><td>Hostname</td><td>{{.LocalHostname}}</td></tr>
+          <tr><td>Mesh Port</td><td>{{.MeshPort}}</td></tr>
+        </tbody>
+      </table>
+    </article>
+
+    <article>
+      <h4>Peer Count</h4>
+      <div class="big-metric">
+        <span class="big-number">{{.PeerCount}}</span>
+        <small>configured peers</small>
+      </div>
+    </article>
+  </div>
+
+  <h3>Peer Table</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Peer ID</th>
+        <th>Endpoint</th>
+        <th>Mesh IPs</th>
+        <th>Obfuscation</th>
+        <th>Capabilities</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Peers}}
+      <tr>
+        <td><code title="{{.ID}}">{{shortID .ID}}</code></td>
+        <td>{{if .Endpoint}}{{.Endpoint}}{{else}}<em>roaming</em>{{end}}</td>
+        <td>{{range .AllowedIPs}}<code>{{.}}</code> {{end}}</td>
+        <td><span class="badge">{{.Obfuscation}}</span></td>
+        <td>{{range .Capabilities}}<span class="badge small">{{.}}</span> {{end}}</td>
+        <td>
+          <a href="/terminal?node={{.ID}}" role="button" class="small">Terminal</a>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="placeholder">No peers configured. Add peers in config.yaml.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  <h3>Capability Grants</h3>
+  <table>
+    <thead>
+      <tr><th>Peer</th><th>Capabilities</th><th>Service Scopes</th><th>File Paths</th></tr>
+    </thead>
+    <tbody>
+      {{range .Grants}}
+      <tr>
+        <td><code>{{shortID .PeerID}}</code></td>
+        <td>{{range .Capabilities}}<span class="badge small">{{.}}</span> {{end}}</td>
+        <td>{{range .ServiceScopes}}<code>{{.}}</code> {{end}}</td>
+        <td>{{range .FileTransferPaths}}<code>{{.}}</code> {{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="4" class="placeholder">No capability grants. Default-deny is active.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  {{if gt (len .Revocations) 0}}
+  <h3>Revoked Peers</h3>
+  <table>
+    <thead><tr><th>Peer</th><th>Revoked By</th><th>At</th><th>Reason</th></tr></thead>
+    <tbody>
+      {{range .Revocations}}
+      <tr>
+        <td><code>{{shortID .PeerID}}</code></td>
+        <td><code>{{shortID .RevokedBy}}</code></td>
+        <td>{{.RevokedAt.Format "2006-01-02 15:04:05"}}</td>
+        <td>{{.Reason}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</div>
+{{end}}

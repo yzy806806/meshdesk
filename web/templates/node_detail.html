@@ -1,0 +1,97 @@
+{{define "content"}}
+<div class="node-detail">
+  <header>
+    <h2>{{.Node.Hostname}}</h2>
+    <div class="node-meta">
+      <span class="badge">ID: {{.Node.ShortID}}</span>
+      <a href="/terminal?node={{.Node.NodeID}}" role="button">Open Terminal</a>
+    </div>
+  </header>
+
+  <div class="grid">
+    <article>
+      <h4>CPU</h4>
+      <div class="big-metric">
+        <span class="big-number" id="cpu-usage">{{printf "%.1f" .Node.CPUUsage}}%</span>
+        <small>{{.Node.CoreCount}} cores</small>
+      </div>
+      {{if gt (len .Node.PerCore) 0}}
+      <div class="per-core">
+        {{range .Node.PerCore}}
+        <div class="core-bar"><div class="bar-fill" style="width:{{printf "%.0f" .}}%"></div></div>
+        {{end}}
+      </div>
+      {{end}}
+    </article>
+
+    <article>
+      <h4>Memory</h4>
+      <div class="big-metric">
+        <span class="big-number">{{humanBytes .Node.MemUsed}}</span>
+        <small>of {{humanBytes .Node.MemTotal}}</small>
+      </div>
+      <div class="bar"><div class="bar-fill {{memClass .Node.MemUsage}}" style="width:{{printf "%.0f" .Node.MemUsage}}%"></div></div>
+      {{if gt .Node.SwapTotal 0}}
+      <small>Swap: {{humanBytes .Node.SwapUsed}} / {{humanBytes .Node.SwapTotal}}</small>
+      {{end}}
+    </article>
+
+    <article>
+      <h4>Load Average</h4>
+      <div class="big-metric">
+        <span class="big-number">{{printf "%.2f" .Node.Load1}}</span>
+        <small>5m: {{printf "%.2f" .Node.Load5}} · 15m: {{printf "%.2f" .Node.Load15}}</small>
+      </div>
+    </article>
+
+    <article>
+      <h4>Uptime</h4>
+      <div class="big-metric">
+        <span class="big-number">{{humanDuration .Node.Uptime}}</span>
+        <small>since {{.Node.BootTime}}</small>
+      </div>
+    </article>
+  </div>
+
+  {{if gt (len .Node.Disks) 0}}
+  <h3>Disk Usage</h3>
+  <div class="grid">
+    {{range .Node.Disks}}
+    <article>
+      <h5>{{.MountPoint}}</h5>
+      <small>{{.Device}} · {{.FSType}}</small>
+      <div class="bar"><div class="bar-fill {{diskClass .UsagePercent}}" style="width:{{printf "%.0f" .UsagePercent}}%"></div></div>
+      <small>{{humanBytes .Used}} / {{humanBytes .Total}}</small>
+    </article>
+    {{end}}
+  </div>
+  {{end}}
+
+  {{if gt (len .Node.Networks) 0}}
+  <h3>Network Interfaces</h3>
+  <table>
+    <thead>
+      <tr><th>Interface</th><th>RX</th><th>TX</th><th>RX Packets</th><th>TX Packets</th><th>Errors</th><th>Speed</th></tr>
+    </thead>
+    <tbody>
+      {{range .Node.Networks}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td>{{humanBytes .RxBytes}}</td>
+        <td>{{humanBytes .TxBytes}}</td>
+        <td>{{.RxPackets}}</td>
+        <td>{{.TxPackets}}</td>
+        <td>{{.RxErrors}}/{{.TxErrors}}</td>
+        <td>{{if gt .SpeedMbps 0}}{{.SpeedMbps}} Mbps{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  <h3>Historical Metrics</h3>
+  <div id="history-chart" data-node="{{.Node.NodeID}}">
+    <p class="placeholder">Live chart loads via SSE when metrics arrive.</p>
+  </div>
+</div>
+{{end}}

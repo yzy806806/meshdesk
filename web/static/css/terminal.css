@@ -1,0 +1,20 @@
+/* Terminal-specific styles */
+#terminal-container {
+  background: #000;
+  border-radius: 0 0 6px 6px;
+}
+
+#terminal-container .xterm-viewport {
+  overflow-y: auto;
+}
+
+.terminal-toolbar button {
+  background: var(--pico-secondary-background);
+  border: 1px solid var(--pico-muted-border-color);
+  border-radius: 4px;
+  color: var(--pico-color);
+  transition: background 0.2s;
+}
+.terminal-toolbar button:hover {
+  background: var(--pico-primary-background);
+}

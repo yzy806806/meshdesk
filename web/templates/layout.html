@@ -1,0 +1,38 @@
+{{define "layout"}}
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} — MeshDesk</title>
+  <link rel="stylesheet" href="/static/css/pico.min.css">
+  <link rel="stylesheet" href="/static/css/xterm.css">
+  <link rel="stylesheet" href="/static/css/app.css">
+  {{block "head" .}}{{end}}
+</head>
+<body>
+  <nav class="container-fluid topnav">
+    <ul>
+      <li><strong>⟁ MeshDesk</strong></li>
+    </ul>
+    <ul>
+      <li><a href="/" class="{{if eq .ActivePage "dashboard"}}active{{end}}">Dashboard</a></li>
+      <li><a href="/nodes" class="{{if eq .ActivePage "nodes"}}active{{end}}">Nodes</a></li>
+      <li><a href="/peers" class="{{if eq .ActivePage "peers"}}active{{end}}">Peers</a></li>
+      <li><a href="/files" class="{{if eq .ActivePage "files"}}active{{end}}">Files</a></li>
+      <li><a href="/services" class="{{if eq .ActivePage "services"}}active{{end}}">Services</a></li>
+    </ul>
+    <ul>
+      <li><a href="/logout" title="Logout">⏻</a></li>
+    </ul>
+  </nav>
+
+  <main class="container-fluid">
+    {{block "content" .}}{{end}}
+  </main>
+
+  <script src="/static/js/htmx.min.js"></script>
+  {{block "scripts" .}}{{end}}
+</body>
+</html>
+{{end}}

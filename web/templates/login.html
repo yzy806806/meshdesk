@@ -1,0 +1,22 @@
+{{define "content"}}
+<div class="login-view">
+  <article class="login-card">
+    <header>
+      <h2>⟁ MeshDesk</h2>
+      <p>Sign in to manage your mesh</p>
+    </header>
+    {{if .Error}}
+    <blockquote class="error">{{.Error}}</blockquote>
+    {{end}}
+    <form method="POST" action="/login">
+      <label for="username">Username
+        <input type="text" id="username" name="username" required autofocus>
+      </label>
+      <label for="password">Password
+        <input type="password" id="password" name="password" required>
+      </label>
+      <button type="submit">Sign In</button>
+    </form>
+  </article>
+</div>
+{{end}}
