@@ -59,6 +59,10 @@ type Server struct {
 	sessions *SessionStore
 	sseHub   *SSEHub
 
+	// webhookDispatcher forwards security alerts to an external endpoint
+	// (Slack, Discord, custom webhook). nil when AlertWebhookURL is empty.
+	webhookDispatcher *WebhookDispatcher
+
 	httpServer *http.Server
 }
 
@@ -92,6 +96,11 @@ type Deps struct {
 	// /api/proxy/status dashboard endpoint. May be nil when the node
 	// is not running as a proxy entry point.
 	ProxyStatusProvider ProxyStatusProvider
+
+	// AlertWebhookURL is an optional webhook endpoint for external
+	// security alert delivery. When set, a WebhookDispatcher is created
+	// and wired to the AlertStore. When empty, no dispatcher is created.
+	AlertWebhookURL string
 
 	// Topology providers for the 3D topology visualization API.
 	// When nil, handlers auto-build adapters from Node + MonitorStore.
@@ -216,6 +225,21 @@ func New(deps Deps) (*Server, error) {
 		s.alertStore = NewAlertStore()
 	}
 
+	// Wire webhook dispatcher if AlertWebhookURL is configured.
+	// When the URL is empty, no dispatcher is created (zero overhead).
+	webhookURL := deps.AlertWebhookURL
+	if webhookURL == "" && deps.Config != nil {
+		webhookURL = deps.Config.Auth.AlertWebhookURL
+	}
+	if webhookURL != "" {
+		nodeID := ""
+		if s.node != nil && s.node.Identity() != nil {
+			nodeID = s.node.Identity().PublicKey
+		}
+		s.webhookDispatcher = NewWebhookDispatcher(webhookURL, nodeID)
+		s.alertStore.SetWebhookCh(s.webhookDispatcher.Channel())
+	}
+
 	return s, nil
 }
 
@@ -251,6 +275,9 @@ func (s *Server) Stop() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		s.httpServer.Shutdown(ctx)
+	}
+	if s.webhookDispatcher != nil {
+		s.webhookDispatcher.Close()
 	}
 	s.sseHub.Close()
 }

@@ -37,6 +37,11 @@ type AlertStore struct {
 	alerts    []SecurityAlert
 	maxAlerts int
 	lastAlert map[string]time.Time // dedup key → last timestamp
+
+	// webhookCh is an optional channel for forwarding alerts to an
+	// external webhook dispatcher. When nil, alert dispatch is disabled.
+	// SetWebhookCh wires this field at server startup.
+	webhookCh chan<- SecurityAlert
 }
 
 // NewAlertStore creates a new alert store with a 1000-entry ring buffer.
@@ -48,14 +53,23 @@ func NewAlertStore() *AlertStore {
 	}
 }
 
+// SetWebhookCh wires the alert store to a webhook dispatcher's channel.
+// After this is called, every alert accepted by Add() is also forwarded
+// to the dispatcher via a non-blocking send. Pass nil to disable.
+func (s *AlertStore) SetWebhookCh(ch chan<- SecurityAlert) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.webhookCh = ch
+}
+
 // Add appends an alert to the store. Returns false if the alert was
 // suppressed by deduplication (same type+username+description within 60s).
 func (s *AlertStore) Add(alert SecurityAlert) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	key := alert.Type + ":" + alert.Username + ":" + alert.Description
 	if last, ok := s.lastAlert[key]; ok && time.Since(last) < 60*time.Second {
+		s.mu.Unlock()
 		return false
 	}
 
@@ -67,6 +81,19 @@ func (s *AlertStore) Add(alert SecurityAlert) bool {
 		s.alerts = s.alerts[1:]
 	}
 	s.alerts = append(s.alerts, alert)
+
+	// Forward to webhook channel if configured. Non-blocking: if the
+	// channel is full, drop the alert rather than blocking the caller.
+	ch := s.webhookCh
+	s.mu.Unlock()
+
+	if ch != nil {
+		select {
+		case ch <- alert:
+		default:
+			// channel full — drop to avoid blocking the alert pipeline
+		}
+	}
 	return true
 }
 
