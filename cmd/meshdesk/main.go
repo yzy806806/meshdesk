@@ -154,11 +154,34 @@ func main() {
 
 	var webServer *web.Server
 	if webMode {
+		// Create the auth capability engine first, so it can be wired
+		// into the aggregator for monitor_write enforcement (Decision E).
+		// Use rotation-enabled audit logger: 100 MB max, 5 backups.
+		auditLogger, err := auth.NewAuditFileLoggerWithRotation("/var/log/meshdesk-audit.jsonl",
+			auth.DefaultAuditMaxBytes, auth.DefaultAuditMaxRotates)
+		if err != nil {
+			log.Printf("Warning: could not open audit log file: %v — using stderr", err)
+			auditLogger = auth.NewAuditLogger(log.Writer())
+		}
+		defer auditLogger.Close()
+
+		authEngine := auth.NewCapabilityEngine(cfg, auditLogger)
+
+		// Wire the monitor auth checker into the aggregator so that every
+		// incoming metric push is checked for the monitor_write capability.
+		// If authEngine is nil, the checker is nil and the aggregator
+		// accepts all pushes (testing mode only).
+		var monitorAuthChecker monitor.AuthChecker
+		if authEngine != nil {
+			monitorAuthChecker = auth.NewMonitorAuthChecker(authEngine)
+		}
+
 		// On web nodes, also run the aggregator to receive metric pushes.
 		aggregator := monitor.NewAggregator(monitor.AggregatorConfig{
-			Store:  monitorStore,
-			Dialer: &meshListenerAdapter{node: node},
-			Port:   cfg.Monitoring.Port,
+			Store:       monitorStore,
+			Dialer:      &meshListenerAdapter{node: node},
+			Port:        cfg.Monitoring.Port,
+			AuthChecker: monitorAuthChecker,
 		})
 		if err := aggregator.Start(); err != nil {
 			log.Printf("Warning: failed to start metric aggregator: %v", err)
@@ -171,18 +194,6 @@ func main() {
 		if aggregator.Store() != nil {
 			monitorStore = aggregator.Store()
 		}
-
-		// Create the auth capability engine.
-		// Use rotation-enabled audit logger: 100 MB max, 5 backups.
-		auditLogger, err := auth.NewAuditFileLoggerWithRotation("/var/log/meshdesk-audit.jsonl",
-			auth.DefaultAuditMaxBytes, auth.DefaultAuditMaxRotates)
-		if err != nil {
-			log.Printf("Warning: could not open audit log file: %v — using stderr", err)
-			auditLogger = auth.NewAuditLogger(log.Writer())
-		}
-		defer auditLogger.Close()
-
-		authEngine := auth.NewCapabilityEngine(cfg, auditLogger)
 
 		// Create the WebSSH hub for terminal sessions.
 		sshClient := webssh.NewSSHClient(
