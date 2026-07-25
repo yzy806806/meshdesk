@@ -386,10 +386,6 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 		return nil, ErrCircuitNotFound
 	}
 
-	if circuit.state != CircuitActive {
-		return nil, fmt.Errorf("circuit %s is not active (state=%d)", circuitID, circuit.state)
-	}
-
 	// Decrypt the chunk with the E2E key.
 	chunk, err := DecodeChunk(wc, circuit.e2eKey)
 	if err != nil {
@@ -398,6 +394,10 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 
 	circuit.mu.Lock()
 	defer circuit.mu.Unlock()
+
+	if circuit.state != CircuitActive {
+		return nil, fmt.Errorf("circuit %s is not active (state=%d)", circuitID, circuit.state)
+	}
 
 	// Record the path for on-demand tracking.
 	circuit.pathTracker.RecordPath(pathIdx)
