@@ -1,10 +1,10 @@
 # Chunker/Reassembler Interface Contract
 
 **Version:** 1.2
-**Status:** Adopted (team motion motion-d607d489b7be, action item 1/5; revised by t_fb704ce9; gap fixes by t_fdd93ad5)
+**Status:** Adopted (team motion motion-d607d489b7be, action item 1/5; revised by t_fb704ce9; gap fixes by t_fdd93ad5; spec addendum by t_18608f29; implementation by t_e2a647c5)
 **File:** `internal/proxy/chunker.go`
-**Tests:** `internal/proxy/chunker_test.go`, `internal/proxy/exit_reassembler_test.go`
-**Gap fixes:** metadata-in-ciphertext, per-circuit padding seed, reassembler bounds, encrypted padding bytes, circuitID binding, flushRemaining byte accounting
+**Tests:** `internal/proxy/chunker_test.go`, `internal/proxy/exit_reassembler_test.go`, `internal/proxy/dispatcher_padding_test.go`, `internal/proxy/exit_timeout_test.go`
+**Gap fixes:** metadata-in-ciphertext, per-circuit padding seed, reassembler bounds, encrypted padding bytes, circuitID binding, flushRemaining byte accounting, per-stream reassembly timeout, NACK retry exhaustion, padding seed lifecycle
 
 ---
 
@@ -125,6 +125,20 @@ type ChunkerConfig struct {
 
 `DefaultChunkerConfig()` returns v1 defaults: 16KB payload, 1–4KB padding,
 max 2048 chunks per stream, 32MB total buffer.
+
+### CircuitConfig (protocol.go)
+
+```go
+type CircuitConfig struct {
+    IdleTimeout             time.Duration // 5 min
+    KeepaliveInterval       time.Duration // 30s
+    NACKTimeout             time.Duration // 5s
+    OrphanTimeout           time.Duration // 30s
+    MaxReassemblyWindow     int           // 256 (sliding window)
+    StreamReassemblyTimeout time.Duration // 60s (per-stream timeout)
+    MaxNACKRetries          int           // 3 (NACK retry limit)
+}
+```
 
 **PaddingSeed (gap fix: per-circuit padding isolation):** When set (len > 0),
 the Chunker derives a deterministic AES-256-CTR CSPRNG from this seed using
@@ -501,3 +515,60 @@ active streams.
 **Test:** `TestExitReassemblerFlushRemainingPreservesGlobalBytes` creates
 two streams with buffered chunks, completes one via `ChunkStreamEnd`, and
 verifies the remaining stream's bytes are still correctly tracked.
+
+---
+
+## 11. Gap Fixes (v1.2 — t_e2a647c5)
+
+### 11.1 Per-Stream Reassembly Timeout (spec §3.2)
+
+**Problem:** No per-stream timeout existed. A circuit with multiple concurrent
+streams where one stream had a permanent gap would never time out — the
+circuit appeared "active" because other streams or keepalives arrived.
+
+**Fix:** Added `StreamReassemblyTimeout` (default 60s) to `CircuitConfig`.
+The exit node tracks per-stream timers via `streamTimers` map in
+`exitCircuit`. Each stream's timer starts when its first chunk arrives.
+`CleanupOrphans` now also scans `streamTimers` and force-purges stuck
+streams via `ExitReassembler.PurgeStream()`. `StartOrphanCleanup` runs at
+half the shorter of `OrphanTimeout` and `StreamReassemblyTimeout`.
+
+**Test:** `TestStreamReassemblyTimeoutPurge` verifies a stuck stream is
+purged after timeout. `TestStreamTimeoutDoesNotAffectOtherStreams`
+verifies purging one stream doesn't affect others.
+
+### 11.2 NACK Retry Exhaustion (spec §3.3)
+
+**Problem:** NACK behavior was underspecified. If the NACK itself was lost,
+the entry never retransmitted. No retry limit existed.
+
+**Fix:** Added `MaxNACKRetries` (default 3) to `CircuitConfig`. The exit
+node tracks per-sequence NACK retry counts via `nackRetryCount` map in
+`exitCircuit`. Each NACK sent for a sequence increments its counter.
+When all gaps have retry counts ≥ `MaxNACKRetries`, `maybeGenerateNACK`
+returns `ErrNACKRetriesExhausted`, signaling the caller to tear down the
+circuit. A new security event `SecEventExitNACKRetriesExhausted` is emitted.
+
+**Test:** `TestNACKRetryExhaustion` verifies `ErrNACKRetriesExhausted` is
+returned after 3 retries. `TestNACKRetryCountTracked` verifies NACKs are
+sent and counted before exhaustion.
+
+### 11.3 Padding Seed Lifecycle (spec §4.2)
+
+**Problem:** The spec did not define who generates the `PaddingSeed`,
+when, or whether it is transmitted to the exit.
+
+**Fix:** The Dispatcher (`NewDispatcher`) generates 32 random bytes as
+the per-circuit padding seed when none is provided in config. The seed
+drives the per-circuit CSPRNG for padding length generation and chunk
+size sampling. It is NOT transmitted to the exit — padding is consumed
+before AEAD encryption. The seed is zeroed in `Dispatcher.Close()` to
+prevent key material leakage. A `PaddingSeed()` accessor is provided
+for verification.
+
+**Test:** `TestDispatcherPaddingSeedGenerated` verifies seed generation.
+`TestDispatcherPaddingSeedRespected` verifies pre-set seeds are not
+overwritten. `TestDispatcherPaddingSeedZeroedOnClose` verifies zeroing.
+`TestDispatcherPaddingSeedNotInCircuitSetup` verifies the seed is not
+serialized in circuit setup. `TestDispatcherPaddingSeedDeterministicChunking`
+verifies deterministic replay with the same seed.

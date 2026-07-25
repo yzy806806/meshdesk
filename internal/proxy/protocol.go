@@ -781,16 +781,37 @@ type CircuitConfig struct {
 	// MaxReassemblyWindow is the hard limit on reassembly window size
 	// (chunks ahead of the highest contiguous byte). Default: 256.
 	MaxReassemblyWindow int
+
+	// StreamReassemblyTimeout is the maximum wall-clock time a single
+	// stream's reassembly buffer may remain incomplete, measured from
+	// the first chunk received for that stream. After this duration,
+	// if the stream still has not completed (all NACK retries
+	// exhausted), the stream buffer is discarded and a CircuitTeardown
+	// is sent to the entry. Default: 60 seconds.
+	//
+	// This is distinct from OrphanTimeout (which fires when a circuit
+	// has NO activity at all). StreamReassemblyTimeout handles the
+	// case where a circuit has multiple concurrent streams and one
+	// stream is stuck while others remain active.
+	StreamReassemblyTimeout time.Duration
+
+	// MaxNACKRetries is the maximum number of NACK transmissions for
+	// a given gap before giving up. After MaxNACKRetries NACKs are
+	// sent for a gap and the gap persists, the circuit is torn down.
+	// Default: 3.
+	MaxNACKRetries int
 }
 
 // DefaultCircuitConfig returns sensible defaults for circuit management.
 func DefaultCircuitConfig() CircuitConfig {
 	return CircuitConfig{
-		IdleTimeout:         5 * time.Minute,
-		KeepaliveInterval:   30 * time.Second,
-		NACKTimeout:         5 * time.Second,
-		OrphanTimeout:       30 * time.Second,
-		MaxReassemblyWindow: 256,
+		IdleTimeout:             5 * time.Minute,
+		KeepaliveInterval:       30 * time.Second,
+		NACKTimeout:             5 * time.Second,
+		OrphanTimeout:           30 * time.Second,
+		MaxReassemblyWindow:     256,
+		StreamReassemblyTimeout: 60 * time.Second,
+		MaxNACKRetries:          3,
 	}
 }
 
@@ -800,4 +821,9 @@ var (
 	ErrCircuitClosed      = errors.New("circuit is closed")
 	ErrInvalidCircuitState = errors.New("invalid circuit state transition")
 	ErrAEADDecryptFailed   = errors.New("AEAD decryption failed")
+
+	// ErrNACKRetriesExhausted is returned when all NACK retries for a
+	// gap have been exhausted (spec §3.3). The caller should tear down
+	// the circuit — the missing chunks are permanently lost.
+	ErrNACKRetriesExhausted = errors.New("NACK retries exhausted, circuit should be torn down")
 )

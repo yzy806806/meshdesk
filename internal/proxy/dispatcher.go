@@ -95,6 +95,7 @@ type DispatcherConfig struct {
 type Dispatcher struct {
 	cfg         DispatcherConfig
 	chunker     Chunker
+	chunkerCfg  ChunkerConfig // resolved config including padding seed
 	streamID    uint32
 	nextSeq     uint32
 	conn        net.Conn // the SS session connection
@@ -138,12 +139,27 @@ func NewDispatcher(cfg DispatcherConfig, conn net.Conn) (*Dispatcher, error) {
 		chunkerCfg = DefaultChunkerConfig()
 	}
 
+	// Per-circuit padding seed lifecycle (spec §4.2):
+	// The entry node generates 32 random bytes as the per-circuit
+	// padding seed. This seed is NOT transmitted to the exit — it
+	// drives the per-circuit CSPRNG for padding length generation
+	// and (for bounded chunker) chunk size sampling. The seed is
+	// zeroed on Dispatcher.Close() to prevent key material leakage.
+	if len(chunkerCfg.PaddingSeed) == 0 {
+		seed := make([]byte, 32)
+		if _, err := rand.Read(seed); err != nil {
+			return nil, fmt.Errorf("generate padding seed: %w", err)
+		}
+		chunkerCfg.PaddingSeed = seed
+	}
+
 	chunker := NewChunkerWithConfig(strategy, chunkerCfg)
 
 	return &Dispatcher{
-		cfg:     cfg,
-		chunker: chunker,
-		conn:    conn,
+		cfg:         cfg,
+		chunkerCfg:  chunkerCfg,
+		chunker:     chunker,
+		conn:        conn,
 	}, nil
 }
 
@@ -292,6 +308,8 @@ func (d *Dispatcher) HandleNACK(nack *NACKMsg) error {
 }
 
 // Close shuts down the dispatcher and closes the SS connection.
+// It also zeros the per-circuit padding seed to prevent key material
+// leakage after the circuit is torn down (spec §4.2 lifecycle).
 func (d *Dispatcher) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -299,6 +317,16 @@ func (d *Dispatcher) Close() error {
 		return nil
 	}
 	d.closed = true
+
+	// Zero the padding seed (spec §4.2: destruction step).
+	// This overwrites the 32-byte seed in the resolved chunker config
+	// so it cannot be recovered from memory after circuit teardown.
+	if len(d.chunkerCfg.PaddingSeed) > 0 {
+		for i := range d.chunkerCfg.PaddingSeed {
+			d.chunkerCfg.PaddingSeed[i] = 0
+		}
+	}
+
 	return d.conn.Close()
 }
 
@@ -307,6 +335,19 @@ func (d *Dispatcher) Stats() (p1Chunks, p2Chunks int, p1Bytes, p2Bytes int64) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.pathStats.p1Chunks, d.pathStats.p2Chunks, d.pathStats.p1Bytes, d.pathStats.p2Bytes
+}
+
+// PaddingSeed returns a copy of the per-circuit padding seed.
+// Used for verification and testing (spec §4.2 contract tests).
+func (d *Dispatcher) PaddingSeed() []byte {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.chunkerCfg.PaddingSeed) == 0 {
+		return nil
+	}
+	cp := make([]byte, len(d.chunkerCfg.PaddingSeed))
+	copy(cp, d.chunkerCfg.PaddingSeed)
+	return cp
 }
 
 // SelectPaths selects two disjoint paths from a set of candidate relays.

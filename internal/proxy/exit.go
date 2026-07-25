@@ -138,6 +138,17 @@ type exitCircuit struct {
 	// gapSeqs records which sequence numbers in the window are missing.
 	gapSeqs map[uint32]bool
 
+	// nackRetryCount tracks how many NACKs have been sent for each
+	// missing sequence (spec §3.3). When a sequence's retry count
+	// reaches MaxNACKRetries, the circuit is flagged for teardown.
+	nackRetryCount map[uint32]int
+
+	// streamTimers tracks per-stream reassembly timeout (spec §3.2).
+	// Each stream's timer starts when its first chunk arrives. If the
+	// stream hasn't completed by StreamReassemblyTimeout and all NACK
+	// retries are exhausted, the stream is force-purged.
+	streamTimers map[uint32]*streamTimer
+
 	// lastActivity is the timestamp of the last received chunk.
 	// Used for orphan timeout cleanup.
 	lastActivity time.Time
@@ -151,6 +162,15 @@ type exitCircuit struct {
 
 	// createdAt is when the circuit was established.
 	createdAt time.Time
+}
+
+// streamTimer tracks per-stream reassembly timeout (spec §3.2).
+// The timer starts when the first chunk for this stream arrives.
+// If the stream hasn't completed within StreamReassemblyTimeout and
+// all NACK retries are exhausted, the stream buffer is discarded.
+type streamTimer struct {
+	firstChunk time.Time // when the first chunk for this stream arrived
+	streamID   uint32
 }
 
 // pathTracker tracks which paths have delivered chunks to a circuit.
@@ -365,6 +385,8 @@ func (e *ExitNode) HandleCircuitSetup(setup *CircuitSetup) (*CircuitAck, error) 
 		reassembler:    reassembler,
 		pathTracker:    newPathTracker(),
 		gapSeqs:        make(map[uint32]bool),
+		nackRetryCount: make(map[uint32]int),
+		streamTimers:   make(map[uint32]*streamTimer),
 		lastActivity:   time.Now(),
 		state:          CircuitActive,
 		createdAt:      time.Now(),
@@ -441,6 +463,15 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 	// Update last activity.
 	circuit.lastActivity = time.Now()
 
+	// Register per-stream timer (spec §3.2).
+	// The timer starts when the first chunk for this stream arrives.
+	if _, ok := circuit.streamTimers[chunk.StreamID]; !ok {
+		circuit.streamTimers[chunk.StreamID] = &streamTimer{
+			firstChunk: time.Now(),
+			streamID:   chunk.StreamID,
+		}
+	}
+
 	// DoS protection: reject chunks beyond the reassembly window.
 	// The window is [ackBase, ackBase + MaxReassemblyWindow).
 	// Chunks with sequence >= ackBase + MaxReassemblyWindow are rejected.
@@ -505,6 +536,11 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 		circuit.ackBase = chunk.Sequence + 1
 	}
 
+	// Remove stream timer on completion (spec §3.2 lifecycle).
+	if done {
+		delete(circuit.streamTimers, chunk.StreamID)
+	}
+
 	// Clear any gap sequences that have been filled (acked past).
 	// Since ackBase advanced, any gaps below ackBase are no longer relevant.
 	for seq := range circuit.gapSeqs {
@@ -517,7 +553,17 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 	}
 
 	// Check if we need to send a NACK for detected gaps.
-	nack := e.maybeGenerateNACK(circuit, chunk.StreamID)
+	nack, nackErr := e.maybeGenerateNACK(circuit, chunk.StreamID)
+	if nackErr != nil {
+		// NACK retries exhausted — the circuit should be torn down.
+		// We return the error so the caller can initiate teardown.
+		e.secReport(SecurityEvent{
+			Type:        SecEventExitNACKRetriesExhausted,
+			Description: fmt.Sprintf("exit NACK retries exhausted for circuit %s stream %d, requesting teardown", circuitID, chunk.StreamID),
+			CircuitID:   circuitID,
+		})
+		return nil, nackErr
+	}
 
 	return nack, nil
 }
@@ -525,9 +571,15 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 // maybeGenerateNACK checks if a detected gap has persisted beyond
 // NACKTimeout and generates a NACK message if so. It also rate-limits
 // NACKs to avoid spamming the entry node.
-func (e *ExitNode) maybeGenerateNACK(circuit *exitCircuit, streamID uint32) *NACKMsg {
+//
+// NACK Retry Logic (spec §3.3):
+// Each missing sequence number has a retry counter. Each NACK sent
+// for a sequence increments its counter. When a sequence's retry count
+// reaches MaxNACKRetries and the gap persists, the circuit is flagged
+// for teardown via the returned ErrNACKRetriesExhausted error.
+func (e *ExitNode) maybeGenerateNACK(circuit *exitCircuit, streamID uint32) (*NACKMsg, error) {
 	if !circuit.gapDetected || len(circuit.gapSeqs) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	nackTimeout := e.cfg.CircuitCfg.NACKTimeout
@@ -535,35 +587,54 @@ func (e *ExitNode) maybeGenerateNACK(circuit *exitCircuit, streamID uint32) *NAC
 		nackTimeout = 5 * time.Second
 	}
 
+	maxRetries := e.cfg.CircuitCfg.MaxNACKRetries
+	if maxRetries <= 0 {
+		maxRetries = 3
+	}
+
 	// Check if the gap has persisted long enough.
 	elapsed := time.Since(circuit.gapFirstSeen)
 	if elapsed < nackTimeout {
-		return nil
+		return nil, nil
 	}
 
 	// Rate-limit: don't send NACKs more than once per NACKTimeout period.
 	if !circuit.lastNACKSent.IsZero() && time.Since(circuit.lastNACKSent) < nackTimeout {
-		return nil
+		return nil, nil
 	}
 
-	// Build the list of missing sequences.
-	missing := make([]uint32, 0, len(circuit.gapSeqs))
+	// Build the list of missing sequences that haven't exhausted retries.
+	var missing []uint32
+	var exhausted []uint32
 	for seq := range circuit.gapSeqs {
-		missing = append(missing, seq)
+		if circuit.nackRetryCount[seq] >= maxRetries {
+			exhausted = append(exhausted, seq)
+		} else {
+			missing = append(missing, seq)
+		}
+	}
+
+	// If ALL gaps have exhausted retries, signal circuit teardown.
+	if len(missing) == 0 && len(exhausted) > 0 {
+		return nil, ErrNACKRetriesExhausted
 	}
 
 	// Sort missing sequences for deterministic output.
-	// Simple insertion sort — the list is typically small (< 256).
 	for i := 1; i < len(missing); i++ {
 		for j := i; j > 0 && missing[j-1] > missing[j]; j-- {
 			missing[j-1], missing[j] = missing[j], missing[j-1]
 		}
 	}
 
+	// Increment retry count for each sequence we're NACKing.
+	for _, seq := range missing {
+		circuit.nackRetryCount[seq]++
+	}
+
 	// Parse the circuit ID bytes.
 	circuitIDBytes, err := parseCircuitIDHex(circuit.circuitID)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	circuit.lastNACKSent = time.Now()
@@ -571,8 +642,8 @@ func (e *ExitNode) maybeGenerateNACK(circuit *exitCircuit, streamID uint32) *NAC
 	return &NACKMsg{
 		CircuitID:    circuitIDBytes,
 		StreamID:     streamID,
-		MissingSeqs: missing,
-	}
+		MissingSeqs:  missing,
+	}, nil
 }
 
 // HandleTeardown processes a circuit teardown message, cleaning up
@@ -691,8 +762,13 @@ func (e *ExitNode) Close() error {
 }
 
 // CleanupOrphans removes circuits that have been inactive (no chunks received)
-// for longer than OrphanTimeout. This prevents memory leaks from circuits
-// that were abandoned by the entry node without a proper teardown.
+// for longer than OrphanTimeout, and also force-purges streams within active
+// circuits that have exceeded StreamReassemblyTimeout (spec §3.2).
+//
+// This prevents:
+//   - Memory leaks from circuits abandoned by the entry node (OrphanTimeout)
+//   - Memory leaks from stuck streams in active multi-stream circuits
+//     (StreamReassemblyTimeout)
 //
 // This function should be called periodically (e.g. every 30s) by a
 // background goroutine.
@@ -702,12 +778,19 @@ func (e *ExitNode) CleanupOrphans() int {
 		orphanTimeout = 30 * time.Second
 	}
 
+	streamTimeout := e.cfg.CircuitCfg.StreamReassemblyTimeout
+	if streamTimeout <= 0 {
+		streamTimeout = 60 * time.Second
+	}
+
 	now := time.Now()
 	var removed int
 
 	e.mu.Lock()
 	for id, circuit := range e.circuits {
 		circuit.mu.Lock()
+
+		// Check for orphaned circuits (no activity at all).
 		inactive := now.Sub(circuit.lastActivity)
 		if inactive > orphanTimeout {
 			circuit.state = CircuitClosed
@@ -716,7 +799,27 @@ func (e *ExitNode) CleanupOrphans() int {
 			}
 			delete(e.circuits, id)
 			removed++
+			circuit.mu.Unlock()
+			continue
 		}
+
+		// Check for stuck streams within active circuits (spec §3.2).
+		// Streams whose firstChunk + StreamReassemblyTimeout has passed
+		// and that haven't completed are force-purged.
+		for streamID, timer := range circuit.streamTimers {
+			if now.Sub(timer.firstChunk) > streamTimeout {
+				// Check if the stream is still incomplete.
+				if !circuit.reassembler.IsCompleted(streamID) {
+					// Force-purge the stuck stream's reassembly buffer.
+					// The stream's data is lost — the caller should have
+					// received it via prior AddStreaming calls.
+					circuit.reassembler.PurgeStream(streamID)
+				}
+				// Remove the timer regardless (stream is done or purged).
+				delete(circuit.streamTimers, streamID)
+			}
+		}
+
 		circuit.mu.Unlock()
 	}
 	e.mu.Unlock()
@@ -726,14 +829,26 @@ func (e *ExitNode) CleanupOrphans() int {
 
 // StartOrphanCleanup runs a background goroutine that periodically calls
 // CleanupOrphans. It runs until the context is cancelled.
+//
+// The interval is half the shorter of OrphanTimeout and
+// StreamReassemblyTimeout, so that both limits are checked promptly.
 func (e *ExitNode) StartOrphanCleanup(ctx context.Context) {
 	orphanTimeout := e.cfg.CircuitCfg.OrphanTimeout
 	if orphanTimeout <= 0 {
 		orphanTimeout = 30 * time.Second
 	}
 
-	// Run cleanup at half the orphan timeout interval.
-	interval := orphanTimeout / 2
+	streamTimeout := e.cfg.CircuitCfg.StreamReassemblyTimeout
+	if streamTimeout <= 0 {
+		streamTimeout = 60 * time.Second
+	}
+
+	// Run cleanup at half the shorter timeout interval.
+	interval := orphanTimeout
+	if streamTimeout < interval {
+		interval = streamTimeout
+	}
+	interval /= 2
 	if interval < 5*time.Second {
 		interval = 5 * time.Second
 	}

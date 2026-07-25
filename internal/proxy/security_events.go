@@ -25,6 +25,10 @@ const (
 	// unknown circuit (orphan or attack probe).
 	SecEventExitCircuitNotFound SecurityEventType = "exit_circuit_not_found"
 
+	// SecEventExitNACKRetriesExhausted: exit node has exhausted all NACK
+	// retries for a gap and is requesting circuit teardown (spec §3.3).
+	SecEventExitNACKRetriesExhausted SecurityEventType = "exit_nack_retries_exhausted"
+
 	// SecEventSSConnError: SS listener encountered a connection error
 	// (e.g. salt read failure, AEAD decryption failure, invalid address).
 	SecEventSSConnError SecurityEventType = "ss_conn_error"

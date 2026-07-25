@@ -429,6 +429,16 @@ func (r *ExitReassembler) IsCompleted(streamID uint32) bool {
 	return st.completed
 }
 
+// PurgeStream force-removes a stream's reassembly state, freeing its
+// buffered bytes from the global counter. Used by the exit node when
+// StreamReassemblyTimeout expires for a stuck stream (spec §3.2).
+//
+// After purging, any chunks for this stream that arrive later will
+// start a fresh reassembly (new stream state, nextExpected=0).
+func (r *ExitReassembler) PurgeStream(streamID uint32) {
+	r.cleanupStream(streamID)
+}
+
 // ActiveStreamCount returns the number of streams currently being
 // reassembled (not yet completed).
 func (r *ExitReassembler) ActiveStreamCount() int {
