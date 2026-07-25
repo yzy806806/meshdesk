@@ -39,7 +39,18 @@ type ProxyConfig struct {
 
 	// Paths holds manually configured relay paths (Phase 1).
 	// Each path is a list of relay node IDs (hex public keys).
+	// When PathSelection.Mode is "auto", this is ignored.
 	Paths [][]string `yaml:"paths,omitempty"`
+
+	// PathSelection holds dynamic path selection configuration (Phase 2).
+	// When enabled, the entry node automatically probes and selects
+	// two disjoint paths based on RTT measurements.
+	PathSelection PathSelectionConfig `yaml:"path_selection,omitempty"`
+
+	// CFTunnel holds Cloudflare Tunnel configuration for exposing
+	// the SS listener via CF's edge network (PROXY_DESIGN.md §2).
+	// Only needed on entry nodes.
+	CFTunnel CFTunnelYAMLConfig `yaml:"cf_tunnel,omitempty"`
 
 	// Relay holds relay-node-specific configuration.
 	// Only needed on nodes that serve as relay nodes.
@@ -48,6 +59,88 @@ type ProxyConfig struct {
 	// Exit holds exit-node-specific configuration.
 	// Only needed on nodes that serve as exit nodes.
 	Exit ExitConfig `yaml:"exit,omitempty"`
+}
+
+// PathSelectionConfig holds settings for dynamic path selection
+// (PROXY_DESIGN.md §1.5, Phase 2).
+type PathSelectionConfig struct {
+	// Mode selects the path selection mode:
+	//   "manual"  — use paths from ProxyConfig.Paths (Phase 1)
+	//   "auto"    — probe and select best paths (Phase 2)
+	// Default: "manual".
+	Mode string `yaml:"mode,omitempty"`
+
+	// MaxRelaysPerPath is the maximum number of relay hops per path.
+	// Default: 2. Higher = more anonymity, more latency.
+	MaxRelaysPerPath int `yaml:"max_relays_per_path,omitempty"`
+
+	// ProbeTimeoutSec is the timeout for each relay probe (seconds).
+	// Default: 3.
+	ProbeTimeoutSec int `yaml:"probe_timeout_sec,omitempty"`
+
+	// ProbeConcurrency limits concurrent probes.
+	// Default: 8.
+	ProbeConcurrency int `yaml:"probe_concurrency,omitempty"`
+
+	// MaxCandidates is the maximum number of relays to probe.
+	// Implements O(K) scaling per PROXY_DESIGN.md §1.5.
+	// Default: 10.
+	MaxCandidates int `yaml:"max_candidates,omitempty"`
+
+	// ProbeCacheTTLSec is how long cached probe results are valid.
+	// Default: 30.
+	ProbeCacheTTLSec int `yaml:"probe_cache_ttl_sec,omitempty"`
+
+	// ExitLatencyMatrix holds exit→region RTT data for exit selection.
+	// Map key: exit node ID → map[region]RTT in milliseconds.
+	// Used by SelectExit to pick the optimal exit for a target.
+	ExitLatencyMatrix map[string]map[string]int `yaml:"exit_latency_matrix,omitempty"`
+}
+
+// CFTunnelYAMLConfig holds CF Tunnel settings for the config file.
+// This maps to the CFTunnelConfig struct used by the tunnel manager.
+type CFTunnelYAMLConfig struct {
+	// Enabled controls whether the CF Tunnel is started on this node.
+	// When true, the entry node runs cloudflared to expose its SS
+	// listener via CF's edge network.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// TunnelID is the Cloudflare Tunnel UUID.
+	TunnelID string `yaml:"tunnel_id,omitempty"`
+
+	// CredentialsFile is the path to the tunnel credentials JSON.
+	CredentialsFile string `yaml:"credentials_file,omitempty"`
+
+	// Hostname is the CF hostname that routes to this tunnel.
+	// E.g., "proxy.example.com".
+	Hostname string `yaml:"hostname,omitempty"`
+
+	// OriginServer is the local address the tunnel forwards to.
+	// Default: "127.0.0.1:8388" (the SS listener address).
+	OriginServer string `yaml:"origin_server,omitempty"`
+
+	// Region is the CF edge region preference. Empty = auto.
+	Region string `yaml:"region,omitempty"`
+
+	// LogLevel controls cloudflared's logging verbosity.
+	// Default: "warn".
+	LogLevel string `yaml:"log_level,omitempty"`
+
+	// MetricsAddr is the cloudflared metrics server address.
+	// Default: "127.0.0.1:36500".
+	MetricsAddr string `yaml:"metrics_addr,omitempty"`
+
+	// BinaryPath is the path to the cloudflared binary.
+	// Empty = use "cloudflared" from PATH.
+	BinaryPath string `yaml:"binary_path,omitempty"`
+
+	// ReconnectRetries is the number of reconnection attempts.
+	// Default: 5.
+	ReconnectRetries int `yaml:"reconnect_retries,omitempty"`
+
+	// GracePeriodSec is the drain time on shutdown.
+	// Default: 30.
+	GracePeriodSec int `yaml:"grace_period_sec,omitempty"`
 }
 
 // RelayNodeConfig holds settings for a relay node in the anonymous
@@ -407,6 +500,41 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Proxy.Relay.MaxQueueDepth == 0 {
 		cfg.Proxy.Relay.MaxQueueDepth = 256
+	}
+	// Path selection defaults.
+	if cfg.Proxy.PathSelection.Mode == "" {
+		cfg.Proxy.PathSelection.Mode = "manual"
+	}
+	if cfg.Proxy.PathSelection.MaxRelaysPerPath == 0 {
+		cfg.Proxy.PathSelection.MaxRelaysPerPath = 2
+	}
+	if cfg.Proxy.PathSelection.ProbeTimeoutSec == 0 {
+		cfg.Proxy.PathSelection.ProbeTimeoutSec = 3
+	}
+	if cfg.Proxy.PathSelection.ProbeConcurrency == 0 {
+		cfg.Proxy.PathSelection.ProbeConcurrency = 8
+	}
+	if cfg.Proxy.PathSelection.MaxCandidates == 0 {
+		cfg.Proxy.PathSelection.MaxCandidates = 10
+	}
+	if cfg.Proxy.PathSelection.ProbeCacheTTLSec == 0 {
+		cfg.Proxy.PathSelection.ProbeCacheTTLSec = 30
+	}
+	// CF Tunnel defaults.
+	if cfg.Proxy.CFTunnel.OriginServer == "" {
+		cfg.Proxy.CFTunnel.OriginServer = "127.0.0.1:8388"
+	}
+	if cfg.Proxy.CFTunnel.LogLevel == "" {
+		cfg.Proxy.CFTunnel.LogLevel = "warn"
+	}
+	if cfg.Proxy.CFTunnel.MetricsAddr == "" {
+		cfg.Proxy.CFTunnel.MetricsAddr = "127.0.0.1:36500"
+	}
+	if cfg.Proxy.CFTunnel.ReconnectRetries == 0 {
+		cfg.Proxy.CFTunnel.ReconnectRetries = 5
+	}
+	if cfg.Proxy.CFTunnel.GracePeriodSec == 0 {
+		cfg.Proxy.CFTunnel.GracePeriodSec = 30
 	}
 	return cfg, nil
 }
