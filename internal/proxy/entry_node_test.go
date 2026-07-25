@@ -27,6 +27,10 @@ type mockExitServer struct {
 	e2eKeys  map[string][]byte
 	closed   bool
 
+	// closeOnce ensures relayCh is only closed once, preventing
+	// "close of closed channel" panics when Close and handleConn race.
+	closeOnce sync.Once
+
 	// targetConnCh receives the target connection when a circuit is set up.
 	// Tests can read from this to get the connection to the "destination."
 	relayCh chan net.Conn
@@ -69,7 +73,7 @@ func (m *mockExitServer) Close() {
 	m.mu.Unlock()
 	m.listener.Close()
 	m.target.Close()
-	close(m.relayCh)
+	m.closeOnce.Do(func() { close(m.relayCh) })
 }
 
 func (m *mockExitServer) acceptLoop() {
@@ -167,8 +171,15 @@ func (m *mockExitServer) handleConn(conn net.Conn) {
 	m.e2eKeys[circuitIDHex] = e2eKey
 	m.mu.Unlock()
 
-	// Signal that a circuit is ready.
-	m.relayCh <- targetConn
+	// Signal that a circuit is ready (non-blocking: skip if closed or full).
+	m.mu.Lock()
+	if !m.closed {
+		select {
+		case m.relayCh <- targetConn:
+		default:
+		}
+	}
+	m.mu.Unlock()
 }
 
 // mockRelayServer simulates a relay node for integration testing.

@@ -1,6 +1,6 @@
 # MeshDesk
 
-**Decentralized server mesh network + monitoring + WebSSH — in a single binary.**
+**Decentralized server mesh network + monitoring + WebSSH + anonymous proxy — in a single binary.**
 
 [中文文档](./README_CN.md)
 
@@ -8,11 +8,13 @@
 
 ## What is MeshDesk?
 
-MeshDesk combines three tools into one:
+MeshDesk combines five tools into one:
 
 1. **Mesh VPN** — P2P decentralized networking between all your servers (replaces EasyTier)
 2. **Server Monitoring** — CPU, memory, disk, network, services (replaces Nezha)
 3. **Web Terminal** — SSH directly from the browser, no separate client needed
+4. **Multi-path Anonymous Proxy** — dispersed traffic across relay nodes with GFW-resistant transport
+5. **3D Topology Visualization** — interactive 3D mesh topology in the browser
 
 Every node runs the same binary. Any node can become the control panel with `--web`.
 
@@ -26,18 +28,22 @@ Every node runs the same binary. Any node can become the control panel with `--w
 | Architecture | Centralized (agent→dashboard) | Decentralized P2P | Decentralized P2P |
 | Single binary | ❌ (dashboard + agent) | ✅ | ✅ |
 | File transfer | ❌ | ❌ | ✅ |
-| Network topology view | ❌ | ✅ (CLI only) | ✅ (Web UI) |
+| Network topology view | ❌ | ✅ (CLI only) | ✅ (3D Web UI) |
+| Anonymous proxy | ❌ | ❌ | ✅ |
+| Dashboard 2FA | ❌ | ❌ | ✅ |
 
 Nezha has monitoring and WebSSH but no mesh networking — if the dashboard is down, you lose everything. EasyTier has mesh VPN but no monitoring or web terminal. MeshDesk does it all in one binary.
 
 ## Features
 
-### Mesh VPN
+### Mesh VPN & P2P Dynamic Networking
 
 - Decentralized P2P networking via **WireGuard** (wireguard-go + gVisor netstack)
-- NAT traversal with shared relay nodes
-- Automatic peer discovery
-- Transport obfuscation: padded mode (AmneziaWG-style) or WebSocket mode
+- **Gossip discovery** — automatic peer discovery via hashicorp/memberlist; no manual peer config needed
+- **NAT traversal** — STUN-based public endpoint discovery + UDP hole-punching with relay fallback
+- **Dynamic join protocol** — new nodes join via `meshdesk join <bootstrap-addr>`, authenticated by authorized_keys
+- **Relay fallback** — when direct connection fails, traffic is relayed through mesh peers
+- Transport obfuscation: padded mode (AmneziaWG-style) or WebSocket+TLS mode (with uTLS fingerprint mimicry)
 - Fine-grained peer capabilities — restrict what each peer can access (monitor, SSH, file transfer, service management)
 
 ### Monitoring
@@ -68,6 +74,44 @@ Nezha has monitoring and WebSSH but no mesh networking — if the dashboard is d
 - View service logs
 - Authorized per-peer — only peers with `service_manage` capability can control services
 
+### Multi-path Anonymous Proxy
+
+A built-in multi-path dispersed transport proxy for censorship-resistant internet access:
+
+- **Shadowsocks entry** — accepts user traffic via SS AEAD (chacha20-ietf-poly1305) over WebSocket
+- **Cloudflare Tunnel camouflage** — entry listener exposed via `cloudflared` for TLS camouflage (appears as HTTPS)
+- **ECDH circuit setup** — per-connection end-to-end encryption between entry and exit nodes
+- **Two disjoint relay paths** — traffic is split across two node-disjoint paths to disperse traffic patterns
+- **Blind relay forwarding** — relay nodes never decrypt payload; they only process the onion-style forwarding header
+- **Anti-timing-analysis jitter** — relays introduce random 5–50ms delays to disrupt traffic correlation
+- **Pluggable chunker** — fixed 16KB or bounded random 4KB–64KB chunk sizes with padding
+- **Exit reassembly** — sliding-window reassembly with out-of-order handling, deduplication, NACK retransmission, and orphan cleanup
+- **Dynamic path selection** — automatic RTT-based path probing and selection (Dijkstra k-shortest paths)
+- **Audit logging** — exit nodes log circuit→destination mappings (no payload data)
+
+### Dashboard Security
+
+- **TOTP 2FA** — RFC 6238 time-based one-time passwords with QR code enrollment
+- **Encrypted secret storage** — TOTP secrets encrypted at rest with node-local master key (AES-256-GCM)
+- **Step-up authentication** — sensitive operations (terminal, service management, file upload, settings) require recent 2FA verification
+- **Security alerting** — real-time alerts for auth denials, node joins/leaves, and suspicious proxy activity
+- **Webhook dispatch** — async alert delivery to external endpoints (Slack, Discord, custom) with 3-retry exponential backoff
+- **TOTP key rotation** — zero-downtime key rotation with old-key grace period
+- **Recovery codes** — 10 single-use recovery codes generated during enrollment
+- **Lockout protection** — 5 failed TOTP attempts triggers 30-second lockout
+
+### 3D Topology Visualization
+
+- Interactive **Three.js** 3D scene with force-directed node layout
+- **Animated particles** flowing along proxy circuit paths (edges)
+- **Real-time SSE updates** — topology changes reflected live in the browser
+- **Color-coded nodes** by role (entry=blue, relay=orange, exit=green, dashboard=purple)
+- **Node hover labels** with role, CPU, memory, hostname
+- **Edge thickness** modulated by latency (lower latency = brighter)
+- **OrbitControls** for pan / zoom / rotate
+- **Performance-adaptive** — reduces particle count on low FPS
+- Mock-data fallback when no real mesh nodes exist
+
 ## Installation
 
 **Requires root.** The agent needs root to:
@@ -92,11 +136,17 @@ sudo cp meshdesk /usr/local/bin/
 # Agent only (mesh transport + monitoring reporter)
 meshdesk --config /etc/meshdesk/config.yaml
 
+# Agent + Web UI (dashboard, WebSSH, file transfer, service management, topology)
+meshdesk --config /etc/meshdesk/config.yaml --web
+
+# Agent + relay mode (accept proxy relay circuits from peers)
+meshdesk --config /etc/meshdesk/config.yaml --relay
+
 # Generate a WireGuard keypair (prints private and public key)
 meshdesk --gen-key
 
-# Agent + Web UI (dashboard, WebSSH, file transfer, service management)
-meshdesk --config /etc/meshdesk/config.yaml --web
+# Join an existing mesh via a bootstrap node (dynamic join protocol)
+meshdesk join 203.0.113.5:51820 --bootstrap-key <hex-pubkey>
 ```
 
 ### CLI Flags
@@ -104,8 +154,17 @@ meshdesk --config /etc/meshdesk/config.yaml --web
 | Flag | Default | Description |
 |---|---|---|
 | `--config` | `/etc/meshdesk/config.yaml` | Path to config file |
-| `--web` | `false` | Enable web UI mode (serves dashboard, WebSSH, file transfer, service management) |
+| `--web` | `false` | Enable web UI mode (serves dashboard, WebSSH, file transfer, service management, topology) |
+| `--relay` | `false` | Enable relay mode (accept proxy relay circuits from peers) |
 | `--gen-key` | `false` | Generate a new WireGuard keypair and exit |
+
+**Subcommand: `join`**
+
+```
+meshdesk join <bootstrap-addr> [--bootstrap-key <hex>] [--config <path>]
+```
+
+Joins an existing mesh via a bootstrap node. The bootstrap authenticates the joiner (authorized_keys check), then gossips the new member to the cluster.
 
 When `--web` is set and `node.web` is not configured, the web UI listens on `:8080`.
 
@@ -117,9 +176,32 @@ node:
   identity: ""           # WireGuard private key (hex); auto-generated if empty
   hostname: ""           # display name (auto-detected if empty)
   web: ":8080"           # web UI listen address; empty = agent-only mode
+  position:              # optional manual 3D position for topology view
+    x: 0
+    y: 0
+    z: 0
 
 mesh:
   port: 51820            # WireGuard listen port
+  gossip_port: 7946      # memberlist gossip port (TCP, on mesh IP)
+
+# P2P dynamic networking (gossip discovery + NAT traversal + dynamic join)
+# When disabled, only static peers are used (backward compatible).
+p2p:
+  enabled: false
+  seeds:                 # bootstrap peers (mesh_ip:gossip_port)
+    - "10.0.0.1:7946"
+  nat_traversal: true    # STUN discovery + UDP hole-punching
+  stun_servers:          # defaults to Google + Cloudflare STUN
+    - "stun.l.google.com:19302"
+  relay_mode: "auto"     # auto | manual | disabled
+  max_relay_hops: 2
+  join_approval: "auto"  # auto (authorized_keys) | manual (dashboard)
+  authorized_keys: []    # WireGuard public keys (hex) pre-authorized to join
+  gossip_interval: 30    # push/pull state sync interval (seconds)
+  gossip_probe_interval: 1  # health check interval (seconds)
+  direct_reprobe_interval: 120  # re-probe direct connection while relayed
+  max_peers: 256
 
 peers:
   - public_key: "abc123..."         # peer's WireGuard public key
@@ -145,6 +227,8 @@ peers:
       psk: ""                          # hex-encoded 32-byte anti-probe PSK (empty = disabled)
       # For websocket mode:
       # ws_use_tls: true               # use wss:// (TLS) for the WebSocket transport
+      # tls_sni: "example.com"         # SNI to send in TLS ClientHello
+      # tls_fingerprint: "chrome"      # chrome | firefox | safari | edge | ios | android
 
 monitoring:
   collectors: []         # peer IDs of collector nodes that receive metric pushes
@@ -164,10 +248,57 @@ auth:
   web_users:             # web UI login accounts (leave empty for first-run open access)
     - username: admin
       password_hash: "$2a$10$..."  # bcrypt hash of the password
+  totp_issuer: "MeshDesk"     # issuer name in QR code otpauth:// URI
+  require_2fa: false          # mandate TOTP enrollment before dashboard access
+  totp_window: 1              # ±skew tolerance (each step = 30s)
+  totp_store_dir: ""          # dir for encrypted TOTP state (e.g. /var/lib/meshdesk/totp)
+  step_up_timeout: 300        # step-up auth token lifetime (seconds)
+  alert_webhook_url: ""      # external webhook for security alert delivery
 
 transfer:
   max_file_size: 1073741824   # max file size in bytes (default 1 GB, 0 = unlimited)
   upload_dir: "/tmp/meshdesk-uploads/"  # where incoming transfers are written
+
+# Multi-path anonymous proxy (see docs/PROXY_DESIGN.md)
+proxy:
+  ss:                         # Shadowsocks entry listener (entry nodes only)
+    password: "your-ss-password"
+    cipher: "chacha20-ietf-poly1305"
+    listen_addr: "127.0.0.1:8388"
+  circuit:                    # circuit lifecycle parameters
+    idle_timeout: 300         # auto-teardown after N seconds idle
+    keepalive_interval: 30    # ping interval (seconds)
+    nack_timeout: 5           # exit waits N seconds before NACK
+    orphan_timeout: 30        # incomplete reassembly buffer cleanup
+    max_reassembly_window: 256
+  chunker_strategy: "bounded-4k-64k"  # or "fixed-16k"
+  path_selection:             # dynamic path selection (Phase 2)
+    mode: "manual"            # manual | auto
+    strategy: "latency"       # latency | random | round-robin
+    max_relays_per_path: 2
+    probe_timeout_sec: 3
+    probe_concurrency: 8
+    max_candidates: 10
+    probe_cache_ttl_sec: 30
+  cf_tunnel:                  # Cloudflare Tunnel (entry nodes only)
+    enabled: false
+    tunnel_id: ""
+    credentials_file: ""
+    hostname: "proxy.example.com"
+    origin_server: "127.0.0.1:8388"
+    binary_path: ""           # path to cloudflared binary
+  relay:                      # relay node config (relay nodes only)
+    enabled: false
+    jitter_min_ms: 5
+    jitter_max_ms: 50
+    max_circuits: 1024
+    max_queue_depth: 256
+  exit:                       # exit node config (exit nodes only)
+    allowed_ports: [80, 443]
+    allow_all_ports: false    # WARNING: full legal exposure
+    destination_filter: []    # CIDR or FQDN patterns
+    audit_log_dir: ""
+    audit_retention_days: 7
 ```
 
 All fields are optional. Omitted fields get sensible defaults. If the config file doesn't exist at startup, the node runs with defaults and auto-generates a WireGuard identity.
@@ -175,29 +306,44 @@ All fields are optional. Omitted fields get sensible defaults. If the config fil
 ## Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│              MeshDesk Node               │
-│                                          │
-│  ┌──────────┐  ┌──────────┐  ┌───────┐  │
-│  │   Mesh   │  │ Monitor  │  │WebSSH │  │
-│  │ WireGuard│  │ Collect  │  │ Hub   │  │
-│  │ + netstk│  │ + Push   │  │ (SSH  │  │
-│  │          │  │          │  │ proxy)│  │
-│  └────┬─────┘  └────┬─────┘  └───┬───┘  │
-│       │             │            │       │
-│       └──────┬──────┴────────────┘       │
-│              │                           │
-│  ┌───────────┴───────────────┐           │
-│  │       HTTP Server          │           │
-│  │  (--web only)             │           │
-│  │                            │           │
-│  │  • Dashboard (htmx + SSE) │           │
-│  │  • WebSSH Terminal         │           │
-│  │  • File Transfer UI        │           │
-│  │  • Service Management UI   │           │
-│  └────────────────────────────┘           │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│                  MeshDesk Node                       │
+│                                                      │
+│  ┌──────────┐  ┌──────────┐  ┌───────┐  ┌────────┐ │
+│  │   Mesh   │  │ Monitor  │  │WebSSH │  │ Proxy  │ │
+│  │ WireGuard│  │ Collect  │  │ Hub   │  │ Entry/ │ │
+│  │ + netstk │  │ + Push   │  │(SSH   │  │ Relay/ │ │
+│  │ + gossip │  │          │  │ proxy)│  │ Exit   │ │
+│  └────┬─────┘  └────┬─────┘  └───┬───┘  └───┬────┘ │
+│       │             │            │           │       │
+│       └──────┬──────┴────────────┴───────────┘       │
+│              │                                      │
+│  ┌───────────┴──────────────────────────┐           │
+│  │           HTTP Server                 │           │
+│  │  (--web only)                        │           │
+│  │                                       │           │
+│  │  • Dashboard (htmx + SSE)            │           │
+│  │  • WebSSH Terminal                    │           │
+│  │  • File Transfer UI                   │           │
+│  │  • Service Management UI              │           │
+│  │  • 3D Topology (Three.js + SSE)      │           │
+│  │  • TOTP 2FA + Step-up Auth           │           │
+│  │  • Security Alerts + Webhook         │           │
+│  └───────────────────────────────────────┘           │
+└─────────────────────────────────────────────────────┘
 ```
+
+## Documentation
+
+Detailed design documents are in [`docs/`](./docs/):
+
+- [ARCHITECTURE.md](./docs/ARCHITECTURE.md) — System architecture overview
+- [PROXY_DESIGN.md](./docs/PROXY_DESIGN.md) — Multi-path anonymous proxy design
+- [CIRCUIT_MANAGER_SPEC.md](./docs/CIRCUIT_MANAGER_SPEC.md) — Circuit lifecycle management
+- [CHUNKER_CONTRACT.md](./docs/CHUNKER_CONTRACT.md) — Chunker/Reassembler interface
+- [TOTP_KEY_ENCRYPTION_SPEC.md](./docs/TOTP_KEY_ENCRYPTION_SPEC.md) — TOTP secret encryption
+- [3D_TOPOLOGY_DESIGN.md](./docs/3D_TOPOLOGY_DESIGN.md) — 3D topology visualization
+- [THREAT_MODEL.md](./THREAT_MODEL.md) — Security threat model
 
 ## License
 
