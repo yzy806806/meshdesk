@@ -159,6 +159,18 @@ type CFTunnelYAMLConfig struct {
 // See PROXY_DESIGN.md §1.7 (Identity Trust Boundary) and §1.9
 // (Forwarding Header Obfuscation).
 type RelayNodeConfig struct {
+	// Enabled indicates whether this node is intentionally configured
+	// as a relay node. When false, the relay module should not be
+	// instantiated and the node should NOT be treated as a relay in
+	// topology role derivation.
+	//
+	// This field exists because Default() pre-populates relay tuning
+	// parameters (MaxCircuits=1024, etc.) so that relay-enabled nodes
+	// have sane defaults without requiring every field. Without an
+	// explicit Enabled flag, checking MaxCircuits > 0 would incorrectly
+	// classify every Default()-derived node as a relay.
+	Enabled bool `yaml:"enabled,omitempty"`
+
 	// JitterMinMs is the minimum forwarding delay per chunk in
 	// milliseconds. Default: 5 (per PROXY_DESIGN.md §1.9).
 	JitterMinMs int `yaml:"jitter_min_ms,omitempty"`
@@ -476,6 +488,7 @@ func Default() *Config {
 				AuditRetentionDays: 7,
 			},
 			Relay: RelayNodeConfig{
+				Enabled:       false, // Nodes are relays only when explicitly enabled.
 				JitterMinMs:   5,
 				JitterMaxMs:   50,
 				MaxCircuits:   1024,

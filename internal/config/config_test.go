@@ -279,3 +279,97 @@ func TestProxyConfigCustomValues(t *testing.T) {
 		t.Errorf("AuditLogDir = %q, want %q", loaded.Proxy.Exit.AuditLogDir, "/var/log/meshdesk/exit-audit")
 	}
 }
+
+// TestRelayEnabledDefaultFalse verifies that Default() produces a
+// RelayNodeConfig with Enabled=false. This is critical for topology
+// role derivation: a node using Default() must NOT appear as a relay
+// just because MaxCircuits > 0.
+func TestRelayEnabledDefaultFalse(t *testing.T) {
+	cfg := Default()
+	if cfg.Proxy.Relay.Enabled {
+		t.Error("Default() Relay.Enabled = true, want false")
+	}
+	// Relay tuning params should still be populated for relay-enabled nodes.
+	if cfg.Proxy.Relay.MaxCircuits != 1024 {
+		t.Errorf("MaxCircuits = %d, want 1024 (tuning defaults preserved)", cfg.Proxy.Relay.MaxCircuits)
+	}
+}
+
+// TestRelayEnabledNotSetByDefault verifies that loading a minimal
+// config (no relay section) does NOT enable the relay.
+func TestRelayEnabledNotSetByDefault(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	minimal := []byte("node:\n  hostname: test\n")
+	if err := os.WriteFile(path, minimal, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if cfg.Proxy.Relay.Enabled {
+		t.Error("Relay.Enabled = true after loading minimal config, want false")
+	}
+}
+
+// TestRelayEnabledTrueViaYAML verifies that a config YAML with
+// relay.enabled: true correctly sets the field.
+func TestRelayEnabledTrueViaYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := []byte("node:\n  hostname: relay-node\nproxy:\n  relay:\n    enabled: true\n    max_circuits: 2048\n")
+	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if !cfg.Proxy.Relay.Enabled {
+		t.Error("Relay.Enabled = false, want true")
+	}
+	if cfg.Proxy.Relay.MaxCircuits != 2048 {
+		t.Errorf("MaxCircuits = %d, want 2048", cfg.Proxy.Relay.MaxCircuits)
+	}
+}
+
+// TestRelayEnabledRoundTripSaveLoad verifies that Enabled=true
+// survives a save/load cycle.
+func TestRelayEnabledRoundTripSaveLoad(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	original := &Config{
+		Node: NodeConfig{Hostname: "relay-test"},
+		Mesh: MeshConfig{Port: 51820},
+		Proxy: ProxyConfig{
+			Relay: RelayNodeConfig{
+				Enabled:     true,
+				MaxCircuits: 512,
+			},
+		},
+	}
+
+	if err := Save(path, original); err != nil {
+		t.Fatalf("Save error: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if !loaded.Proxy.Relay.Enabled {
+		t.Error("Relay.Enabled = false after round-trip, want true")
+	}
+	if loaded.Proxy.Relay.MaxCircuits != 512 {
+		t.Errorf("MaxCircuits = %d, want 512", loaded.Proxy.Relay.MaxCircuits)
+	}
+}
