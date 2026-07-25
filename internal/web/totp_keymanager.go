@@ -26,13 +26,18 @@ const (
 
 // DefaultMasterSecretPath is the conventional location for the node-local
 // TOTP master secret. The file is created with mode 0600 on first boot.
-const DefaultMasterSecretPath = "/var/lib/meshdesk/totp.ms"
+const DefaultMasterSecretPath = "/var/lib/meshdesk/totp/master.key"
+
+// DefaultTOTPStoreDir is the conventional location for the TOTP
+// encrypted state directory. Per-user encrypted blobs are stored in
+// the "users" subdirectory under this path.
+const DefaultTOTPStoreDir = "/var/lib/meshdesk/totp"
 
 // TOTPKeyManager manages the encryption of per-user TOTP secrets.
 // It is created once at server startup and injected into TOTPStore.
 //
 // The master secret is a 32-byte cryptographically random value generated
-// at first boot and stored at a node-local path (default: /var/lib/meshdesk/totp.ms)
+// at first boot and stored at a node-local path (default: /var/lib/meshdesk/totp/master.key)
 // with mode 0600. It is NEVER written to config.yaml.
 //
 // The encryption key is derived from the master secret via HKDF-SHA256

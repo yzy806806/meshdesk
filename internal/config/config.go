@@ -382,6 +382,13 @@ type AuthConfig struct {
 	// the previous, current, and next 30-second windows.
 	TOTPWindow int `yaml:"totp_window,omitempty"`
 
+	// TOTPStoreDir is the directory for persistent TOTP encrypted state
+	// storage. When set, TOTP enrollment state is encrypted and persisted
+	// to <TOTPStoreDir>/users/<username>.enc, surviving process restarts.
+	// When empty (default), TOTP state is in-memory only and lost on restart.
+	// Production deployments should set this to /var/lib/meshdesk/totp.
+	TOTPStoreDir string `yaml:"totp_store_dir,omitempty"`
+
 	// StepUpTimeout is the lifetime of a step-up auth token in seconds
 	// (default 300 = 5 minutes). After this period, sensitive operations
 	// require re-authentication.
@@ -439,6 +446,10 @@ const DefaultMaxFileSize int64 = 1 << 30
 
 // DefaultUploadDir is the default directory for incoming file transfers.
 const DefaultUploadDir = "/tmp/meshdesk-uploads/"
+
+// DefaultTOTPStoreDir is the default directory for persistent TOTP
+// encrypted state storage.
+const DefaultTOTPStoreDir = "/var/lib/meshdesk/totp"
 
 // Default returns a config with sensible defaults.
 func Default() *Config {
@@ -512,11 +523,11 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	// Detect deprecated totp_secret in config.yaml (removed field).
-	// The TOTP encryption key is now node-local at /var/lib/meshdesk/totp.ms.
+	// The TOTP encryption key is now node-local at /var/lib/meshdesk/totp/master.key.
 	if legacySecret := extractLegacyTOTPSecret(data); legacySecret != "" {
 		cfg.Auth.legacyTOTPSecret = legacySecret
 		log.Printf("[WARNING] config.yaml contains deprecated field 'totp_secret' — " +
-			"TOTP encryption now uses node-local /var/lib/meshdesk/totp.ms. " +
+			"TOTP encryption now uses node-local /var/lib/meshdesk/totp/master.key. " +
 			"The config field is ignored and should be removed.")
 	}
 	if cfg.Mesh.Port == 0 {
@@ -558,6 +569,12 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Auth.StepUpTimeout == 0 {
 		cfg.Auth.StepUpTimeout = 300
+	}
+	// Enable persistent TOTP storage by default in production (when
+	// loaded from config file). Tests use config.Default() which
+	// leaves this empty for in-memory mode.
+	if cfg.Auth.TOTPStoreDir == "" {
+		cfg.Auth.TOTPStoreDir = DefaultTOTPStoreDir
 	}
 	// Proxy config defaults.
 	if cfg.Proxy.ChunkerStrategy == "" {
@@ -656,7 +673,7 @@ func Save(path string, cfg *Config) error {
 
 // LegacyTOTPSecret returns the deprecated totp_secret value found in
 // config.yaml during Load(), or empty string if none. Used for one-time
-// migration to the node-local master secret at /var/lib/meshdesk/totp.ms.
+// migration to the node-local master secret at /var/lib/meshdesk/totp/master.key.
 func (a *AuthConfig) LegacyTOTPSecret() string {
 	return a.legacyTOTPSecret
 }

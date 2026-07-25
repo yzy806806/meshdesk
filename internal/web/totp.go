@@ -7,6 +7,8 @@ import (
 	"encoding/base32"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -96,10 +98,15 @@ type totpState struct {
 // TOTPStore manages per-user TOTP enrollment and verification state.
 // Secrets are encrypted at rest with AES-256-GCM using a key derived
 // from a node-local master secret (see TOTPKeyManager).
+//
+// When storeDir is non-empty and a key manager is present, state is
+// persisted to disk as encrypted blobs (storeDir/users/<username>.enc).
+// Otherwise the store operates in-memory only (for backward compat).
 type TOTPStore struct {
-	mu         sync.Mutex
-	users      map[string]*totpState
-	km         *TOTPKeyManager
+	mu          sync.RWMutex
+	users       map[string]*totpState
+	km          *TOTPKeyManager
+	storeDir    string
 	stopSweeper chan struct{}
 }
 
@@ -108,9 +115,57 @@ type TOTPStore struct {
 // backward compatibility — secrets are stored unencrypted). Production
 // code should always provide a non-nil key manager.
 func NewTOTPStore(km *TOTPKeyManager) *TOTPStore {
+	return newTOTPStore(km, "")
+}
+
+// NewPersistentTOTPStore creates a TOTP store that persists encrypted
+// state to storeDir. The key manager must be non-nil. The users/
+// subdirectory is created if it doesn't exist. Existing encrypted
+// blobs are loaded into the in-memory cache on startup.
+//
+// If a plaintext .json file is found for a user, it is migrated to
+// an encrypted .enc blob and the plaintext is deleted (spec §7).
+func NewPersistentTOTPStore(km *TOTPKeyManager, storeDir string) (*TOTPStore, error) {
+	if km == nil {
+		return nil, fmt.Errorf("persistent TOTP store requires a non-nil key manager")
+	}
+	if storeDir == "" {
+		return nil, fmt.Errorf("persistent TOTP store requires a non-empty storeDir")
+	}
+
+	// Create the users/ subdirectory
+	usersDir := filepath.Join(storeDir, usersSubDir)
+	if err := os.MkdirAll(usersDir, 0700); err != nil {
+		return nil, fmt.Errorf("create TOTP users directory: %w", err)
+	}
+
+	s := newTOTPStore(km, storeDir)
+
+	// Clean up any stale .tmp files from a previous crash
+	if err := s.cleanupStaleTmpFiles(); err != nil {
+		return nil, fmt.Errorf("TOTP cleanup: %w", err)
+	}
+
+	// Migrate any plaintext files
+	if err := s.migratePlaintext(); err != nil {
+		return nil, fmt.Errorf("TOTP migration: %w", err)
+	}
+
+	// Load encrypted state from disk
+	if err := s.loadFromDisk(); err != nil {
+		return nil, fmt.Errorf("load TOTP state: %w", err)
+	}
+
+	return s, nil
+}
+
+// newTOTPStore is the internal constructor that sets up the common
+// fields and starts the PENDING sweeper.
+func newTOTPStore(km *TOTPKeyManager, storeDir string) *TOTPStore {
 	s := &TOTPStore{
 		users:       make(map[string]*totpState),
 		km:          km,
+		storeDir:    storeDir,
 		stopSweeper: make(chan struct{}),
 	}
 	// Start the PENDING expiry sweeper.
@@ -128,10 +183,18 @@ func (s *TOTPStore) sweepPending() {
 		case <-ticker.C:
 			s.mu.Lock()
 			now := time.Now()
+			var expired []string
 			for username, st := range s.users {
 				if st.State == StatePending && now.Sub(st.PendingSince) > pendingTTL {
 					log.Printf("[INFO] TOTP PENDING enrollment for user %s expired after %v, removing", username, pendingTTL)
 					delete(s.users, username)
+					expired = append(expired, username)
+				}
+			}
+			// Persist removals to disk
+			for _, u := range expired {
+				if perr := s.persist(u); perr != nil {
+					log.Printf("[WARNING] TOTP: failed to persist expired PENDING removal for %s: %v", u, perr)
 				}
 			}
 			s.mu.Unlock()
@@ -210,6 +273,11 @@ func (s *TOTPStore) Enroll(username string) (*EnrollResult, error) {
 	}
 	s.users[username] = state
 
+	// Persist to disk (no-op in in-memory mode)
+	if perr := s.persist(username); perr != nil {
+		log.Printf("[WARNING] TOTP: failed to persist enrollment for %s: %v", username, perr)
+	}
+
 	return &EnrollResult{
 		Secret:        secret,
 		RecoveryCodes: recoveryCodes,
@@ -232,6 +300,10 @@ func (s *TOTPStore) CompleteEnrollment(username string) bool {
 	}
 	st.State = StateVerified
 	st.PendingSince = time.Time{}
+	// Persist the state transition
+	if perr := s.persist(username); perr != nil {
+		log.Printf("[WARNING] TOTP: failed to persist enrollment completion for %s: %v", username, perr)
+	}
 	return true
 }
 
@@ -274,6 +346,10 @@ func (s *TOTPStore) Disable(username string) bool {
 		return false
 	}
 	delete(s.users, username)
+	// Remove from disk (no-op in in-memory mode)
+	if perr := s.persist(username); perr != nil {
+		log.Printf("[WARNING] TOTP: failed to remove disk state for %s: %v", username, perr)
+	}
 	return true
 }
 
@@ -291,6 +367,10 @@ func (s *TOTPStore) DisableByAdmin(username string) bool {
 	st.OldEncryptedSecret = nil
 	st.RecoveryCodes = nil
 	st.PendingSince = time.Time{}
+	// Persist the disabled state
+	if perr := s.persist(username); perr != nil {
+		log.Printf("[WARNING] TOTP: failed to persist admin-disable for %s: %v", username, perr)
+	}
 	return true
 }
 
@@ -304,6 +384,10 @@ func (s *TOTPStore) AdminEnable(username string) bool {
 		return false
 	}
 	delete(s.users, username) // → back to DISABLED (absent = not enrolled)
+	// Remove from disk (no-op in in-memory mode)
+	if perr := s.persist(username); perr != nil {
+		log.Printf("[WARNING] TOTP: failed to remove disk state for %s: %v", username, perr)
+	}
 	return true
 }
 
@@ -344,18 +428,27 @@ func (s *TOTPStore) ValidateCode(username, code string) bool {
 	valid := validateTOTP(plaintext, code, time.Now(), totpSkew)
 
 	if valid {
+		stateChanged := false
 		// If PENDING, complete enrollment.
 		if st.State == StatePending {
 			st.State = StateVerified
 			st.PendingSince = time.Time{}
+			stateChanged = true
 		}
 		// If ROTATING and code matches the NEW secret, complete rotation.
 		if st.State == StateRotating {
 			st.State = StateVerified
 			st.OldEncryptedSecret = nil
+			stateChanged = true
 		}
 		st.FailedAttempts = 0
 		st.LockedUntil = time.Time{}
+		// Persist if state changed or counters reset
+		if stateChanged || st.FailedAttempts == 0 {
+			if perr := s.persist(username); perr != nil {
+				log.Printf("[WARNING] TOTP: failed to persist state after ValidateCode for %s: %v", username, perr)
+			}
+		}
 	}
 
 	return valid
@@ -404,6 +497,10 @@ func (s *TOTPStore) RecordFailedAttempt(username string) (locked bool) {
 	st.FailedAttempts++
 	if st.FailedAttempts >= maxFailedTOTP {
 		st.LockedUntil = time.Now().Add(totpLockout)
+		// Persist the locked state
+		if perr := s.persist(username); perr != nil {
+			log.Printf("[WARNING] TOTP: failed to persist lockout for %s: %v", username, perr)
+		}
 		return true
 	}
 	return false
@@ -419,6 +516,10 @@ func (s *TOTPStore) ClearFailedAttempts(username string) {
 	}
 	st.FailedAttempts = 0
 	st.LockedUntil = time.Time{}
+	// Persist the cleared state
+	if perr := s.persist(username); perr != nil {
+		log.Printf("[WARNING] TOTP: failed to persist cleared attempts for %s: %v", username, perr)
+	}
 }
 
 // IsLocked reports whether the user is currently locked out.
@@ -448,6 +549,10 @@ func (s *TOTPStore) ConsumeRecoveryCode(username, code string) bool {
 	for i, rc := range st.RecoveryCodes {
 		if rc == code {
 			st.RecoveryCodes = append(st.RecoveryCodes[:i], st.RecoveryCodes[i+1:]...)
+			// Persist the consumed recovery code
+			if perr := s.persist(username); perr != nil {
+				log.Printf("[WARNING] TOTP: failed to persist recovery code consumption for %s: %v", username, perr)
+			}
 			return true
 		}
 	}

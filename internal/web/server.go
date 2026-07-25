@@ -74,7 +74,7 @@ type Deps struct {
 
 	// TOTPKeyManager handles encryption of per-user TOTP secrets.
 	// When nil, a new one is created from the node-local master secret
-	// at /var/lib/meshdesk/totp.ms (or a test path if configured).
+	// at /var/lib/meshdesk/totp/master.key (or a test path if configured).
 	TOTPKeyManager *TOTPKeyManager
 
 	// ProxyStatusProvider supplies proxy subsystem status for the
@@ -154,7 +154,7 @@ func New(deps Deps) (*Server, error) {
 	}
 	if s.totpKM == nil && s.totpStore == nil {
 		// Create key manager from node-local master secret.
-		// In production, this reads/generates /var/lib/meshdesk/totp.ms.
+		// In production, this reads/generates /var/lib/meshdesk/totp/master.key.
 		// If the config has a legacy totp_secret, it's used for one-time migration.
 		legacySecret := ""
 		if deps.Config != nil {
@@ -168,7 +168,24 @@ func New(deps Deps) (*Server, error) {
 		}
 	}
 	if s.totpStore == nil {
-		s.totpStore = NewTOTPStore(s.totpKM)
+		// Use persistent encrypted store when TOTPStoreDir is configured,
+		// otherwise fall back to in-memory (lost on restart).
+		storeDir := ""
+		if deps.Config != nil {
+			storeDir = deps.Config.Auth.TOTPStoreDir
+		}
+		if s.totpKM != nil && storeDir != "" {
+			store, err := NewPersistentTOTPStore(s.totpKM, storeDir)
+			if err != nil {
+				log.Printf("[WARNING] failed to create persistent TOTP store: %v — falling back to in-memory", err)
+				s.totpStore = NewTOTPStore(s.totpKM)
+			} else {
+				s.totpStore = store
+			}
+		} else {
+			// No key manager or no store dir — in-memory only
+			s.totpStore = NewTOTPStore(s.totpKM)
+		}
 	}
 	if s.stepUpStore == nil {
 		s.stepUpStore = NewStepUpStore()
