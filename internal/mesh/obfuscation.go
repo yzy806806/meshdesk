@@ -1081,6 +1081,9 @@ func ListenWebSocket(addr string, useTLS bool, certFile, keyFile string) (*wsLis
 			return nil, fmt.Errorf("ws load TLS cert: %w", err)
 		}
 		listener, err = tls.Listen("tcp", addr, &tls.Config{Certificates: []tls.Certificate{cert}})
+		if err != nil {
+			return nil, fmt.Errorf("ws TLS listen: %w", err)
+		}
 	} else {
 		listener, err = net.Listen("tcp", addr)
 	}

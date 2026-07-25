@@ -42,11 +42,6 @@ type envRequestMsg struct {
 	Value string
 }
 
-// execRequestMsg matches the SSH exec wire format (RFC 4254 Section 6.5).
-type execRequestMsg struct {
-	Command string
-}
-
 // SSHServer runs on the target node. It accepts SSH connections from the
 // web server node over the mesh VPN, allocates a PTY, runs a shell, and
 // handles SIGWINCH (terminal resize) propagation.
@@ -67,7 +62,6 @@ type SSHServer struct {
 
 // ptySession represents a single active PTY session on the target node.
 type ptySession struct {
-	id        string
 	ptyFile   *os.File
 	cmd       *exec.Cmd
 	sshConn   ssh.Conn

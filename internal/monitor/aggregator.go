@@ -189,7 +189,6 @@ func (a *Aggregator) IsRunning() bool {
 // in tests. It directly accepts envelopes without a network listener.
 type AggregatorInProc struct {
 	store *Store
-	mu    sync.Mutex
 }
 
 // NewAggregatorInProc creates an in-process aggregator for testing.

@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -365,6 +364,3 @@ func newPipeConn() (client, server *pipeConn) {
 
 // Ensure pipeConn satisfies io.ReadWriter
 var _ io.ReadWriter = (*pipeConn)(nil)
-
-// Suppress unused import warnings
-var _ = strings.TrimSpace

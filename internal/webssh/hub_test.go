@@ -3,7 +3,6 @@ package webssh
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -505,9 +504,6 @@ func TestSShServerCloseWithoutServe(t *testing.T) {
 
 func TestNetDialer(t *testing.T) {
 	d := &NetDialer{Timeout: 1 * time.Second}
-	if d == nil {
-		t.Fatal("NetDialer is nil")
-	}
 	// Try connecting to a bad address
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -536,6 +532,3 @@ func TestWSRequestFields(t *testing.T) {
 		t.Error("WSRequest fields not set correctly")
 	}
 }
-
-// Ensure io is used to avoid unused import
-var _ = io.EOF

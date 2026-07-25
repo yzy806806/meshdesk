@@ -1,10 +1,7 @@
 package mesh
 
 import (
-	"bufio"
 	"bytes"
-	"encoding/binary"
-	"fmt"
 	"net/netip"
 	"sync"
 	"testing"
@@ -384,9 +381,3 @@ func TestObfuscatingBindGetConfig(t *testing.T) {
 var _ conn.Bind = (*capturingBind)(nil)
 var _ conn.Endpoint = (*testEndpoint)(nil)
 var _ conn.Endpoint = (*wsEndpoint)(nil)
-
-// Suppress unused import (bufio, fmt used only in websocket test helpers
-// in obfuscation.go; referenced here via wsConn which uses *bufio.Reader).
-var _ = bufio.NewReader
-var _ = fmt.Sprintf
-var _ = binary.LittleEndian

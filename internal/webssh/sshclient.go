@@ -57,7 +57,6 @@ type RemoteSession struct {
 	session *ssh.Session
 	stdout  io.Reader      // obtained before Shell() via session.StdoutPipe()
 	stdin   io.WriteCloser // obtained before Shell() via session.StdinPipe()
-	ptyCh   ssh.Channel    // direct channel access for I/O (optional)
 }
 
 // Connect dials the target node and requests a PTY.

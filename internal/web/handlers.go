@@ -4,17 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/yzy806806/meshdesk/internal/auth"
-	"github.com/yzy806806/meshdesk/internal/config"
-	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/transfer"
@@ -950,38 +945,7 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
-func mkdirAll(path string) error {
-	return os.MkdirAll(path, 0755)
-}
-
-func writeFile(path string, src interface{ Read([]byte) (int, error) }) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	buf := make([]byte, 64*1024)
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			if _, werr := f.Write(buf[:n]); werr != nil {
-				return werr
-			}
-		}
-		if err != nil {
-			return nil
-		}
-	}
-}
-
 // bcryptCompare checks a bcrypt hash against a plaintext password.
 func bcryptCompare(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
-
-// Ensure config and mesh imports are used
-var _ = config.Config{}
-var _ = auth.CapSSHProxy
-var _ = mesh.MeshNode{}
-var _ = strconv.Itoa
-var _ = log.Printf

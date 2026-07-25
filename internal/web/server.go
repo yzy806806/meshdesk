@@ -14,7 +14,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/mesh"
-	"github.com/yzy806806/meshdesk/internal/mesh/peer"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/webssh"
@@ -297,14 +296,6 @@ func isHTMXRequest(r *http.Request) bool {
 
 // ctxUsernameKey is the context key for the authenticated username.
 type ctxUsernameKey struct{}
-
-// usernameFromCtx extracts the username from the request context.
-func usernameFromCtx(r *http.Request) string {
-	if v, ok := r.Context().Value(ctxUsernameKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
 
 // --- Template Rendering ---
 
@@ -665,9 +656,6 @@ type RevocationInfo struct {
 	RevokedAt time.Time
 	Reason    string
 }
-
-// unused but needed to satisfy imports during development
-var _ = peer.Identity{}
 
 // NodeCardData holds display-ready node metrics for dashboard cards.
 type NodeCardData struct {
