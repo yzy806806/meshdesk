@@ -2,6 +2,8 @@ package web
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"html/template"
 	"log"
@@ -502,9 +504,14 @@ func (s *SessionStore) Delete(token string) {
 	s.mu.Unlock()
 }
 
-// generateToken generates a random session token.
+// generateToken generates a cryptographically secure random session token.
+// It returns 32 bytes encoded as a 64-character lowercase hex string.
 func generateToken() string {
-	return fmt.Sprintf("%x", time.Now().UnixNano())
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return hex.EncodeToString(b)
 }
 
 // --- PeerResolver adapter ---
