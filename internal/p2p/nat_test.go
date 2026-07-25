@@ -70,8 +70,8 @@ func TestCanHolePunch_TableDriven(t *testing.T) {
 
 func TestIsPublicIP(t *testing.T) {
 	tests := []struct {
-		ip      string
-		public  bool
+		ip     string
+		public bool
 	}{
 		{"8.8.8.8", true},
 		{"203.0.113.5", true},

@@ -292,7 +292,7 @@ func (s *TOTPStore) RotateMasterKey() error {
 	// version). The .enc.new files on disk were written by persistToNewFile.
 
 	// Compute fingerprints for audit log
-	oldFingerprint := sha256.Sum256([]byte("old"))  // placeholder — we don't have the old raw key
+	oldFingerprint := sha256.Sum256([]byte("old")) // placeholder — we don't have the old raw key
 	newFingerprint := sha256.Sum256(newMasterKey)
 	log.Printf("[INFO] TOTP master key rotation complete: %d users re-encrypted, old fingerprint: %s, new fingerprint: %s",
 		len(reEncrypted),

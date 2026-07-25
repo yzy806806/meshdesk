@@ -13,12 +13,12 @@ import (
 type NatType string
 
 const (
-	NatTypeNone          NatType = "none"           // public IP, no NAT
-	NatTypeFullCone      NatType = "full_cone"      // full-cone NAT (endpoint-independent)
-	NatTypeRestricted    NatType = "restricted"     // restricted-cone NAT
+	NatTypeNone           NatType = "none"            // public IP, no NAT
+	NatTypeFullCone       NatType = "full_cone"       // full-cone NAT (endpoint-independent)
+	NatTypeRestricted     NatType = "restricted"      // restricted-cone NAT
 	NatTypePortRestricted NatType = "port_restricted" // port-restricted-cone NAT
-	NatTypeSymmetric     NatType = "symmetric"      // symmetric NAT (different mapped port per dest)
-	NatTypeUnknown       NatType = "unknown"        // STUN failed or inconclusive
+	NatTypeSymmetric      NatType = "symmetric"       // symmetric NAT (different mapped port per dest)
+	NatTypeUnknown        NatType = "unknown"         // STUN failed or inconclusive
 )
 
 // EndpointDiscovery holds the result of a STUN discovery query.
@@ -47,8 +47,8 @@ type EndpointDiscovery struct {
 //   - If different mapped ports → symmetric NAT
 //   - If only one responds → unknown (conservative fallback)
 type StunClient struct {
-	servers  []string
-	timeout  time.Duration
+	servers []string
+	timeout time.Duration
 }
 
 // NewStunClient creates a STUN client with the given server list.
@@ -187,11 +187,11 @@ func (sc *StunClient) queryServer(serverAddr string) (*EndpointDiscovery, error)
 // from two different STUN servers.
 //
 // Per RFC 5780:
-// - If both servers return the same mapped address (same IP:port),
-//   the NAT is either full_cone or restricted (we conservatively
-//   call it full_cone since hole-punching will work either way).
-// - If the mapped IP is the same but the port differs, the NAT is
-//   symmetric (different mapping per destination).
+//   - If both servers return the same mapped address (same IP:port),
+//     the NAT is either full_cone or restricted (we conservatively
+//     call it full_cone since hole-punching will work either way).
+//   - If the mapped IP is the same but the port differs, the NAT is
+//     symmetric (different mapping per destination).
 func classifyNat(first, second *EndpointDiscovery) NatType {
 	if first.MappedAddress == second.MappedAddress {
 		return NatTypeFullCone

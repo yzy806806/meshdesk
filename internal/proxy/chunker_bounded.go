@@ -48,7 +48,7 @@ type boundedChunker struct {
 	totalSet  bool
 	minSize   int
 	maxSize   int
-	alpha     float64  // Pareto shape parameter
+	alpha     float64   // Pareto shape parameter
 	padSource io.Reader // per-circuit padding CSPRNG or crypto/rand
 }
 

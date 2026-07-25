@@ -19,8 +19,8 @@ import (
 
 // Compile-time assertions that mock implements all three interfaces.
 var (
-	_ topology.TopologyPeers   = (*MockPeers)(nil)
-	_ topology.TopologyMetrics = (*MockMetrics)(nil)
+	_ topology.TopologyPeers    = (*MockPeers)(nil)
+	_ topology.TopologyMetrics  = (*MockMetrics)(nil)
 	_ topology.TopologyPathInfo = (*MockPaths)(nil)
 )
 
@@ -37,65 +37,65 @@ const (
 
 // mockNode is a single fake node's static data.
 type mockNode struct {
-	id       string
-	role     string
-	hostname string
-	cpu      float64
-	mem      float64
-	status   string
+	id        string
+	role      string
+	hostname  string
+	cpu       float64
+	mem       float64
+	status    string
 	bandwidth float64
-	ts       time.Time
+	ts        time.Time
 }
 
 // mockNodes is the deterministic node set (5 nodes).
 var mockNodes = map[string]*mockNode{
 	nodeEntryID: {
-		id:       nodeEntryID,
-		role:     "entry",
-		hostname: "node-us-east",
-		cpu:      23.7,
-		mem:      62.1,
-		status:   "online",
+		id:        nodeEntryID,
+		role:      "entry",
+		hostname:  "node-us-east",
+		cpu:       23.7,
+		mem:       62.1,
+		status:    "online",
 		bandwidth: 940,
-		ts:       time.Now(),
+		ts:        time.Now(),
 	},
 	nodeRelayID: {
-		id:       nodeRelayID,
-		role:     "entry+relay",
-		hostname: "node-eu-central",
-		cpu:      45.2,
-		mem:      71.8,
-		status:   "online",
+		id:        nodeRelayID,
+		role:      "entry+relay",
+		hostname:  "node-eu-central",
+		cpu:       45.2,
+		mem:       71.8,
+		status:    "online",
 		bandwidth: 1000,
-		ts:       time.Now(),
+		ts:        time.Now(),
 	},
 	nodeExitID: {
-		id:       nodeExitID,
-		role:     "exit",
-		hostname: "node-asia-south",
-		cpu:      12.3,
-		mem:      38.5,
-		status:   "online",
+		id:        nodeExitID,
+		role:      "exit",
+		hostname:  "node-asia-south",
+		cpu:       12.3,
+		mem:       38.5,
+		status:    "online",
 		bandwidth: 500,
-		ts:       time.Now(),
+		ts:        time.Now(),
 	},
 	nodeDashID: {
-		id:       nodeDashID,
-		role:     "dashboard",
-		hostname: "node-local-dash",
-		cpu:      5.1,
-		mem:      28.0,
-		status:   "online",
+		id:        nodeDashID,
+		role:      "dashboard",
+		hostname:  "node-local-dash",
+		cpu:       5.1,
+		mem:       28.0,
+		status:    "online",
 		bandwidth: 1000,
-		ts:       time.Now(),
+		ts:        time.Now(),
 	},
 	nodeOfflineID: {
-		id:       nodeOfflineID,
-		role:     "relay",
-		hostname: "node-offline-relay",
-		cpu:      0,
-		mem:      0,
-		status:   "offline",
+		id:        nodeOfflineID,
+		role:      "relay",
+		hostname:  "node-offline-relay",
+		cpu:       0,
+		mem:       0,
+		status:    "offline",
 		bandwidth: -1,
 		// Timestamp is 2 minutes in the past → stale → offline
 		ts: time.Now().Add(-2 * time.Minute),

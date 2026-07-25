@@ -11,14 +11,14 @@ import (
 // to expect without waiting for a ChunkStreamEnd marker.
 func TestFixedChunkerTotalComputed(t *testing.T) {
 	cfg := ChunkerConfig{
-		MaxChunkSize:    16 * 1024,
-		MinChunkSize:    16 * 1024,
-		DisablePadding:  true, // deterministic
+		MaxChunkSize:   16 * 1024,
+		MinChunkSize:   16 * 1024,
+		DisablePadding: true, // deterministic
 	}
 
 	tests := []struct {
-		name     string
-		dataLen  int
+		name      string
+		dataLen   int
 		wantTotal uint32
 	}{
 		{"exact multiple", 48 * 1024, 3},       // 3 x 16KB = 48KB → 3 chunks
@@ -26,7 +26,7 @@ func TestFixedChunkerTotalComputed(t *testing.T) {
 		{"single full chunk", 16 * 1024, 1},    // 1 chunk
 		{"single partial chunk", 100, 1},       // 1 chunk (smaller than MaxChunkSize)
 		{"two full chunks", 32 * 1024, 2},      // 2 chunks
-		{"partial last chunk 2", 17 * 1024, 2},  // 1 full + 1 partial → 2 chunks
+		{"partial last chunk 2", 17 * 1024, 2}, // 1 full + 1 partial → 2 chunks
 	}
 
 	for _, tt := range tests {

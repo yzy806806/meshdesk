@@ -88,20 +88,28 @@ type DispatcherConfig struct {
 
 	// DebugFixedChunks forces uniform chunk sizes when true (testing).
 	DebugFixedChunks bool
+
+	// AssignmentStrategy controls how chunks are distributed across
+	// the two paths. If nil, round-robin is used (v1 default).
+	// This implements the ChunkAssignmentStrategy interface from
+	// circuit_manager.go (AC-IN-02).
+	AssignmentStrategy ChunkAssignmentStrategy
 }
 
 // Dispatcher manages a single proxy session: it reads from the SS
 // connection, chunks the data, and dispatches chunks across two paths.
 type Dispatcher struct {
-	cfg         DispatcherConfig
-	chunker     Chunker
-	chunkerCfg  ChunkerConfig // resolved config including padding seed
-	streamID    uint32
-	nextSeq     uint32
-	conn        net.Conn // the SS session connection
-	closed      bool
-	mu          sync.Mutex
-	pathStats   pathStats
+	cfg        DispatcherConfig
+	chunker    Chunker
+	chunkerCfg ChunkerConfig // resolved config including padding seed
+	streamID   uint32
+	nextSeq    uint32
+	conn       net.Conn // the SS session connection
+	closed     bool
+	mu         sync.Mutex
+	pathStats  pathStats
+	strategy   ChunkAssignmentStrategy // resolved strategy (never nil)
+	callCount  int                     // total chunks assigned (for round-robin)
 }
 
 type pathStats struct {
@@ -155,11 +163,19 @@ func NewDispatcher(cfg DispatcherConfig, conn net.Conn) (*Dispatcher, error) {
 
 	chunker := NewChunkerWithConfig(strategy, chunkerCfg)
 
+	// Resolve the chunk assignment strategy. If none is provided,
+	// default to round-robin (v1 default, AC-CA-01).
+	assignmentStrategy := cfg.AssignmentStrategy
+	if assignmentStrategy == nil {
+		assignmentStrategy = &RoundRobinStrategy{}
+	}
+
 	return &Dispatcher{
-		cfg:         cfg,
-		chunkerCfg:  chunkerCfg,
-		chunker:     chunker,
-		conn:        conn,
+		cfg:        cfg,
+		chunkerCfg: chunkerCfg,
+		chunker:    chunker,
+		conn:       conn,
+		strategy:   assignmentStrategy,
 	}, nil
 }
 
@@ -168,14 +184,15 @@ func NewDispatcher(cfg DispatcherConfig, conn net.Conn) (*Dispatcher, error) {
 // the two paths. It blocks until the connection is closed or an error
 // occurs.
 //
-// In a full implementation, each chunk would be sent over the mesh
-// transport (via MeshNode.Dial to the first relay on each path).
-// For Phase 1, this function produces the encrypted WireChunks and
-// dispatches them via a callback, allowing the caller to wire the
-// transport layer.
+// The chunk-to-path assignment is delegated to the configured
+// ChunkAssignmentStrategy (round-robin, weighted, or fastest-only).
+// This replaces the inline pathToggle from Phase 1 (AC-IN-02).
 func (d *Dispatcher) Run(ctx context.Context, sendChunk func(path int, wc *WireChunk) error) error {
 	buf := make([]byte, 32*1024) // 32KB read buffer
-	pathToggle := 0               // alternate between path 0 and path 1
+
+	// Build CircuitPath snapshots for the assignment strategy.
+	// The strategy reads path health and RTT from these objects.
+	circuitPaths := d.buildCircuitPaths()
 
 	for {
 		select {
@@ -198,6 +215,8 @@ func (d *Dispatcher) Run(ctx context.Context, sendChunk func(path int, wc *WireC
 				chunk.StreamID = d.streamID
 				chunk.Sequence = d.nextSeq
 				d.nextSeq++
+				callCount := d.callCount
+				d.callCount++
 				d.mu.Unlock()
 
 				// Streaming mode: each Split() call produces a partial
@@ -205,9 +224,13 @@ func (d *Dispatcher) Run(ctx context.Context, sendChunk func(path int, wc *WireC
 				// so the reassembler does not prematurely signal completion.
 				chunk.Total = 0
 
-				// Select path (round-robin for v1).
-				pathIdx := pathToggle % 2
-				pathToggle++
+				// Select path via the assignment strategy (AC-IN-02).
+				// The strategy considers path health and RTT for weighted
+				// decisions. Falls back to round-robin when no RTT data.
+				pathIdx := d.strategy.AssignPath(&Circuit{
+					Paths:              circuitPaths,
+					AssignmentStrategy: d.strategy,
+				}, callCount)
 
 				// Get the path and first relay.
 				var path *Path
@@ -248,13 +271,16 @@ func (d *Dispatcher) Run(ctx context.Context, sendChunk func(path int, wc *WireC
 					d.pathStats.p2Bytes += int64(len(chunk.Payload))
 				}
 				d.mu.Unlock()
+
+				// Update circuit path stats for the strategy.
+				circuitPaths[pathIdx].RecordChunk(len(chunk.Payload))
 			}
 		}
 
 		if err != nil {
 			if err == io.EOF {
 				// Send stream-end marker.
-				d.sendStreamEnd(sendChunk, &pathToggle)
+				d.sendStreamEnd(sendChunk)
 				return nil
 			}
 			return fmt.Errorf("read from SS connection: %w", err)
@@ -262,9 +288,29 @@ func (d *Dispatcher) Run(ctx context.Context, sendChunk func(path int, wc *WireC
 	}
 }
 
+// buildCircuitPaths creates CircuitPath snapshots from the dispatcher's
+// Path1 and Path2 for the assignment strategy to read.
+func (d *Dispatcher) buildCircuitPaths() [2]*CircuitPath {
+	now := time.Now()
+	var result [2]*CircuitPath
+	for i, p := range []*Path{d.cfg.Path1, d.cfg.Path2} {
+		if p == nil {
+			continue
+		}
+		result[i] = &CircuitPath{
+			Index:         i,
+			Hops:          append([]string{}, p.Relays...),
+			RelayKeys:     p.RelayKeys,
+			Health:        PathHealthHealthy,
+			EstablishedAt: now,
+		}
+	}
+	return result
+}
+
 // sendStreamEnd sends a ChunkStreamEnd marker on both paths to signal
 // the exit node that the stream is complete.
-func (d *Dispatcher) sendStreamEnd(sendChunk func(path int, wc *WireChunk) error, pathToggle *int) {
+func (d *Dispatcher) sendStreamEnd(sendChunk func(path int, wc *WireChunk) error) {
 	d.mu.Lock()
 	endChunk := Chunk{
 		StreamID: d.streamID,
@@ -424,8 +470,8 @@ func (d *Dispatcher) KeepaliveLoop(ctx context.Context, sendKeepalive func(path 
 			return
 		case <-ticker.C:
 			msg := &KeepaliveMsg{
-				CircuitID:  circuitID,
-				Timestamp:  time.Now().UnixNano(),
+				CircuitID: circuitID,
+				Timestamp: time.Now().UnixNano(),
 			}
 			// Send on both paths.
 			sendKeepalive(0, msg)

@@ -152,10 +152,10 @@ func TestFindDisjointPairNotFound(t *testing.T) {
 func TestFindBestDisjointPair(t *testing.T) {
 	// Create candidates with different hop counts.
 	candidates := []*Path{
-		{Relays: []string{"r1"}},                     // 1 hop
-		{Relays: []string{"r2"}},                     // 1 hop
-		{Relays: []string{"r3", "r4", "r5"}},        // 3 hops
-		{Relays: []string{"r6", "r7", "r8"}},        // 3 hops
+		{Relays: []string{"r1"}},             // 1 hop
+		{Relays: []string{"r2"}},             // 1 hop
+		{Relays: []string{"r3", "r4", "r5"}}, // 3 hops
+		{Relays: []string{"r6", "r7", "r8"}}, // 3 hops
 	}
 
 	// Quality function: lower hop count = better.

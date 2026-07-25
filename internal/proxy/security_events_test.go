@@ -56,17 +56,17 @@ func TestExitNode_SecurityEvents(t *testing.T) {
 
 	// Create an exit node with only port 80 allowed.
 	exit := NewExitNode(ExitConfig{
-		CircuitCfg:    DefaultCircuitConfig(),
-		AllowedPorts:  []int{80},
-		ChunkerCfg:    DefaultChunkerConfig(),
+		CircuitCfg:   DefaultCircuitConfig(),
+		AllowedPorts: []int{80},
+		ChunkerCfg:   DefaultChunkerConfig(),
 	})
 	exit.SetSecurityEventSink(sink)
 
 	// Circuit setup with disallowed port (443) → SecEventExitPortDenied.
 	setup := &CircuitSetup{
-		CircuitID:   make([]byte, CircuitIDSize),
-		ECDHPubKey:  make([]byte, 32),
-		TargetAddr:  "1.2.3.4:443", // not in allowed list [80]
+		CircuitID:  make([]byte, CircuitIDSize),
+		ECDHPubKey: make([]byte, 32),
+		TargetAddr: "1.2.3.4:443", // not in allowed list [80]
 	}
 	// Fill with valid-looking values.
 	for i := range setup.CircuitID {

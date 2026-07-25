@@ -9,14 +9,14 @@ import (
 // YAML contains all required fields and is well-formed.
 func TestCFTunnelConfigYAMLGeneration(t *testing.T) {
 	cfg := CFTunnelConfig{
-		TunnelID:        "test-tunnel-uuid",
-		CredentialsFile: "/etc/meshdesk/tunnel-creds.json",
-		OriginServer:    "127.0.0.1:8388",
-		Region:          "us",
+		TunnelID:         "test-tunnel-uuid",
+		CredentialsFile:  "/etc/meshdesk/tunnel-creds.json",
+		OriginServer:     "127.0.0.1:8388",
+		Region:           "us",
 		ReconnectRetries: 5,
-		GracePeriodSec:  30,
-		LogLevel:        "warn",
-		MetricsAddr:     "127.0.0.1:36500",
+		GracePeriodSec:   30,
+		LogLevel:         "warn",
+		MetricsAddr:      "127.0.0.1:36500",
 		IngressRules: []CFIngressRule{
 			{
 				Hostname: "proxy.example.com",
@@ -35,19 +35,19 @@ func TestCFTunnelConfigYAMLGeneration(t *testing.T) {
 
 	// Verify required fields are present.
 	checks := map[string]bool{
-		"tunnel: test-tunnel-uuid":                true,
+		"tunnel: test-tunnel-uuid":                          true,
 		"credentials-file: /etc/meshdesk/tunnel-creds.json": true,
-		"region: us":                               true,
-		"retries: 5":                               true,
-		"grace-period: 30s":                        true,
-		"loglevel: warn":                           true,
-		"metrics: 127.0.0.1:36500":                 true,
-		"hostname: proxy.example.com":              true,
-		"service: ws://127.0.0.1:8388":             true,
-		"connectTimeout: 30s":                      true,
-		"tlsTimeout: 10s":                          true,
-		"keepAliveTimeout: 15s":                    true,
-		"http_status:404":                          true, // catch-all rule
+		"region: us":                   true,
+		"retries: 5":                   true,
+		"grace-period: 30s":            true,
+		"loglevel: warn":               true,
+		"metrics: 127.0.0.1:36500":     true,
+		"hostname: proxy.example.com":  true,
+		"service: ws://127.0.0.1:8388": true,
+		"connectTimeout: 30s":          true,
+		"tlsTimeout: 10s":              true,
+		"keepAliveTimeout: 15s":        true,
+		"http_status:404":              true, // catch-all rule
 	}
 
 	for check, _ := range checks {

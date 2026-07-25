@@ -158,24 +158,24 @@ func deriveSSKey(password string) []byte {
 // ssSession wraps a TCP connection with SS AEAD encryption/decryption.
 //
 // The SS protocol (AEAD edition) works as follows:
-// 1. Client sends a random salt (16 bytes for chacha20-ietf-poly1305)
-// 2. Client derives session subkey from masterKey + salt using HKDF
-// 3. Client sends encrypted payload chunks: [AEAD(2-byte length)]
-//    [AEAD(payload)]
-// 4. Server reads salt, derives subkey, decrypts chunks
-// 5. First payload chunk contains the SOCKS5 target address
+//  1. Client sends a random salt (16 bytes for chacha20-ietf-poly1305)
+//  2. Client derives session subkey from masterKey + salt using HKDF
+//  3. Client sends encrypted payload chunks: [AEAD(2-byte length)]
+//     [AEAD(payload)]
+//  4. Server reads salt, derives subkey, decrypts chunks
+//  5. First payload chunk contains the SOCKS5 target address
 type ssSession struct {
-	conn        net.Conn
-	masterKey   []byte
-	aead        cipher.AEAD
-	readBuf     []byte
-	readStart   int
-	readEnd     int
-	writeNonce  []byte
-	readNonce   []byte
-	writeMu     sync.Mutex
-	readMu      sync.Mutex
-	closed      bool
+	conn       net.Conn
+	masterKey  []byte
+	aead       cipher.AEAD
+	readBuf    []byte
+	readStart  int
+	readEnd    int
+	writeNonce []byte
+	readNonce  []byte
+	writeMu    sync.Mutex
+	readMu     sync.Mutex
+	closed     bool
 
 	// secSink receives suspicious-activity events for alerting.
 	// May be nil (no alerting). Set by the ssListener on creation.
@@ -200,11 +200,11 @@ func newSSSession(conn net.Conn, masterKey []byte) (*ssSession, error) {
 	}
 
 	s := &ssSession{
-		conn:        conn,
-		masterKey:   masterKey,
-		aead:        aead,
-		writeNonce:  make([]byte, chacha20poly1305.NonceSize),
-		readNonce:   make([]byte, chacha20poly1305.NonceSize),
+		conn:       conn,
+		masterKey:  masterKey,
+		aead:       aead,
+		writeNonce: make([]byte, chacha20poly1305.NonceSize),
+		readNonce:  make([]byte, chacha20poly1305.NonceSize),
 	}
 
 	// Read the first encrypted chunk to extract the target address.
@@ -223,7 +223,9 @@ func (s *ssSession) secReport(event SecurityEvent) {
 // contains the SOCKS5 target address. Returns the parsed address.
 //
 // The SOCKS5 address format (as used by SS):
-//   [1-byte addr type] [addr data] [2-byte port]
+//
+//	[1-byte addr type] [addr data] [2-byte port]
+//
 // Addr types: 0x01=IPv4(4 bytes), 0x03=domain(1-byte len + bytes), 0x04=IPv6(16 bytes)
 func (s *ssSession) ReadTarget() (string, error) {
 	// Read and decrypt the first payload chunk.

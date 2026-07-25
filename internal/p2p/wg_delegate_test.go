@@ -75,9 +75,9 @@ func TestPeerHealthTracking(t *testing.T) {
 	// Simulate adding a peer health record.
 	wg.mu.Lock()
 	wg.health[key] = &PeerHealth{
-		PublicKey:  key,
-		Endpoint:   "203.0.113.5:51820",
-		AddedAt:    time.Now(),
+		PublicKey: key,
+		Endpoint:  "203.0.113.5:51820",
+		AddedAt:   time.Now(),
 	}
 	wg.mu.Unlock()
 
@@ -107,8 +107,8 @@ func TestPeerHealthHandshakeTracking(t *testing.T) {
 
 	wg.mu.Lock()
 	wg.health[key] = &PeerHealth{
-		PublicKey:  key,
-		AddedAt:    time.Now().Add(-10 * time.Minute), // old
+		PublicKey: key,
+		AddedAt:   time.Now().Add(-10 * time.Minute), // old
 	}
 	wg.mu.Unlock()
 

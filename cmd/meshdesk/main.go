@@ -414,9 +414,9 @@ func main() {
 		cancel()
 	}
 
-	_ = webServer     // silence unused warning if not web mode
-	_ = gossipLayer   // silence unused warning if P2P disabled
-	_ = natTraversal  // silence unused warning if NAT traversal disabled
+	_ = webServer    // silence unused warning if not web mode
+	_ = gossipLayer  // silence unused warning if P2P disabled
+	_ = natTraversal // silence unused warning if NAT traversal disabled
 }
 
 // meshDialerAdapter adapts mesh.MeshNode to the monitor.MeshDialer interface.

@@ -1509,11 +1509,11 @@ func TestStressConcurrentCloseAndChunks(t *testing.T) {
 // reassembler knows when all chunks have arrived without a StreamEnd signal.
 func TestStressReassemblyCorrectness(t *testing.T) {
 	cfg := ChunkerConfig{
-		MaxChunkSize:         256,
-		MinChunkSize:         256,
-		DisablePadding:       true,
-		MaxReassemblyChunks:  4096,
-		MaxReassemblyBytes:   32 * 1024 * 1024,
+		MaxChunkSize:        256,
+		MinChunkSize:        256,
+		DisablePadding:      true,
+		MaxReassemblyChunks: 4096,
+		MaxReassemblyBytes:  32 * 1024 * 1024,
 	}
 
 	// Create original data.

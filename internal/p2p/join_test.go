@@ -11,7 +11,7 @@ import (
 
 // testJoinSetup creates a JoinProtocol with wired callbacks for testing.
 type testJoinSetup struct {
-	jp          *JoinProtocol
+	jp         *JoinProtocol
 	delegate   *meshDelegate
 	events     *meshEventDelegate
 	sentMsgs   []joinSentMsg
@@ -56,9 +56,9 @@ func newTestJoinSetup(localKey string, authorizedKeys []string, approvalMode str
 	jp := NewJoinProtocol(cfg, delegate, events)
 
 	setup := &testJoinSetup{
-		jp:        jp,
-		delegate:  delegate,
-		events:    events,
+		jp:       jp,
+		delegate: delegate,
+		events:   events,
 	}
 
 	jp.SetMessageSender(func(peerKey string, msg *JoinMessage) {
@@ -182,7 +182,7 @@ func TestJoinMessageAllTypes(t *testing.T) {
 func TestJoinMessageTypeString(t *testing.T) {
 	tests := []struct {
 		typ  JoinMsgType
-		want  string
+		want string
 	}{
 		{MsgJoinRequest, "JOIN_REQUEST"},
 		{MsgJoinAccept, "JOIN_ACCEPT"},

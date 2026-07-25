@@ -33,73 +33,162 @@ Nezha 有监控和 WebSSH 但没有 mesh 组网——dashboard 挂了就全没�
 ## 功能
 
 ### Mesh VPN
-- 去中心化 P2P 组网（KCP/QUIC/TCP）
+
+- 去中心化 P2P 组网，基于 **WireGuard**（wireguard-go + gVisor netstack）
 - NAT 穿透，支持共享中继节点
 - 自动节点发现
-- 加密隧道（ChaCha20-Poly1305）
-- Web UI 网络拓扑可视化
+- 传输混淆：填充模式（AmneziaWG 风格）或 WebSocket 模式
+- 细粒度节点权限——限制每个节点能访问哪些功能（监控、SSH、文件传输、服务管理）
 
 ### 监控
-- 实时 CPU / 内存 / 磁盘 / 网络指标
+
+- 实时 CPU / 内存 / 磁盘 / 网络 / 负载指标
+- 指标推送到采集节点，可配置推送间隔
+- 每节点环形缓冲区存储（采集节点断连时缓冲数据）
+- 仪表盘实时更新（Server-Sent Events）
 - 每台服务器的进程列表
-- 服务状态（systemd units）
-- 历史图表
-- 告警（阈值触发，webhook/Telegram 通知）
 
 ### Web 终端
+
 - 浏览器终端（xterm.js + WebSocket）
 - 无需 SSH 密钥或密码——agent 以 root 运行
 - 多标签、多服务器
-- 会话录制（可选）
+- 连接通过 mesh VPN 代理
 
-### 文件管理
+### 文件传输
+
 - 通过 Web UI 上传/下载文件
-- 拖拽支持
-- 文件浏览器（含权限显示）
+- Mesh 内部传输（文件走 VPN，不暴露到公网）
+- 基于权限的访问控制——限制哪些节点可以发送文件以及可访问的路径
+- 可配置单文件大小上限和上传目录
 
 ### 服务管理
+
 - 启动/停止/重启 systemd 服务
 - 查看服务日志
-- 启用/禁用服务
+- 按节点授权——只有具备 `service_manage` 权限的节点才能管理服务
 
 ## 安装
 
-```bash
-# 以 root 安装
-curl -fsSL https://raw.githubusercontent.com/yzy806806/meshdesk/main/install.sh | bash
-
-# 或手动：
-# 1. 下载对应平台的二进制
-# 2. 放到 /usr/local/bin/meshdesk
-# 3. 创建 systemd 服务
-# 4. 启动
-
-# 仅 agent（默认）
-meshdesk --network mynet --secret mysecret
-
-# Agent + Web UI
-meshdesk --network mynet --secret mysecret --web :8080
-```
-
 **必须 root 运行。** Agent 需要 root 权限用于：
-- 创建 TUN 网卡（VPN）
+
+- 创建 TUN 网卡（WireGuard VPN）
 - 执行命令（Web 终端）
 - 读取系统指标（磁盘、网络、进程）
 - 管理 systemd 服务
+
+### 从源码构建
+
+```bash
+git clone https://github.com/yzy806806/meshdesk.git
+cd meshdesk
+go build -o meshdesk ./cmd/meshdesk/
+sudo cp meshdesk /usr/local/bin/
+```
+
+### 运行
+
+```bash
+# 仅 agent 模式（mesh 传输 + 监控上报）
+meshdesk --config /etc/meshdesk/config.yaml
+
+# 生成 WireGuard 密钥对（输出私钥和公钥）
+meshdesk --gen-key
+
+# Agent + Web UI（仪表盘、WebSSH、文件传输、服务管理）
+meshdesk --config /etc/meshdesk/config.yaml --web
+```
+
+### 命令行参数
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `/etc/meshdesk/config.yaml` | 配置文件路径 |
+| `--web` | `false` | 启用 Web UI 模式（仪表盘、WebSSH、文件传输、服务管理） |
+| `--gen-key` | `false` | 生成 WireGuard 密钥对后退出 |
+
+设置 `--web` 且未配置 `node.web` 时，Web UI 默认监听 `:8080`。
 
 ## 配置
 
 ```yaml
 # /etc/meshdesk/config.yaml
-network: mynet          # mesh 网络名
-secret: mysecret        # mesh 认证密钥
-web: ":8080"            # Web UI 端口（空 = 不开 Web UI）
-peers:                  # 引导节点（共享中继）
-  - relay1.example.com:11010
-  - relay2.example.com:11010
-hostname: ""            # 显示名称（空则自动检测）
-tun: true               # 是否启用 TUN 网卡
-tun_ip: ""              # 自动分配（空则自动）
+node:
+  identity: ""           # WireGuard 私钥（十六进制）；为空则自动生成
+  hostname: ""           # 显示名称（为空则自动检测）
+  web: ":8080"           # Web UI 监听地址；为空 = 仅 agent 模式
+
+mesh:
+  port: 51820            # WireGuard 监听端口
+
+peers:
+  - public_key: "abc123..."         # 节点 WireGuard 公钥
+    endpoint: "relay.example.com:51820"  # host:port；漫游节点可留空
+    allowed_ips:                     # 路由到此节点的 mesh IP
+      - "10.0.0.2/32"
+    capabilities:                    # 该节点在本机上允许的操作
+      - monitor_write               # 推送指标
+      - file_transfer               # 发送/接收文件
+      - ssh                         # 打开终端会话
+      - service_manage              # 管理 systemd 服务
+    service_manage:                  # 限制只允许管理特定服务
+      - nginx
+      - docker
+    file_transfer_paths:             # 限制文件传输可访问的路径
+      - /var/www/
+    obfuscation: "padded"            # none | padded | websocket
+
+monitoring:
+  collectors: []         # 接收指标推送的采集节点 ID 列表
+  interval: 15           # 推送间隔（秒）
+  port: 4191             # mesh 内部指标推送端口
+
+webssh:
+  port: 2222             # 目标节点上 SSH 服务器的 mesh 内部端口
+  shell: ""              # 默认 shell（为空则自动检测）
+  host_key: ""           # SSH 主机私钥（为空则自动生成）
+  dial_timeout: 10       # 连接目标节点的超时时间（秒）
+  read_deadline: 300     # 空闲会话的 WebSocket 读超时（秒）
+  write_deadline: 10     # WebSocket 写超时（秒）
+  max_sessions: 256      # 每节点最大并发终端会话数
+
+auth:
+  web_users:             # Web UI 登录账号（留空则为首次运行开放模式）
+    - username: admin
+      password_hash: "$2a$10$..."  # 密码的 bcrypt 哈希值
+
+transfer:
+  max_file_size: 1073741824   # 单文件最大字节数（默认 1 GB，0 = 无限制）
+  upload_dir: "/tmp/meshdesk-uploads/"  # 接收文件的存储目录
+```
+
+所有字段均为可选。未填写的字段使用合理默认值。如果启动时配置文件不存在，节点以默认配置运行并自动生成 WireGuard 身份密钥。
+
+## 架构
+
+```
+┌─────────────────────────────────────────┐
+│              MeshDesk 节点               │
+│                                          │
+│  ┌──────────┐  ┌──────────┐  ┌───────┐  │
+│  │   Mesh   │  │ Monitor  │  │WebSSH │  │
+│  │ WireGuard│  │ Collect  │  │ Hub   │  │
+│  │ + netstk│  │ + Push   │  │ (SSH  │  │
+│  │          │  │          │  │ proxy)│  │
+│  └────┬─────┘  └────┬─────┘  └───┬───┘  │
+│       │             │            │       │
+│       └──────┬──────┴────────────┘       │
+│              │                           │
+│  ┌───────────┴───────────────┐           │
+│  │       HTTP Server          │           │
+│  │  (仅 --web 模式)           │           │
+│  │                            │           │
+│  │  • 仪表盘 (htmx + SSE)    │           │
+│  │  • WebSSH 终端             │           │
+│  │  • 文件传输界面            │           │
+│  │  • 服务管理界面            │           │
+│  └────────────────────────────┘           │
+└─────────────────────────────────────────┘
 ```
 
 ## License

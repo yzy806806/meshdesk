@@ -12,14 +12,14 @@ import (
 	"os"
 	"path/filepath"
 
-	"golang.org/x/crypto/hkdf"
 	"crypto/sha256"
+	"golang.org/x/crypto/hkdf"
 )
 
 // Domain separation constants for HKDF key derivation (spec §2.2).
 const (
-	hkdfSalt     = "meshdesk-totp-encryption-v1"
-	hkdfInfo     = "per-user-key"
+	hkdfSalt         = "meshdesk-totp-encryption-v1"
+	hkdfInfo         = "per-user-key"
 	masterSecretSize = 32 // 256-bit
 	gcmNonceSize     = 12 // standard GCM nonce size
 )

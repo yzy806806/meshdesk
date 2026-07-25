@@ -14,13 +14,13 @@ import (
 // uses pointer types for optional time fields so zero values are
 // omitted from JSON (smaller blobs, cleaner output).
 type persistedState struct {
-	Version            int    `json:"version"`
-	EncryptedSecret    []byte `json:"encrypted_secret"`
-	OldEncryptedSecret []byte `json:"old_encrypted_secret,omitempty"`
-	RecoveryCodes      []string `json:"recovery_codes,omitempty"`
-	State              int    `json:"state"`
+	Version            int        `json:"version"`
+	EncryptedSecret    []byte     `json:"encrypted_secret"`
+	OldEncryptedSecret []byte     `json:"old_encrypted_secret,omitempty"`
+	RecoveryCodes      []string   `json:"recovery_codes,omitempty"`
+	State              int        `json:"state"`
 	PendingSince       *time.Time `json:"pending_since,omitempty"`
-	FailedAttempts     int    `json:"failed_attempts"`
+	FailedAttempts     int        `json:"failed_attempts"`
 	LockedUntil        *time.Time `json:"locked_until,omitempty"`
 }
 
