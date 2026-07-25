@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/transfer"
@@ -236,8 +237,8 @@ func (s *Server) handleWebSocketTerminal(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	// Delegate to webssh.Handler
-	handler := webssh.NewHandler(s.sshHub)
+	// Delegate to webssh.Handler — enforce ssh_proxy capability (Decision E).
+	handler := webssh.NewHandlerWithAuth(s.sshHub, auth.NewWebSSHAuthChecker(s.authEngine))
 	handler.ServeHTTP(w, r)
 }
 
