@@ -10,6 +10,7 @@ import (
 
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/monitor"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // newTestServer creates a web server with a populated monitor store for testing.
@@ -410,8 +411,12 @@ func TestHandleLogin_GET(t *testing.T) {
 
 func TestHandleLogin_POST_Success(t *testing.T) {
 	cfg := config.Default()
+	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt hash error: %v", err)
+	}
 	cfg.Auth.WebUsers = []config.WebUser{
-		{Username: "admin", PasswordHash: "testpass"}, // plaintext for testing
+		{Username: "admin", PasswordHash: string(hash)},
 	}
 
 	srv, err := New(Deps{Config: cfg, MonitorStore: monitor.NewStore()})
@@ -447,8 +452,12 @@ func TestHandleLogin_POST_Success(t *testing.T) {
 
 func TestHandleLogin_POST_Failure(t *testing.T) {
 	cfg := config.Default()
+	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt hash error: %v", err)
+	}
 	cfg.Auth.WebUsers = []config.WebUser{
-		{Username: "admin", PasswordHash: "testpass"},
+		{Username: "admin", PasswordHash: string(hash)},
 	}
 
 	srv, err := New(Deps{Config: cfg, MonitorStore: monitor.NewStore()})
@@ -488,8 +497,12 @@ func TestAuthMiddleware_NoUsers(t *testing.T) {
 
 func TestAuthMiddleware_WithUsers(t *testing.T) {
 	cfg := config.Default()
+	hash, err := bcrypt.GenerateFromPassword([]byte("testpass"), bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("bcrypt hash error: %v", err)
+	}
 	cfg.Auth.WebUsers = []config.WebUser{
-		{Username: "admin", PasswordHash: "testpass"},
+		{Username: "admin", PasswordHash: string(hash)},
 	}
 
 	srv, err := New(Deps{Config: cfg, MonitorStore: monitor.NewStore()})
@@ -517,6 +530,91 @@ func TestAuthMiddleware_WithUsers(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Errorf("Status = %d, want %d (valid session)", rr.Code, http.StatusOK)
+	}
+}
+
+// TestAuthenticate_RejectsPlaintext verifies that a plaintext password stored
+// in config (instead of a bcrypt hash) is NOT accepted as a valid credential.
+// This is the core security fix: the old plaintext fallback is gone.
+func TestAuthenticate_RejectsPlaintext(t *testing.T) {
+	cfg := config.Default()
+	cfg.Auth.WebUsers = []config.WebUser{
+		{Username: "admin", PasswordHash: "testpass"}, // plaintext, NOT a bcrypt hash
+	}
+
+	srv, err := New(Deps{Config: cfg, MonitorStore: monitor.NewStore()})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	// Even with the correct plaintext password, authentication must fail.
+	if srv.authenticate("admin", "testpass") {
+		t.Error("authenticate() returned true for plaintext stored password; expected false")
+	}
+
+	// A different password must also fail.
+	if srv.authenticate("admin", "wrongpass") {
+		t.Error("authenticate() returned true for wrong password; expected false")
+	}
+
+	// Unknown user must fail.
+	if srv.authenticate("nobody", "testpass") {
+		t.Error("authenticate() returned true for unknown user; expected false")
+	}
+}
+
+// TestAuthenticate_AcceptsBcryptHashes verifies that all three bcrypt
+// prefix variants ($2a$, $2b$, $2y$) are recognized as valid hash formats.
+func TestAuthenticate_AcceptsBcryptPrefixes(t *testing.T) {
+	hash2a, _ := bcrypt.GenerateFromPassword([]byte("pass1"), bcrypt.MinCost)
+	// bcrypt.GenerateFromPassword always produces $2a$ hashes; we test that
+	// $2a$ is accepted by the isBcryptHash check.
+	cfg := config.Default()
+	cfg.Auth.WebUsers = []config.WebUser{
+		{Username: "admin", PasswordHash: string(hash2a)},
+	}
+
+	srv, err := New(Deps{Config: cfg, MonitorStore: monitor.NewStore()})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	if !srv.authenticate("admin", "pass1") {
+		t.Error("authenticate() returned false for $2a$ bcrypt hash with correct password")
+	}
+	if srv.authenticate("admin", "wrong") {
+		t.Error("authenticate() returned true for bcrypt hash with wrong password")
+	}
+}
+
+// TestIsBcryptHash covers the hash-format check directly.
+func TestIsBcryptHash(t *testing.T) {
+	// A bcrypt hash is exactly 60 chars: $2X$ + 2-digit cost + $ + 22-char salt + 31-char hash
+	valid2a := "$2a$10$abcdefghijklmnopqrstuvABCDEFGHIJKLMNOPQRSTUVWXYZabcde"
+	valid2b := "$2b$10$abcdefghijklmnopqrstuvABCDEFGHIJKLMNOPQRSTUVWXYZabcde"
+	valid2y := "$2y$10$abcdefghijklmnopqrstuvABCDEFGHIJKLMNOPQRSTUVWXYZabcde"
+
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"testpass", false},          // plaintext
+		{"password123", false},       // plaintext
+		{"$2b$10$abc", false},        // too short
+		{"$2b$notabcrypth", false},   // wrong length, bcrypt-like prefix
+		{"", false},                  // empty
+		{valid2a, true},              // valid $2a$
+		{valid2b, true},              // valid $2b$
+		{valid2y, true},              // valid $2y$
+		{"$1$abc$def", false},        // MD5 crypt, not bcrypt
+		{"$5$abc$def", false},        // SHA-256 crypt, not bcrypt
+	}
+
+	for _, tt := range tests {
+		got := isBcryptHash(tt.input)
+		if got != tt.want {
+			t.Errorf("isBcryptHash(%q) = %v, want %v", tt.input, got, tt.want)
+		}
 	}
 }
 

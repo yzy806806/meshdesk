@@ -87,19 +87,30 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 // authenticate checks credentials against the config's web_users list.
-// Passwords are bcrypt-hashed in config.yaml.
+// Passwords must be bcrypt-hashed ($2a$, $2b$, or $2y$ prefix).
+// Non-bcrypt stored values (including plaintext) are rejected.
 func (s *Server) authenticate(username, password string) bool {
 	for _, user := range s.cfg.Auth.WebUsers {
 		if user.Username == username {
-			// For development/testing: if the hash doesn't start with $2b$,
-			// compare as plaintext (NOT for production).
-			if !strings.HasPrefix(user.PasswordHash, "$2b$") {
-				return user.PasswordHash == password
+			// Reject any stored value that isn't a bcrypt hash.
+			// Accept $2a$, $2b$, and $2y$ prefixes (bcrypt variants).
+			if !isBcryptHash(user.PasswordHash) {
+				return false
 			}
 			return bcryptCompare(user.PasswordHash, password)
 		}
 	}
 	return false
+}
+
+// isBcryptHash reports whether s looks like a bcrypt hash.
+// Bcrypt hashes start with $2a$, $2b$, or $2y$ followed by a cost and 53-char
+// salt+hash (total 60 chars).
+func isBcryptHash(s string) bool {
+	return len(s) == 60 &&
+		(strings.HasPrefix(s, "$2a$") ||
+			strings.HasPrefix(s, "$2b$") ||
+			strings.HasPrefix(s, "$2y$"))
 }
 
 // --- Dashboard ---
