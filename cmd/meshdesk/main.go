@@ -19,6 +19,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
+	"github.com/yzy806806/meshdesk/internal/p2p"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
@@ -78,6 +79,92 @@ func main() {
 	log.Printf("  Public key: %s", node.Identity().PublicKey)
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 	log.Printf("  Peers:      %d", node.RoutingTable().PeerCount())
+
+	// Initialize the P2P gossip discovery layer (if enabled).
+	var gossipLayer *p2p.GossipLayer
+	var natTraversal *p2p.NatTraversal
+	if cfg.P2P.Enabled {
+		// Create the WireGuard delegate for dynamic peer management.
+		wgDelegate := p2p.NewWireGuardDelegate(node)
+
+		// Mark statically-configured peers so they are never removed by gossip.
+		for _, peerCfg := range cfg.Peers {
+			wgDelegate.MarkStaticPeer(peerCfg.PublicKey)
+		}
+
+		// Convert config.P2pConfig to p2p.P2pConfig.
+		p2pCfg := p2p.FromConfig(cfg.P2P)
+		p2pCfg.GossipPort = cfg.Mesh.GossipPort
+
+		gl, err := p2p.NewGossipLayer(p2pCfg, node, wgDelegate)
+		if err != nil {
+			log.Fatalf("Failed to create P2P gossip layer: %v", err)
+		}
+
+		// Set local identity.
+		hostname := cfg.Node.Hostname
+		if hostname == "" {
+			hostname, _ = os.Hostname()
+		}
+		role := "agent"
+		if webMode {
+			role = "web"
+		}
+		gl.SetLocalIdentity(hostname, role)
+		gl.SetLocalCapabilities(
+			cfg.Proxy.Relay.Enabled,
+			len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
+			cfg.Proxy.SS.Port != 0,
+		)
+
+		if err := gl.Start(); err != nil {
+			log.Printf("Warning: failed to start P2P gossip layer: %v", err)
+		} else {
+			gossipLayer = gl
+			log.Printf("  P2P:       gossip active (port %d, %d seeds)",
+				cfg.Mesh.GossipPort, len(cfg.P2P.Seeds))
+		}
+
+		// Initialize and start NAT traversal (if enabled).
+		if cfg.P2P.NatTraversal {
+			natCfg := p2p.NatTraversalFromP2pConfig(p2pCfg)
+			natTraversal = p2p.NewNatTraversal(
+				natCfg,
+				wgDelegate,
+				gl.Relay(),
+				gl.Events(),
+				cfg.Mesh.Port,
+			)
+
+			// Register a join handler so that NAT traversal is initiated
+			// for each new peer discovered via gossip (§1.5 step 3).
+			gl.Events().SetJoinHandler(func(meta *p2p.NodeMeta) {
+				peerEndpoints := meta.Endpoints
+				peerNatType := p2p.NatType(meta.NatType)
+				natTraversal.InitiateConnection(meta.PublicKey, peerEndpoints, peerNatType)
+			})
+
+			// Register a leave handler to clean up NAT sessions.
+			gl.Events().SetLeaveHandler(func(peerKey string) {
+				natTraversal.RemoveConnection(peerKey)
+			})
+
+			if err := natTraversal.Start(); err != nil {
+				log.Printf("Warning: failed to start NAT traversal: %v", err)
+			} else {
+				log.Printf("  P2P:       NAT traversal active (STUN + hole-punch + relay fallback)")
+			}
+		}
+
+		defer func() {
+			if natTraversal != nil {
+				natTraversal.Stop()
+			}
+			if gossipLayer != nil {
+				gossipLayer.Stop()
+			}
+		}()
+	}
 
 	// Start the remote service management server (listens on mesh).
 	// Every node accepts service management commands from authorized peers.
@@ -287,7 +374,9 @@ func main() {
 	<-sigCh
 
 	log.Printf("Shutting down...")
-	_ = webServer // silence unused warning if not web mode
+	_ = webServer     // silence unused warning if not web mode
+	_ = gossipLayer   // silence unused warning if P2P disabled
+	_ = natTraversal  // silence unused warning if NAT traversal disabled
 }
 
 // meshDialerAdapter adapts mesh.MeshNode to the monitor.MeshDialer interface.
