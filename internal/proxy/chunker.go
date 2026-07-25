@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -31,6 +32,13 @@ var (
 	// ErrReassemblyBytesExceeded is returned when total buffered bytes
 	// across all in-progress streams exceeds MaxReassemblyBytes.
 	ErrReassemblyBytesExceeded = errors.New("proxy: reassembly byte limit exceeded")
+
+	// ErrStreamTimeout is returned when a stream's reassembly has not
+	// completed within StreamReassemblyTimeout. The caller should
+	// discard the stream and signal upstream that the circuit is dead.
+	// This prevents the relay/exit from deadlocking when chunks are
+	// lost or the entry node never sends a ChunkStreamEnd marker.
+	ErrStreamTimeout = errors.New("proxy: stream reassembly timeout")
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -264,19 +272,41 @@ type ChunkerConfig struct {
 	// a chunk would push the total above this limit, Add returns
 	// ErrReassemblyBytesExceeded. Zero means no limit.
 	MaxReassemblyBytes int
+
+	// StreamReassemblyTimeout is the maximum duration a stream may
+	// remain in-progress (not yet complete) before it is considered
+	// timed out. When ExpireStreams is called, any stream whose
+	// first-chunk timestamp is older than now - StreamReassemblyTimeout
+	// is purged and the caller receives ErrStreamTimeout for each.
+	//
+	// Zero means no timeout (streams persist indefinitely). This is
+	// appropriate for testing but MUST NOT be used in production —
+	// without a timeout, a stream that never receives its
+	// ChunkStreamEnd or all Total chunks will buffer forever,
+	// potentially causing a relay/exit deadlock.
+	StreamReassemblyTimeout time.Duration
 }
+
+// DefaultStreamReassemblyTimeout is the default maximum duration a
+// stream may remain in-progress before being considered timed out.
+// This is conservative: most legitimate streams complete in well
+// under 30 seconds. The value must be long enough to accommodate
+// legitimate retransmission delays but short enough to prevent
+// unbounded resource consumption from abandoned streams.
+const DefaultStreamReassemblyTimeout = 30 * time.Second
 
 // DefaultChunkerConfig returns a ChunkerConfig suitable for the v1
 // fixed-16KB chunking strategy with per-chunk random padding (1–4KB)
 // and production-grade reassembly bounds.
 func DefaultChunkerConfig() ChunkerConfig {
 	return ChunkerConfig{
-		MaxChunkSize:          16 * 1024,
-		MinChunkSize:          16 * 1024,
-		PaddingMin:            1024,
-		PaddingMax:            4 * 1024,
-		MaxReassemblyChunks:   DefaultMaxReassemblyChunks,
-		MaxReassemblyBytes:    DefaultMaxReassemblyBytes,
+		MaxChunkSize:            16 * 1024,
+		MinChunkSize:            16 * 1024,
+		PaddingMin:              1024,
+		PaddingMax:              4 * 1024,
+		MaxReassemblyChunks:     DefaultMaxReassemblyChunks,
+		MaxReassemblyBytes:      DefaultMaxReassemblyBytes,
+		StreamReassemblyTimeout: DefaultStreamReassemblyTimeout,
 	}
 }
 

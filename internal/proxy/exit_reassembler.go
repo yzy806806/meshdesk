@@ -40,7 +40,10 @@
 // that want streaming delivery.
 package proxy
 
-import "sort"
+import (
+	"sort"
+	"time"
+)
 
 // ExitReassembler is the exit-side streaming reassembler. It reconstructs
 // the original data stream from received chunks, delivering contiguous data
@@ -84,6 +87,11 @@ type exitStreamState struct {
 	// this field — but it's maintained unconditionally so Add works
 	// correctly regardless of which method was previously called.
 	accumulated []byte
+
+	// firstChunkAt records when the first chunk for this stream was
+	// received. Used by ExpireStreams to detect streams that have
+	// been in-progress longer than StreamReassemblyTimeout.
+	firstChunkAt time.Time
 }
 
 // NewExitReassembler creates a new ExitReassembler with the given config.
@@ -338,7 +346,8 @@ func (r *ExitReassembler) getOrCreateStream(streamID uint32) *exitStreamState {
 	st, ok := r.streams[streamID]
 	if !ok {
 		st = &exitStreamState{
-			chunks: make(map[uint32][]byte),
+			chunks:      make(map[uint32][]byte),
+			firstChunkAt: time.Now(),
 		}
 		r.streams[streamID] = st
 	}
@@ -439,10 +448,82 @@ func (r *ExitReassembler) PurgeStream(streamID uint32) {
 	r.cleanupStream(streamID)
 }
 
+// ExpireStream checks whether a single stream has exceeded the
+// StreamReassemblyTimeout and, if so, purges it.
+//
+// Returns true if the stream was expired (purged), false otherwise.
+// If StreamReassemblyTimeout is zero, no expiration is performed.
+// If the stream does not exist or is already completed, returns false.
+func (r *ExitReassembler) ExpireStream(streamID uint32, now time.Time) bool {
+	if r.cfg.StreamReassemblyTimeout <= 0 {
+		return false
+	}
+	st, ok := r.streams[streamID]
+	if !ok || st.completed {
+		return false
+	}
+	if now.Sub(st.firstChunkAt) > r.cfg.StreamReassemblyTimeout {
+		r.cleanupStream(streamID)
+		return true
+	}
+	return false
+}
+
+// ExpireStreams scans all in-progress streams and purges any whose
+// first-chunk timestamp is older than now - StreamReassemblyTimeout.
+//
+// Returns the list of expired stream IDs. The caller should signal
+// upstream (e.g. close the circuit) for each expired stream so that
+// the entry node stops sending chunks for it.
+//
+// If StreamReassemblyTimeout is zero, no expiration is performed and
+// the returned slice is nil.
+//
+// This method is the primary deadlock-prevention mechanism: if the
+// entry node crashes or a network partition prevents delivery of the
+// final ChunkStreamEnd marker, the exit-side reassembler would
+// otherwise buffer those chunks indefinitely. The relay/exit should
+// call ExpireStreams periodically (e.g. every 5 seconds) via a
+// background goroutine.
+func (r *ExitReassembler) ExpireStreams(now time.Time) []uint32 {
+	if r.cfg.StreamReassemblyTimeout <= 0 {
+		return nil
+	}
+
+	var expired []uint32
+	for streamID, st := range r.streams {
+		if st.completed {
+			continue
+		}
+		if now.Sub(st.firstChunkAt) > r.cfg.StreamReassemblyTimeout {
+			expired = append(expired, streamID)
+		}
+	}
+
+	// Purge after iteration to avoid map mutation during range.
+	for _, id := range expired {
+		r.cleanupStream(id)
+	}
+
+	return expired
+}
+
 // ActiveStreamCount returns the number of streams currently being
 // reassembled (not yet completed).
 func (r *ExitReassembler) ActiveStreamCount() int {
 	return len(r.streams)
+}
+
+// StreamAge returns the duration since the first chunk of the given
+// stream was received. This is useful for monitoring and for deciding
+// when to call ExpireStreams. Returns (0, false) if the stream does
+// not exist (never started, already completed, or already purged).
+func (r *ExitReassembler) StreamAge(streamID uint32, now time.Time) (time.Duration, bool) {
+	st, ok := r.streams[streamID]
+	if !ok {
+		return 0, false
+	}
+	return now.Sub(st.firstChunkAt), true
 }
 
 // BufferedBytes returns the total payload bytes currently buffered across
