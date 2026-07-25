@@ -3,17 +3,17 @@
 {{end}}
 {{define "content"}}
 <div class="terminal-view">
-  <div class="terminal-toolbar">
-    <span id="term-status" class="term-status disconnected">● Disconnected</span>
-    <span class="term-target">Target: {{.PeerShortID}}</span>
+  <div class="terminal-toolbar" role="toolbar" aria-label="Terminal controls">
+    <span id="term-status" class="term-status disconnected" aria-live="polite" aria-atomic="true">● Disconnected</span>
+    <span class="term-target" aria-label="Target peer">Target: {{.PeerShortID}}</span>
     <div class="term-actions">
-      <button id="term-paste" title="Paste (Ctrl+Shift+V)">📋 Paste</button>
-      <button id="term-fit" title="Fit to window">⤢ Fit</button>
-      <button id="term-clear" title="Clear screen">✕ Clear</button>
-      <button id="term-reconnect" title="Reconnect">↻ Reconnect</button>
+      <button id="term-paste" title="Paste (Ctrl+Shift+V)" aria-label="Paste clipboard content">📋 Paste</button>
+      <button id="term-fit" title="Fit to window (Ctrl+Shift+F)" aria-label="Fit terminal to window">⤢ Fit</button>
+      <button id="term-clear" title="Clear screen (Ctrl+L)" aria-label="Clear terminal screen">✕ Clear</button>
+      <button id="term-reconnect" title="Reconnect (Ctrl+Shift+R)" aria-label="Reconnect terminal session">↻ Reconnect</button>
     </div>
   </div>
-  <div id="terminal-container" data-peer="{{.PeerID}}"></div>
+  <div id="terminal-container" data-peer="{{.PeerID}}" role="application" aria-label="Terminal session to {{.PeerShortID}}" tabindex="0"></div>
 </div>
 {{end}}
 {{define "scripts"}}

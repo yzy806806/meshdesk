@@ -92,6 +92,7 @@ func New(deps Deps) (*Server, error) {
 	pageNames := []string{
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "peers.html",
+		"error.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -336,6 +337,27 @@ func (s *Server) renderPartial(w http.ResponseWriter, templateName string, data 
 		}
 	}
 	log.Printf("partial template not found: %s", templateName)
+}
+
+// errorData holds the context for the error page template.
+type errorData struct {
+	PageData
+	StatusCode int
+	StatusText string
+	Message    string
+}
+
+// renderError renders a styled error page using the error.html template.
+func (s *Server) renderError(w http.ResponseWriter, statusCode int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(statusCode)
+	data := errorData{
+		PageData:   PageData{Title: "Error", ActivePage: ""},
+		StatusCode: statusCode,
+		StatusText: http.StatusText(statusCode),
+		Message:    message,
+	}
+	s.renderPage(w, "error.html", data)
 }
 
 // --- SSE Hub Integration ---

@@ -3,29 +3,34 @@
   <h2>File Transfer</h2>
   <p>Upload files to the web server node, then push them to a target mesh node.</p>
 
-  <form id="upload-form" hx-post="/api/files/upload" hx-encoding="multipart/form-data" hx-swap="innerHTML" hx-target="#upload-result">
-    <label for="file-input">Choose file
-      <input type="file" id="file-input" name="file" required>
-    </label>
-    <label for="target-node">Target Node
-      <select id="target-node" name="target_node">
-        <option value="">Local (web server)</option>
-        {{range .Nodes}}
-        <option value="{{.NodeID}}">{{.Hostname}} ({{.ShortID}})</option>
-        {{end}}
-      </select>
-    </label>
-    <label for="dest-path">Destination Path
-      <input type="text" id="dest-path" name="dest_path" value="/tmp/" placeholder="/tmp/">
-    </label>
-    <button type="submit">Upload & Transfer</button>
-  </form>
+  <article class="upload-card">
+    <h4>New Upload</h4>
+    <form id="upload-form" class="form-inline" hx-post="/api/files/upload" hx-encoding="multipart/form-data" hx-swap="innerHTML" hx-target="#upload-result">
+      <label for="file-input">Choose file
+        <input type="file" id="file-input" name="file" required>
+      </label>
+      <label for="target-node">Target Node
+        <select id="target-node" name="target_node">
+          <option value="">Local (web server)</option>
+          {{range .Nodes}}
+          <option value="{{.NodeID}}">{{.Hostname}} ({{.ShortID}})</option>
+          {{end}}
+        </select>
+      </label>
+      <label for="dest-path">Destination Path
+        <input type="text" id="dest-path" name="dest_path" value="/tmp/" placeholder="/tmp/">
+      </label>
+      <div class="button-group">
+        <button type="submit" aria-label="Upload and transfer file">Upload & Transfer</button>
+      </div>
+    </form>
+  </article>
 
-  <div id="upload-result"></div>
+  <div id="upload-result" aria-live="polite"></div>
 
   <h3>Uploads</h3>
   <div hx-get="/api/files/list" hx-trigger="load, refresh from:body" hx-swap="innerHTML">
-    <p class="placeholder">Loading...</p>
+    <div class="skeleton skeleton-card"></div>
   </div>
 </div>
 {{end}}

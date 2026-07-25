@@ -26,6 +26,7 @@
   </div>
 
   <h3>Peer Table</h3>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -54,8 +55,10 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 
   <h3>Capability Grants</h3>
+  <div class="table-wrap">
   <table>
     <thead>
       <tr><th>Peer</th><th>Capabilities</th><th>Service Scopes</th><th>File Paths</th></tr>
@@ -73,9 +76,11 @@
       {{end}}
     </tbody>
   </table>
+  </div>
 
   {{if gt (len .Revocations) 0}}
   <h3>Revoked Peers</h3>
+  <div class="table-wrap">
   <table>
     <thead><tr><th>Peer</th><th>Revoked By</th><th>At</th><th>Reason</th></tr></thead>
     <tbody>
@@ -89,6 +94,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{end}}
 </div>
 {{end}}

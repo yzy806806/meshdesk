@@ -389,6 +389,63 @@ func TestHandleNodeDetail_NotFound(t *testing.T) {
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("Status = %d, want %d", rr.Code, http.StatusNotFound)
 	}
+
+	// Verify the error page renders styled HTML, not plain text
+	body := rr.Body.String()
+	if !strings.Contains(body, "error-card") {
+		t.Error("404 response should render styled error page with 'error-card' class")
+	}
+	if !strings.Contains(body, "Node not found") {
+		t.Error("404 response should contain error message")
+	}
+}
+
+func TestHandleNodeList_Render(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/nodes", nil)
+	rr := httptest.NewRecorder()
+
+	srv.handleNodeList(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	body := rr.Body.String()
+	// Nodes page should show "Nodes" heading, not "Mesh Overview"
+	if !strings.Contains(body, ">Nodes<") {
+		t.Error("Nodes page should have 'Nodes' heading")
+	}
+	if strings.Contains(body, "Mesh Overview") {
+		t.Error("Nodes page should not show 'Mesh Overview' heading")
+	}
+	// Should have ActiveSessions and Collecting badges
+	if !strings.Contains(body, "session-count") {
+		t.Error("Nodes page should include session-count badge")
+	}
+}
+
+func TestRenderError(t *testing.T) {
+	srv := newTestServer(t)
+
+	rr := httptest.NewRecorder()
+	srv.renderError(rr, http.StatusInternalServerError, "something broke")
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("Status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "error-card") {
+		t.Error("error page should contain 'error-card' class")
+	}
+	if !strings.Contains(body, "500") {
+		t.Error("error page should contain status code")
+	}
+	if !strings.Contains(body, "something broke") {
+		t.Error("error page should contain the error message")
+	}
 }
 
 func TestHandleLogin_GET(t *testing.T) {

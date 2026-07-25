@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="error-view">
+  <article class="error-card">
+    <header>
+      <h2>{{.StatusCode}}</h2>
+      <span class="badge status-{{if ge .StatusCode 500}}error{{else if ge .StatusCode 400}}warn{{end}}">{{.StatusText}}</span>
+    </header>
+    <p>{{.Message}}</p>
+    <footer>
+      <a href="/" role="button">← Back to Dashboard</a>
+    </footer>
+  </article>
+</div>
+{{end}}

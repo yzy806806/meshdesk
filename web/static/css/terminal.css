@@ -1,20 +1,113 @@
-/* Terminal-specific styles */
-#terminal-container {
-  background: #000;
-  border-radius: 0 0 6px 6px;
-}
+/* ═══════════════════════════════════════════════════════════════
+   MeshDesk Terminal Styles
+   Extends the design system in app.css with terminal-specific
+   styling for the xterm.js container, toolbar, and scrollbars.
+   ─────────────────────────────────────────────────────────── ═══ */
+
+/* ── Terminal container (base styles in app.css) ────────────── */
 
 #terminal-container .xterm-viewport {
   overflow-y: auto;
 }
 
-.terminal-toolbar button {
-  background: var(--pico-secondary-background);
-  border: 1px solid var(--pico-muted-border-color);
-  border-radius: 4px;
-  color: var(--pico-color);
-  transition: background 0.2s;
+/* ── Scrollbar styling (WebKit) ────────────────────────────── */
+
+#terminal-container .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
 }
+
+#terminal-container .xterm-viewport::-webkit-scrollbar-track {
+  background: #0a0a0a;
+}
+
+#terminal-container .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--md-border);
+  border-radius: 4px;
+}
+
+#terminal-container .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--md-text-muted);
+}
+
+/* Firefox scrollbar */
+#terminal-container .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--md-border) #0a0a0a;
+}
+
+/* ── Terminal toolbar buttons ──────────────────────────────── */
+
+.terminal-toolbar button {
+  background: var(--md-surface-overlay);
+  border: 1px solid var(--md-border);
+  border-radius: var(--md-radius-sm);
+  color: var(--md-text-secondary);
+  transition: background var(--md-transition-fast),
+              border-color var(--md-transition-fast),
+              color var(--md-transition-fast);
+}
+
 .terminal-toolbar button:hover {
-  background: var(--pico-primary-background);
+  background: var(--md-surface-raised);
+  border-color: var(--md-text-muted);
+  color: var(--md-text-primary);
+}
+
+.terminal-toolbar button:active {
+  transform: scale(0.96);
+}
+
+/* ── Connection spinner ────────────────────────────────────── */
+
+@keyframes term-spin {
+  to { transform: rotate(360deg); }
+}
+
+.term-spinner {
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 2px solid var(--md-warning-muted);
+  border-top-color: var(--md-warning);
+  border-radius: 50%;
+  animation: term-spin 0.7s linear infinite;
+}
+
+.term-status.connecting .term-spinner {
+  border-color: var(--md-primary-muted);
+  border-top-color: var(--md-primary);
+}
+
+/* ── Terminal focus indicator ─────────────────────────────── */
+
+.terminal-view.is-focused #terminal-container {
+  box-shadow: 0 0 0 2px var(--md-primary-border);
+}
+
+/* ── Disconnected overlay ──────────────────────────────────── */
+
+.term-disconnected-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(4px);
+  z-index: 10;
+  border-radius: 0 0 var(--md-radius-lg) var(--md-radius-lg);
+}
+
+.term-disconnected-overlay .term-overlay-content {
+  text-align: center;
+  color: var(--md-text-secondary);
+}
+
+.term-disconnected-overlay .term-overlay-content p {
+  margin: 0 0 var(--md-space-4);
+  font-size: var(--md-text-sm);
+}
+
+.term-disconnected-overlay .term-overlay-content button {
+  margin: 0 auto;
 }

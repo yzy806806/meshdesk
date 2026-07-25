@@ -12,38 +12,63 @@
       </select>
     </label>
     <label for="service-name">Service
-      <input type="text" id="service-name" name="service" placeholder="nginx" list="service-list">
-      <datalist id="service-list">
+      <input type="text" id="service-name" name="service" placeholder="nginx" list="service-suggestions">
+      <datalist id="service-suggestions">
         {{range .Services}}
         <option value="{{.Name}}">
         {{end}}
       </datalist>
     </label>
     <div class="button-group">
-      <button type="button" onclick="serviceAction('start')">Start</button>
-      <button type="button" onclick="serviceAction('stop')" class="secondary">Stop</button>
-      <button type="button" onclick="serviceAction('restart')" class="contrast">Restart</button>
+      <button type="button" onclick="serviceAction('start')" class="success" aria-label="Start service">Start</button>
+      <button type="button" onclick="serviceAction('stop')" class="contrast" aria-label="Stop service">Stop</button>
+      <button type="button" onclick="serviceAction('restart')" class="secondary" aria-label="Restart service">Restart</button>
     </div>
   </form>
 
   <h3>Services</h3>
   <div id="service-list" hx-get="/api/services/list" hx-trigger="load, refresh from:body" hx-swap="innerHTML">
-    <p class="placeholder">Loading services...</p>
+    <div class="skeleton skeleton-card"></div>
   </div>
 </div>
 
 <script>
+function showToast(message, type) {
+  var container = document.querySelector('.toast-container');
+  if (!container) {
+    container = document.createElement('div');
+    container.className = 'toast-container';
+    document.body.appendChild(container);
+  }
+  var toast = document.createElement('div');
+  toast.className = 'toast ' + (type || 'info');
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(function() {
+    toast.classList.add('removing');
+    setTimeout(function() {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 300);
+  }, 4000);
+}
+
 function serviceAction(action) {
-  const node = document.getElementById('service-node').value;
-  const service = document.getElementById('service-name').value;
-  if (!service) { alert('Enter a service name'); return; }
+  var node = document.getElementById('service-node').value;
+  var service = document.getElementById('service-name').value;
+  if (!service) {
+    showToast('Enter a service name', 'warning');
+    document.getElementById('service-name').focus();
+    return;
+  }
   fetch('/api/services/' + action, {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     body: 'node=' + encodeURIComponent(node) + '&service=' + encodeURIComponent(service)
-  }).then(r => r.text()).then(msg => {
+  }).then(function(r) { return r.text(); }).then(function(msg) {
     htmx.trigger(document.body, 'refresh');
-    alert(msg);
+    showToast(msg, msg.indexOf('error') >= 0 || msg.indexOf('fail') >= 0 ? 'error' : 'success');
+  }).catch(function(err) {
+    showToast('Request failed: ' + err.message, 'error');
   });
 }
 </script>

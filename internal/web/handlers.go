@@ -166,12 +166,16 @@ func (s *Server) handleNodeList(w http.ResponseWriter, r *http.Request) {
 	nodes := s.buildNodeCards()
 	data := struct {
 		PageData
-		Nodes     []NodeCardData
-		NodeCount int
+		Nodes          []NodeCardData
+		NodeCount      int
+		ActiveSessions int
+		Collecting     bool
 	}{
-		PageData:  PageData{Title: "Nodes", ActivePage: "nodes"},
-		Nodes:     nodes,
-		NodeCount: len(nodes),
+		PageData:       PageData{Title: "Nodes", ActivePage: "nodes"},
+		Nodes:          nodes,
+		NodeCount:      len(nodes),
+		ActiveSessions: s.activeSessionCount(),
+		Collecting:     s.monitorStore != nil && s.monitorStore.NodeCount() > 0,
 	}
 	s.renderPage(w, "dashboard.html", data)
 }
@@ -186,7 +190,7 @@ func (s *Server) handleNodeDetail(w http.ResponseWriter, r *http.Request) {
 
 	metrics := s.monitorStore.Latest(nodeID)
 	if metrics == nil {
-		http.Error(w, "Node not found or no metrics available", http.StatusNotFound)
+		s.renderError(w, http.StatusNotFound, "Node not found or no metrics available for: "+nodeID)
 		return
 	}
 

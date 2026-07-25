@@ -1,15 +1,15 @@
 {{define "content"}}
 <div class="dashboard">
   <header>
-    <h2>Mesh Overview</h2>
-    <div class="cluster-stats">
+    <h2>{{if eq .Title "Nodes"}}Nodes{{else}}Mesh Overview{{end}}</h2>
+    <div class="cluster-stats" aria-label="Cluster statistics">
       <span class="badge"><strong id="node-count">{{.NodeCount}}</strong> nodes</span>
       <span class="badge"><strong id="session-count">{{.ActiveSessions}}</strong> sessions</span>
       <span class="badge" id="collector-status">{{if .Collecting}}collector active{{else}}agent-only{{end}}</span>
     </div>
   </header>
 
-  <div class="grid" id="node-grid" hx-get="/api/dashboard/partial" hx-trigger="sse:metrics" hx-swap="innerHTML">
+  <div class="grid" id="node-grid" hx-get="/api/dashboard/partial" hx-trigger="sse:metrics" hx-swap="innerHTML" role="region" aria-label="Node cards" aria-live="polite">
     {{template "node-cards" .}}
   </div>
 </div>
@@ -25,12 +25,12 @@
   <div class="metrics-grid">
     <div class="metric">
       <label>CPU</label>
-      <div class="bar"><div class="bar-fill {{cpuClass .CPUUsage}}" style="width:{{printf "%.0f" .CPUUsage}}%"></div></div>
+      <div class="bar" role="progressbar" aria-valuenow="{{printf "%.0f" .CPUUsage}}" aria-valuemin="0" aria-valuemax="100"><div class="bar-fill {{cpuClass .CPUUsage}}" style="width:{{printf "%.0f" .CPUUsage}}%"></div></div>
       <span>{{printf "%.1f" .CPUUsage}}%</span>
     </div>
     <div class="metric">
       <label>Memory</label>
-      <div class="bar"><div class="bar-fill {{memClass .MemUsage}}" style="width:{{printf "%.0f" .MemUsage}}%"></div></div>
+      <div class="bar" role="progressbar" aria-valuenow="{{printf "%.0f" .MemUsage}}" aria-valuemin="0" aria-valuemax="100"><div class="bar-fill {{memClass .MemUsage}}" style="width:{{printf "%.0f" .MemUsage}}%"></div></div>
       <span>{{humanBytes .MemUsed}} / {{humanBytes .MemTotal}}</span>
     </div>
     <div class="metric">

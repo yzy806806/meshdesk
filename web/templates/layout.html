@@ -4,6 +4,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0d1117">
   <title>{{.Title}} — MeshDesk</title>
   <link rel="stylesheet" href="/static/css/pico.min.css">
   <link rel="stylesheet" href="/static/css/xterm.css">
@@ -11,25 +12,35 @@
   {{block "head" .}}{{end}}
 </head>
 <body>
-  <nav class="container-fluid topnav">
+  <a href="#main-content" class="skip-link">Skip to content</a>
+  {{if eq .ActivePage "login"}}
+  {{else}}
+  <nav class="container-fluid topnav" role="navigation" aria-label="Main navigation">
     <ul>
-      <li><strong>⟁ MeshDesk</strong></li>
+      <li><strong aria-label="MeshDesk home">⟁ MeshDesk</strong></li>
     </ul>
     <ul>
-      <li><a href="/" class="{{if eq .ActivePage "dashboard"}}active{{end}}">Dashboard</a></li>
-      <li><a href="/nodes" class="{{if eq .ActivePage "nodes"}}active{{end}}">Nodes</a></li>
-      <li><a href="/peers" class="{{if eq .ActivePage "peers"}}active{{end}}">Peers</a></li>
-      <li><a href="/files" class="{{if eq .ActivePage "files"}}active{{end}}">Files</a></li>
-      <li><a href="/services" class="{{if eq .ActivePage "services"}}active{{end}}">Services</a></li>
+      <li><a href="/" class="{{if eq .ActivePage "dashboard"}}active{{end}}"{{if eq .ActivePage "dashboard"}} aria-current="page"{{end}}>Dashboard</a></li>
+      <li><a href="/nodes" class="{{if eq .ActivePage "nodes"}}active{{end}}"{{if eq .ActivePage "nodes"}} aria-current="page"{{end}}>Nodes</a></li>
+      <li><a href="/peers" class="{{if eq .ActivePage "peers"}}active{{end}}"{{if eq .ActivePage "peers"}} aria-current="page"{{end}}>Peers</a></li>
+      <li><a href="/files" class="{{if eq .ActivePage "files"}}active{{end}}"{{if eq .ActivePage "files"}} aria-current="page"{{end}}>Files</a></li>
+      <li><a href="/services" class="{{if eq .ActivePage "services"}}active{{end}}"{{if eq .ActivePage "services"}} aria-current="page"{{end}}>Services</a></li>
     </ul>
     <ul>
-      <li><a href="/logout" title="Logout">⏻</a></li>
+      <li><a href="/logout" title="Logout" aria-label="Logout">⏻</a></li>
     </ul>
   </nav>
+  {{end}}
 
-  <main class="container-fluid">
+  <main class="container-fluid{{if eq .ActivePage "login"}} login-main{{end}}" id="main-content">
     {{block "content" .}}{{end}}
   </main>
+
+  {{if ne .ActivePage "login"}}
+  <footer class="container-fluid site-footer">
+    <small>⟁ MeshDesk — Mesh VPN Management Console</small>
+  </footer>
+  {{end}}
 
   <script src="/static/js/htmx.min.js"></script>
   {{block "scripts" .}}{{end}}
