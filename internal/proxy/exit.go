@@ -1004,6 +1004,11 @@ func (e *ExitNode) ForwardTargetToEntry(ctx context.Context, circuitID string, e
 				chunk.Sequence = seq
 				seq++
 
+				// Streaming mode: each Split() call produces a partial
+				// batch of chunks, not the full stream. Reset Total to 0
+				// so the reassembler does not prematurely signal completion.
+				chunk.Total = 0
+
 				// Determine the path to send on.
 				pathIdx := circuit.pathTracker.FastestPath()
 

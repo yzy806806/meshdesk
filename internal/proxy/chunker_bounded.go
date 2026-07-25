@@ -82,6 +82,16 @@ func newBoundedChunker(cfg ChunkerConfig) *boundedChunker {
 // maxSize (uniform sizing), bypassing the Pareto sampler. This is the
 // debug/testing mode required by CHUNKER_CONTRACT.md §6.5 — it must NOT
 // be enabled in production.
+//
+// Total is set to len(chunks) after production so the exit-side
+// Reassembler knows how many chunks to expect without waiting for a
+// ChunkStreamEnd marker. This prevents the reassembler from waiting
+// forever when the full data buffer is split in one call (buffered mode).
+//
+// In streaming mode (where Split is called incrementally with partial
+// data), the caller MUST set chunk.Total = 0 on each chunk to preserve
+// streaming semantics — otherwise each batch would carry a Total
+// reflecting only that batch's chunk count, not the stream's total.
 func (c *boundedChunker) Split(data []byte) []Chunk {
 	if len(data) == 0 {
 		return nil
@@ -132,6 +142,18 @@ func (c *boundedChunker) Split(data []byte) []Chunk {
 		chunks = append(chunks, chunk)
 		c.nextSeq++
 		offset += chunkSize
+	}
+
+	// Set Total on all chunks: prefer explicitly-set total (via SetTotal)
+	// when available; otherwise use the actual chunk count so the
+	// Reassembler knows the expected count for this data. This prevents
+	// the reassembler from waiting forever when the full data buffer is
+	// split in one call.
+	if !c.totalSet && len(chunks) > 0 {
+		computedTotal := uint32(len(chunks))
+		for i := range chunks {
+			chunks[i].Total = computedTotal
+		}
 	}
 
 	return chunks

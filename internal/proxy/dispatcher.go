@@ -200,6 +200,11 @@ func (d *Dispatcher) Run(ctx context.Context, sendChunk func(path int, wc *WireC
 				d.nextSeq++
 				d.mu.Unlock()
 
+				// Streaming mode: each Split() call produces a partial
+				// batch of chunks, not the full stream. Reset Total to 0
+				// so the reassembler does not prematurely signal completion.
+				chunk.Total = 0
+
 				// Select path (round-robin for v1).
 				pathIdx := pathToggle % 2
 				pathToggle++

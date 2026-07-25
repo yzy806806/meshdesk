@@ -45,12 +45,29 @@ func newFixedChunker(cfg ChunkerConfig) *fixedChunker {
 // Split divides data into chunks of exactly cfg.MaxChunkSize bytes.
 // The last chunk may be smaller if len(data) is not a multiple of
 // MaxChunkSize. Empty input produces no chunks.
+//
+// Total is computed as ceil(len(data) / MaxChunkSize) so the exit-side
+// Reassembler knows how many chunks to expect without waiting for a
+// ChunkStreamEnd marker. This prevents the reassembler from waiting
+// forever or erroring on final partial chunks when the full data
+// buffer is split in one call (buffered mode).
+//
+// In streaming mode (where Split is called incrementally with partial
+// data), the caller MUST set chunk.Total = 0 on each chunk to preserve
+// streaming semantics — otherwise each batch would carry a Total
+// reflecting only that batch's chunk count, not the stream's total.
 func (c *fixedChunker) Split(data []byte) []Chunk {
 	if len(data) == 0 {
 		return nil
 	}
 
 	maxSize := c.cfg.MaxChunkSize
+
+	// Compute total chunk count: ceil(len(data) / maxSize).
+	// This lets the Reassembler detect completion when all 0..Total-1
+	// chunks have arrived, without needing a ChunkStreamEnd marker.
+	computedTotal := uint32((len(data) + maxSize - 1) / maxSize)
+
 	var chunks []Chunk
 
 	for offset := 0; offset < len(data); {
@@ -75,8 +92,13 @@ func (c *fixedChunker) Split(data []byte) []Chunk {
 			}
 		}
 
+		// Set Total: prefer explicitly-set total (via SetTotal) when
+		// available; otherwise use the computed value so the
+		// Reassembler knows the expected chunk count for this data.
 		if c.totalSet {
 			chunk.Total = c.total
+		} else {
+			chunk.Total = computedTotal
 		}
 
 		chunks = append(chunks, chunk)
