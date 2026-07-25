@@ -13,6 +13,8 @@ import (
 	"os/user"
 	"strings"
 	"sync"
+	"syscall"
+	"unsafe"
 
 	"github.com/creack/pty"
 	"golang.org/x/crypto/ssh"
@@ -200,6 +202,7 @@ func (s *SSHServer) handleConn(conn net.Conn) {
 // It handles pty-req, shell/exec, window-change (SIGWINCH), and environment requests.
 func (s *SSHServer) handleSession(sshConn ssh.Conn, channel ssh.Channel, requests <-chan *ssh.Request) {
 	var ptyFile *os.File
+	var ptyFD int
 	var cmd *exec.Cmd
 	var closeOnce sync.Once
 	var shellStarted bool
@@ -241,6 +244,12 @@ func (s *SSHServer) handleSession(sshConn ssh.Conn, channel ssh.Channel, request
 				continue
 			}
 			ptyFile = c.ptyFile
+			// Capture the raw FD once while no goroutines are touching
+			// ptyFile. Using the FD directly in window-change below
+			// avoids the data race between pty.Setsize (which calls
+			// os.File.Fd()) and the io.Copy goroutines that read/write
+			// the same *os.File.
+			ptyFD = int(ptyFile.Fd())
 			cmd = c.cmd
 			req.Reply(true, nil)
 
@@ -274,10 +283,7 @@ func (s *SSHServer) handleSession(sshConn ssh.Conn, channel ssh.Channel, request
 			if ptyFile != nil {
 				var wc windowChangeMsg
 				if err := ssh.Unmarshal(req.Payload, &wc); err == nil {
-					pty.Setsize(ptyFile, &pty.Winsize{
-						Cols: uint16(wc.Columns),
-						Rows: uint16(wc.Rows),
-					})
+					setPtySize(ptyFD, int(wc.Rows), int(wc.Columns))
 				}
 			}
 			req.Reply(true, nil)
@@ -407,4 +413,28 @@ func (s *ptySession) close() {
 			s.sshConn.Close()
 		}
 	})
+}
+
+// setPtySize issues a TIOCSWINSZ ioctl on the given FD to set the
+// PTY window size. It uses the raw FD directly instead of
+// pty.Setsize(*os.File) to avoid the data race between
+// os.File.Fd() (called by pty.Setsize) and concurrent io.Copy
+// goroutines that read/write the same *os.File.
+func setPtySize(fd, rows, cols int) {
+	var ws struct {
+		Row    uint16
+		Col    uint16
+		Xpixel uint16
+		Ypixel uint16
+	}
+	ws.Row = uint16(rows)
+	ws.Col = uint16(cols)
+	const TIOCSWINSZ = 0x5414 // syscall.TIOCSWINSZ on Linux
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		uintptr(fd),
+		uintptr(TIOCSWINSZ),
+		uintptr(unsafe.Pointer(&ws)),
+	)
+	_ = errno
 }

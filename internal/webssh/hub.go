@@ -99,6 +99,7 @@ type Session struct {
 	cancel    context.CancelFunc
 	closeOnce sync.Once
 	mu        sync.Mutex
+	ioWG      sync.WaitGroup // tracks wsToSSH + sshToWS goroutines
 	cols      int
 	rows      int
 }
@@ -116,19 +117,27 @@ func (h *Hub) HandleWebSocket(ctx context.Context, ws *websocket.Conn, peerID st
 		rows = 24
 	}
 
+	// Create session context before registration so cancel is set
+	// before the session is visible to CloseAll().
+	sessionCtx, cancel := context.WithCancel(ctx)
+
 	sess := &Session{
-		ID:     generateSessionID(),
-		PeerID: peerID,
-		ws:     ws,
-		hub:    h,
-		cols:   cols,
-		rows:   rows,
+		ID:        generateSessionID(),
+		PeerID:    peerID,
+		ws:        ws,
+		hub:       h,
+		cancel:    cancel,
+		closeOnce: sync.Once{},
+		mu:        sync.Mutex{},
+		cols:      cols,
+		rows:      rows,
 	}
 
 	// Enforce max sessions
 	h.mu.Lock()
 	if len(h.sessions) >= h.maxSessions {
 		h.mu.Unlock()
+		cancel()
 		h.sendError(ws, "maximum concurrent sessions reached")
 		ws.Close()
 		return
@@ -162,7 +171,11 @@ func (h *Hub) HandleWebSocket(ctx context.Context, ws *websocket.Conn, peerID st
 		h.sendError(ws, fmt.Sprintf("cannot connect to %s: %v", meshIP, err))
 		return
 	}
+	// Protect the remote assignment with sess.mu so CloseAll() can safely
+	// read sess.remote concurrently.
+	sess.mu.Lock()
 	sess.remote = remote
+	sess.mu.Unlock()
 
 	// Send "connected" status
 	connectedMsg, _ := NewConnectedMessage(peerID, meshIP, cols, rows)
@@ -170,11 +183,8 @@ func (h *Hub) HandleWebSocket(ctx context.Context, ws *websocket.Conn, peerID st
 
 	h.sendStatus(ws, StatusConnected, fmt.Sprintf("Connected to %s via mesh", shortID(peerID)))
 
-	// Run the bridge
-	sessionCtx, cancel := context.WithCancel(ctx)
-	sess.cancel = cancel
+	// Run the bridge — sessionCtx and cancel were created before registration.
 	defer cancel()
-
 	h.bridge(sessionCtx, sess)
 }
 
@@ -183,15 +193,20 @@ func (h *Hub) HandleWebSocket(ctx context.Context, ws *websocket.Conn, peerID st
 func (h *Hub) bridge(ctx context.Context, sess *Session) {
 	done := make(chan struct{}, 2)
 
+	// Track I/O goroutines so close() can wait for them to drain.
+	sess.ioWG.Add(2)
+
 	// wsToSSH: read WebSocket messages, dispatch to SSH stdin / resize
 	go func() {
 		defer func() { done <- struct{}{} }()
+		defer sess.ioWG.Done()
 		h.wsToSSH(ctx, sess)
 	}()
 
 	// sshToWS: read SSH stdout, write as output messages to WebSocket
 	go func() {
 		defer func() { done <- struct{}{} }()
+		defer sess.ioWG.Done()
 		h.sshToWS(ctx, sess)
 	}()
 
@@ -333,17 +348,29 @@ func (h *Hub) CloseAll() {
 }
 
 // close tears down the session: closes SSH connection and WebSocket.
+// It waits for I/O goroutines to drain before returning so that
+// CloseAll() callers can be sure no goroutine is accessing the
+// connection FDs after close() returns.
 func (s *Session) close() {
 	s.closeOnce.Do(func() {
 		if s.cancel != nil {
 			s.cancel()
 		}
-		if s.remote != nil {
-			s.remote.Close()
+
+		s.mu.Lock()
+		remote := s.remote
+		s.mu.Unlock()
+		if remote != nil {
+			remote.Close()
 		}
 		if s.ws != nil {
 			s.ws.Close()
 		}
+
+		// Wait for I/O goroutines to finish accessing conn/remote.
+		// They exit promptly after cancel() fires (ctx.Done) or after
+		// the close above causes their read/write to error out.
+		s.ioWG.Wait()
 	})
 }
 
