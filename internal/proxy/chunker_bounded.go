@@ -77,6 +77,11 @@ func newBoundedChunker(cfg ChunkerConfig) *boundedChunker {
 // independently sampled from a truncated Pareto distribution in
 // [minSize, maxSize]. The final chunk may be smaller than the sampled
 // size if insufficient data remains.
+//
+// When cfg.DebugFixedSizes is true, all chunks are produced at exactly
+// maxSize (uniform sizing), bypassing the Pareto sampler. This is the
+// debug/testing mode required by CHUNKER_CONTRACT.md §6.5 — it must NOT
+// be enabled in production.
 func (c *boundedChunker) Split(data []byte) []Chunk {
 	if len(data) == 0 {
 		return nil
@@ -86,14 +91,19 @@ func (c *boundedChunker) Split(data []byte) []Chunk {
 	offset := 0
 
 	for offset < len(data) {
-		chunkSize := c.sampleParetoSize()
+		var chunkSize int
+		if c.cfg.DebugFixedSizes {
+			// Debug mode: force uniform chunk sizing at maxSize.
+			chunkSize = c.maxSize
+		} else {
+			chunkSize = c.sampleParetoSize()
+		}
 		// Clamp to remaining data.
 		remaining := len(data) - offset
 		if chunkSize > remaining {
 			chunkSize = remaining
 		}
-		// Ensure minimum chunk size unless this is the last chunk
-		// and remaining data is less than minSize.
+		// Ensure minimum chunk size of 1 byte (never produce size-0 chunks).
 		if chunkSize < 1 {
 			chunkSize = 1
 		}

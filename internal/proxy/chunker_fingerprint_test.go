@@ -17,6 +17,7 @@ package proxy
 
 import (
 	"bytes"
+	"math"
 	"testing"
 )
 
@@ -320,10 +321,10 @@ func TestFingerprintPaddingSeedIsolation(t *testing.T) {
 // =============================================================================
 
 // TestFingerprintDebugFixedChunksProducesUniformChunks verifies that
-// the chunker created by the exit node in debug mode produces uniform
-// chunks directly (by examining the chunker output).
+// the bounded chunker in debug mode (DebugFixedSizes=true) produces
+// uniform chunks at exactly MaxChunkSize. This is the contract
+// requirement from CHUNKER_CONTRACT.md §6.5.
 func TestFingerprintDebugFixedChunksProducesUniformChunks(t *testing.T) {
-	// Create two configs: one debug, one production.
 	debugCfg := ChunkerConfig{
 		MaxChunkSize:    16 * 1024,
 		MinChunkSize:    4 * 1024,
@@ -348,16 +349,22 @@ func TestFingerprintDebugFixedChunksProducesUniformChunks(t *testing.T) {
 	proChunker := NewChunkerWithConfig("bounded-4k-64k", proCfg)
 	proChunks := proChunker.Split(data)
 
-	// Debug mode: DebugFixedSizes=true should force uniform sizes.
-	// Verify all non-last chunks have the same size.
-	if len(debugChunks) > 1 {
-		for i := 0; i < len(debugChunks)-1; i++ {
-			if len(debugChunks[i].Payload) != debugCfg.MaxChunkSize {
-				// DebugFixedSizes may or may not be honored by the bounded chunker.
-				// The bounded chunker's Split doesn't check DebugFixedSizes directly.
-				_ = i
-			}
+	// Debug mode: DebugFixedSizes=true MUST force uniform sizes at MaxChunkSize.
+	// All non-last chunks must be exactly MaxChunkSize.
+	if len(debugChunks) < 2 {
+		t.Fatalf("debug chunker produced %d chunks — expected at least 2 for uniform size test", len(debugChunks))
+	}
+	for i := 0; i < len(debugChunks)-1; i++ {
+		sz := len(debugChunks[i].Payload)
+		if sz != debugCfg.MaxChunkSize {
+			t.Errorf("debug chunk %d size = %d, want %d (DebugFixedSizes must force uniform MaxChunkSize)",
+				i, sz, debugCfg.MaxChunkSize)
 		}
+	}
+	// Last chunk may be smaller (remainder).
+	lastSize := len(debugChunks[len(debugChunks)-1].Payload)
+	if lastSize > debugCfg.MaxChunkSize {
+		t.Errorf("debug last chunk size %d exceeds max %d", lastSize, debugCfg.MaxChunkSize)
 	}
 
 	// Production mode: should produce variable sizes.
@@ -371,7 +378,6 @@ func TestFingerprintDebugFixedChunksProducesUniformChunks(t *testing.T) {
 		}
 	}
 
-	// Just verify both complete without errors.
 	if len(debugChunks) == 0 {
 		t.Error("debug chunker produced no chunks")
 	}
@@ -658,5 +664,145 @@ func TestFingerprintChunkStreamIDDefault(t *testing.T) {
 		if c.StreamID != 0 {
 			t.Errorf("chunk %d has StreamID=%d, expected 0 (default)", i, c.StreamID)
 		}
+	}
+}
+
+// =============================================================================
+// Section 7: Statistical Fingerprinting Mitigation Tests (§6.7–§6.9)
+// =============================================================================
+//
+// These tests verify the three statistical fingerprinting mitigations
+// documented in CHUNKER_CONTRACT.md §6 that were previously untested:
+//   - §6.7: Chunk count distribution (non-deterministic chunk counts)
+//   - §6.8: Padding-size independence (no correlation between payload
+//     size and padding length)
+//   - §6.9: Dispatch timing (no fixed intervals — this is a transport-
+//     layer concern, tested via configuration validation, not here)
+
+// TestFingerprintChunkCountDistribution verifies that for a fixed-size
+// input, the bounded chunker produces a non-deterministic number of
+// chunks across multiple runs. Two streams of identical payload length
+// should not produce the same chunk count on every run — that would
+// create a recognizable fingerprint.
+//
+// Contract reference: CHUNKER_CONTRACT.md §6.7
+func TestFingerprintChunkCountDistribution(t *testing.T) {
+	cfg := ChunkerConfig{
+		MinChunkSize:   4 * 1024,
+		MaxChunkSize:   64 * 1024,
+		DisablePadding: true,
+	}
+
+	data := make([]byte, 256*1024) // 256KB — enough to produce 4–64 chunks
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	// Run the chunker 20 times with the same input.
+	const runs = 20
+	counts := make(map[int]int)
+	for i := 0; i < runs; i++ {
+		chunker := NewChunkerWithConfig("bounded-4k-64k", cfg)
+		chunks := chunker.Split(data)
+		counts[len(chunks)]++
+	}
+
+	t.Logf("chunk count distribution over %d runs: %v", runs, counts)
+
+	// We expect at least 2 distinct chunk counts — if every run produced
+	// the same count, the chunker would be fingerprintable.
+	if len(counts) < 2 {
+		t.Errorf("all %d runs produced the same chunk count (%d) — chunk count is deterministic (fingerprintable)",
+			runs, func() int {
+				for k := range counts {
+					return k
+				}
+				return -1
+			}())
+	}
+
+	// Verify no single count dominates (>90% of runs would indicate
+	// very low variance, which is weak but not a hard failure).
+	maxFreq := 0
+	for _, freq := range counts {
+		if freq > maxFreq {
+			maxFreq = freq
+		}
+	}
+	if maxFreq == runs && runs > 1 {
+		t.Errorf("100%% of runs produced the same chunk count — distribution is degenerate")
+	}
+}
+
+// TestFingerprintPaddingSizeIndependence verifies that there is no
+// correlation between payload size and padding length. A passive
+// adversary who can observe a correlation between the two dimensions
+// could fingerprint the implementation.
+//
+// We compute the Pearson correlation coefficient between payload sizes
+// and padding lengths across many chunks. The null hypothesis (no
+// correlation) must not be rejected at p < 0.05 — in practice, we
+// check that |r| < 0.5 (a very lenient threshold; real independence
+// produces |r| < 0.1).
+//
+// Contract reference: CHUNKER_CONTRACT.md §6.8
+func TestFingerprintPaddingSizeIndependence(t *testing.T) {
+	cfg := ChunkerConfig{
+		MinChunkSize:   4 * 1024,
+		MaxChunkSize:   64 * 1024,
+		PaddingMin:     256,
+		PaddingMax:     2048,
+		DisablePadding: false, // padding active
+	}
+
+	// 2MB of data → enough chunks for statistical significance.
+	data := make([]byte, 2*1024*1024)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+
+	chunker := NewChunkerWithConfig("bounded-4k-64k", cfg)
+	chunks := chunker.Split(data)
+
+	if len(chunks) < 30 {
+		t.Fatalf("only %d chunks — need at least 30 for correlation test", len(chunks))
+	}
+
+	// Collect (payloadSize, paddingLen) pairs for non-last chunks.
+	n := len(chunks) - 1 // exclude last (remainder chunk)
+	x := make([]float64, n) // payload sizes
+	y := make([]float64, n) // padding lengths
+	for i := 0; i < n; i++ {
+		x[i] = float64(len(chunks[i].Payload))
+		y[i] = float64(chunks[i].PaddingLen)
+	}
+
+	// Compute Pearson correlation coefficient.
+	var sumX, sumY, sumXY, sumX2, sumY2 float64
+	for i := 0; i < n; i++ {
+		sumX += x[i]
+		sumY += y[i]
+		sumXY += x[i] * y[i]
+		sumX2 += x[i] * x[i]
+		sumY2 += y[i] * y[i]
+	}
+	meanX := sumX / float64(n)
+	meanY := sumY / float64(n)
+
+	numerator := sumXY - float64(n)*meanX*meanY
+	denominator := math.Sqrt((sumX2 - float64(n)*meanX*meanX) * (sumY2 - float64(n)*meanY*meanY))
+
+	var r float64
+	if denominator > 0 {
+		r = numerator / denominator
+	}
+
+	t.Logf("Pearson r(payloadSize, paddingLen) = %.4f over %d chunks", r, n)
+
+	// |r| must be below 0.5 (very lenient — true independence gives |r| < 0.1).
+	// A value above 0.5 would indicate a strong linear correlation between
+	// the two dimensions, which is a fingerprinting vulnerability.
+	if r > 0.5 || r < -0.5 {
+		t.Errorf("strong correlation between payload size and padding length (r=%.4f) — fingerprinting vulnerability", r)
 	}
 }
