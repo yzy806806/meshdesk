@@ -178,3 +178,104 @@ func TestTransferConfigCustomValues(t *testing.T) {
 		t.Errorf("UploadDir = %q, want %q", loaded.Transfer.UploadDir, "/custom/uploads")
 	}
 }
+
+// TestProxyConfigDefaults verifies that the proxy config defaults
+// are populated when loading a config without proxy settings.
+func TestProxyConfigDefaults(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	// Save a minimal config — no proxy section.
+	original := &Config{
+		Node: NodeConfig{Hostname: "test"},
+		Mesh: MeshConfig{Port: 51820},
+	}
+
+	if err := Save(path, original); err != nil {
+		t.Fatalf("Save error: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	// Verify proxy defaults.
+	if loaded.Proxy.ChunkerStrategy != "bounded-4k-64k" {
+		t.Errorf("ChunkerStrategy = %q, want %q", loaded.Proxy.ChunkerStrategy, "bounded-4k-64k")
+	}
+	if loaded.Proxy.Circuit.IdleTimeout != 300 {
+		t.Errorf("IdleTimeout = %d, want 300", loaded.Proxy.Circuit.IdleTimeout)
+	}
+	if loaded.Proxy.Circuit.KeepaliveInterval != 30 {
+		t.Errorf("KeepaliveInterval = %d, want 30", loaded.Proxy.Circuit.KeepaliveInterval)
+	}
+	if loaded.Proxy.Circuit.NACKTimeout != 5 {
+		t.Errorf("NACKTimeout = %d, want 5", loaded.Proxy.Circuit.NACKTimeout)
+	}
+	if loaded.Proxy.Circuit.OrphanTimeout != 30 {
+		t.Errorf("OrphanTimeout = %d, want 30", loaded.Proxy.Circuit.OrphanTimeout)
+	}
+	if loaded.Proxy.Circuit.MaxReassemblyWindow != 256 {
+		t.Errorf("MaxReassemblyWindow = %d, want 256", loaded.Proxy.Circuit.MaxReassemblyWindow)
+	}
+	if len(loaded.Proxy.Exit.AllowedPorts) != 2 {
+		t.Errorf("AllowedPorts length = %d, want 2", len(loaded.Proxy.Exit.AllowedPorts))
+	}
+	if loaded.Proxy.Exit.AllowedPorts[0] != 80 || loaded.Proxy.Exit.AllowedPorts[1] != 443 {
+		t.Errorf("AllowedPorts = %v, want [80 443]", loaded.Proxy.Exit.AllowedPorts)
+	}
+	if loaded.Proxy.Exit.AuditRetentionDays != 7 {
+		t.Errorf("AuditRetentionDays = %d, want 7", loaded.Proxy.Exit.AuditRetentionDays)
+	}
+}
+
+// TestProxyConfigCustomValues verifies custom proxy config values
+// are preserved through save/load.
+func TestProxyConfigCustomValues(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	original := &Config{
+		Node: NodeConfig{Hostname: "test"},
+		Mesh: MeshConfig{Port: 51820},
+		Proxy: ProxyConfig{
+			ChunkerStrategy: "fixed-16k",
+			Circuit: CircuitLifecycleConfig{
+				IdleTimeout:         600,
+				KeepaliveInterval:   60,
+				NACKTimeout:         10,
+				OrphanTimeout:       60,
+				MaxReassemblyWindow: 512,
+			},
+			Exit: ExitConfig{
+				AllowedPorts:       []int{80, 443, 22},
+				AllowAllPorts:      false,
+				AuditLogDir:        "/var/log/meshdesk/exit-audit",
+				AuditRetentionDays: 14,
+			},
+		},
+	}
+
+	if err := Save(path, original); err != nil {
+		t.Fatalf("Save error: %v", err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if loaded.Proxy.ChunkerStrategy != "fixed-16k" {
+		t.Errorf("ChunkerStrategy = %q, want %q", loaded.Proxy.ChunkerStrategy, "fixed-16k")
+	}
+	if loaded.Proxy.Circuit.IdleTimeout != 600 {
+		t.Errorf("IdleTimeout = %d, want 600", loaded.Proxy.Circuit.IdleTimeout)
+	}
+	if len(loaded.Proxy.Exit.AllowedPorts) != 3 {
+		t.Errorf("AllowedPorts length = %d, want 3", len(loaded.Proxy.Exit.AllowedPorts))
+	}
+	if loaded.Proxy.Exit.AuditLogDir != "/var/log/meshdesk/exit-audit" {
+		t.Errorf("AuditLogDir = %q, want %q", loaded.Proxy.Exit.AuditLogDir, "/var/log/meshdesk/exit-audit")
+	}
+}

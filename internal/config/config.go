@@ -16,6 +16,91 @@ type Config struct {
 	WebSSH     WebSSHConfig     `yaml:"webssh"`
 	Auth       AuthConfig       `yaml:"auth"`
 	Transfer   TransferConfig   `yaml:"transfer"`
+	Proxy      ProxyConfig      `yaml:"proxy,omitempty"`
+}
+
+// ProxyConfig holds settings for the anonymous proxy subsystem
+// (multi-path dispersed transport). See docs/PROXY_DESIGN.md.
+type ProxyConfig struct {
+	// SS holds the Shadowsocks entry-point listener configuration.
+	// Only needed on nodes that serve as proxy entry points.
+	SS SSListenerConfig `yaml:"ss,omitempty"`
+
+	// Circuit holds circuit lifecycle parameters.
+	Circuit CircuitLifecycleConfig `yaml:"circuit,omitempty"`
+
+	// ChunkerStrategy selects the chunking strategy: "fixed-16k"
+	// or "bounded-4k-64k". Default: "bounded-4k-64k".
+	ChunkerStrategy string `yaml:"chunker_strategy,omitempty"`
+
+	// DebugFixedChunks forces uniform 16KB chunks for deterministic
+	// testing. MUST be false in production.
+	DebugFixedChunks bool `yaml:"debug_fixed_chunks,omitempty"`
+
+	// Paths holds manually configured relay paths (Phase 1).
+	// Each path is a list of relay node IDs (hex public keys).
+	Paths [][]string `yaml:"paths,omitempty"`
+
+	// Exit holds exit-node-specific configuration.
+	// Only needed on nodes that serve as exit nodes.
+	Exit ExitConfig `yaml:"exit,omitempty"`
+}
+
+// SSListenerConfig configures the Shadowsocks entry listener.
+type SSListenerConfig struct {
+	// Password is the pre-shared password for SS AEAD key derivation.
+	Password string `yaml:"password"`
+
+	// Cipher is the AEAD cipher name. Currently only
+	// "chacha20-ietf-poly1305" is supported.
+	Cipher string `yaml:"cipher,omitempty"`
+
+	// ListenAddr is the address to listen on. In production this
+	// is behind a CF Tunnel — the tunnel provides TLS.
+	ListenAddr string `yaml:"listen_addr"`
+}
+
+// CircuitLifecycleConfig holds circuit lifecycle parameters.
+// These map to the CircuitConfig in internal/proxy/protocol.go.
+type CircuitLifecycleConfig struct {
+	// IdleTimeout is how long a circuit stays active without data
+	// before automatic teardown (seconds). Default: 300 (5 min).
+	IdleTimeout int `yaml:"idle_timeout,omitempty"`
+
+	// KeepaliveInterval is how often the entry sends keepalive pings
+	// (seconds). Default: 30.
+	KeepaliveInterval int `yaml:"keepalive_interval,omitempty"`
+
+	// NACKTimeout is how long the exit waits for a missing chunk
+	// before sending a NACK (seconds). Default: 5.
+	NACKTimeout int `yaml:"nack_timeout,omitempty"`
+
+	// OrphanTimeout is how long the exit keeps an incomplete reassembly
+	// buffer (seconds). Default: 30.
+	OrphanTimeout int `yaml:"orphan_timeout,omitempty"`
+
+	// MaxReassemblyWindow is the hard limit on reassembly window size.
+	// Default: 256.
+	MaxReassemblyWindow int `yaml:"max_reassembly_window,omitempty"`
+}
+
+// ExitConfig holds exit-node-specific configuration.
+type ExitConfig struct {
+	// AllowedPorts is the list of destination ports the exit will
+	// connect to. Default: [80, 443]. Operators can expand this
+	// at their own legal risk.
+	AllowedPorts []int `yaml:"allowed_ports,omitempty"`
+
+	// AllowAllPorts removes the port restriction entirely.
+	// WARNING: full legal exposure. Not recommended.
+	AllowAllPorts bool `yaml:"allow_all_ports,omitempty"`
+
+	// AuditLogDir is the directory for exit audit logs.
+	// Logs record circuit_id → dest_ip:port → timestamp (no payload).
+	AuditLogDir string `yaml:"audit_log_dir,omitempty"`
+
+	// AuditRetentionDays is how long to keep audit logs. Default: 7.
+	AuditRetentionDays int `yaml:"audit_retention_days,omitempty"`
 }
 
 // TransferConfig holds file transfer settings.
@@ -188,6 +273,21 @@ func Default() *Config {
 			MaxFileSize: DefaultMaxFileSize,
 			UploadDir:   DefaultUploadDir,
 		},
+		Proxy: ProxyConfig{
+			ChunkerStrategy: "bounded-4k-64k",
+			Circuit: CircuitLifecycleConfig{
+				IdleTimeout:         300,
+				KeepaliveInterval:   30,
+				NACKTimeout:         5,
+				OrphanTimeout:       30,
+				MaxReassemblyWindow: 256,
+			},
+			Exit: ExitConfig{
+				AllowedPorts:       []int{80, 443},
+				AllowAllPorts:      false,
+				AuditRetentionDays: 7,
+			},
+		},
 	}
 }
 
@@ -230,6 +330,31 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Transfer.UploadDir == "" {
 		cfg.Transfer.UploadDir = DefaultUploadDir
+	}
+	// Proxy config defaults.
+	if cfg.Proxy.ChunkerStrategy == "" {
+		cfg.Proxy.ChunkerStrategy = "bounded-4k-64k"
+	}
+	if cfg.Proxy.Circuit.IdleTimeout == 0 {
+		cfg.Proxy.Circuit.IdleTimeout = 300
+	}
+	if cfg.Proxy.Circuit.KeepaliveInterval == 0 {
+		cfg.Proxy.Circuit.KeepaliveInterval = 30
+	}
+	if cfg.Proxy.Circuit.NACKTimeout == 0 {
+		cfg.Proxy.Circuit.NACKTimeout = 5
+	}
+	if cfg.Proxy.Circuit.OrphanTimeout == 0 {
+		cfg.Proxy.Circuit.OrphanTimeout = 30
+	}
+	if cfg.Proxy.Circuit.MaxReassemblyWindow == 0 {
+		cfg.Proxy.Circuit.MaxReassemblyWindow = 256
+	}
+	if len(cfg.Proxy.Exit.AllowedPorts) == 0 && !cfg.Proxy.Exit.AllowAllPorts {
+		cfg.Proxy.Exit.AllowedPorts = []int{80, 443}
+	}
+	if cfg.Proxy.Exit.AuditRetentionDays == 0 {
+		cfg.Proxy.Exit.AuditRetentionDays = 7
 	}
 	return cfg, nil
 }

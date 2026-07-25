@@ -36,6 +36,18 @@ const (
 	// CapBinaryUpgrade allows uploading and executing a new binary.
 	// Requires an additional nonce-sign challenge beyond service_manage.
 	CapBinaryUpgrade = "binary_upgrade"
+
+	// CapRelay allows a peer to forward transit circuit packets for
+	// the multi-path dispersed anonymous proxy. Relay nodes see only
+	// AEAD-encrypted ciphertext fragments — they have no decryption
+	// key and cannot reconstruct the payload.
+	CapRelay = "relay"
+
+	// CapExit allows a peer to serve as an exit node for the anonymous
+	// proxy. Exit nodes decrypt the E2E payload and initiate outbound
+	// TCP connections to target destinations. This carries legal
+	// responsibility (see PROXY_DESIGN.md §6).
+	CapExit = "exit"
 )
 
 // AllCapabilities is the full set of recognized capability strings.
@@ -46,6 +58,8 @@ var AllCapabilities = []string{
 	CapMonitorWrite,
 	CapServiceManage,
 	CapBinaryUpgrade,
+	CapRelay,
+	CapExit,
 }
 
 // IsValidCapability returns true if cap is a recognized capability string.

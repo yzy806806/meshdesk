@@ -37,8 +37,8 @@ func TestIsValidCapability(t *testing.T) {
 }
 
 func TestAllCapabilities(t *testing.T) {
-	if len(AllCapabilities) != 6 {
-		t.Errorf("expected 6 capabilities, got %d", len(AllCapabilities))
+	if len(AllCapabilities) != 8 {
+		t.Errorf("expected 8 capabilities, got %d", len(AllCapabilities))
 	}
 }
 
