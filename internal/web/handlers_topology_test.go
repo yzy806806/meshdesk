@@ -82,11 +82,11 @@ func newTopologyTestServer(t *testing.T) *Server {
 	}
 
 	srv, err := New(Deps{
-		Config:               cfg,
-		MonitorStore:         store,
-		TopologyPeers:        peers,
-		TopologyMetrics:      metricsAdapter,
-		TopologyPaths:        paths,
+		Config:          cfg,
+		MonitorStore:    store,
+		TopologyPeers:   peers,
+		TopologyMetrics: metricsAdapter,
+		TopologyPaths:   paths,
 	})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -508,24 +508,24 @@ func TestDeriveRoleFromConfig(t *testing.T) {
 		{
 			name: "entry node (SS password set, web addr set)",
 			cfg: &config.Config{
-				Node:   config.NodeConfig{WebAddr: ":8080"},
-				Proxy:  config.ProxyConfig{SS: config.SSListenerConfig{Password: "secret"}},
+				Node:  config.NodeConfig{WebAddr: ":8080"},
+				Proxy: config.ProxyConfig{SS: config.SSListenerConfig{Password: "secret"}},
 			},
 			expected: "entry+dashboard",
 		},
 		{
 			name: "relay node (enabled, web addr set)",
 			cfg: &config.Config{
-				Node:   config.NodeConfig{WebAddr: ":8080"},
-				Proxy:  config.ProxyConfig{Relay: config.RelayNodeConfig{Enabled: true}},
+				Node:  config.NodeConfig{WebAddr: ":8080"},
+				Proxy: config.ProxyConfig{Relay: config.RelayNodeConfig{Enabled: true}},
 			},
 			expected: "relay+dashboard",
 		},
 		{
 			name: "exit node (allowed ports, web addr set)",
 			cfg: &config.Config{
-				Node:   config.NodeConfig{WebAddr: ":8080"},
-				Proxy:  config.ProxyConfig{Exit: config.ExitConfig{AllowedPorts: []int{80, 443}}},
+				Node:  config.NodeConfig{WebAddr: ":8080"},
+				Proxy: config.ProxyConfig{Exit: config.ExitConfig{AllowedPorts: []int{80, 443}}},
 			},
 			expected: "exit+dashboard",
 		},

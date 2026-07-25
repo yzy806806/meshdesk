@@ -12,10 +12,10 @@ const (
 
 // Sensitive operations that require step-up authentication.
 const (
-	OpTerminal       = "terminal"
-	OpServiceManage  = "service_manage"
-	OpFileUpload     = "file_upload"
-	OpSettings       = "settings"
+	OpTerminal      = "terminal"
+	OpServiceManage = "service_manage"
+	OpFileUpload    = "file_upload"
+	OpSettings      = "settings"
 )
 
 // stepUpToken represents a per-session elevated-privilege token.

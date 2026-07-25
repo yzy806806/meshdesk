@@ -145,9 +145,9 @@ func TestDispatcherPaddingSeedNotInCircuitSetup(t *testing.T) {
 
 	// Create a CircuitSetup with only the expected fields.
 	setup := &CircuitSetup{
-		CircuitID:   circuitID,
-		ECDHPubKey:  ecdhPub,
-		TargetAddr:  "127.0.0.1:80",
+		CircuitID:  circuitID,
+		ECDHPubKey: ecdhPub,
+		TargetAddr: "127.0.0.1:80",
 	}
 
 	// Encode the CircuitSetup.
@@ -182,11 +182,11 @@ func TestDispatcherPaddingSeedDeterministicChunking(t *testing.T) {
 	}
 
 	cfg := ChunkerConfig{
-		MaxChunkSize:  1024,
-		MinChunkSize:  1024,
-		PaddingMin:    100,
-		PaddingMax:    500,
-		PaddingSeed:   seed,
+		MaxChunkSize:   1024,
+		MinChunkSize:   1024,
+		PaddingMin:     100,
+		PaddingMax:     500,
+		PaddingSeed:    seed,
 		DisablePadding: false,
 	}
 

@@ -175,7 +175,7 @@ func (s *AlertStore) HandlePeerJoin(peer *mesh.PeerEntry) {
 	s.Add(SecurityAlert{
 		Type:        "node_join",
 		Username:    peer.ID,
-		Description:  "new node joined mesh: " + peer.ID[:min(8, len(peer.ID))] + " endpoint=" + peer.Endpoint,
+		Description: "new node joined mesh: " + peer.ID[:min(8, len(peer.ID))] + " endpoint=" + peer.Endpoint,
 		Severity:    AlertInfo,
 	})
 }
@@ -186,7 +186,7 @@ func (s *AlertStore) HandlePeerLeave(peerID string) {
 	s.Add(SecurityAlert{
 		Type:        "node_leave",
 		Username:    peerID,
-		Description:  "node left mesh: " + peerID,
+		Description: "node left mesh: " + peerID,
 		Severity:    AlertInfo,
 	})
 }
@@ -204,7 +204,7 @@ func (s *AlertStore) HandleProxySecurityEvent(event proxy.SecurityEvent) {
 		Type:        string(event.Type),
 		Username:    event.CircuitID,
 		SourceIP:    event.SourceIP,
-		Description:  event.Description,
+		Description: event.Description,
 		Severity:    AlertWarning,
 	})
 }

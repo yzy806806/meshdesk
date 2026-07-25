@@ -282,19 +282,19 @@ func TestPathSelectorFilterCandidates(t *testing.T) {
 func TestSelectExit(t *testing.T) {
 	exitProbes := map[string]map[string]time.Duration{
 		"exit-tokyo": {
-			"jp":       5 * time.Millisecond,
-			"us-west":  120 * time.Millisecond,
-			"eu":       200 * time.Millisecond,
+			"jp":      5 * time.Millisecond,
+			"us-west": 120 * time.Millisecond,
+			"eu":      200 * time.Millisecond,
 		},
 		"exit-uswest": {
-			"jp":       110 * time.Millisecond,
-			"us-west":  8 * time.Millisecond,
-			"eu":       150 * time.Millisecond,
+			"jp":      110 * time.Millisecond,
+			"us-west": 8 * time.Millisecond,
+			"eu":      150 * time.Millisecond,
 		},
 		"exit-fra": {
-			"jp":       250 * time.Millisecond,
-			"us-west":  180 * time.Millisecond,
-			"eu":       12 * time.Millisecond,
+			"jp":      250 * time.Millisecond,
+			"us-west": 180 * time.Millisecond,
+			"eu":      12 * time.Millisecond,
 		},
 	}
 

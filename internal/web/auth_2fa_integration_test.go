@@ -41,11 +41,11 @@ import (
 
 // totpTestState simulates the server-side 2FA state for a user.
 type totpTestState struct {
-	Secret          string   // base32-encoded TOTP secret
-	RecoveryCodes   []string // one-time-use recovery codes
-	Enrolled        bool
-	FailedAttempts  int
-	LockedUntil     time.Time
+	Secret         string   // base32-encoded TOTP secret
+	RecoveryCodes  []string // one-time-use recovery codes
+	Enrolled       bool
+	FailedAttempts int
+	LockedUntil    time.Time
 }
 
 // totpStore is a test double for the TOTP enrollment store.

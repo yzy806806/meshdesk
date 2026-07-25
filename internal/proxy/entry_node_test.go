@@ -22,10 +22,10 @@ type mockExitServer struct {
 	listener net.Listener
 	target   net.Listener // the "destination" service
 
-	mu         sync.Mutex
-	circuits   map[string]*exitCircuitState
-	e2eKeys    map[string][]byte
-	closed     bool
+	mu       sync.Mutex
+	circuits map[string]*exitCircuitState
+	e2eKeys  map[string][]byte
+	closed   bool
 
 	// targetConnCh receives the target connection when a circuit is set up.
 	// Tests can read from this to get the connection to the "destination."
@@ -33,12 +33,12 @@ type mockExitServer struct {
 }
 
 type exitCircuitState struct {
-	circuitID    []byte
-	e2eKey       []byte
-	targetConn   net.Conn
-	reassembler  *ExitReassembler
-	pathConns    [2]net.Conn
-	pathConnIdx  int
+	circuitID   []byte
+	e2eKey      []byte
+	targetConn  net.Conn
+	reassembler *ExitReassembler
+	pathConns   [2]net.Conn
+	pathConnIdx int
 }
 
 func newMockExitServer(target net.Listener) *mockExitServer {
@@ -47,11 +47,11 @@ func newMockExitServer(target net.Listener) *mockExitServer {
 		panic(err)
 	}
 	return &mockExitServer{
-		listener:  ln,
-		target:    target,
-		circuits:  make(map[string]*exitCircuitState),
-		e2eKeys:   make(map[string][]byte),
-		relayCh:   make(chan net.Conn, 10),
+		listener: ln,
+		target:   target,
+		circuits: make(map[string]*exitCircuitState),
+		e2eKeys:  make(map[string][]byte),
+		relayCh:  make(chan net.Conn, 10),
 	}
 }
 

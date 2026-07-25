@@ -22,12 +22,12 @@ type ProxyStatusProvider interface {
 
 // proxyStatusResponse is the JSON envelope returned by /api/proxy/status.
 type proxyStatusResponse struct {
-	Running      bool     `json:"running"`
-	SessionCount int      `json:"session_count"`
-	CFTunnelReady bool    `json:"cf_tunnel_ready"`
-	Path1Relays  []string `json:"path1_relays,omitempty"`
-	Path2Relays  []string `json:"path2_relays,omitempty"`
-	ExitAddr     string   `json:"exit_addr,omitempty"`
+	Running       bool     `json:"running"`
+	SessionCount  int      `json:"session_count"`
+	CFTunnelReady bool     `json:"cf_tunnel_ready"`
+	Path1Relays   []string `json:"path1_relays,omitempty"`
+	Path2Relays   []string `json:"path2_relays,omitempty"`
+	ExitAddr      string   `json:"exit_addr,omitempty"`
 }
 
 // handleProxyStatus handles GET /api/proxy/status.

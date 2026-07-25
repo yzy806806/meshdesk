@@ -34,10 +34,10 @@ type WebhookDispatcher struct {
 
 // webhookPayload is the JSON body sent to the external webhook endpoint.
 type webhookPayload struct {
-	Source    string         `json:"source"`
-	NodeID    string         `json:"node_id"`
-	Event     string         `json:"event"`
-	Timestamp time.Time      `json:"timestamp"`
+	Source    string        `json:"source"`
+	NodeID    string        `json:"node_id"`
+	Event     string        `json:"event"`
+	Timestamp time.Time     `json:"timestamp"`
 	Alert     SecurityAlert `json:"alert"`
 }
 

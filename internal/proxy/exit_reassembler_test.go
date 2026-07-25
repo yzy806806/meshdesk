@@ -5,15 +5,15 @@
 // reassembly and handles arbitrary chunk sizes.
 //
 // Test coverage:
-//   1. Streaming delivery: data delivered incrementally as chunks arrive
-//   2. Sequence/total keying: correct completion via both paths
-//   3. Arbitrary chunk sizes: variable payload sizes work correctly
-//   4. Out-of-order reassembly with incremental delivery
-//   5. Deduplication in streaming mode
-//   6. Bounds enforcement with streaming delivery
-//   7. Multi-stream isolation
-//   8. NextExpected / HasGap / MissingSequences diagnostics
-//   9. Backward compatibility: Add returns full stream on completion
+//  1. Streaming delivery: data delivered incrementally as chunks arrive
+//  2. Sequence/total keying: correct completion via both paths
+//  3. Arbitrary chunk sizes: variable payload sizes work correctly
+//  4. Out-of-order reassembly with incremental delivery
+//  5. Deduplication in streaming mode
+//  6. Bounds enforcement with streaming delivery
+//  7. Multi-stream isolation
+//  8. NextExpected / HasGap / MissingSequences diagnostics
+//  9. Backward compatibility: Add returns full stream on completion
 package proxy
 
 import (

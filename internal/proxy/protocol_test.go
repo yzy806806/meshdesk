@@ -360,8 +360,8 @@ func TestKeepaliveMsgRoundTrip(t *testing.T) {
 	circuitID, _ := GenerateCircuitID()
 
 	orig := &KeepaliveMsg{
-		CircuitID:  circuitID,
-		Timestamp:  1700000000000000000,
+		CircuitID: circuitID,
+		Timestamp: 1700000000000000000,
 	}
 
 	encoded, err := orig.Encode()
@@ -387,9 +387,9 @@ func TestNACKMsgRoundTrip(t *testing.T) {
 	circuitID, _ := GenerateCircuitID()
 
 	orig := &NACKMsg{
-		CircuitID:    circuitID,
-		StreamID:     42,
-		MissingSeqs:  []uint32{3, 7, 12, 15},
+		CircuitID:   circuitID,
+		StreamID:    42,
+		MissingSeqs: []uint32{3, 7, 12, 15},
 	}
 
 	encoded, err := orig.Encode()

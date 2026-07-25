@@ -7,12 +7,12 @@
 // (suitable for debugging but fingerprintable in production).
 //
 // Key properties tested:
-//   1. Bounded chunker produces variable-sized chunks (entropy > 0 in sizes)
-//   2. Fixed chunker produces uniform-sized chunks (all same size except tail)
-//   3. DebugFixedChunks flag forces uniform sizing at the exit node level
-//   4. Per-circuit PaddingSeed produces deterministic reproducible padding
-//   5. Chunk sizes stay within [MinChunkSize, MaxChunkSize] bounds
-//   6. Identical input with different seeds produces different chunk layouts
+//  1. Bounded chunker produces variable-sized chunks (entropy > 0 in sizes)
+//  2. Fixed chunker produces uniform-sized chunks (all same size except tail)
+//  3. DebugFixedChunks flag forces uniform sizing at the exit node level
+//  4. Per-circuit PaddingSeed produces deterministic reproducible padding
+//  5. Chunk sizes stay within [MinChunkSize, MaxChunkSize] bounds
+//  6. Identical input with different seeds produces different chunk layouts
 package proxy
 
 import (
@@ -31,8 +31,8 @@ import (
 // proxy; variable sizes are essential for protocol mimicry.
 func TestFingerprintBoundedVariableSizes(t *testing.T) {
 	cfg := ChunkerConfig{
-		MinChunkSize: 4 * 1024,
-		MaxChunkSize: 64 * 1024,
+		MinChunkSize:   4 * 1024,
+		MaxChunkSize:   64 * 1024,
 		DisablePadding: true,
 	}
 
@@ -103,8 +103,8 @@ func TestFingerprintBoundedVariableSizes(t *testing.T) {
 // should ONLY be used in testing.
 func TestFingerprintFixedUniformSizes(t *testing.T) {
 	cfg := ChunkerConfig{
-		MaxChunkSize: 16 * 1024,
-		MinChunkSize: 16 * 1024,
+		MaxChunkSize:   16 * 1024,
+		MinChunkSize:   16 * 1024,
 		DisablePadding: true,
 	}
 
@@ -156,8 +156,8 @@ func TestFingerprintFixedUniformSizes(t *testing.T) {
 // that bounded mode provides real anti-fingerprinting value.
 func TestFingerprintCompareDistributions(t *testing.T) {
 	cfg := ChunkerConfig{
-		MaxChunkSize: 16 * 1024,
-		MinChunkSize: 4 * 1024,
+		MaxChunkSize:   16 * 1024,
+		MinChunkSize:   4 * 1024,
 		DisablePadding: true,
 	}
 
@@ -769,7 +769,7 @@ func TestFingerprintPaddingSizeIndependence(t *testing.T) {
 	}
 
 	// Collect (payloadSize, paddingLen) pairs for non-last chunks.
-	n := len(chunks) - 1 // exclude last (remainder chunk)
+	n := len(chunks) - 1    // exclude last (remainder chunk)
 	x := make([]float64, n) // payload sizes
 	y := make([]float64, n) // padding lengths
 	for i := 0; i < n; i++ {

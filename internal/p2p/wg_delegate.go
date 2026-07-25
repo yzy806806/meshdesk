@@ -66,22 +66,22 @@ type DynamicPeer struct {
 
 // PeerHealth tracks the WireGuard handshake health for a dynamic peer.
 type PeerHealth struct {
-	PublicKey        string
-	LastHandshake    time.Time
-	Endpoint         string
-	IsRelay          bool
-	RelayVia         string
-	AddedAt          time.Time
+	PublicKey     string
+	LastHandshake time.Time
+	Endpoint      string
+	IsRelay       bool
+	RelayVia      string
+	AddedAt       time.Time
 }
 
 // WireGuardDelegate is the bridge between dynamic gossip events and the
 // static MeshNode.AddPeer()/RemovePeer() API. It wraps MeshNode and
 // provides dynamic peer management with health tracking.
 type WireGuardDelegate struct {
-	node    *mesh.MeshNode
-	mu      sync.Mutex
-	health  map[string]*PeerHealth // publicKey → health
-	staticKeys map[string]bool      // keys from static config (never removed)
+	node       *mesh.MeshNode
+	mu         sync.Mutex
+	health     map[string]*PeerHealth // publicKey → health
+	staticKeys map[string]bool        // keys from static config (never removed)
 }
 
 // NewWireGuardDelegate creates a new delegate wrapping the given MeshNode.
@@ -152,11 +152,11 @@ func (d *WireGuardDelegate) AddDynamicPeer(peer DynamicPeer) error {
 
 	// Track health.
 	d.health[peer.PublicKey] = &PeerHealth{
-		PublicKey:     peer.PublicKey,
-		Endpoint:      peer.Endpoint,
-		IsRelay:       peer.IsRelay,
-		RelayVia:      peer.RelayVia,
-		AddedAt:       time.Now(),
+		PublicKey: peer.PublicKey,
+		Endpoint:  peer.Endpoint,
+		IsRelay:   peer.IsRelay,
+		RelayVia:  peer.RelayVia,
+		AddedAt:   time.Now(),
 	}
 
 	return nil

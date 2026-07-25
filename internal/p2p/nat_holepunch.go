@@ -63,9 +63,9 @@ type HolePuncher struct {
 func NewHolePuncher(localEndpoint string, wgPort int) *HolePuncher {
 	return &HolePuncher{
 		localEndpoint: localEndpoint,
-		punchPort:    wgPort,
-		timeout:      5 * time.Second,
-		numPackets:   3,
+		punchPort:     wgPort,
+		timeout:       5 * time.Second,
+		numPackets:    3,
 	}
 }
 
@@ -82,22 +82,22 @@ func (h *HolePuncher) Punch(ctx context.Context, remoteEndpoint string) *HolePun
 	host, port, err := net.SplitHostPort(remoteEndpoint)
 	if err != nil {
 		return &HolePunchResult{
-			Success:       false,
-			LocalEndpoint: h.localEndpoint,
+			Success:        false,
+			LocalEndpoint:  h.localEndpoint,
 			RemoteEndpoint: remoteEndpoint,
-			Error:         fmt.Errorf("invalid remote endpoint: %w", err),
-			Elapsed:       time.Since(start),
+			Error:          fmt.Errorf("invalid remote endpoint: %w", err),
+			Elapsed:        time.Since(start),
 		}
 	}
 
 	remoteAddr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, port))
 	if err != nil {
 		return &HolePunchResult{
-			Success:       false,
-			LocalEndpoint: h.localEndpoint,
+			Success:        false,
+			LocalEndpoint:  h.localEndpoint,
 			RemoteEndpoint: remoteEndpoint,
-			Error:         fmt.Errorf("resolve remote addr: %w", err),
-			Elapsed:       time.Since(start),
+			Error:          fmt.Errorf("resolve remote addr: %w", err),
+			Elapsed:        time.Since(start),
 		}
 	}
 
@@ -115,11 +115,11 @@ func (h *HolePuncher) Punch(ctx context.Context, remoteEndpoint string) *HolePun
 		conn, err = net.DialUDP("udp", nil, remoteAddr)
 		if err != nil {
 			return &HolePunchResult{
-				Success:       false,
-				LocalEndpoint: h.localEndpoint,
+				Success:        false,
+				LocalEndpoint:  h.localEndpoint,
 				RemoteEndpoint: remoteEndpoint,
-				Error:         fmt.Errorf("dial UDP: %w", err),
-				Elapsed:       time.Since(start),
+				Error:          fmt.Errorf("dial UDP: %w", err),
+				Elapsed:        time.Since(start),
 			}
 		}
 	}
@@ -140,11 +140,11 @@ func (h *HolePuncher) Punch(ctx context.Context, remoteEndpoint string) *HolePun
 	probeMsg, err := stun.Build(stun.BindingRequest, stun.TransactionID)
 	if err != nil {
 		return &HolePunchResult{
-			Success:       false,
-			LocalEndpoint: h.localEndpoint,
+			Success:        false,
+			LocalEndpoint:  h.localEndpoint,
 			RemoteEndpoint: remoteEndpoint,
-			Error:         fmt.Errorf("build probe: %w", err),
-			Elapsed:       time.Since(start),
+			Error:          fmt.Errorf("build probe: %w", err),
+			Elapsed:        time.Since(start),
 		}
 	}
 
@@ -153,11 +153,11 @@ func (h *HolePuncher) Punch(ctx context.Context, remoteEndpoint string) *HolePun
 		select {
 		case <-ctx.Done():
 			return &HolePunchResult{
-				Success:       false,
-				LocalEndpoint: h.localEndpoint,
+				Success:        false,
+				LocalEndpoint:  h.localEndpoint,
 				RemoteEndpoint: remoteEndpoint,
-				Error:         ctx.Err(),
-				Elapsed:       time.Since(start),
+				Error:          ctx.Err(),
+				Elapsed:        time.Since(start),
 			}
 		default:
 		}
@@ -205,7 +205,7 @@ func (h *HolePuncher) Punch(ctx context.Context, remoteEndpoint string) *HolePun
 // achieved because both peers discover the need to connect at roughly
 // the same time via gossip.
 type HolePunchCoordinator struct {
-	mu      sync.Mutex
+	mu       sync.Mutex
 	punchers map[string]*HolePuncher // peerKey → puncher
 }
 
@@ -240,9 +240,9 @@ func (hc *HolePunchCoordinator) AttemptPunch(ctx context.Context, peerKey, remot
 
 	if !ok {
 		return &HolePunchResult{
-			Success:       false,
+			Success:        false,
 			RemoteEndpoint: remoteEndpoint,
-			Error:         fmt.Errorf("peer %s not registered for hole-punching", safeShortKey(peerKey)),
+			Error:          fmt.Errorf("peer %s not registered for hole-punching", safeShortKey(peerKey)),
 		}
 	}
 

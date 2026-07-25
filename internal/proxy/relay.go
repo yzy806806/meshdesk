@@ -21,7 +21,8 @@
 //     with the next relay's key. No relay can reconstruct the full path.
 //
 // The relay is the "middle hop" in the circuit:
-//   entry → relay₁ → relay₂ → ... → exit
+//
+//	entry → relay₁ → relay₂ → ... → exit
 //
 // Each relay processes chunks concurrently per-circuit. A relay may
 // handle multiple circuits simultaneously, each with its own relayKey.
@@ -484,12 +485,12 @@ type RelayStats struct {
 // lean for the hot path). Callers who want stats use this wrapper.
 type statsRelay struct {
 	*Relay
-	forwarded      uint64
-	bytes          uint64
-	jitterTotal    uint64 // nanoseconds
-	jitterMu       sync.Mutex
-	forwardedMu    sync.Mutex
-	bytesMu        sync.Mutex
+	forwarded   uint64
+	bytes       uint64
+	jitterTotal uint64 // nanoseconds
+	jitterMu    sync.Mutex
+	forwardedMu sync.Mutex
+	bytesMu     sync.Mutex
 }
 
 // NewRelayWithStats creates a relay that also tracks statistics.
@@ -513,10 +514,10 @@ func (sr *statsRelay) Stats() RelayStats {
 	sr.jitterMu.Unlock()
 
 	return RelayStats{
-		Circuits:         sr.CircuitCount(),
-		TotalForwarded:   f,
-		TotalBytes:       b,
-		TotalJitterTime:  time.Duration(j),
+		Circuits:        sr.CircuitCount(),
+		TotalForwarded:  f,
+		TotalBytes:      b,
+		TotalJitterTime: time.Duration(j),
 	}
 }
 

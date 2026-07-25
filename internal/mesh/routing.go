@@ -22,9 +22,9 @@ type PeerLeaveCallback func(peerID string)
 // It's the core data structure that the mesh routing layer uses to
 // decide which peer to send a packet to.
 type RoutingTable struct {
-	mu      sync.RWMutex
-	routes  map[string]string     // mesh IP (string) → peer ID (hex public key)
-	peers   map[string]*PeerEntry // peer ID → peer entry
+	mu     sync.RWMutex
+	routes map[string]string     // mesh IP (string) → peer ID (hex public key)
+	peers  map[string]*PeerEntry // peer ID → peer entry
 
 	// joinCB is invoked when a new peer is added. Set via SetJoinCallback.
 	// Accessed atomically so it is safe to read concurrently without holding mu.

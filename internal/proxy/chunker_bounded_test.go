@@ -99,9 +99,9 @@ func TestBoundedChunkerParetoDistribution(t *testing.T) {
 	// Count chunks in each quartile of the range [4KB, 64KB].
 	// Pareto should produce more chunks in the lower quartile.
 	rangeSize := cfg.MaxChunkSize - cfg.MinChunkSize
-	q1 := cfg.MinChunkSize + rangeSize/4    // 20KB
-	q2 := cfg.MinChunkSize + rangeSize/2    // 34KB
-	q3 := cfg.MinChunkSize + 3*rangeSize/4  // 48KB
+	q1 := cfg.MinChunkSize + rangeSize/4   // 20KB
+	q2 := cfg.MinChunkSize + rangeSize/2   // 34KB
+	q3 := cfg.MinChunkSize + 3*rangeSize/4 // 48KB
 
 	var q1Count, q2Count, q3Count, q4Count int
 	for i := 0; i < len(chunks)-1; i++ { // exclude last (remainder)

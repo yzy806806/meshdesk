@@ -336,9 +336,9 @@ func (s *padSource) Read(p []byte) (int, error) {
 //
 // Usage in Chunker implementations:
 //
-//   pad := NewPaddingSource(cfg)
-//   buf := make([]byte, paddingLen)
-//   io.ReadFull(pad, buf)
+//	pad := NewPaddingSource(cfg)
+//	buf := make([]byte, paddingLen)
+//	io.ReadFull(pad, buf)
 //
 // The returned io.Reader is safe for concurent use (AES-CTR via
 // cipher.Stream is not goroutine-safe; callers must serialize access

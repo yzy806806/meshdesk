@@ -573,13 +573,13 @@ func NewSSTunnelConfig(tunnelID, credentialsFile, hostname, originServer string)
 	}
 
 	return CFTunnelConfig{
-		TunnelID:        tunnelID,
-		CredentialsFile: credentialsFile,
-		OriginServer:    originServer,
-		LogLevel:        "warn",
-		MetricsAddr:     "127.0.0.1:36500",
+		TunnelID:         tunnelID,
+		CredentialsFile:  credentialsFile,
+		OriginServer:     originServer,
+		LogLevel:         "warn",
+		MetricsAddr:      "127.0.0.1:36500",
 		ReconnectRetries: 5,
-		GracePeriodSec:  30,
+		GracePeriodSec:   30,
 		IngressRules: []CFIngressRule{
 			{
 				Hostname: hostname,

@@ -104,9 +104,10 @@ const (
 // the next-hop address, then re-encrypts for the next relay.
 //
 // Layout (before encryption):
-//   bytes 0-1:  next-hop address length (uint16, max 62)
-//   bytes 2-N:  next-hop address (mesh IP or relay ID)
-//   bytes N+1:  remaining bytes are random padding to fill 64 bytes
+//
+//	bytes 0-1:  next-hop address length (uint16, max 62)
+//	bytes 2-N:  next-hop address (mesh IP or relay ID)
+//	bytes N+1:  remaining bytes are random padding to fill 64 bytes
 //
 // After encryption, the entire 64 bytes appear as random ciphertext.
 // No relay can reconstruct the full path.
@@ -196,12 +197,13 @@ func DecodeForwardingHeader(encrypted []byte, relayKey []byte) (*ForwardingHeade
 // (StreamID, Sequence, Total, Type) and the application data.
 //
 // Wire layout:
-//   [ForwardingHeader (64 bytes)]
-//   [Nonce (12 bytes)]
-//   [AEAD Ciphertext (chunk metadata + payload + 16-byte auth tag)]
+//
+//	[ForwardingHeader (64 bytes)]
+//	[Nonce (12 bytes)]
+//	[AEAD Ciphertext (chunk metadata + payload + 16-byte auth tag)]
 type WireChunk struct {
-	Header  []byte // 64-byte onion-encrypted forwarding header
-	Nonce   []byte // 12-byte AEAD nonce
+	Header     []byte // 64-byte onion-encrypted forwarding header
+	Nonce      []byte // 12-byte AEAD nonce
 	Ciphertext []byte // AEAD-encrypted payload
 }
 
@@ -214,16 +216,17 @@ type WireChunk struct {
 // decoded circuit ID is verified against the expected value at the exit.
 //
 // The encrypted payload format:
-//   [CircuitID  (16 bytes)]
-//   [StreamID   (4 bytes)]
-//   [Sequence   (4 bytes)]
-//   [Total      (4 bytes)]
-//   [Type       (1 byte)]
-//   [PaddingLen (2 bytes)]
-//   [PayloadLen (4 bytes)]
-//   [Padding    (PaddingLen bytes)]   — actual random padding bytes
-//   [Payload    (PayloadLen bytes)]
-//   + 16-byte Poly1305 auth tag (added by AEAD)
+//
+//	[CircuitID  (16 bytes)]
+//	[StreamID   (4 bytes)]
+//	[Sequence   (4 bytes)]
+//	[Total      (4 bytes)]
+//	[Type       (1 byte)]
+//	[PaddingLen (2 bytes)]
+//	[PayloadLen (4 bytes)]
+//	[Padding    (PaddingLen bytes)]   — actual random padding bytes
+//	[Payload    (PayloadLen bytes)]
+//	+ 16-byte Poly1305 auth tag (added by AEAD)
 //
 // Gap fix (encryptedMetadata): The actual padding bytes are now included
 // inside the AEAD ciphertext, making PaddingLen self-verifying. An
@@ -355,7 +358,7 @@ func DecodeChunk(wc *WireChunk, e2eKey []byte, circuitID []byte) (Chunk, error) 
 	}
 
 	chunk := Chunk{
-		StreamID:   binary.BigEndian.Uint32(plaintext[offset : offset+4]),
+		StreamID: binary.BigEndian.Uint32(plaintext[offset : offset+4]),
 	}
 	offset += 4
 	chunk.Sequence = binary.BigEndian.Uint32(plaintext[offset : offset+4])
@@ -817,8 +820,8 @@ func DefaultCircuitConfig() CircuitConfig {
 
 // Common errors.
 var (
-	ErrCircuitNotFound    = errors.New("circuit not found")
-	ErrCircuitClosed      = errors.New("circuit is closed")
+	ErrCircuitNotFound     = errors.New("circuit not found")
+	ErrCircuitClosed       = errors.New("circuit is closed")
 	ErrInvalidCircuitState = errors.New("invalid circuit state transition")
 	ErrAEADDecryptFailed   = errors.New("AEAD decryption failed")
 

@@ -6,33 +6,33 @@
 //
 // Key differences from the basic fixedReassembler/boundedReassembler:
 //
-//   1. STREAMING DELIVERY: Instead of buffering the entire stream and
-//      delivering only on completion, ExitReassembler delivers contiguous
-//      data incrementally as chunks arrive. This reduces latency for
-//      interactive protocols (SSH, HTTP) where the first bytes must reach
-//      the target before the entire stream is complete.
+//  1. STREAMING DELIVERY: Instead of buffering the entire stream and
+//     delivering only on completion, ExitReassembler delivers contiguous
+//     data incrementally as chunks arrive. This reduces latency for
+//     interactive protocols (SSH, HTTP) where the first bytes must reach
+//     the target before the entire stream is complete.
 //
-//   2. SEQUENCE/TOTAL KEYING: Completion is determined by two independent
-//      signals, both keyed on the chunk's Sequence and Total fields:
-//        a) ChunkStreamEnd marker — universal completion signal.
-//        b) Total field — when all chunks 0..Total-1 have arrived.
-//      The reassembler tracks nextExpected (the next contiguous sequence
-//      we haven't delivered yet) and uses it for gap detection and
-//      ackBase advancement.
+//  2. SEQUENCE/TOTAL KEYING: Completion is determined by two independent
+//     signals, both keyed on the chunk's Sequence and Total fields:
+//     a) ChunkStreamEnd marker — universal completion signal.
+//     b) Total field — when all chunks 0..Total-1 have arrived.
+//     The reassembler tracks nextExpected (the next contiguous sequence
+//     we haven't delivered yet) and uses it for gap detection and
+//     ackBase advancement.
 //
-//   3. ARBITRARY CHUNK SIZES: The reassembler makes NO assumption about
-//      payload size. It operates on []byte slices of variable length.
-//      This means the same reassembler works for fixed-16k, bounded-4k-64k,
-//      or any future variable-size chunking strategy — the entry-side
-//      Chunker can be swapped without touching the exit-side reassembler.
+//  3. ARBITRARY CHUNK SIZES: The reassembler makes NO assumption about
+//     payload size. It operates on []byte slices of variable length.
+//     This means the same reassembler works for fixed-16k, bounded-4k-64k,
+//     or any future variable-size chunking strategy — the entry-side
+//     Chunker can be swapped without touching the exit-side reassembler.
 //
-//   4. DEDUPLICATION + BOUNDS ENFORCEMENT: Duplicate (StreamID, Sequence)
-//      pairs are silently ignored. MaxReassemblyChunks and MaxReassemblyBytes
-//      are enforced to prevent memory exhaustion attacks.
+//  4. DEDUPLICATION + BOUNDS ENFORCEMENT: Duplicate (StreamID, Sequence)
+//     pairs are silently ignored. MaxReassemblyChunks and MaxReassemblyBytes
+//     are enforced to prevent memory exhaustion attacks.
 //
-//   5. MULTI-STREAM SUPPORT: Multiple streams (identified by StreamID)
-//      can be reassembled concurrently within a single reassembler instance,
-//      each with independent completion state.
+//  5. MULTI-STREAM SUPPORT: Multiple streams (identified by StreamID)
+//     can be reassembled concurrently within a single reassembler instance,
+//     each with independent completion state.
 //
 // The ExitReassembler implements the standard Reassembler interface so it
 // is fully backward-compatible with existing callers (exit.go uses
@@ -52,9 +52,10 @@ import (
 // ExitReassembler is safe for concurrent use by a single goroutine.
 // If shared across goroutines, the caller is responsible for synchronization.
 type ExitReassembler struct {
-	cfg        ChunkerConfig
-	streams    map[uint32]*exitStreamState
-	totalBytes int // running total of buffered payload bytes across all streams
+	cfg              ChunkerConfig
+	streams          map[uint32]*exitStreamState
+	totalBytes       int             // running total of buffered payload bytes across all streams
+	completedStreams map[uint32]bool // tracks stream IDs that have been completed
 }
 
 // exitStreamState holds per-stream reassembly state.
@@ -97,8 +98,9 @@ type exitStreamState struct {
 // NewExitReassembler creates a new ExitReassembler with the given config.
 func NewExitReassembler(cfg ChunkerConfig) *ExitReassembler {
 	return &ExitReassembler{
-		cfg:     cfg,
-		streams: make(map[uint32]*exitStreamState),
+		cfg:              cfg,
+		streams:          make(map[uint32]*exitStreamState),
+		completedStreams: make(map[uint32]bool),
 	}
 }
 
@@ -118,6 +120,11 @@ func exitReassemblerFactory(cfg ChunkerConfig) Reassembler {
 //
 // For streaming (incremental) delivery, use AddStreaming instead.
 func (r *ExitReassembler) Add(chunk Chunk) (complete []byte, done bool, err error) {
+	// If this stream was already completed and cleaned up, silently ignore.
+	if r.completedStreams[chunk.StreamID] {
+		return nil, false, nil
+	}
+
 	// Track per-stream accumulation for Add callers.
 	// We use a separate map from the streaming state because Add callers
 	// expect the full stream on completion, not incremental delivery.
@@ -141,6 +148,7 @@ func (r *ExitReassembler) Add(chunk Chunk) (complete []byte, done bool, err erro
 	if done {
 		// Return the full accumulated stream.
 		full := st.accumulated
+		r.completedStreams[chunk.StreamID] = true
 		r.cleanupStream(chunk.StreamID)
 		return full, true, nil
 	}
@@ -162,6 +170,11 @@ func (r *ExitReassembler) Add(chunk Chunk) (complete []byte, done bool, err erro
 // portion (not the full stream). Callers should write it to the target
 // immediately, as with all prior incremental deliveries.
 func (r *ExitReassembler) AddStreaming(chunk Chunk) (delivered []byte, done bool, err error) {
+	// If this stream was already completed and cleaned up, silently ignore.
+	if r.completedStreams[chunk.StreamID] {
+		return nil, false, nil
+	}
+
 	st := r.getOrCreateStream(chunk.StreamID)
 
 	if st.completed {
@@ -174,9 +187,11 @@ func (r *ExitReassembler) AddStreaming(chunk Chunk) (delivered []byte, done bool
 	}
 
 	if done {
-		// Stream complete — cleanup. The caller has already received
-		// prior incremental deliveries via previous AddStreaming calls.
-		// This final call returns only the remaining incremental data.
+		// Stream complete — mark as completed and cleanup. The caller
+		// has already received prior incremental deliveries via previous
+		// AddStreaming calls. This final call returns only the remaining
+		// incremental data.
+		r.completedStreams[chunk.StreamID] = true
 		r.cleanupStream(chunk.StreamID)
 	}
 
@@ -210,13 +225,19 @@ func (r *ExitReassembler) processChunk(st *exitStreamState, chunk Chunk) (delive
 	// buffered data as the final delivery.
 	if chunk.Type == ChunkStreamEnd {
 		if len(chunk.Payload) > 0 {
-			if _, exists := st.chunks[chunk.Sequence]; !exists {
+			_, exists := st.chunks[chunk.Sequence]
+			alreadyDelivered := chunk.Sequence < st.nextExpected
+			if !exists && !alreadyDelivered {
 				if err := r.checkBounds(st, chunk.Payload); err != nil {
 					return nil, false, err
 				}
-				st.chunks[chunk.Sequence] = chunk.Payload
-				st.bytes += len(chunk.Payload)
-				r.totalBytes += len(chunk.Payload)
+				// Copy the payload to prevent aliasing — the caller
+				// may modify the chunk's slice after Add returns.
+				payload := make([]byte, len(chunk.Payload))
+				copy(payload, chunk.Payload)
+				st.chunks[chunk.Sequence] = payload
+				st.bytes += len(payload)
+				r.totalBytes += len(payload)
 			}
 		}
 		st.completed = true
@@ -346,7 +367,7 @@ func (r *ExitReassembler) getOrCreateStream(streamID uint32) *exitStreamState {
 	st, ok := r.streams[streamID]
 	if !ok {
 		st = &exitStreamState{
-			chunks:      make(map[uint32][]byte),
+			chunks:       make(map[uint32][]byte),
 			firstChunkAt: time.Now(),
 		}
 		r.streams[streamID] = st

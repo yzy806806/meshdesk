@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"crypto/sha256"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
-	"crypto/sha256"
 )
 
 // TestDeriveSSKey verifies key derivation produces a 32-byte key.
@@ -143,8 +143,8 @@ func TestSSSessionIPv4Target(t *testing.T) {
 // TestSSListenerCreate verifies that a listener can be created.
 func TestSSListenerCreate(t *testing.T) {
 	cfg := SSConfig{
-		Password:  "test-password",
-		Cipher:    CipherChaCha20IETFPoly1305,
+		Password:   "test-password",
+		Cipher:     CipherChaCha20IETFPoly1305,
 		ListenAddr: "127.0.0.1:0", // random port
 	}
 
@@ -162,7 +162,7 @@ func TestSSListenerCreate(t *testing.T) {
 // TestSSListenerRejectsEmptyPassword verifies validation.
 func TestSSListenerRejectsEmptyPassword(t *testing.T) {
 	cfg := SSConfig{
-		Password:  "",
+		Password:   "",
 		ListenAddr: "127.0.0.1:0",
 	}
 
@@ -175,8 +175,8 @@ func TestSSListenerRejectsEmptyPassword(t *testing.T) {
 // TestSSListenerRejectsUnsupportedCipher verifies cipher validation.
 func TestSSListenerRejectsUnsupportedCipher(t *testing.T) {
 	cfg := SSConfig{
-		Password:  "test",
-		Cipher:    "aes-256-gcm",
+		Password:   "test",
+		Cipher:     "aes-256-gcm",
 		ListenAddr: "127.0.0.1:0",
 	}
 

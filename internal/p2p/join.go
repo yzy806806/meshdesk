@@ -57,7 +57,7 @@ func (t JoinMsgType) String() string {
 const (
 	RejectJoinUnauthorized = "unauthorized"
 	RejectJoinAtCapacity   = "at_capacity"
-	RejectJoinIncompatible  = "incompatible_version"
+	RejectJoinIncompatible = "incompatible_version"
 )
 
 // JoinMessage is the envelope for all join-protocol control messages.
@@ -400,7 +400,7 @@ func (jp *JoinProtocol) sendJoinAccept(req *JoinMessage) {
 	accept.BootstrapMeshIP = localMeta.MeshIP
 	accept.BootstrapPort = 0 // The joiner already knows the bootstrap endpoint
 	accept.BootstrapPubKey = localMeta.PublicKey
-	accept.GossipPort = 0    // Filled from config if needed
+	accept.GossipPort = 0 // Filled from config if needed
 
 	// Include the current known-peers list so the joiner gets an
 	// immediate view of the mesh (§4.1 Phase 2 step 4a).

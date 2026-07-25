@@ -12,12 +12,12 @@ import (
 
 // totpEnrollResponse is the JSON response from the enrollment endpoint.
 type totpEnrollResponse struct {
-	Secret       string   `json:"secret"`
-	QRURL        string   `json:"qr_url"`
-	Algorithm    string   `json:"algorithm"`
-	Digits       int      `json:"digits"`
-	Period       int      `json:"period"`
-	Recovery     []string `json:"recovery"`
+	Secret    string   `json:"secret"`
+	QRURL     string   `json:"qr_url"`
+	Algorithm string   `json:"algorithm"`
+	Digits    int      `json:"digits"`
+	Period    int      `json:"period"`
+	Recovery  []string `json:"recovery"`
 }
 
 // handle2FAEnroll handles POST /api/2fa/enroll.

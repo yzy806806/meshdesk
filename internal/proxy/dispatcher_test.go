@@ -12,10 +12,10 @@ import (
 // shared relay nodes between two paths.
 func TestPathOverlapDetection(t *testing.T) {
 	tests := []struct {
-		name     string
-		path1    []string
-		path2    []string
-		overlap  bool
+		name    string
+		path1   []string
+		path2   []string
+		overlap bool
 	}{
 		{
 			name:    "disjoint",
@@ -98,9 +98,9 @@ func TestDispatcherRejectsOverlappingPaths(t *testing.T) {
 	sharedRelay := "relayA"
 
 	cfg := DispatcherConfig{
-		E2EKey:  e2eKey,
-		Path1:   &Path{Relays: []string{sharedRelay}, RelayKeys: [][]byte{make([]byte, KeySize)}},
-		Path2:   &Path{Relays: []string{sharedRelay}, RelayKeys: [][]byte{make([]byte, KeySize)}},
+		E2EKey: e2eKey,
+		Path1:  &Path{Relays: []string{sharedRelay}, RelayKeys: [][]byte{make([]byte, KeySize)}},
+		Path2:  &Path{Relays: []string{sharedRelay}, RelayKeys: [][]byte{make([]byte, KeySize)}},
 	}
 
 	_, err := NewDispatcher(cfg, nil)
@@ -141,9 +141,9 @@ func TestDispatcherRoundTrip(t *testing.T) {
 	cfg := DispatcherConfig{
 		ChunkerStrategy: "fixed-16k",
 		ChunkerCfg: ChunkerConfig{
-			MaxChunkSize:    4 * 1024, // small chunks for test
-			MinChunkSize:    4 * 1024,
-			DisablePadding:  true,
+			MaxChunkSize:   4 * 1024, // small chunks for test
+			MinChunkSize:   4 * 1024,
+			DisablePadding: true,
 		},
 		CircuitCfg: DefaultCircuitConfig(),
 		Path1:      path1,

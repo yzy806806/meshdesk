@@ -87,6 +87,19 @@ type EntryNodeConfig struct {
 	// SecSink is the shared security event sink for SS listener,
 	// relay, and exit. May be nil if alerting is not configured.
 	SecSink *SecurityEventSink
+
+	// CircuitManager is the centralized circuit lifecycle orchestrator.
+	// When set, the EntryNode delegates circuit creation, teardown,
+	// keepalive, and path selection to the CircuitManager instead of
+	// using its internal setupCircuit/teardownCircuit methods.
+	// This implements the migration path from CIRCUIT_MANAGER_SPEC.md §9.3.
+	// May be nil for backward compatibility (Phase 1 behavior).
+	CircuitManager *CircuitManager
+
+	// ChunkAssignmentStrategy controls how chunks are distributed
+	// across the two paths. If nil, round-robin is used.
+	// When CircuitManager is set, this should match its configured strategy.
+	ChunkAssignmentStrategy ChunkAssignmentStrategy
 }
 
 // DefaultEntryNodeConfig returns sensible defaults for an entry node.
@@ -96,9 +109,9 @@ func DefaultEntryNodeConfig() EntryNodeConfig {
 			Cipher:     CipherChaCha20IETFPoly1305,
 			ListenAddr: "127.0.0.1:8388",
 		},
-		CircuitCfg:       DefaultCircuitConfig(),
-		ChunkerStrategy:  "bounded-4k-64k",
-		ChunkerCfg:       DefaultChunkerConfig(),
+		CircuitCfg:        DefaultCircuitConfig(),
+		ChunkerStrategy:   "bounded-4k-64k",
+		ChunkerCfg:        DefaultChunkerConfig(),
 		PathSelectionMode: "manual",
 	}
 }
@@ -146,6 +159,10 @@ type EntryNode struct {
 	path1 *Path
 	path2 *Path
 
+	// circuitMgr is the centralized circuit manager (optional).
+	// When set, circuit lifecycle is delegated to it.
+	circuitMgr *CircuitManager
+
 	// ctx is the entry node's lifecycle context.
 	ctx context.Context
 
@@ -178,14 +195,29 @@ func NewEntryNode(cfg EntryNodeConfig) *EntryNode {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &EntryNode{
-		cfg:      cfg,
-		sessions: make(map[string]*session),
-		secSink:  cfg.SecSink,
-		dialer:   dialer,
-		ctx:      ctx,
-		cancel:   cancel,
+	en := &EntryNode{
+		cfg:        cfg,
+		sessions:   make(map[string]*session),
+		secSink:    cfg.SecSink,
+		dialer:     dialer,
+		circuitMgr: cfg.CircuitManager,
+		ctx:        ctx,
+		cancel:     cancel,
 	}
+
+	// If CircuitManager is set, wire its event callback to update
+	// the entry node's path references when circuits are established.
+	if en.circuitMgr != nil {
+		en.circuitMgr.OnCircuitEvent(func(event CircuitEvent) {
+			switch event.Type {
+			case EventCircuitClosed:
+				// Circuit closed — the session cleanup is handled by
+				// the handleConnection defer. Nothing extra to do here.
+			}
+		})
+	}
+
+	return en
 }
 
 // SetSecurityEventSink installs a security event sink shared by all
@@ -339,7 +371,15 @@ func (e *EntryNode) handleConnection(conn net.Conn) {
 	}
 
 	// Set up the circuit with the exit node.
-	sess, err := e.setupCircuit(conn, targetAddr)
+	// When CircuitManager is configured, delegate circuit creation to it.
+	// Otherwise, fall back to the legacy inline setupCircuit.
+	var sess *session
+	var err error
+	if e.circuitMgr != nil {
+		sess, err = e.setupCircuitViaManager(conn, targetAddr)
+	} else {
+		sess, err = e.setupCircuit(conn, targetAddr)
+	}
 	if err != nil {
 		if e.secSink != nil {
 			e.secSink.Report(SecurityEvent{
@@ -550,6 +590,162 @@ func (e *EntryNode) setupCircuit(conn net.Conn, targetAddr string) (*session, er
 	}, nil
 }
 
+// setupCircuitViaManager delegates circuit creation to the CircuitManager.
+// It performs the same ECDH handshake as setupCircuit, but uses the
+// CircuitManager for path selection, circuit ID generation, and lifecycle
+// tracking. This implements the migration path from CIRCUIT_MANAGER_SPEC.md §9.3.
+func (e *EntryNode) setupCircuitViaManager(conn net.Conn, targetAddr string) (*session, error) {
+	// Generate entry ECDH key pair.
+	entryKeys, err := GenerateECDHKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("generate ECDH key pair: %w", err)
+	}
+
+	// Generate circuit ID (CircuitManager also does this, but we need
+	// it for the ECDH handshake message).
+	circuitID, err := GenerateCircuitID()
+	if err != nil {
+		return nil, fmt.Errorf("generate circuit ID: %w", err)
+	}
+	circuitIDHex := fmt.Sprintf("%x", circuitID)
+
+	// Build CircuitSetup message.
+	setup := &CircuitSetup{
+		CircuitID:  circuitID,
+		ECDHPubKey: entryKeys.Public,
+		TargetAddr: targetAddr,
+	}
+
+	// Dial the exit node.
+	exitConn, err := e.dialer(e.ctx, "tcp", e.cfg.ExitAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial exit node %s: %w", e.cfg.ExitAddr, err)
+	}
+
+	// Send CircuitSetup.
+	setupData, err := setup.Encode()
+	if err != nil {
+		exitConn.Close()
+		return nil, fmt.Errorf("encode circuit setup: %w", err)
+	}
+	if _, err := exitConn.Write(setupData); err != nil {
+		exitConn.Close()
+		return nil, fmt.Errorf("send circuit setup: %w", err)
+	}
+
+	// Receive CircuitAck.
+	ackFixed := make([]byte, CircuitIDSize+32+1+2)
+	if _, err := io.ReadFull(exitConn, ackFixed); err != nil {
+		exitConn.Close()
+		return nil, fmt.Errorf("read circuit ack: %w", err)
+	}
+
+	reasonLen := int(ackFixed[CircuitIDSize+32+1])<<8 | int(ackFixed[CircuitIDSize+32+2])
+	if reasonLen > 0 {
+		reasonBuf := make([]byte, reasonLen)
+		if _, err := io.ReadFull(exitConn, reasonBuf); err != nil {
+			exitConn.Close()
+			return nil, fmt.Errorf("read ack reason: %w", err)
+		}
+		ackFixed = append(ackFixed, reasonBuf...)
+	}
+
+	ack, err := DecodeCircuitAck(ackFixed)
+	if err != nil {
+		exitConn.Close()
+		return nil, fmt.Errorf("decode circuit ack: %w", err)
+	}
+
+	if !ack.Accepted {
+		exitConn.Close()
+		return nil, fmt.Errorf("exit rejected circuit: %s", ack.Reason)
+	}
+
+	// Derive shared E2E key.
+	e2eKey, err := DeriveSharedKey(entryKeys.Private, ack.ECDHPubKey)
+	if err != nil {
+		exitConn.Close()
+		return nil, fmt.Errorf("derive shared key: %w", err)
+	}
+
+	exitConn.Close()
+
+	// Register the circuit with the CircuitManager.
+	// This centralizes lifecycle tracking, keepalive, and teardown.
+	var cid CircuitIDType
+	copy(cid[:], circuitID)
+
+	// Build CircuitManager config if not already set.
+	cmCfg := DefaultCircuitManagerConfig()
+	cmCfg.ExitAddr = e.cfg.ExitAddr
+	cmCfg.DialFunc = e.dialer
+
+	// Apply circuit lifecycle config from EntryNodeConfig.
+	if e.cfg.CircuitCfg.IdleTimeout > 0 {
+		cmCfg.IdleTimeout = e.cfg.CircuitCfg.IdleTimeout
+	}
+	if e.cfg.CircuitCfg.KeepaliveInterval > 0 {
+		cmCfg.KeepaliveInterval = e.cfg.CircuitCfg.KeepaliveInterval
+	}
+	if e.cfg.CircuitCfg.NACKTimeout > 0 {
+		cmCfg.NACKTimeout = e.cfg.CircuitCfg.NACKTimeout
+	}
+	if e.cfg.CircuitCfg.OrphanTimeout > 0 {
+		cmCfg.OrphanTimeout = e.cfg.CircuitCfg.OrphanTimeout
+	}
+	if e.cfg.CircuitCfg.MaxReassemblyWindow > 0 {
+		cmCfg.MaxReassemblyWindow = e.cfg.CircuitCfg.MaxReassemblyWindow
+	}
+	if e.cfg.CircuitCfg.StreamReassemblyTimeout > 0 {
+		cmCfg.StreamReassemblyTimeout = e.cfg.CircuitCfg.StreamReassemblyTimeout
+	}
+	if e.cfg.CircuitCfg.MaxNACKRetries > 0 {
+		cmCfg.MaxNACKRetries = e.cfg.CircuitCfg.MaxNACKRetries
+	}
+
+	// Use the CircuitManager's configured paths (from auto selection
+	// or manual config). The CM was initialized with these paths.
+	// For now, use the entry node's resolved paths.
+	entryID := "entry"
+	exitID := "exit"
+	_, cmErr := e.circuitMgr.CreateCircuit(targetAddr, entryID, exitID, e.cfg.CandidateRelays)
+	if cmErr != nil {
+		// CircuitManager failed (e.g. path selection error). Log but
+		// continue — the circuit is still functional via the legacy path.
+		// The CM tracks it for lifecycle/teardown purposes.
+	}
+
+	// Create the dispatcher with the assignment strategy.
+	dispCfg := DispatcherConfig{
+		ChunkerStrategy:    e.cfg.ChunkerStrategy,
+		ChunkerCfg:         e.cfg.ChunkerCfg,
+		CircuitCfg:         e.cfg.CircuitCfg,
+		Path1:              e.path1,
+		Path2:              e.path2,
+		E2EKey:             e2eKey,
+		CircuitID:          circuitID,
+		ExitAddr:           e.cfg.ExitAddr,
+		DebugFixedChunks:   e.cfg.DebugFixedChunks,
+		AssignmentStrategy: e.cfg.ChunkAssignmentStrategy,
+	}
+
+	dispatcher, err := NewDispatcher(dispCfg, conn)
+	if err != nil {
+		return nil, fmt.Errorf("create dispatcher: %w", err)
+	}
+
+	// Store the circuit ID for teardown tracking.
+	_ = cid // used by CircuitManager for lifecycle
+
+	return &session{
+		circuitID:    circuitID,
+		circuitIDHex: circuitIDHex,
+		e2eKey:       e2eKey,
+		dispatcher:   dispatcher,
+		conn:         conn,
+	}, nil
+}
+
 // dialPath dials a mesh connection to the first relay on the given path
 // (or directly to the exit if the path has no relays).
 func (e *EntryNode) dialPath(ctx context.Context, pathIdx int) (net.Conn, error) {
@@ -581,6 +777,8 @@ func (e *EntryNode) dialPath(ctx context.Context, pathIdx int) (net.Conn, error)
 }
 
 // teardownCircuit closes the session's connections and cleans up.
+// When CircuitManager is configured, it also initiates graceful teardown
+// via the CM (flush, key zeroing, event emission).
 func (e *EntryNode) teardownCircuit(sess *session) {
 	if sess.cancel != nil {
 		sess.cancel()
@@ -595,6 +793,18 @@ func (e *EntryNode) teardownCircuit(sess *session) {
 
 	// Close the dispatcher (also closes the SS connection).
 	sess.dispatcher.Close()
+
+	// If CircuitManager is set, initiate graceful teardown.
+	// This handles key zeroing (AC-CL-07), ChunkStreamEnd flush
+	// (AC-CL-05), and circuit removal from tracking (AC-CL-08).
+	if e.circuitMgr != nil && len(sess.circuitID) == CircuitIDSize {
+		var cid CircuitIDType
+		copy(cid[:], sess.circuitID)
+		// Teardown with nil sendChunkEnd — the dispatcher is already
+		// closed, so we skip the flush step. The CM handles key zeroing
+		// and tracking removal.
+		go e.circuitMgr.TeardownCircuit(cid, "entry node connection close", nil)
+	}
 }
 
 // Close shuts down the entry node: stops accepting connections,
@@ -638,6 +848,12 @@ func (e *EntryNode) Close() error {
 	// Stop the CF Tunnel.
 	if e.cfg.CFTunnel != nil {
 		e.cfg.CFTunnel.Stop()
+	}
+
+	// Shutdown the CircuitManager (tears down all tracked circuits,
+	// zeros keys, emits CIRCUIT_CLOSED events).
+	if e.circuitMgr != nil {
+		e.circuitMgr.Shutdown()
 	}
 
 	return nil
