@@ -742,8 +742,10 @@ func TestRelayChainE2EDecrypt(t *testing.T) {
 		PaddingLen: 0,
 	}
 
+	circuitID, _ := GenerateCircuitID()
+
 	// Entry encodes the chunk: E2E encrypts payload, header encrypted with relayKey.
-	wc, err := EncodeChunk(origChunk, e2eKey, relayKey, "exit-addr")
+	wc, err := EncodeChunk(origChunk, e2eKey, relayKey, "exit-addr", circuitID)
 	if err != nil {
 		t.Fatalf("EncodeChunk failed: %v", err)
 	}
@@ -755,7 +757,7 @@ func TestRelayChainE2EDecrypt(t *testing.T) {
 	}
 
 	// Exit decrypts the E2E payload.
-	decoded, err := DecodeChunk(forwarded, e2eKey)
+	decoded, err := DecodeChunk(forwarded, e2eKey, circuitID)
 	if err != nil {
 		t.Fatalf("DecodeChunk at exit failed: %v", err)
 	}

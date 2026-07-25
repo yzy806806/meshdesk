@@ -79,6 +79,10 @@ type DispatcherConfig struct {
 	// E2EKey is the shared ChaCha20-Poly1305 key for E2E encryption.
 	E2EKey []byte
 
+	// CircuitID is the 16-byte circuit identifier, bound into each
+	// chunk's AEAD plaintext to prevent cross-circuit replay.
+	CircuitID []byte
+
 	// ExitAddr is the mesh address of the exit node.
 	ExitAddr string
 
@@ -110,6 +114,9 @@ type pathStats struct {
 func NewDispatcher(cfg DispatcherConfig, conn net.Conn) (*Dispatcher, error) {
 	if cfg.E2EKey == nil || len(cfg.E2EKey) != KeySize {
 		return nil, fmt.Errorf("E2E key must be %d bytes", KeySize)
+	}
+	if cfg.CircuitID == nil || len(cfg.CircuitID) != CircuitIDSize {
+		return nil, fmt.Errorf("circuit ID must be %d bytes", CircuitIDSize)
 	}
 	if cfg.Path1 == nil || cfg.Path2 == nil {
 		return nil, fmt.Errorf("two paths are required")
@@ -200,7 +207,7 @@ func (d *Dispatcher) Run(ctx context.Context, sendChunk func(path int, wc *WireC
 				}
 
 				// Encrypt the chunk.
-				wc, encErr := EncodeChunk(chunk, d.cfg.E2EKey, relayKey, nextHop)
+				wc, encErr := EncodeChunk(chunk, d.cfg.E2EKey, relayKey, nextHop, d.cfg.CircuitID)
 				if encErr != nil {
 					return fmt.Errorf("encode chunk: %w", encErr)
 				}
@@ -263,7 +270,7 @@ func (d *Dispatcher) sendStreamEnd(sendChunk func(path int, wc *WireChunk) error
 			relayKey = d.cfg.E2EKey
 		}
 
-		wc, err := EncodeChunk(endChunk, d.cfg.E2EKey, relayKey, nextHop)
+		wc, err := EncodeChunk(endChunk, d.cfg.E2EKey, relayKey, nextHop, d.cfg.CircuitID)
 		if err != nil {
 			continue
 		}

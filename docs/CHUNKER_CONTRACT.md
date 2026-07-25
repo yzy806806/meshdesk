@@ -1,10 +1,10 @@
 # Chunker/Reassembler Interface Contract
 
-**Version:** 1.1
-**Status:** Adopted (team motion motion-d607d489b7be, action item 1/5; revised by t_fb704ce9)
+**Version:** 1.2
+**Status:** Adopted (team motion motion-d607d489b7be, action item 1/5; revised by t_fb704ce9; gap fixes by t_fdd93ad5)
 **File:** `internal/proxy/chunker.go`
-**Tests:** `internal/proxy/chunker_test.go`
-**Gap fixes:** metadata-in-ciphertext, per-circuit padding seed, reassembler bounds
+**Tests:** `internal/proxy/chunker_test.go`, `internal/proxy/exit_reassembler_test.go`
+**Gap fixes:** metadata-in-ciphertext, per-circuit padding seed, reassembler bounds, encrypted padding bytes, circuitID binding, flushRemaining byte accounting
 
 ---
 
@@ -428,3 +428,76 @@ bounds on each `Add` call, returning `ErrReassemblyChunksExceeded` or
 `ErrReassemblyBytesExceeded`. Updated the `Reassembler` interface to return
 `(complete []byte, done bool, err error)` so callers can detect violations.
 Added three contract tests proving each bound is enforced.
+
+### 10.4 Encrypted Padding Bytes (encryptedMetadata)
+
+**Problem:** The `PaddingLen` field was declared in the AEAD plaintext
+metadata, but no actual padding bytes were included in the ciphertext.
+`PaddingLen` was an unverifiable claim — the receiver had no way to verify
+that the declared padding length matched actual padding on the wire. An
+attacker could strip padding without breaking the AEAD tag, or a buggy
+sender could claim any `PaddingLen` value without consequence.
+
+**Fix:** `EncodeChunk` now generates `PaddingLen` random bytes via
+`crypto/rand` and includes them in the AEAD plaintext, between the metadata
+header and the payload. `DecodeChunk` reads exactly `PaddingLen` bytes
+from the decrypted plaintext and discards them (they carry no application
+data). This makes `PaddingLen` self-verifying: any discrepancy between the
+declared padding length and the actual bytes in the ciphertext will cause
+an AEAD tag verification failure or a plaintext parsing error.
+
+New wire format:
+```
+[CircuitID (16)] [StreamID (4)] [Sequence (4)] [Total (4)] [Type (1)]
+[PaddingLen (2)] [PayloadLen (4)] [Padding (PaddingLen bytes)] [Payload (variable)]
++ 16-byte Poly1305 auth tag
+```
+
+**Tests:** `TestEncodeChunkPaddingBytesInCiphertext` verifies the ciphertext
+is larger by exactly the padding bytes, and `TestEncodeChunkZeroPaddingWorks`
+verifies the zero-padding edge case. `TestMetadataInCiphertextContract` was
+updated to pass the circuit ID parameter.
+
+### 10.5 Circuit ID Binding (circuitID param)
+
+**Problem:** `EncodeChunk` and `DecodeChunk` did not bind chunks to a
+specific circuit. A chunk encrypted for circuit A could theoretically be
+injected into circuit B's stream if an attacker had access to the relay
+forwarding path. There was no per-circuit authentication of chunk origin.
+
+**Fix:** Added a `circuitID []byte` parameter (16 bytes, matching
+`CircuitIDSize`) to both `EncodeChunk` and `DecodeChunk`. The circuit ID
+is included as the first 16 bytes of the AEAD plaintext. `DecodeChunk`
+verifies the decoded circuit ID against the expected value using a
+constant-time comparison (`bytesEqual`), returning `ErrCircuitIDMismatch`
+if they differ. This prevents cross-circuit replay: even if an attacker
+injects a valid chunk from circuit A into circuit B's stream, the circuit
+ID mismatch will be detected.
+
+The `Dispatcher` and `ExitNode` were updated to pass the circuit ID through
+`DispatcherConfig.CircuitID` and `exitCircuit.circuitIDBytes` respectively.
+The `ExitNode.HandleCircuitSetup` stores the raw circuit ID bytes from the
+`CircuitSetup` message for later verification.
+
+**Test:** `TestChunkEncodeTampered` now includes a cross-circuit replay
+verification case that decodes a chunk with a different circuit ID and
+expects `ErrCircuitIDMismatch`.
+
+### 10.6 flushRemaining Byte Accounting (Reassembler errors)
+
+**Problem:** `ExitReassembler.flushRemaining` zeroed `r.totalBytes` (the
+global buffered-bytes counter) instead of subtracting the completed stream's
+bytes. When multiple streams were active concurrently, completing one stream
+via `ChunkStreamEnd` would zero the global counter, causing the byte limit
+enforcement (`MaxReassemblyBytes`) to undercount the memory actually in use.
+This could allow a memory exhaustion attack to bypass the byte limit.
+
+**Fix:** `flushRemaining` now subtracts `st.bytes` from `r.totalBytes`
+(with a floor of 0), matching the accounting already used by
+`deliverContiguous` and `cleanupStream`. This ensures the global byte
+counter accurately reflects only the bytes still buffered across remaining
+active streams.
+
+**Test:** `TestExitReassemblerFlushRemainingPreservesGlobalBytes` creates
+two streams with buffered chunks, completes one via `ChunkStreamEnd`, and
+verifies the remaining stream's bytes are still correctly tracked.

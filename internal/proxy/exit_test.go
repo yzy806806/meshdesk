@@ -82,7 +82,7 @@ func setupExitWithMockTarget(t *testing.T, cfg ExitConfig) (*ExitNode, net.Liste
 
 // performCircuitSetup creates a circuit on the exit node by sending a
 // CircuitSetup message. Returns the circuit ID hex string and the E2E key.
-func performCircuitSetup(t *testing.T, exit *ExitNode, targetAddr string, entryKeys *ECDHKeyPair, exitKeys *ECDHKeyPair) (string, []byte) {
+func performCircuitSetup(t *testing.T, exit *ExitNode, targetAddr string, entryKeys *ECDHKeyPair, exitKeys *ECDHKeyPair) (string, []byte, []byte) {
 	t.Helper()
 
 	circuitID, err := GenerateCircuitID()
@@ -110,12 +110,12 @@ func performCircuitSetup(t *testing.T, exit *ExitNode, targetAddr string, entryK
 		t.Fatalf("derive E2E key: %v", err)
 	}
 
-	return fmt.Sprintf("%x", circuitID), e2eKey
+	return fmt.Sprintf("%x", circuitID), circuitID, e2eKey
 }
 
 // encodeChunks encrypts a slice of Chunks into WireChunks using the E2E key
 // and a dummy relay key.
-func encodeChunks(t *testing.T, chunks []Chunk, e2eKey []byte) []*WireChunk {
+func encodeChunks(t *testing.T, chunks []Chunk, e2eKey []byte, circuitID []byte) []*WireChunk {
 	t.Helper()
 
 	relayKey := make([]byte, KeySize)
@@ -125,7 +125,7 @@ func encodeChunks(t *testing.T, chunks []Chunk, e2eKey []byte) []*WireChunk {
 
 	result := make([]*WireChunk, len(chunks))
 	for i, chunk := range chunks {
-		wc, err := EncodeChunk(chunk, e2eKey, relayKey, "exit-node")
+		wc, err := EncodeChunk(chunk, e2eKey, relayKey, "exit-node", circuitID)
 		if err != nil {
 			t.Fatalf("encode chunk %d: %v", i, err)
 		}
@@ -177,7 +177,8 @@ func TestExitCircuitSetup(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, exitKeys)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, exitKeys)
+	_ = circuitID // not all tests use circuitID directly; it's used by encodeChunks
 
 	if circuitIDHex == "" {
 		t.Fatal("circuit ID is empty")
@@ -338,12 +339,12 @@ func TestExitInOrderReassembly(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Create test data and split into chunks.
 	testData := bytes.Repeat([]byte("A"), 4096) // 4 chunks of 1024 bytes
 	chunks := makeDataChunks(0, testData, 1024)
-	wireChunks := encodeChunks(t, chunks, e2eKey)
+	wireChunks := encodeChunks(t, chunks, e2eKey, circuitID)
 
 	// Feed chunks in order.
 	for i, wc := range wireChunks {
@@ -382,12 +383,12 @@ func TestExitOutOfOrderReassembly(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Create test data.
 	testData := []byte("Hello, MeshDesk! This is a test of out-of-order reassembly.")
 	chunks := makeDataChunks(0, testData, 16) // small chunks to get several
-	wireChunks := encodeChunks(t, chunks, e2eKey)
+	wireChunks := encodeChunks(t, chunks, e2eKey, circuitID)
 
 	// Feed chunks in reverse order (except the last one which is StreamEnd).
 	// We need to be careful: the StreamEnd chunk triggers assembly.
@@ -424,11 +425,11 @@ func TestExitDeduplication(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	testData := []byte("duplicate test")
 	chunks := makeDataChunks(0, testData, 16)
-	wireChunks := encodeChunks(t, chunks, e2eKey)
+	wireChunks := encodeChunks(t, chunks, e2eKey, circuitID)
 
 	// Feed each chunk twice.
 	for i, wc := range wireChunks {
@@ -464,11 +465,11 @@ func TestExitDoSWindowRejection(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Create a chunk with sequence 0 (in-window).
 	chunk0 := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
-	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey)[0]
+	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey, circuitID)[0]
 	_, err := exit.HandleWireChunk(circuitIDHex, wc0, 0)
 	if err != nil {
 		t.Fatalf("handle chunk seq=0: %v", err)
@@ -477,7 +478,7 @@ func TestExitDoSWindowRejection(t *testing.T) {
 	// Create a chunk with sequence 10 (beyond window of 4).
 	// ackBase is now 1, so max allowed is 1 + 4 = 5. Seq 10 is rejected.
 	chunk10 := Chunk{StreamID: 0, Sequence: 10, Type: ChunkData, Payload: []byte("B")}
-	wc10 := encodeChunks(t, []Chunk{chunk10}, e2eKey)[0]
+	wc10 := encodeChunks(t, []Chunk{chunk10}, e2eKey, circuitID)[0]
 	_, err = exit.HandleWireChunk(circuitIDHex, wc10, 0)
 	if err == nil {
 		t.Fatal("expected error for chunk beyond reassembly window, got nil")
@@ -501,11 +502,11 @@ func TestExitDoSWindowEdge(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Chunk at sequence 0 (ackBase starts at 0, window is [0, 4)).
 	chunk0 := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
-	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey)[0]
+	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey, circuitID)[0]
 	_, err := exit.HandleWireChunk(circuitIDHex, wc0, 0)
 	if err != nil {
 		t.Fatalf("handle chunk seq=0: %v", err)
@@ -513,7 +514,7 @@ func TestExitDoSWindowEdge(t *testing.T) {
 
 	// Chunk at sequence 3 (window edge: ackBase=1, max=1+4=5, so 3 < 5 is OK).
 	chunk3 := Chunk{StreamID: 0, Sequence: 3, Type: ChunkData, Payload: []byte("D")}
-	wc3 := encodeChunks(t, []Chunk{chunk3}, e2eKey)[0]
+	wc3 := encodeChunks(t, []Chunk{chunk3}, e2eKey, circuitID)[0]
 	_, err = exit.HandleWireChunk(circuitIDHex, wc3, 0)
 	if err != nil {
 		t.Fatalf("handle chunk seq=3 (window edge): %v", err)
@@ -521,7 +522,7 @@ func TestExitDoSWindowEdge(t *testing.T) {
 
 	// Chunk at sequence 4 (just beyond edge: 4 < 5, still OK).
 	chunk4 := Chunk{StreamID: 0, Sequence: 4, Type: ChunkData, Payload: []byte("E")}
-	wc4 := encodeChunks(t, []Chunk{chunk4}, e2eKey)[0]
+	wc4 := encodeChunks(t, []Chunk{chunk4}, e2eKey, circuitID)[0]
 	_, err = exit.HandleWireChunk(circuitIDHex, wc4, 0)
 	if err != nil {
 		t.Fatalf("handle chunk seq=4 (within window): %v", err)
@@ -547,11 +548,11 @@ func TestExitNACKGeneration(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Send chunk 0 (in-order, no gap).
 	chunk0 := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
-	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey)[0]
+	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey, circuitID)[0]
 	nack, err := exit.HandleWireChunk(circuitIDHex, wc0, 0)
 	if err != nil {
 		t.Fatalf("handle chunk 0: %v", err)
@@ -562,7 +563,7 @@ func TestExitNACKGeneration(t *testing.T) {
 
 	// Send chunk 5 (creates a gap: 1,2,3,4 are missing).
 	chunk5 := Chunk{StreamID: 0, Sequence: 5, Type: ChunkData, Payload: []byte("F")}
-	wc5 := encodeChunks(t, []Chunk{chunk5}, e2eKey)[0]
+	wc5 := encodeChunks(t, []Chunk{chunk5}, e2eKey, circuitID)[0]
 	nack, err = exit.HandleWireChunk(circuitIDHex, wc5, 0)
 	if err != nil {
 		t.Fatalf("handle chunk 5: %v", err)
@@ -577,7 +578,7 @@ func TestExitNACKGeneration(t *testing.T) {
 
 	// Send another chunk to trigger the NACK check.
 	chunk6 := Chunk{StreamID: 0, Sequence: 6, Type: ChunkData, Payload: []byte("G")}
-	wc6 := encodeChunks(t, []Chunk{chunk6}, e2eKey)[0]
+	wc6 := encodeChunks(t, []Chunk{chunk6}, e2eKey, circuitID)[0]
 	nack, err = exit.HandleWireChunk(circuitIDHex, wc6, 0)
 	if err != nil {
 		t.Fatalf("handle chunk 6: %v", err)
@@ -616,15 +617,15 @@ func TestExitNACKRateLimit(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Create a gap by sending chunk 0 then chunk 5.
 	chunk0 := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
-	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey)[0]
+	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey, circuitID)[0]
 	exit.HandleWireChunk(circuitIDHex, wc0, 0)
 
 	chunk5 := Chunk{StreamID: 0, Sequence: 5, Type: ChunkData, Payload: []byte("F")}
-	wc5 := encodeChunks(t, []Chunk{chunk5}, e2eKey)[0]
+	wc5 := encodeChunks(t, []Chunk{chunk5}, e2eKey, circuitID)[0]
 	exit.HandleWireChunk(circuitIDHex, wc5, 0)
 
 	// Wait for timeout.
@@ -632,7 +633,7 @@ func TestExitNACKRateLimit(t *testing.T) {
 
 	// Send a chunk that should trigger NACK.
 	chunk6 := Chunk{StreamID: 0, Sequence: 6, Type: ChunkData, Payload: []byte("G")}
-	wc6 := encodeChunks(t, []Chunk{chunk6}, e2eKey)[0]
+	wc6 := encodeChunks(t, []Chunk{chunk6}, e2eKey, circuitID)[0]
 	nack1, _ := exit.HandleWireChunk(circuitIDHex, wc6, 0)
 	if nack1 == nil {
 		t.Fatal("expected first NACK")
@@ -640,7 +641,7 @@ func TestExitNACKRateLimit(t *testing.T) {
 
 	// Immediately send another chunk — should NOT get a NACK (rate limited).
 	chunk7 := Chunk{StreamID: 0, Sequence: 7, Type: ChunkData, Payload: []byte("H")}
-	wc7 := encodeChunks(t, []Chunk{chunk7}, e2eKey)[0]
+	wc7 := encodeChunks(t, []Chunk{chunk7}, e2eKey, circuitID)[0]
 	nack2, _ := exit.HandleWireChunk(circuitIDHex, wc7, 0)
 	if nack2 != nil {
 		t.Fatal("expected rate-limited NACK to be nil")
@@ -698,11 +699,11 @@ func TestExitOrphanCleanupKeepsActive(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Send a chunk to keep the circuit active.
 	chunk := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
-	wc := encodeChunks(t, []Chunk{chunk}, e2eKey)[0]
+	wc := encodeChunks(t, []Chunk{chunk}, e2eKey, circuitID)[0]
 	exit.HandleWireChunk(circuitIDHex, wc, 0)
 
 	// Wait less than the orphan timeout.
@@ -761,7 +762,7 @@ func TestExitTeardown(t *testing.T) {
 	// Further operations on the torn-down circuit should fail.
 	chunk := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
 	e2eKey, _ := DeriveSharedKey(entryKeys.Private, ack.ECDHPubKey)
-	wc := encodeChunks(t, []Chunk{chunk}, e2eKey)[0]
+	wc := encodeChunks(t, []Chunk{chunk}, e2eKey, circuitID)[0]
 	_, err = exit.HandleWireChunk(circuitIDHex, wc, 0)
 	if err == nil {
 		t.Fatal("expected error handling chunk on torn-down circuit")
@@ -786,15 +787,15 @@ func TestExitPathTracking(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Send chunks on path 0 and path 1.
 	chunk0 := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
-	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey)[0]
+	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey, circuitID)[0]
 	exit.HandleWireChunk(circuitIDHex, wc0, 0)
 
 	chunk1 := Chunk{StreamID: 0, Sequence: 1, Type: ChunkData, Payload: []byte("B")}
-	wc1 := encodeChunks(t, []Chunk{chunk1}, e2eKey)[0]
+	wc1 := encodeChunks(t, []Chunk{chunk1}, e2eKey, circuitID)[0]
 	exit.HandleWireChunk(circuitIDHex, wc1, 1)
 
 	// Verify that both paths are tracked.
@@ -823,11 +824,11 @@ func TestExitPathTrackingOnDemand(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Send only on path 0.
 	chunk0 := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("A")}
-	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey)[0]
+	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey, circuitID)[0]
 	exit.HandleWireChunk(circuitIDHex, wc0, 0)
 
 	// Only one path should be tracked.
@@ -847,7 +848,8 @@ func TestExitKeepalive(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, _ := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, _ := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	_ = circuitID
 
 	circuitIDBytes, _ := parseCircuitIDHex(circuitIDHex)
 
@@ -922,7 +924,7 @@ func TestExitAEADDecryptFailure(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, _ := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, _ := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Create a chunk encrypted with a DIFFERENT key.
 	wrongKey := make([]byte, KeySize)
@@ -930,7 +932,7 @@ func TestExitAEADDecryptFailure(t *testing.T) {
 		wrongKey[i] = 0xFF
 	}
 	chunk := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: []byte("secret")}
-	wc := encodeChunks(t, []Chunk{chunk}, wrongKey)[0]
+	wc := encodeChunks(t, []Chunk{chunk}, wrongKey, circuitID)[0]
 
 	_, err := exit.HandleWireChunk(circuitIDHex, wc, 0)
 	if err == nil {
@@ -1119,7 +1121,7 @@ func TestExitConcurrentChunks(t *testing.T) {
 				if j == numChunksPerCircuit-1 {
 					chunk.Type = ChunkStreamEnd
 				}
-				wc := encodeChunks(t, []Chunk{chunk}, e2eKey)[0]
+				wc := encodeChunks(t, []Chunk{chunk}, e2eKey, circuitID)[0]
 				_, err := exit.HandleWireChunk(circuitIDHex, wc, j%2)
 				if err != nil {
 					t.Errorf("circuit %d chunk %d: %v", circuitIdx, j, err)
@@ -1152,12 +1154,12 @@ func TestExitFullRoundTrip(t *testing.T) {
 	defer ln.Close()
 	defer exit.Close()
 
-	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
+	circuitIDHex, circuitID, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 
 	// Create test data larger than chunk size.
 	testData := []byte("MeshDesk anonymous proxy - full round trip test data!")
 	chunks := makeDataChunks(0, testData, 16)
-	wireChunks := encodeChunks(t, chunks, e2eKey)
+	wireChunks := encodeChunks(t, chunks, e2eKey, circuitID)
 
 	// Feed chunks in order.
 	for _, wc := range wireChunks {
@@ -1168,8 +1170,8 @@ func TestExitFullRoundTrip(t *testing.T) {
 	}
 
 	// Teardown the circuit.
-	circuitID, _ := parseCircuitIDHex(circuitIDHex)
-	td := &TeardownMsg{CircuitID: circuitID, Reason: "done"}
+	circuitIDBytes2, _ := parseCircuitIDHex(circuitIDHex)
+	td := &TeardownMsg{CircuitID: circuitIDBytes2, Reason: "done"}
 	if err := exit.HandleTeardown(td); err != nil {
 		t.Fatalf("teardown: %v", err)
 	}

@@ -724,3 +724,122 @@ func TestExitReassemblerLateChunkAfterCompletion(t *testing.T) {
 		t.Errorf("late chunk: unexpected error: %v", err)
 	}
 }
+
+// TestExitReassemblerFlushRemainingPreservesGlobalBytes verifies the gap fix
+// for the flushRemaining bug: previously flushRemaining zeroed r.totalBytes
+// instead of subtracting the stream's bytes, corrupting the global byte
+// counter when multiple streams were active. This test creates two streams,
+// completes one via StreamEnd (triggering flushRemaining), and verifies
+// the other stream's bytes are still correctly tracked.
+func TestExitReassemblerFlushRemainingPreservesGlobalBytes(t *testing.T) {
+	r := NewExitReassembler(ChunkerConfig{
+		MaxReassemblyChunks: 100,
+		MaxReassemblyBytes:  1024 * 1024,
+	})
+
+	// Stream 1: send two out-of-order chunks (not contiguous from 0,
+	// so they stay buffered).
+	r.AddStreaming(testChunk(1, 1, 0, ChunkData, make([]byte, 100)))
+	r.AddStreaming(testChunk(1, 2, 0, ChunkData, make([]byte, 100)))
+
+	// Stream 2: send two out-of-order chunks.
+	r.AddStreaming(testChunk(2, 1, 0, ChunkData, make([]byte, 100)))
+	r.AddStreaming(testChunk(2, 2, 0, ChunkData, make([]byte, 100)))
+
+	// At this point, 4 chunks are buffered = 400 bytes.
+	if r.BufferedBytes() != 400 {
+		t.Fatalf("BufferedBytes=%d, want 400 (before flush)", r.BufferedBytes())
+	}
+
+	// Complete stream 1 with ChunkStreamEnd. This triggers flushRemaining
+	// which delivers the buffered chunks for stream 1 and cleans up.
+	// The bug was that flushRemaining zeroed r.totalBytes, which would
+	// lose the 200 bytes still buffered for stream 2.
+	r.AddStreaming(testChunk(1, 0, 0, ChunkStreamEnd, nil))
+
+	// After stream 1 completes, only stream 2's 200 bytes should remain.
+	if r.BufferedBytes() != 200 {
+		t.Errorf("BufferedBytes=%d after flush, want 200 (stream 2 bytes preserved)",
+			r.BufferedBytes())
+	}
+}
+
+// TestEncodeChunkPaddingBytesInCiphertext verifies the encryptedMetadata gap
+// fix: actual random padding bytes are now included inside the AEAD
+// ciphertext, making PaddingLen self-verifying. The receiver reads exactly
+// PaddingLen bytes from the decrypted plaintext.
+func TestEncodeChunkPaddingBytesInCiphertext(t *testing.T) {
+	e2eKey := make([]byte, KeySize)
+	relayKey := make([]byte, KeySize)
+	circuitID, _ := GenerateCircuitID()
+
+	chunk := Chunk{
+		StreamID:   1,
+		Sequence:   0,
+		Total:      1,
+		Type:       ChunkData,
+		Payload:    []byte("test payload"),
+		PaddingLen: 256,
+	}
+
+	wc, err := EncodeChunk(chunk, e2eKey, relayKey, "10.0.0.1", circuitID)
+	if err != nil {
+		t.Fatalf("EncodeChunk: %v", err)
+	}
+
+	// The ciphertext must be larger than just metadata + payload because
+	// it now contains the 256 padding bytes + 16-byte AEAD tag.
+	// Metadata: 35 bytes, Payload: 12 bytes, Padding: 256 bytes, Tag: 16 bytes
+	minCiphertextLen := 35 + 12 + 256 + 16
+	if len(wc.Ciphertext) < minCiphertextLen {
+		t.Errorf("ciphertext length = %d, want >= %d (must include padding bytes)",
+			len(wc.Ciphertext), minCiphertextLen)
+	}
+
+	// Decode should succeed and recover the original PaddingLen.
+	decoded, err := DecodeChunk(wc, e2eKey, circuitID)
+	if err != nil {
+		t.Fatalf("DecodeChunk: %v", err)
+	}
+
+	if decoded.PaddingLen != chunk.PaddingLen {
+		t.Errorf("decoded PaddingLen = %d, want %d", decoded.PaddingLen, chunk.PaddingLen)
+	}
+	if !bytesEqual(decoded.Payload, chunk.Payload) {
+		t.Errorf("payload mismatch after round-trip")
+	}
+}
+
+// TestEncodeChunkZeroPaddingWorks verifies that a chunk with PaddingLen=0
+// still works correctly after the wire format change.
+func TestEncodeChunkZeroPaddingWorks(t *testing.T) {
+	e2eKey := make([]byte, KeySize)
+	relayKey := make([]byte, KeySize)
+	circuitID, _ := GenerateCircuitID()
+
+	chunk := Chunk{
+		StreamID:   1,
+		Sequence:   0,
+		Total:      1,
+		Type:       ChunkData,
+		Payload:    []byte("no padding"),
+		PaddingLen: 0,
+	}
+
+	wc, err := EncodeChunk(chunk, e2eKey, relayKey, "10.0.0.1", circuitID)
+	if err != nil {
+		t.Fatalf("EncodeChunk: %v", err)
+	}
+
+	decoded, err := DecodeChunk(wc, e2eKey, circuitID)
+	if err != nil {
+		t.Fatalf("DecodeChunk: %v", err)
+	}
+
+	if decoded.PaddingLen != 0 {
+		t.Errorf("PaddingLen = %d, want 0", decoded.PaddingLen)
+	}
+	if string(decoded.Payload) != "no padding" {
+		t.Errorf("Payload = %q, want %q", string(decoded.Payload), "no padding")
+	}
+}

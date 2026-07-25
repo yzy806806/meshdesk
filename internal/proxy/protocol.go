@@ -208,29 +208,74 @@ type WireChunk struct {
 // EncodeChunk encrypts a Chunk for end-to-end transport (entry → exit).
 // The e2eKey is the shared ChaCha20-Poly1305 key derived from ECDH.
 // The relayKey is used for the per-hop forwarding header.
+// The circuitID is the 16-byte circuit identifier, bound into the AEAD
+// plaintext to prevent cross-circuit replay: a chunk encrypted for circuit
+// A will fail AEAD verification if decoded with circuit B's key, and the
+// decoded circuit ID is verified against the expected value at the exit.
 //
 // The encrypted payload format:
-//   [StreamID (4)] [Sequence (4)] [Total (4)] [Type (1)] [PaddingLen (2)]
-//   [PayloadLen (4)] [Payload (variable)]
+//   [CircuitID  (16 bytes)]
+//   [StreamID   (4 bytes)]
+//   [Sequence   (4 bytes)]
+//   [Total      (4 bytes)]
+//   [Type       (1 byte)]
+//   [PaddingLen (2 bytes)]
+//   [PayloadLen (4 bytes)]
+//   [Padding    (PaddingLen bytes)]   — actual random padding bytes
+//   [Payload    (PayloadLen bytes)]
 //   + 16-byte Poly1305 auth tag (added by AEAD)
-func EncodeChunk(chunk Chunk, e2eKey []byte, relayKey []byte, nextHop string) (*WireChunk, error) {
+//
+// Gap fix (encryptedMetadata): The actual padding bytes are now included
+// inside the AEAD ciphertext, making PaddingLen self-verifying. An
+// attacker cannot strip padding without breaking the AEAD tag. Previously
+// PaddingLen was an unverifiable claim with no corresponding bytes.
+//
+// Gap fix (circuitID param): The circuit ID is included in the AEAD
+// plaintext, binding each chunk to its circuit. DecodeChunk verifies the
+// decoded circuit ID matches the expected value, preventing cross-circuit
+// replay attacks.
+func EncodeChunk(chunk Chunk, e2eKey []byte, relayKey []byte, nextHop string, circuitID []byte) (*WireChunk, error) {
 	if len(e2eKey) != KeySize {
 		return nil, fmt.Errorf("e2e key must be %d bytes, got %d", KeySize, len(e2eKey))
 	}
+	if len(circuitID) != CircuitIDSize {
+		return nil, fmt.Errorf("circuit ID must be %d bytes, got %d", CircuitIDSize, len(circuitID))
+	}
 
-	// Build the plaintext (metadata + payload).
+	// Build the plaintext: metadata + padding + payload.
 	payloadLen := len(chunk.Payload)
-	// Metadata: StreamID(4) + Sequence(4) + Total(4) + Type(1) + PaddingLen(2) + PayloadLen(4) = 19 bytes
-	metaSize := 19
-	plaintext := make([]byte, metaSize+payloadLen)
+	paddingLen := int(chunk.PaddingLen)
+	// Metadata: CircuitID(16) + StreamID(4) + Sequence(4) + Total(4) + Type(1) + PaddingLen(2) + PayloadLen(4) = 35 bytes
+	metaSize := 35
+	plaintext := make([]byte, metaSize+paddingLen+payloadLen)
 
-	binary.BigEndian.PutUint32(plaintext[0:4], chunk.StreamID)
-	binary.BigEndian.PutUint32(plaintext[4:8], chunk.Sequence)
-	binary.BigEndian.PutUint32(plaintext[8:12], chunk.Total)
-	plaintext[12] = byte(chunk.Type)
-	binary.BigEndian.PutUint16(plaintext[13:15], chunk.PaddingLen)
-	binary.BigEndian.PutUint32(plaintext[15:19], uint32(payloadLen))
-	copy(plaintext[19:], chunk.Payload)
+	offset := 0
+	copy(plaintext[offset:offset+CircuitIDSize], circuitID)
+	offset += CircuitIDSize
+	binary.BigEndian.PutUint32(plaintext[offset:offset+4], chunk.StreamID)
+	offset += 4
+	binary.BigEndian.PutUint32(plaintext[offset:offset+4], chunk.Sequence)
+	offset += 4
+	binary.BigEndian.PutUint32(plaintext[offset:offset+4], chunk.Total)
+	offset += 4
+	plaintext[offset] = byte(chunk.Type)
+	offset += 1
+	binary.BigEndian.PutUint16(plaintext[offset:offset+2], chunk.PaddingLen)
+	offset += 2
+	binary.BigEndian.PutUint32(plaintext[offset:offset+4], uint32(payloadLen))
+	offset += 4
+
+	// Generate actual random padding bytes inside the AEAD ciphertext.
+	// This makes PaddingLen self-verifying: the receiver reads exactly
+	// PaddingLen bytes from the decrypted plaintext.
+	if paddingLen > 0 {
+		if _, err := rand.Read(plaintext[offset : offset+paddingLen]); err != nil {
+			return nil, fmt.Errorf("generate padding: %w", err)
+		}
+		offset += paddingLen
+	}
+
+	copy(plaintext[offset:], chunk.Payload)
 
 	// Generate a random nonce.
 	nonce := make([]byte, NonceSize)
@@ -262,7 +307,13 @@ func EncodeChunk(chunk Chunk, e2eKey []byte, relayKey []byte, nextHop string) (*
 
 // DecodeChunk decrypts a WireChunk back into a Chunk using the E2E key.
 // This is called by the exit node after receiving the chunk.
-func DecodeChunk(wc *WireChunk, e2eKey []byte) (Chunk, error) {
+//
+// The circuitID parameter is the expected circuit ID for this chunk.
+// If the circuit ID embedded in the AEAD plaintext does not match, the
+// function returns ErrCircuitIDMismatch. This prevents cross-circuit
+// replay: a chunk encrypted for circuit A will not be accepted for circuit
+// B even if an attacker manages to inject it.
+func DecodeChunk(wc *WireChunk, e2eKey []byte, circuitID []byte) (Chunk, error) {
 	if len(e2eKey) != KeySize {
 		return Chunk{}, fmt.Errorf("e2e key must be %d bytes, got %d", KeySize, len(e2eKey))
 	}
@@ -271,6 +322,9 @@ func DecodeChunk(wc *WireChunk, e2eKey []byte) (Chunk, error) {
 	}
 	if len(wc.Header) != ForwardingHeaderSize {
 		return Chunk{}, fmt.Errorf("header must be %d bytes, got %d", ForwardingHeaderSize, len(wc.Header))
+	}
+	if len(circuitID) != CircuitIDSize {
+		return Chunk{}, fmt.Errorf("circuit ID must be %d bytes, got %d", CircuitIDSize, len(circuitID))
 	}
 
 	aead, err := chacha20poly1305.New(e2eKey)
@@ -285,28 +339,73 @@ func DecodeChunk(wc *WireChunk, e2eKey []byte) (Chunk, error) {
 	}
 
 	// Parse metadata.
-	if len(plaintext) < 19 {
-		return Chunk{}, fmt.Errorf("plaintext too short: %d bytes (min 19)", len(plaintext))
+	// Metadata: CircuitID(16) + StreamID(4) + Sequence(4) + Total(4) + Type(1) + PaddingLen(2) + PayloadLen(4) = 35 bytes
+	const metaSize = 35
+	if len(plaintext) < metaSize {
+		return Chunk{}, fmt.Errorf("plaintext too short: %d bytes (min %d)", len(plaintext), metaSize)
+	}
+
+	offset := 0
+
+	// Verify circuit ID.
+	decodedCircuitID := plaintext[offset : offset+CircuitIDSize]
+	offset += CircuitIDSize
+	if !bytesEqual(decodedCircuitID, circuitID) {
+		return Chunk{}, ErrCircuitIDMismatch
 	}
 
 	chunk := Chunk{
-		StreamID:   binary.BigEndian.Uint32(plaintext[0:4]),
-		Sequence:   binary.BigEndian.Uint32(plaintext[4:8]),
-		Total:      binary.BigEndian.Uint32(plaintext[8:12]),
-		Type:       ChunkType(plaintext[12]),
-		PaddingLen: binary.BigEndian.Uint16(plaintext[13:15]),
+		StreamID:   binary.BigEndian.Uint32(plaintext[offset : offset+4]),
 	}
+	offset += 4
+	chunk.Sequence = binary.BigEndian.Uint32(plaintext[offset : offset+4])
+	offset += 4
+	chunk.Total = binary.BigEndian.Uint32(plaintext[offset : offset+4])
+	offset += 4
+	chunk.Type = ChunkType(plaintext[offset])
+	offset += 1
+	chunk.PaddingLen = binary.BigEndian.Uint16(plaintext[offset : offset+2])
+	offset += 2
+	payloadLen := binary.BigEndian.Uint32(plaintext[offset : offset+4])
+	offset += 4
 
-	payloadLen := binary.BigEndian.Uint32(plaintext[15:19])
-	if int(payloadLen) != len(plaintext)-19 {
+	// Skip actual padding bytes (they're inside the AEAD ciphertext but
+	// carry no application data — the Reassembler never sees them).
+	paddingLen := int(chunk.PaddingLen)
+	if offset+paddingLen > len(plaintext) {
+		return Chunk{}, fmt.Errorf("padding overflows plaintext: declared %d, available %d",
+			paddingLen, len(plaintext)-offset)
+	}
+	offset += paddingLen
+
+	// Verify payload length.
+	remaining := len(plaintext) - offset
+	if int(payloadLen) != remaining {
 		return Chunk{}, fmt.Errorf("payload length mismatch: declared %d, actual %d",
-			payloadLen, len(plaintext)-19)
+			payloadLen, remaining)
 	}
 
 	chunk.Payload = make([]byte, payloadLen)
-	copy(chunk.Payload, plaintext[19:])
+	copy(chunk.Payload, plaintext[offset:])
 
 	return chunk, nil
+}
+
+// ErrCircuitIDMismatch is returned by DecodeChunk when the circuit ID
+// embedded in the AEAD plaintext does not match the expected circuit ID.
+var ErrCircuitIDMismatch = errors.New("circuit ID mismatch in chunk")
+
+// bytesEqual is a constant-time comparison helper used for circuit ID
+// verification. Avoids subtle timing side-channels in the comparison.
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	var v byte
+	for i := range a {
+		v |= a[i] ^ b[i]
+	}
+	return v == 0
 }
 
 // ECDHKeyPair holds an X25519 key pair for circuit ECDH key agreement.

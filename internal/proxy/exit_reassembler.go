@@ -304,9 +304,14 @@ func (r *ExitReassembler) flushRemaining(st *exitStreamState) []byte {
 		result = append(result, st.chunks[seq]...)
 	}
 
-	// Clear the buffer and update byte counts.
+	// Subtract this stream's buffered bytes from the global counter.
+	// Gap fix: previously this zeroed r.totalBytes, which corrupted
+	// the byte count when multiple streams were active concurrently.
+	r.totalBytes -= st.bytes
+	if r.totalBytes < 0 {
+		r.totalBytes = 0
+	}
 	st.bytes = 0
-	r.totalBytes = 0 // This stream's bytes are the last remaining
 	st.chunks = make(map[uint32][]byte)
 	return result
 }

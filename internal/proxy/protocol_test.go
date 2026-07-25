@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 )
@@ -120,6 +121,8 @@ func TestChunkEncodeDecodeRoundTrip(t *testing.T) {
 		relayKey[i] = byte(i + 1)
 	}
 
+	circuitID, _ := GenerateCircuitID()
+
 	origChunk := Chunk{
 		StreamID:   42,
 		Sequence:   7,
@@ -129,7 +132,7 @@ func TestChunkEncodeDecodeRoundTrip(t *testing.T) {
 		PaddingLen: 512,
 	}
 
-	wc, err := EncodeChunk(origChunk, entryE2EKey, relayKey, "10.10.0.5")
+	wc, err := EncodeChunk(origChunk, entryE2EKey, relayKey, "10.10.0.5", circuitID)
 	if err != nil {
 		t.Fatalf("EncodeChunk failed: %v", err)
 	}
@@ -141,7 +144,7 @@ func TestChunkEncodeDecodeRoundTrip(t *testing.T) {
 		t.Errorf("nonce length = %d, want %d", len(wc.Nonce), NonceSize)
 	}
 
-	decoded, err := DecodeChunk(wc, exitE2EKey)
+	decoded, err := DecodeChunk(wc, exitE2EKey, circuitID)
 	if err != nil {
 		t.Fatalf("DecodeChunk failed: %v", err)
 	}
@@ -174,6 +177,7 @@ func TestChunkEncodeTampered(t *testing.T) {
 
 	e2eKey, _ := DeriveSharedKey(entryKP.Private, exitKP.Public)
 	relayKey := make([]byte, KeySize)
+	circuitID, _ := GenerateCircuitID()
 
 	chunk := Chunk{
 		StreamID: 1,
@@ -182,7 +186,7 @@ func TestChunkEncodeTampered(t *testing.T) {
 		Payload:  []byte("sensitive data"),
 	}
 
-	wc, err := EncodeChunk(chunk, e2eKey, relayKey, "10.10.0.1")
+	wc, err := EncodeChunk(chunk, e2eKey, relayKey, "10.10.0.1", circuitID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +197,7 @@ func TestChunkEncodeTampered(t *testing.T) {
 	copy(tampered.Ciphertext, wc.Ciphertext)
 	tampered.Ciphertext[0] ^= 0xFF
 
-	_, err = DecodeChunk(&tampered, e2eKey)
+	_, err = DecodeChunk(&tampered, e2eKey, circuitID)
 	if err == nil {
 		t.Error("expected AEAD decryption failure for tampered ciphertext")
 	}
@@ -204,9 +208,24 @@ func TestChunkEncodeTampered(t *testing.T) {
 	copy(tampered2.Header, wc.Header)
 	tampered2.Header[0] ^= 0xFF
 
-	_, err = DecodeChunk(&tampered2, e2eKey)
+	_, err = DecodeChunk(&tampered2, e2eKey, circuitID)
 	if err == nil {
 		t.Error("expected AEAD decryption failure for tampered header")
+	}
+
+	// Verify cross-circuit replay protection: decoding with a different
+	// circuit ID should fail with ErrCircuitIDMismatch.
+	otherCircuitID, _ := GenerateCircuitID()
+	// Make sure they're actually different
+	for bytes.Equal(otherCircuitID, circuitID) {
+		otherCircuitID, _ = GenerateCircuitID()
+	}
+	_, err = DecodeChunk(wc, e2eKey, otherCircuitID)
+	if err == nil {
+		t.Error("expected error for circuit ID mismatch")
+	}
+	if err != nil && !errors.Is(err, ErrCircuitIDMismatch) {
+		t.Errorf("expected ErrCircuitIDMismatch, got %v", err)
 	}
 }
 

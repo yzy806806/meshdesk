@@ -136,6 +136,8 @@ func TestDispatcherRoundTrip(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 
+	circuitID, _ := GenerateCircuitID()
+
 	cfg := DispatcherConfig{
 		ChunkerStrategy: "fixed-16k",
 		ChunkerCfg: ChunkerConfig{
@@ -147,6 +149,7 @@ func TestDispatcherRoundTrip(t *testing.T) {
 		Path1:      path1,
 		Path2:      path2,
 		E2EKey:     e2eKey,
+		CircuitID:  circuitID,
 		ExitAddr:   "10.10.0.5",
 	}
 
@@ -198,7 +201,7 @@ func TestDispatcherRoundTrip(t *testing.T) {
 	// Decrypt and verify chunks.
 	r := newFixedReassembler(cfg.ChunkerCfg)
 	for _, wc := range collected {
-		chunk, err := DecodeChunk(wc, e2eKey)
+		chunk, err := DecodeChunk(wc, e2eKey, circuitID)
 		if err != nil {
 			t.Fatalf("DecodeChunk failed: %v", err)
 		}
@@ -228,6 +231,8 @@ func TestDispatcherStats(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer clientConn.Close()
 
+	circuitID2, _ := GenerateCircuitID()
+
 	cfg := DispatcherConfig{
 		ChunkerStrategy: "fixed-16k",
 		ChunkerCfg: ChunkerConfig{
@@ -239,6 +244,7 @@ func TestDispatcherStats(t *testing.T) {
 		Path1:      path1,
 		Path2:      path2,
 		E2EKey:     e2eKey,
+		CircuitID:  circuitID2,
 		ExitAddr:   "10.10.0.5",
 	}
 
@@ -308,9 +314,11 @@ func TestDispatcherRequiresTwoPaths(t *testing.T) {
 // forces the fixed-16k strategy.
 func TestDispatcherDebugFixedChunks(t *testing.T) {
 	e2eKey := make([]byte, KeySize)
+	circuitID, _ := GenerateCircuitID()
 
 	cfg := DispatcherConfig{
 		E2EKey:           e2eKey,
+		CircuitID:        circuitID,
 		Path1:            &Path{Relays: []string{"r1"}, RelayKeys: [][]byte{make([]byte, KeySize)}},
 		Path2:            &Path{Relays: []string{"r2"}, RelayKeys: [][]byte{make([]byte, KeySize)}},
 		DebugFixedChunks: true,

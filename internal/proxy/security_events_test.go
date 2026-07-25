@@ -328,18 +328,20 @@ func TestExitNode_WindowExceededEvent(t *testing.T) {
 	defer serverConn.Close()
 
 	// Manually create a circuit entry in the exit node.
+	circuitIDBytes := make([]byte, CircuitIDSize)
 	exit.mu.Lock()
 	exit.circuits["aabbccdd"] = &exitCircuit{
-		circuitID:    "aabbccdd",
-		e2eKey:       make([]byte, KeySize),
-		targetConn:   serverConn,
-		targetAddr:   "1.2.3.4:80",
-		reassembler:  NewExitReassembler(DefaultChunkerConfig()),
-		pathTracker:  newPathTracker(),
-		gapSeqs:      make(map[uint32]bool),
-		lastActivity: time.Now(),
-		state:        CircuitActive,
-		createdAt:    time.Now(),
+		circuitID:      "aabbccdd",
+		circuitIDBytes: circuitIDBytes,
+		e2eKey:         make([]byte, KeySize),
+		targetConn:     serverConn,
+		targetAddr:     "1.2.3.4:80",
+		reassembler:    NewExitReassembler(DefaultChunkerConfig()),
+		pathTracker:    newPathTracker(),
+		gapSeqs:        make(map[uint32]bool),
+		lastActivity:   time.Now(),
+		state:          CircuitActive,
+		createdAt:      time.Now(),
 	}
 	exit.mu.Unlock()
 

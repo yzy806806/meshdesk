@@ -679,8 +679,13 @@ func TestMetadataInCiphertextContract(t *testing.T) {
 		PaddingLen: 1234,
 	}
 
-	// Encode: metadata + payload go into AEAD ciphertext.
-	wc, err := proxy.EncodeChunk(original, e2eKey, relayKey, "10.0.0.1:8080")
+	circuitID := make([]byte, proxy.CircuitIDSize)
+	for i := range circuitID {
+		circuitID[i] = byte(i + 1)
+	}
+
+	// Encode: metadata + payload + padding go into AEAD ciphertext.
+	wc, err := proxy.EncodeChunk(original, e2eKey, relayKey, "10.0.0.1:8080", circuitID)
 	if err != nil {
 		t.Fatalf("EncodeChunk failed: %v", err)
 	}
@@ -697,7 +702,7 @@ func TestMetadataInCiphertextContract(t *testing.T) {
 	}
 
 	// Decode: recover the original Chunk including all metadata.
-	decoded, err := proxy.DecodeChunk(wc, e2eKey)
+	decoded, err := proxy.DecodeChunk(wc, e2eKey, circuitID)
 	if err != nil {
 		t.Fatalf("DecodeChunk failed: %v", err)
 	}

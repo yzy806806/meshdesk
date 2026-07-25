@@ -97,6 +97,10 @@ type exitCircuit struct {
 	// circuitID is the hex-encoded circuit identifier.
 	circuitID string
 
+	// circuitIDBytes is the raw 16-byte circuit identifier, used for
+	// AEAD plaintext verification in DecodeChunk.
+	circuitIDBytes []byte
+
 	// e2eKey is the shared ChaCha20-Poly1305 key derived from ECDH.
 	e2eKey []byte
 
@@ -353,16 +357,17 @@ func (e *ExitNode) HandleCircuitSetup(setup *CircuitSetup) (*CircuitAck, error) 
 
 	// Create the circuit entry.
 	circuit := &exitCircuit{
-		circuitID:    circuitIDHex,
-		e2eKey:       e2eKey,
-		targetConn:   targetConn,
-		targetAddr:   setup.TargetAddr,
-		reassembler:  reassembler,
-		pathTracker:  newPathTracker(),
-		gapSeqs:      make(map[uint32]bool),
-		lastActivity: time.Now(),
-		state:        CircuitActive,
-		createdAt:    time.Now(),
+		circuitID:      circuitIDHex,
+		circuitIDBytes: setup.CircuitID,
+		e2eKey:         e2eKey,
+		targetConn:     targetConn,
+		targetAddr:     setup.TargetAddr,
+		reassembler:    reassembler,
+		pathTracker:    newPathTracker(),
+		gapSeqs:        make(map[uint32]bool),
+		lastActivity:   time.Now(),
+		state:          CircuitActive,
+		createdAt:      time.Now(),
 	}
 
 	// Register the circuit.
@@ -411,7 +416,9 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 	}
 
 	// Decrypt the chunk with the E2E key.
-	chunk, err := DecodeChunk(wc, circuit.e2eKey)
+	// The circuit ID is verified inside DecodeChunk against the expected
+	// value, preventing cross-circuit replay.
+	chunk, err := DecodeChunk(wc, circuit.e2eKey, circuit.circuitIDBytes)
 	if err != nil {
 		e.secReport(SecurityEvent{
 			Type:        SecEventExitDecodeFail,
@@ -886,7 +893,7 @@ func (e *ExitNode) ForwardTargetToEntry(ctx context.Context, circuitID string, e
 				pathIdx := circuit.pathTracker.FastestPath()
 
 				// Encrypt and send the chunk back to the entry.
-				wc, encErr := EncodeChunk(chunk, e2eKey, relayKey, nextHop)
+				wc, encErr := EncodeChunk(chunk, e2eKey, relayKey, nextHop, circuit.circuitIDBytes)
 				if encErr != nil {
 					return fmt.Errorf("encode return chunk: %w", encErr)
 				}
@@ -905,7 +912,7 @@ func (e *ExitNode) ForwardTargetToEntry(ctx context.Context, circuitID string, e
 					Sequence: seq,
 					Type:     ChunkStreamEnd,
 				}
-				wc, _ := EncodeChunk(endChunk, e2eKey, relayKey, nextHop)
+				wc, _ := EncodeChunk(endChunk, e2eKey, relayKey, nextHop, circuit.circuitIDBytes)
 				pathIdx := circuit.pathTracker.FastestPath()
 				sendChunk(pathIdx, wc)
 				return nil
