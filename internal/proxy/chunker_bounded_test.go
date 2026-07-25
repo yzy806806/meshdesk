@@ -180,10 +180,14 @@ func TestBoundedReassemblerRoundTrip(t *testing.T) {
 	total := uint32(len(chunks))
 	var reassembled []byte
 	var done bool
+	var err error
 
 	for _, ch := range chunks {
 		ch.Total = total
-		reassembled, done = r.Add(ch)
+		reassembled, done, err = r.Add(ch)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if !done {
 			continue
 		}
@@ -232,8 +236,12 @@ func TestBoundedReassemblerOutOfOrder(t *testing.T) {
 
 	var reassembled []byte
 	var done bool
+	var err error
 	for _, ch := range chunks {
-		reassembled, done = r.Add(ch)
+		reassembled, done, err = r.Add(ch)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 	}
 
 	if !done {
@@ -304,19 +312,5 @@ func TestBoundedReassemblerRegistered(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("bounded-4k-64k not found in registry names: %v", names)
-	}
-}
-
-// TestCryptoRandFloat64 verifies the crypto random float function
-// returns values in [0, 1).
-func TestCryptoRandFloat64(t *testing.T) {
-	for i := 0; i < 1000; i++ {
-		f, err := cryptoRandFloat64()
-		if err != nil {
-			t.Fatalf("cryptoRandFloat64() error: %v", err)
-		}
-		if f < 0 || f >= 1 {
-			t.Errorf("cryptoRandFloat64() = %f, want [0, 1)", f)
-		}
 	}
 }

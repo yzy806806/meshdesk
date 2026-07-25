@@ -428,7 +428,10 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 	}
 
 	// Feed the chunk to the reassembler.
-	complete, done := circuit.reassembler.Add(chunk)
+	complete, done, err := circuit.reassembler.Add(chunk)
+	if err != nil {
+		return nil, fmt.Errorf("reassemble chunk: %w", err)
+	}
 
 	// Remove this sequence from the gap set if it was there.
 	delete(circuit.gapSeqs, chunk.Sequence)
