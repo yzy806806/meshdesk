@@ -5,28 +5,13 @@ import (
 	"strconv"
 )
 
-// AuthChecker is the interface for capability-based authorization of
-// incoming WebSocket terminal sessions. In production this is implemented
-// by wrapping *auth.CapabilityEngine. The handler calls AuthorizeSSH
-// before accepting a WebSocket upgrade, enforcing Decision E (zero-trust).
-//
-// If the checker is nil, all peers are allowed (for testing only).
-// In production, always set an auth checker.
-type AuthChecker interface {
-	// AuthorizeSSH checks whether peerID is authorized to open an SSH
-	// terminal session. Returns true if allowed, false otherwise.
-	// Every call should produce an audit log entry.
-	AuthorizeSSH(peerID string) bool
-
-	// AuthorizeSSHWithIP is like AuthorizeSSH but also records the
-	// source IP (from the HTTP request's RemoteAddr) in the audit
-	// entry. Implementations that don't support source IP can fall
-	// back to AuthorizeSSH.
-	AuthorizeSSHWithIP(peerID, sourceIP string) bool
-}
-
 // Handler is the HTTP handler for the /ws/terminal WebSocket endpoint.
 // It upgrades the connection and delegates to the Hub.
+//
+// Capability enforcement (ssh_proxy) is handled by the upstream
+// auth.RequireCapability middleware in the web server's route registration.
+// The handler itself is purely concerned with WebSocket upgrade and
+// session management — it no longer contains per-request auth logic.
 //
 // Query parameters:
 //
@@ -34,22 +19,12 @@ type AuthChecker interface {
 //	cols: initial terminal columns (default 80)
 //	rows: initial terminal rows (default 24)
 type Handler struct {
-	hub         *Hub
-	authChecker AuthChecker
+	hub *Hub
 }
 
 // NewHandler creates an HTTP handler for WebSocket terminal connections.
-// No auth checker is set; use NewHandlerWithAuth for production.
 func NewHandler(hub *Hub) *Handler {
 	return &Handler{hub: hub}
-}
-
-// NewHandlerWithAuth creates an HTTP handler with capability enforcement.
-// The authChecker is called for every incoming WebSocket connection to
-// verify the requesting peer has the ssh_proxy capability (Decision E
-// compliance). If authChecker is nil, all peers are allowed (testing mode).
-func NewHandlerWithAuth(hub *Hub, authChecker AuthChecker) *Handler {
-	return &Handler{hub: hub, authChecker: authChecker}
 }
 
 // ServeHTTP handles the WebSocket upgrade and delegates to the Hub.
@@ -58,17 +33,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if peerID == "" {
 		http.Error(w, "missing 'node' query parameter", http.StatusBadRequest)
 		return
-	}
-
-	// Capability check: verify the requesting peer is authorized to
-	// open an SSH terminal session (Decision E — zero-trust).
-	// This runs before the WebSocket upgrade, so unauthorized peers
-	// get a clean HTTP 403 instead of a WebSocket connection.
-	if h.authChecker != nil {
-		if !h.authChecker.AuthorizeSSHWithIP(peerID, r.RemoteAddr) {
-			http.Error(w, "forbidden: ssh_proxy capability denied", http.StatusForbidden)
-			return
-		}
 	}
 
 	cols := 80

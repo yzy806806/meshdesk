@@ -7,22 +7,8 @@ import (
 	"time"
 )
 
-// mockAuthChecker is a test AuthChecker that allows/denies based on a preset map.
-type mockAuthChecker struct {
-	allowedPeers map[string]bool
-}
-
-func (m *mockAuthChecker) AuthorizeSSH(peerID string) bool {
-	return m.allowedPeers[peerID]
-}
-
-func (m *mockAuthChecker) AuthorizeSSHWithIP(peerID, sourceIP string) bool {
-	return m.allowedPeers[peerID]
-}
-
-// newTestHub creates a minimal Hub suitable for handler auth tests.
-// The Hub has a valid WebSocket upgrader but no SSH backend — the
-// auth check runs before any SSH connection is attempted.
+// newTestHub creates a minimal Hub suitable for handler tests.
+// The Hub has a valid WebSocket upgrader but no SSH backend.
 func newTestHub() *Hub {
 	dialer := &NetDialer{Timeout: 5 * time.Second}
 	sshClient := NewSSHClient(dialer, 5*time.Second, nil)
@@ -30,81 +16,12 @@ func newTestHub() *Hub {
 	return NewHub(sshClient, resolver, 22, 64, 30*time.Second, 5*time.Second)
 }
 
-// TestHandlerRejectsUnauthorizedPeer verifies that the handler returns
-// HTTP 403 when the requesting peer lacks the ssh_proxy capability.
-func TestHandlerRejectsUnauthorizedPeer(t *testing.T) {
-	hub := newTestHub()
-	defer hub.CloseAll()
-	checker := &mockAuthChecker{
-		allowedPeers: map[string]bool{
-			"authorized-peer": true,
-			// "unauthorized-peer" is NOT in the map
-		},
-	}
-
-	handler := NewHandlerWithAuth(hub, checker)
-
-	req := httptest.NewRequest("GET", "/ws/terminal?node=unauthorized-peer", nil)
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusForbidden {
-		t.Errorf("expected 403 for unauthorized peer, got %d", rr.Code)
-	}
-}
-
-// TestHandlerAcceptsAuthorizedPeer verifies that the handler proceeds
-// past the auth check for authorized peers. The WebSocket upgrade will
-// fail (no real SSH server), but the critical assertion is that it does
-// NOT return 403 — proving the auth check passed.
-func TestHandlerAcceptsAuthorizedPeer(t *testing.T) {
-	hub := newTestHub()
-	defer hub.CloseAll()
-	checker := &mockAuthChecker{
-		allowedPeers: map[string]bool{
-			"authorized-peer": true,
-		},
-	}
-
-	handler := NewHandlerWithAuth(hub, checker)
-
-	req := httptest.NewRequest("GET", "/ws/terminal?node=authorized-peer&cols=120&rows=40", nil)
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	// Should NOT be 403 — the auth check passed.
-	// The upgrade may fail with another error (e.g. 400 from the upgrader),
-	// but that's after auth and is acceptable for this unit test.
-	if rr.Code == http.StatusForbidden {
-		t.Error("expected authorized peer to NOT get 403")
-	}
-}
-
-// TestHandlerNilAuthCheckerAllowsAll verifies that a nil auth checker
-// (testing mode) allows all peers without checking.
-func TestHandlerNilAuthCheckerAllowsAll(t *testing.T) {
-	hub := newTestHub()
-	defer hub.CloseAll()
-	handler := NewHandler(hub) // no auth checker
-
-	req := httptest.NewRequest("GET", "/ws/terminal?node=any-peer", nil)
-	rr := httptest.NewRecorder()
-	handler.ServeHTTP(rr, req)
-
-	// Should NOT be 403 — no auth checker means all allowed
-	if rr.Code == http.StatusForbidden {
-		t.Error("expected nil auth checker to allow all peers")
-	}
-}
-
-// TestHandlerRejectsMissingNodeParam verifies that the handler still
-// returns 400 for missing node parameter, even with auth configured.
+// TestHandlerRejectsMissingNodeParam verifies that the handler returns
+// 400 when the 'node' query parameter is missing.
 func TestHandlerRejectsMissingNodeParam(t *testing.T) {
 	hub := newTestHub()
 	defer hub.CloseAll()
-	checker := &mockAuthChecker{allowedPeers: map[string]bool{}}
-
-	handler := NewHandlerWithAuth(hub, checker)
+	handler := NewHandler(hub)
 
 	req := httptest.NewRequest("GET", "/ws/terminal", nil)
 	rr := httptest.NewRecorder()
@@ -112,5 +29,47 @@ func TestHandlerRejectsMissingNodeParam(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for missing node, got %d", rr.Code)
+	}
+}
+
+// TestHandlerNoInlineAuthCheck verifies that the handler does NOT perform
+// any capability check itself — that responsibility belongs to the upstream
+// RequireCapability middleware. The handler should proceed past the auth
+// point regardless of the peer ID (it may fail at WebSocket upgrade, but
+// it must not return 403).
+func TestHandlerNoInlineAuthCheck(t *testing.T) {
+	hub := newTestHub()
+	defer hub.CloseAll()
+	handler := NewHandler(hub)
+
+	// Any peer ID should pass through the handler without a 403.
+	// The WebSocket upgrade will fail (no real SSH server), but the
+	// critical assertion is that 403 is never returned by the handler.
+	req := httptest.NewRequest("GET", "/ws/terminal?node=any-peer", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code == http.StatusForbidden {
+		t.Error("handler should not return 403 — auth is handled by middleware")
+	}
+}
+
+// TestHandlerAcceptsAuthorizedPeer verifies that the handler proceeds
+// past the (now removed) auth check for any peer. The WebSocket upgrade
+// will fail (no real SSH server), but the critical assertion is that
+// it does NOT return 403.
+func TestHandlerAcceptsAnyPeer(t *testing.T) {
+	hub := newTestHub()
+	defer hub.CloseAll()
+	handler := NewHandler(hub)
+
+	req := httptest.NewRequest("GET", "/ws/terminal?node=authorized-peer&cols=120&rows=40", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	// Should NOT be 403 — the handler doesn't check auth.
+	// The upgrade may fail with another error, but that's acceptable.
+	if rr.Code == http.StatusForbidden {
+		t.Error("expected handler to NOT return 403 (auth is middleware's job)")
 	}
 }

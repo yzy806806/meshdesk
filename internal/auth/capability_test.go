@@ -21,10 +21,15 @@ type authCall struct {
 	peerID     string
 	capability string
 	resource   string
+	sourceIP   string
 }
 
 func (s *stubAuther) Authorize(sourcePeer, capability, resource string) AuthResult {
-	s.calls = append(s.calls, authCall{sourcePeer, capability, resource})
+	return s.AuthorizeWithSourceIP(sourcePeer, capability, resource, "")
+}
+
+func (s *stubAuther) AuthorizeWithSourceIP(sourcePeer, capability, resource, sourceIP string) AuthResult {
+	s.calls = append(s.calls, authCall{sourcePeer, capability, resource, sourceIP})
 	key := sourcePeer + ":" + capability
 	if r, ok := s.results[key]; ok {
 		return r
@@ -227,8 +232,9 @@ func TestRequireCapability_StubAuther(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	// Allowed
+	// Allowed — set RemoteAddr so we can verify it flows through
 	req := httptest.NewRequest(http.MethodGet, "/api/ssh", nil)
+	req.RemoteAddr = "192.168.1.5:34567"
 	req = req.WithContext(WithPeerID(req.Context(), "peer-1"))
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
@@ -249,6 +255,10 @@ func TestRequireCapability_StubAuther(t *testing.T) {
 	}
 	if call.resource != "" {
 		t.Errorf("expected empty resource, got %q", call.resource)
+	}
+	// Verify source IP from RemoteAddr was passed through
+	if call.sourceIP != "192.168.1.5:34567" {
+		t.Errorf("expected sourceIP '192.168.1.5:34567', got %q", call.sourceIP)
 	}
 }
 

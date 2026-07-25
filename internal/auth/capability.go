@@ -53,6 +53,13 @@ type Auther interface {
 	// capability. The resource parameter is empty for capabilities that
 	// don't have a resource scope (the common case for HTTP middleware).
 	Authorize(sourcePeer, capability, resource string) AuthResult
+
+	// AuthorizeWithSourceIP is like Authorize but also records the source
+	// IP address (from the HTTP layer or mesh connection) in the audit
+	// entry. RequireCapability calls this variant so that capability
+	// denials via middleware retain the same audit trail quality as
+	// per-subsystem checkers did.
+	AuthorizeWithSourceIP(sourcePeer, capability, resource, sourceIP string) AuthResult
 }
 
 // RequireCapability returns an HTTP middleware that enforces a capability
@@ -95,7 +102,7 @@ func RequireCapability(engine Auther, cap string) func(http.Handler) http.Handle
 				return
 			}
 
-			result := engine.Authorize(peerID, cap, "")
+			result := engine.AuthorizeWithSourceIP(peerID, cap, "", r.RemoteAddr)
 			if !result.Allowed {
 				http.Error(w, "forbidden: "+cap+" capability denied ("+result.Reason+")", http.StatusForbidden)
 				return

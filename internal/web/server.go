@@ -175,8 +175,27 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 
-	// WebSocket terminal (auth checked inside handler via session)
-	mux.HandleFunc("/ws/terminal", s.handleWebSocketTerminal)
+	// WebSocket terminal — middleware chain enforces:
+	//   sessionAuthMiddleware  → valid web session (if web users configured)
+	//   peerIDFromQueryMiddleware → extracts peer ID from ?node= query param
+	//   auth.RequireCapability  → ssh_proxy capability check (Decision E)
+	// The webssh handler itself no longer contains auth logic.
+	sshHandler := webssh.NewHandler(s.sshHub)
+	var terminalChain http.Handler
+	if s.authEngine != nil {
+		terminalChain = s.sessionAuthMiddleware(
+			s.peerIDFromQueryMiddleware(
+				auth.RequireCapability(s.authEngine, auth.CapSSHProxy)(sshHandler),
+			),
+		)
+	} else {
+		// No auth engine (testing mode) — still enforce session auth,
+		// but skip capability check.
+		terminalChain = s.sessionAuthMiddleware(
+			s.peerIDFromQueryMiddleware(sshHandler),
+		)
+	}
+	mux.Handle("/ws/terminal", terminalChain)
 
 	// SSE events stream (auth required)
 	mux.HandleFunc("/api/events", s.requireAuth(s.handleSSE))
@@ -203,7 +222,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 // --- Middleware ---
 
 // authMiddleware checks for a valid session cookie on all routes except
-// /login, /logout, /static/, and /ws/terminal (which has its own auth check).
+// /login, /logout, /static/, and /ws/terminal. The /ws/terminal route
+// is excluded because it runs its own sessionAuthMiddleware in the
+// middleware chain assembled in registerRoutes.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -299,6 +320,53 @@ func isHTMXRequest(r *http.Request) bool {
 
 // ctxUsernameKey is the context key for the authenticated username.
 type ctxUsernameKey struct{}
+
+// peerIDFromQueryMiddleware extracts the peer ID from the "node" query
+// parameter and injects it into the request context via auth.WithPeerID.
+// This is the bridge between the web UI's query-string-based peer selection
+// and the auth.RequireCapability middleware, which expects the peer ID in
+// the context. If the "node" parameter is missing, the request is rejected
+// with 400 Bad Request.
+func (s *Server) peerIDFromQueryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peerID := r.URL.Query().Get("node")
+		if peerID == "" {
+			http.Error(w, "missing 'node' query parameter", http.StatusBadRequest)
+			return
+		}
+		ctx := auth.WithPeerID(r.Context(), peerID)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// sessionAuthMiddleware enforces session-based authentication for routes
+// that are not covered by authMiddleware (e.g. /ws/terminal was previously
+// exempted from authMiddleware and did its own session check inline). This
+// middleware centralizes that check. If no web users are configured, all
+// requests pass through (first-run setup mode).
+func (s *Server) sessionAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.cfg.Auth.WebUsers) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		cookie, err := r.Cookie("meshdesk_session")
+		if err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		session := s.sessions.Get(cookie.Value)
+		if session == nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ctxUsernameKey{}, session.Username)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
 
 // --- Template Rendering ---
 

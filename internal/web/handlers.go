@@ -10,11 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/transfer"
-	"github.com/yzy806806/meshdesk/internal/webssh"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -224,26 +222,6 @@ func (s *Server) handleTerminalPage(w http.ResponseWriter, r *http.Request) {
 		PeerShortID: shortIDDisplay(peerID),
 	}
 	s.renderPage(w, "terminal.html", data)
-}
-
-func (s *Server) handleWebSocketTerminal(w http.ResponseWriter, r *http.Request) {
-	if s.sshHub == nil {
-		http.Error(w, "WebSSH not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	// Check auth via session cookie
-	if len(s.cfg.Auth.WebUsers) > 0 {
-		cookie, err := r.Cookie("meshdesk_session")
-		if err != nil || s.sessions.Get(cookie.Value) == nil {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
-	}
-
-	// Delegate to webssh.Handler — enforce ssh_proxy capability (Decision E).
-	handler := webssh.NewHandlerWithAuth(s.sshHub, auth.NewWebSSHAuthChecker(s.authEngine))
-	handler.ServeHTTP(w, r)
 }
 
 // --- Files ---
