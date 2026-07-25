@@ -174,6 +174,253 @@ func TestAuthorizeFileTransferPathScope(t *testing.T) {
 	}
 }
 
+// TestAuthorizeFileTransferPrefixConfusion verifies that a grant for
+// /tmp does NOT match /tmp_evil or /tmpsecret (prefix confusion attack).
+func TestAuthorizeFileTransferPrefixConfusion(t *testing.T) {
+	var auditBuf bytes.Buffer
+	audit := NewAuditLogger(&auditBuf)
+	cfg := &config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:         "peer-ft-confusion",
+				Capabilities:      []string{CapFileTransfer},
+				FileTransferPaths: []string{"/tmp"},
+			},
+		},
+	}
+	engine := NewCapabilityEngine(cfg, audit)
+
+	// /tmp_evil should NOT match a grant for /tmp
+	result := engine.Authorize("peer-ft-confusion", CapFileTransfer, "/tmp_evil")
+	if result.Allowed {
+		t.Error("expected /tmp_evil to be denied (prefix confusion attack)")
+	}
+	if result.Reason != "path_denied" {
+		t.Errorf("expected reason 'path_denied', got %s", result.Reason)
+	}
+
+	// /tmpsecret should NOT match a grant for /tmp
+	result = engine.Authorize("peer-ft-confusion", CapFileTransfer, "/tmpsecret")
+	if result.Allowed {
+		t.Error("expected /tmpsecret to be denied (prefix confusion attack)")
+	}
+	if result.Reason != "path_denied" {
+		t.Errorf("expected reason 'path_denied', got %s", result.Reason)
+	}
+
+	// /tmp_evil_file.txt should NOT match
+	result = engine.Authorize("peer-ft-confusion", CapFileTransfer, "/tmp_evil_file.txt")
+	if result.Allowed {
+		t.Error("expected /tmp_evil_file.txt to be denied (prefix confusion attack)")
+	}
+	if result.Reason != "path_denied" {
+		t.Errorf("expected reason 'path_denied', got %s", result.Reason)
+	}
+}
+
+// TestAuthorizeFileTransferExactMatch verifies that a resource path
+// exactly equal to the granted prefix is allowed.
+func TestAuthorizeFileTransferExactMatch(t *testing.T) {
+	var auditBuf bytes.Buffer
+	audit := NewAuditLogger(&auditBuf)
+	cfg := &config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:         "peer-ft-exact",
+				Capabilities:      []string{CapFileTransfer},
+				FileTransferPaths: []string{"/tmp"},
+			},
+		},
+	}
+	engine := NewCapabilityEngine(cfg, audit)
+
+	// Exact match: resource == prefix
+	result := engine.Authorize("peer-ft-exact", CapFileTransfer, "/tmp")
+	if !result.Allowed {
+		t.Errorf("expected exact match /tmp to be allowed, got: %s", result.Reason)
+	}
+
+	// Also test with trailing slash variants — filepath.Clean normalizes them
+	result = engine.Authorize("peer-ft-exact", CapFileTransfer, "/tmp/")
+	if !result.Allowed {
+		t.Errorf("expected /tmp/ (with trailing slash) to be allowed, got: %s", result.Reason)
+	}
+}
+
+// TestAuthorizeFileTransferSubdirectory verifies that a resource path
+// under the prefix directory (prefix/subpath) is allowed.
+func TestAuthorizeFileTransferSubdirectory(t *testing.T) {
+	var auditBuf bytes.Buffer
+	audit := NewAuditLogger(&auditBuf)
+	cfg := &config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:         "peer-ft-subdir",
+				Capabilities:      []string{CapFileTransfer},
+				FileTransferPaths: []string{"/home/user"},
+			},
+		},
+	}
+	engine := NewCapabilityEngine(cfg, audit)
+
+	// Subdirectory access should be allowed
+	result := engine.Authorize("peer-ft-subdir", CapFileTransfer, "/home/user/documents/report.txt")
+	if !result.Allowed {
+		t.Errorf("expected /home/user/documents/report.txt to be allowed, got: %s", result.Reason)
+	}
+
+	// Nested subdirectory
+	result = engine.Authorize("peer-ft-subdir", CapFileTransfer, "/home/user/deep/nested/path/file.txt")
+	if !result.Allowed {
+		t.Errorf("expected nested path to be allowed, got: %s", result.Reason)
+	}
+
+	// /home/useradmin should NOT match (prefix confusion)
+	result = engine.Authorize("peer-ft-subdir", CapFileTransfer, "/home/useradmin")
+	if result.Allowed {
+		t.Error("expected /home/useradmin to be denied (prefix confusion attack)")
+	}
+	if result.Reason != "path_denied" {
+		t.Errorf("expected reason 'path_denied', got %s", result.Reason)
+	}
+}
+
+// TestAuthorizeFileTransferTraversal verifies that directory traversal
+// via ".." in the resource path is rejected.
+func TestAuthorizeFileTransferTraversal(t *testing.T) {
+	var auditBuf bytes.Buffer
+	audit := NewAuditLogger(&auditBuf)
+	cfg := &config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:         "peer-ft-traversal",
+				Capabilities:      []string{CapFileTransfer},
+				FileTransferPaths: []string{"/tmp"},
+			},
+		},
+	}
+	engine := NewCapabilityEngine(cfg, audit)
+
+	// Traversal: /tmp/../etc/passwd should be rejected.
+	// filepath.Clean("/tmp/../etc/passwd") = "/etc/passwd", which is NOT
+	// under /tmp, so this is denied.
+	result := engine.Authorize("peer-ft-traversal", CapFileTransfer, "/tmp/../etc/passwd")
+	if result.Allowed {
+		t.Error("expected /tmp/../etc/passwd to be denied (directory traversal)")
+	}
+	if result.Reason != "path_denied" {
+		t.Errorf("expected reason 'path_denied', got %s", result.Reason)
+	}
+
+	// Deeper traversal: /tmp/logs/../../etc/shadow
+	result = engine.Authorize("peer-ft-traversal", CapFileTransfer, "/tmp/logs/../../etc/shadow")
+	if result.Allowed {
+		t.Error("expected /tmp/logs/../../etc/shadow to be denied (directory traversal)")
+	}
+
+	// Traversal that resolves outside the prefix even with deeper nesting
+	result = engine.Authorize("peer-ft-traversal", CapFileTransfer, "/tmp/subdir/../../../etc/passwd")
+	if result.Allowed {
+		t.Error("expected /tmp/subdir/../../../etc/passwd to be denied (directory traversal)")
+	}
+}
+
+// TestAuthorizeFileTransferPathNormalization verifies that path
+// normalization via filepath.Clean is applied to both the resource
+// and the granted prefix before comparison.
+func TestAuthorizeFileTransferPathNormalization(t *testing.T) {
+	var auditBuf bytes.Buffer
+	audit := NewAuditLogger(&auditBuf)
+	cfg := &config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:         "peer-ft-norm",
+				Capabilities:      []string{CapFileTransfer},
+				FileTransferPaths: []string{"/var/log"}, // no trailing slash
+			},
+		},
+	}
+	engine := NewCapabilityEngine(cfg, audit)
+
+	// Resource with redundant slashes — should be cleaned and matched
+	result := engine.Authorize("peer-ft-norm", CapFileTransfer, "/var/log//nginx/access.log")
+	if !result.Allowed {
+		t.Errorf("expected /var/log//nginx/access.log (redundant slash) to be allowed, got: %s", result.Reason)
+	}
+
+	// Resource with single-dot segments — should be cleaned and matched
+	result = engine.Authorize("peer-ft-norm", CapFileTransfer, "/var/log/./nginx/access.log")
+	if !result.Allowed {
+		t.Errorf("expected /var/log/./nginx/access.log (dot segment) to be allowed, got: %s", result.Reason)
+	}
+
+	// Grant prefix with trailing slash — should still work (cleaned)
+	cfg2 := &config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:         "peer-ft-norm2",
+				Capabilities:      []string{CapFileTransfer},
+				FileTransferPaths: []string{"/var/log/"},
+			},
+		},
+	}
+	engine2 := NewCapabilityEngine(cfg2, audit)
+
+	result = engine2.Authorize("peer-ft-norm2", CapFileTransfer, "/var/log/nginx/access.log")
+	if !result.Allowed {
+		t.Errorf("expected /var/log/nginx/access.log to be allowed with trailing-slash grant, got: %s", result.Reason)
+	}
+}
+
+// TestPathWithinPrefixDirect is a unit test for the pathWithinPrefix
+// helper function itself, covering all edge cases directly.
+func TestPathWithinPrefixDirect(t *testing.T) {
+	tests := []struct {
+		name     string
+		resource string
+		prefix   string
+		want     bool
+	}{
+		// Exact match
+		{"exact match", "/tmp", "/tmp", true},
+		{"exact match with trailing slash resource", "/tmp/", "/tmp", true},
+		{"exact match with trailing slash prefix", "/tmp", "/tmp/", true},
+
+		// Subdirectory access
+		{"subdirectory", "/tmp/file.txt", "/tmp", true},
+		{"nested subdirectory", "/tmp/sub/deep/file.txt", "/tmp", true},
+
+		// Prefix confusion — must be denied
+		{"prefix confusion sibling", "/tmp_evil", "/tmp", false},
+		{"prefix confusion secret", "/tmpsecret", "/tmp", false},
+		{"prefix confusion with file ext", "/tmp_evil.txt", "/tmp", false},
+		{"prefix confusion home", "/home/useradmin", "/home/user", false},
+
+		// Directory traversal — must be denied
+		{"traversal basic", "/tmp/../etc/passwd", "/tmp", false},
+		{"traversal deep", "/tmp/subdir/../../../etc/passwd", "/tmp", false},
+		{"traversal logs", "/tmp/logs/../../etc/shadow", "/tmp", false},
+
+		// Completely different paths
+		{"different root", "/etc/passwd", "/tmp", false},
+		{"different root2", "/home/user/file", "/tmp", false},
+
+		// Path normalization
+		{"redundant slash in resource", "/var/log//nginx", "/var/log", true},
+		{"dot segment in resource", "/var/log/./nginx", "/var/log", true},
+		{"redundant slash in prefix", "/var/log/nginx", "/var/log//", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := pathWithinPrefix(tt.resource, tt.prefix)
+			if got != tt.want {
+				t.Errorf("pathWithinPrefix(%q, %q) = %v, want %v", tt.resource, tt.prefix, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAuthorizeMonitorScope(t *testing.T) {
 	var auditBuf bytes.Buffer
 	audit := NewAuditLogger(&auditBuf)

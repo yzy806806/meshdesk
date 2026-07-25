@@ -2,6 +2,7 @@ package auth
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -180,7 +181,7 @@ func (e *CapabilityEngine) Authorize(sourcePeer, capability, resource string) Au
 		if len(grant.FileTransferPaths) > 0 {
 			matched := false
 			for _, prefix := range grant.FileTransferPaths {
-				if strings.HasPrefix(resource, prefix) {
+				if pathWithinPrefix(resource, prefix) {
 					matched = true
 					break
 				}
@@ -332,6 +333,39 @@ func allowDeny(allowed bool) string {
 		return "allow"
 	}
 	return "deny"
+}
+
+// pathWithinPrefix checks whether resource is contained within the
+// directory specified by prefix. It is a security-sensitive function
+// that prevents path traversal and prefix-confusion attacks.
+//
+// Both paths are cleaned with filepath.Clean before comparison. A
+// resource is considered within the prefix if:
+//   - It is exactly equal to the cleaned prefix, OR
+//   - It starts with the cleaned prefix followed by a path separator
+//
+// Paths that still contain ".." after cleaning are rejected (defence
+// in depth — filepath.Clean already resolves them, but an explicit
+// check guards against edge cases on different OS path separators).
+func pathWithinPrefix(resource, prefix string) bool {
+	cleanResource := filepath.Clean(resource)
+	cleanPrefix := filepath.Clean(prefix)
+
+	// Reject any path that still contains ".." after cleaning.
+	// On a cleaned path this should not happen, but it is a cheap
+	// belt-and-suspenders check against platform-specific quirks.
+	if strings.Contains(cleanResource, "..") {
+		return false
+	}
+
+	// Exact match: resource is the prefix directory itself.
+	if cleanResource == cleanPrefix {
+		return true
+	}
+
+	// Directory containment: resource must start with prefix + separator.
+	// This prevents prefix confusion (/tmp matching /tmp_evil).
+	return strings.HasPrefix(cleanResource, cleanPrefix+string(filepath.Separator))
 }
 
 // GrantSummary returns a human-readable summary of a peer's grants.
