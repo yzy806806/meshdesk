@@ -807,6 +807,13 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
+// AlertStore returns the server's security alert store. This is used by
+// main.go to wire external subsystem callbacks (auth deny, mesh peer join,
+// proxy security events) into the dashboard alerting system.
+func (s *Server) AlertStore() *AlertStore {
+	return s.alertStore
+}
+
 // --- PeerResolver adapter ---
 
 // meshPeerResolver adapts mesh.RoutingTable to the webssh.PeerResolver interface.

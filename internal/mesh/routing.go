@@ -4,15 +4,35 @@ import (
 	"fmt"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 )
+
+// PeerJoinCallback is invoked when a new peer is added to the routing
+// table (i.e. a new node joins the mesh). The callback receives the
+// PeerEntry for the newly joined node. This allows the web dashboard's
+// AlertStore to generate a "new node joined" security alert without
+// coupling the mesh package to the web layer.
+type PeerJoinCallback func(peer *PeerEntry)
+
+// PeerLeaveCallback is invoked when a peer is removed from the routing
+// table (i.e. a node leaves or is removed from the mesh).
+type PeerLeaveCallback func(peerID string)
 
 // RoutingTable maintains the mapping of mesh IPs to peer IDs.
 // It's the core data structure that the mesh routing layer uses to
 // decide which peer to send a packet to.
 type RoutingTable struct {
-	mu     sync.RWMutex
-	routes map[string]string     // mesh IP (string) → peer ID (hex public key)
-	peers  map[string]*PeerEntry // peer ID → peer entry
+	mu      sync.RWMutex
+	routes  map[string]string     // mesh IP (string) → peer ID (hex public key)
+	peers   map[string]*PeerEntry // peer ID → peer entry
+
+	// joinCB is invoked when a new peer is added. Set via SetJoinCallback.
+	// Accessed atomically so it is safe to read concurrently without holding mu.
+	joinCB atomic.Pointer[PeerJoinCallback]
+
+	// leaveCB is invoked when a peer is removed. Set via SetLeaveCallback.
+	// Accessed atomically so it is safe to read concurrently without holding mu.
+	leaveCB atomic.Pointer[PeerLeaveCallback]
 }
 
 // PeerEntry holds the state for a single mesh peer.
@@ -31,13 +51,28 @@ func NewRoutingTable() *RoutingTable {
 	}
 }
 
+// SetJoinCallback installs a callback invoked when a new peer is added.
+// Pass nil to clear. The callback is invoked synchronously within AddPeer,
+// so it must be fast and must not call back into the routing table.
+func (rt *RoutingTable) SetJoinCallback(cb PeerJoinCallback) {
+	rt.joinCB.Store(&cb)
+}
+
+// SetLeaveCallback installs a callback invoked when a peer is removed.
+// Pass nil to clear.
+func (rt *RoutingTable) SetLeaveCallback(cb PeerLeaveCallback) {
+	rt.leaveCB.Store(&cb)
+}
+
 // AddPeer adds or updates a peer in the routing table.
 func (rt *RoutingTable) AddPeer(peer *PeerEntry) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 
 	// Remove old routes for this peer if it already exists.
+	isNew := true
 	if existing, ok := rt.peers[peer.ID]; ok {
+		isNew = false
 		for _, ip := range existing.AllowedIPs {
 			delete(rt.routes, ip)
 		}
@@ -47,18 +82,33 @@ func (rt *RoutingTable) AddPeer(peer *PeerEntry) {
 	for _, ip := range peer.AllowedIPs {
 		rt.routes[ip] = peer.ID
 	}
+
+	// Invoke join callback only for genuinely new peers (not updates).
+	if isNew {
+		if cbPtr := rt.joinCB.Load(); cbPtr != nil && *cbPtr != nil {
+			(*cbPtr)(peer)
+		}
+	}
 }
 
 // RemovePeer removes a peer from the routing table.
 func (rt *RoutingTable) RemovePeer(peerID string) {
 	rt.mu.Lock()
-	defer rt.mu.Unlock()
-
+	existed := false
 	if peer, ok := rt.peers[peerID]; ok {
+		existed = true
 		for _, ip := range peer.AllowedIPs {
 			delete(rt.routes, ip)
 		}
 		delete(rt.peers, peerID)
+	}
+	rt.mu.Unlock()
+
+	// Invoke leave callback only if the peer actually existed.
+	if existed {
+		if cbPtr := rt.leaveCB.Load(); cbPtr != nil && *cbPtr != nil {
+			(*cbPtr)(peerID)
+		}
 	}
 }
 

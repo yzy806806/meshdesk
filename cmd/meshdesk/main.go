@@ -171,7 +171,7 @@ func main() {
 
 		authEngine := auth.NewCapabilityEngine(cfg, auditLogger)
 
-		// Wire the monitor auth checker into the aggregator so that every
+		// Wire monitor auth checker into the aggregator so that every
 		// incoming metric push is checked for the monitor_write capability.
 		// If authEngine is nil, the checker is nil and the aggregator
 		// accepts all pushes (testing mode only).
@@ -236,6 +236,36 @@ func main() {
 		if err != nil {
 			log.Fatalf("Failed to create web server: %v", err)
 		}
+
+		// Wire security alerting callbacks:
+		// - auth.CapabilityEngine denials → capability_denied alerts
+		// - mesh.RoutingTable join/leave → node_join/node_leave alerts
+		// - proxy.SecurityEventSink → suspicious proxy activity alerts
+		//
+		// All three feed into the web server's AlertStore, which powers
+		// the /api/alerts dashboard endpoint.
+		alertStore := webServer.AlertStore()
+		if alertStore != nil {
+			if authEngine != nil {
+				authEngine.SetDenyCallback(alertStore.HandleAuthDenial)
+			}
+			// Wire the remote service auth engine (used for mesh-internal
+			// service management requests) to the same alert store.
+			if remoteAuthEngine != nil {
+				remoteAuthEngine.SetDenyCallback(alertStore.HandleAuthDenial)
+			}
+			// Wire the transfer auth engine (used for file transfer
+			// authorization) to the same alert store.
+			if transferAuthEngine != nil {
+				transferAuthEngine.SetDenyCallback(alertStore.HandleAuthDenial)
+			}
+			if node != nil {
+				rt := node.RoutingTable()
+				rt.SetJoinCallback(alertStore.HandlePeerJoin)
+				rt.SetLeaveCallback(alertStore.HandlePeerLeave)
+			}
+		}
+
 		if err := webServer.Start(cfg.Node.WebAddr); err != nil {
 			log.Fatalf("Failed to start web server: %v", err)
 		}

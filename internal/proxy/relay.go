@@ -35,6 +35,7 @@ import (
 	"math/big"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"crypto/rand"
@@ -121,6 +122,12 @@ type Relay struct {
 	mu        sync.RWMutex
 	circuits  map[string]*circuitEntry // circuit ID (hex) → state
 	nextHopMu sync.Mutex
+
+	// secSink receives suspicious-activity events for alerting.
+	// Accessed atomically — set via SetSecurityEventSink, read by secReport
+	// without holding mu (avoids deadlock when secReport is called from
+	// within methods that already hold mu).
+	secSink atomic.Pointer[SecurityEventSink]
 }
 
 // NewRelay creates a new relay forwarding module with the given config.
@@ -146,6 +153,18 @@ func NewRelay(cfg RelayConfig) *Relay {
 	}
 }
 
+// SetSecurityEventSink installs a sink for reporting suspicious proxy activity.
+func (r *Relay) SetSecurityEventSink(sink *SecurityEventSink) {
+	r.secSink.Store(sink)
+}
+
+// secReport is a convenience to send a security event if a sink is set.
+func (r *Relay) secReport(event SecurityEvent) {
+	if sink := r.secSink.Load(); sink != nil {
+		sink.Report(event)
+	}
+}
+
 // AddCircuit registers a new circuit on this relay. The relayKey is
 // the per-hop key for decrypting the incoming forwarding header.
 // nextRelayKey is the key for re-encrypting the header for the next
@@ -164,6 +183,11 @@ func (r *Relay) AddCircuit(circuitID string, relayKey []byte, nextRelayKey []byt
 	defer r.mu.Unlock()
 
 	if len(r.circuits) >= r.cfg.MaxCircuits {
+		r.secReport(SecurityEvent{
+			Type:        SecEventRelayAtCapacity,
+			Description: fmt.Sprintf("relay rejected circuit %s: at capacity (%d/%d)", circuitID, len(r.circuits), r.cfg.MaxCircuits),
+			CircuitID:   circuitID,
+		})
 		return fmt.Errorf("relay at capacity: %d circuits (max %d)", len(r.circuits), r.cfg.MaxCircuits)
 	}
 
@@ -215,6 +239,11 @@ func (r *Relay) ForwardChunk(circuitID string, wc *WireChunk) (string, *WireChun
 	r.mu.RUnlock()
 
 	if !exists {
+		r.secReport(SecurityEvent{
+			Type:        SecEventRelayCircuitNotFound,
+			Description: fmt.Sprintf("relay received chunk for unknown circuit %s", circuitID),
+			CircuitID:   circuitID,
+		})
 		return "", nil, fmt.Errorf("circuit %s not found on relay", circuitID)
 	}
 
@@ -229,6 +258,11 @@ func (r *Relay) ForwardChunk(circuitID string, wc *WireChunk) (string, *WireChun
 
 	header, err := DecodeForwardingHeader(wc.Header, relayKey)
 	if err != nil {
+		r.secReport(SecurityEvent{
+			Type:        SecEventRelayHeaderDecodeFail,
+			Description: fmt.Sprintf("relay failed to decode forwarding header for circuit %s: %v", circuitID, err),
+			CircuitID:   circuitID,
+		})
 		return "", nil, fmt.Errorf("decrypt forwarding header: %w", err)
 	}
 

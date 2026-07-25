@@ -3,6 +3,10 @@ package web
 import (
 	"sync"
 	"time"
+
+	"github.com/yzy806806/meshdesk/internal/auth"
+	"github.com/yzy806806/meshdesk/internal/mesh"
+	"github.com/yzy806806/meshdesk/internal/proxy"
 )
 
 // Alert severity levels.
@@ -95,11 +99,93 @@ func (s *AlertStore) CountUndismissed() int {
 	return count
 }
 
-// Dismiss marks all alerts as dismissed (bulk acknowledge).
+// DismissAll marks all alerts as dismissed (bulk acknowledge).
 func (s *AlertStore) DismissAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.alerts {
 		s.alerts[i].Dismissed = true
 	}
+}
+
+// =============================================================================
+// External event adapter methods
+//
+// These methods convert events from other subsystems (auth, mesh, proxy)
+// into SecurityAlert entries and add them to the store. They are the bridge
+// between subsystem-specific callback types and the dashboard alert model.
+// =============================================================================
+
+// HandleAuthDenial converts an auth.CapabilityEngine denial into a security
+// alert and adds it to the store. This is designed to be installed as the
+// engine's deny callback via auth.CapabilityEngine.SetDenyCallback.
+//
+// Denials are classified as "critical" for revoked peers (someone with a
+// revoked key is trying to access services) and "warning" for all other
+// denial reasons (no_capability, path_denied, service_not_scoped, etc.).
+func (s *AlertStore) HandleAuthDenial(result auth.AuthResult) {
+	severity := AlertWarning
+	if result.Reason == "revoked" {
+		severity = AlertCritical
+	}
+
+	s.Add(SecurityAlert{
+		Type:        "capability_denied",
+		Username:    result.SourcePeer,
+		SourceIP:    result.SourceIP,
+		Description: "capability " + result.Capability + " denied (" + result.Reason + ") for resource: " + result.Resource,
+		Severity:    severity,
+	})
+}
+
+// HandlePeerJoin converts a mesh peer join into a security alert and adds
+// it to the store. This is designed to be installed as the routing table's
+// join callback via mesh.RoutingTable.SetJoinCallback.
+//
+// New node joins are "info" severity by default. The admin can review the
+// alert to verify the new peer is expected.
+func (s *AlertStore) HandlePeerJoin(peer *mesh.PeerEntry) {
+	s.Add(SecurityAlert{
+		Type:        "node_join",
+		Username:    peer.ID,
+		Description:  "new node joined mesh: " + peer.ID[:min(8, len(peer.ID))] + " endpoint=" + peer.Endpoint,
+		Severity:    AlertInfo,
+	})
+}
+
+// HandlePeerLeave converts a mesh peer leave into a security alert.
+// This is designed to be installed via mesh.RoutingTable.SetLeaveCallback.
+func (s *AlertStore) HandlePeerLeave(peerID string) {
+	s.Add(SecurityAlert{
+		Type:        "node_leave",
+		Username:    peerID,
+		Description:  "node left mesh: " + peerID,
+		Severity:    AlertInfo,
+	})
+}
+
+// HandleProxySecurityEvent converts a proxy.SecurityEvent into a security
+// alert and adds it to the store. This is designed to be installed as the
+// proxy.SecurityEventSink callback.
+//
+// The severity is determined by the event type:
+//   - port_denied, window_exceeded, relay_at_capacity: warning
+//   - decode failures, circuit_not_found, ss_conn_error: warning
+//   - circuit_setup_fail: warning
+func (s *AlertStore) HandleProxySecurityEvent(event proxy.SecurityEvent) {
+	s.Add(SecurityAlert{
+		Type:        string(event.Type),
+		Username:    event.CircuitID,
+		SourceIP:    event.SourceIP,
+		Description:  event.Description,
+		Severity:    AlertWarning,
+	})
+}
+
+// min returns the smaller of two ints (local to avoid import conflicts).
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

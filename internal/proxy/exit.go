@@ -44,6 +44,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -229,6 +230,12 @@ type ExitNode struct {
 	// dialer is the function for dialing target TCP connections.
 	dialer func(network, addr string) (net.Conn, error)
 
+	// secSink receives suspicious-activity events for alerting.
+	// Accessed atomically — set via SetSecurityEventSink, read by secReport
+	// without holding mu (avoids deadlock when secReport is called from
+	// within methods that already hold mu or circuit.mu).
+	secSink atomic.Pointer[SecurityEventSink]
+
 	// closed signals shutdown.
 	closed bool
 }
@@ -295,10 +302,16 @@ func (e *ExitNode) HandleCircuitSetup(setup *CircuitSetup) (*CircuitAck, error) 
 
 	// Validate target port.
 	if err := e.validatePort(setup.TargetAddr); err != nil {
+		e.secReport(SecurityEvent{
+			Type:        SecEventExitPortDenied,
+			Description: fmt.Sprintf("exit rejected circuit %s: %v", circuitIDHex, err),
+			CircuitID:   circuitIDHex,
+			TargetAddr:  setup.TargetAddr,
+		})
 		return &CircuitAck{
-			CircuitID:  setup.CircuitID,
+			CircuitID: setup.CircuitID,
 			Accepted:  false,
-			Reason:     err.Error(),
+			Reason:    err.Error(),
 		}, nil
 	}
 
@@ -317,8 +330,14 @@ func (e *ExitNode) HandleCircuitSetup(setup *CircuitSetup) (*CircuitAck, error) 
 	// Dial the target TCP connection.
 	targetConn, err := e.dialer("tcp", setup.TargetAddr)
 	if err != nil {
+		e.secReport(SecurityEvent{
+			Type:        SecEventExitCircuitSetupFail,
+			Description: fmt.Sprintf("exit failed to dial target %s for circuit %s: %v", setup.TargetAddr, circuitIDHex, err),
+			CircuitID:   circuitIDHex,
+			TargetAddr:  setup.TargetAddr,
+		})
 		return &CircuitAck{
-			CircuitID:  setup.CircuitID,
+			CircuitID: setup.CircuitID,
 			Accepted:  false,
 			Reason:     fmt.Sprintf("dial target: %v", err),
 		}, nil
@@ -383,12 +402,22 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 	e.mu.RUnlock()
 
 	if !exists {
+		e.secReport(SecurityEvent{
+			Type:        SecEventExitCircuitNotFound,
+			Description: fmt.Sprintf("exit received chunk for unknown circuit %s", circuitID),
+			CircuitID:   circuitID,
+		})
 		return nil, ErrCircuitNotFound
 	}
 
 	// Decrypt the chunk with the E2E key.
 	chunk, err := DecodeChunk(wc, circuit.e2eKey)
 	if err != nil {
+		e.secReport(SecurityEvent{
+			Type:        SecEventExitDecodeFail,
+			Description: fmt.Sprintf("exit failed to decode chunk for circuit %s: %v", circuitID, err),
+			CircuitID:   circuitID,
+		})
 		return nil, fmt.Errorf("decode chunk: %w", err)
 	}
 
@@ -415,6 +444,12 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 
 	if chunk.Sequence >= circuit.ackBase+uint32(maxWindow) {
 		// Chunk is too far ahead — reject to prevent memory exhaustion.
+		e.secReport(SecurityEvent{
+			Type:        SecEventExitWindowExceeded,
+			Description: fmt.Sprintf("exit rejected chunk seq %d beyond reassembly window (base=%d, max=%d) for circuit %s",
+				chunk.Sequence, circuit.ackBase, maxWindow, circuitID),
+			CircuitID: circuitID,
+		})
 		return nil, fmt.Errorf("chunk sequence %d beyond reassembly window (base=%d, max=%d)",
 			chunk.Sequence, circuit.ackBase, maxWindow)
 	}
@@ -608,6 +643,20 @@ func (e *ExitNode) GetCircuitInfo(circuitID string) (targetAddr string, state Ci
 	defer circuit.mu.Unlock()
 
 	return circuit.targetAddr, circuit.state, circuit.pathTracker.ActivePaths(), nil
+}
+
+// SetSecurityEventSink installs a sink for reporting suspicious proxy
+// activity (port denials, decode failures, window exceeded, etc.).
+// Pass nil to disable alerting on this exit node.
+func (e *ExitNode) SetSecurityEventSink(sink *SecurityEventSink) {
+	e.secSink.Store(sink)
+}
+
+// secReport is a convenience to send a security event if a sink is set.
+func (e *ExitNode) secReport(event SecurityEvent) {
+	if sink := e.secSink.Load(); sink != nil {
+		sink.Report(event)
+	}
 }
 
 // Close shuts down the exit node: tears down all circuits, closes all

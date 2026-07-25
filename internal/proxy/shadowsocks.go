@@ -63,6 +63,10 @@ type ssListener struct {
 	netListener net.Listener
 	masterKey   []byte // derived from password via HKDF
 	cipherName  string
+
+	// secSink receives suspicious-activity events for alerting.
+	// May be nil (no alerting). Set via SetSecurityEventSink.
+	secSink *SecurityEventSink
 }
 
 // NewSSListener creates a Shadowsocks listener on the given address.
@@ -95,6 +99,20 @@ func NewSSListener(cfg SSConfig) (net.Listener, error) {
 	}, nil
 }
 
+// SetSecurityEventSink installs a sink for reporting suspicious SS activity
+// (connection errors, salt read failures, invalid address types, decryption
+// failures).
+func (l *ssListener) SetSecurityEventSink(sink *SecurityEventSink) {
+	l.secSink = sink
+}
+
+// secReport is a convenience to send a security event if a sink is set.
+func (l *ssListener) secReport(event SecurityEvent) {
+	if l.secSink != nil {
+		l.secSink.Report(event)
+	}
+}
+
 // Accept waits for and returns the next connection to the listener.
 func (l *ssListener) Accept() (net.Conn, error) {
 	conn, err := l.netListener.Accept()
@@ -102,7 +120,21 @@ func (l *ssListener) Accept() (net.Conn, error) {
 		return nil, err
 	}
 	// Wrap the connection in an SS session.
-	return newSSSession(conn, l.masterKey)
+	session, err := newSSSession(conn, l.masterKey)
+	if err != nil {
+		// Security event: SS session initialization failed (salt read error,
+		// AEAD creation failure, etc.). This could indicate a port scanner,
+		// protocol fuzzing, or a misbehaving client.
+		l.secReport(SecurityEvent{
+			Type:        SecEventSSConnError,
+			Description: fmt.Sprintf("SS session init failed from %s: %v", conn.RemoteAddr(), err),
+			SourceIP:    conn.RemoteAddr().String(),
+		})
+		conn.Close()
+		return nil, err
+	}
+	session.secSink = l.secSink
+	return session, nil
 }
 
 // Close closes the listener.
@@ -144,6 +176,10 @@ type ssSession struct {
 	writeMu     sync.Mutex
 	readMu      sync.Mutex
 	closed      bool
+
+	// secSink receives suspicious-activity events for alerting.
+	// May be nil (no alerting). Set by the ssListener on creation.
+	secSink *SecurityEventSink
 }
 
 // newSSSession reads the salt from the connection and derives the
@@ -174,6 +210,13 @@ func newSSSession(conn net.Conn, masterKey []byte) (*ssSession, error) {
 	// Read the first encrypted chunk to extract the target address.
 	// But we defer that to the caller via ReadTarget.
 	return s, nil
+}
+
+// secReport is a convenience to send a security event if a sink is set.
+func (s *ssSession) secReport(event SecurityEvent) {
+	if s.secSink != nil {
+		s.secSink.Report(event)
+	}
 }
 
 // ReadTarget reads and decrypts the first SS payload chunk, which
@@ -225,6 +268,11 @@ func (s *ssSession) ReadTarget() (string, error) {
 		port = binary.BigEndian.Uint16(plaintext[17:19])
 		offset = 19
 	default:
+		s.secReport(SecurityEvent{
+			Type:        SecEventSSConnError,
+			Description: fmt.Sprintf("SS unknown address type 0x%02x from %s", addrType, s.conn.RemoteAddr()),
+			SourceIP:    s.conn.RemoteAddr().String(),
+		})
 		return "", fmt.Errorf("unknown address type: 0x%02x", addrType)
 	}
 
@@ -322,6 +370,11 @@ func (s *ssSession) readChunk() ([]byte, error) {
 	nonce := s.nextReadNonce()
 	lenPlain, err := s.aead.Open(nil, nonce, lenCipher, nil)
 	if err != nil {
+		s.secReport(SecurityEvent{
+			Type:        SecEventSSConnError,
+			Description: fmt.Sprintf("SS failed to decrypt chunk length from %s: %v", s.conn.RemoteAddr(), err),
+			SourceIP:    s.conn.RemoteAddr().String(),
+		})
 		return nil, fmt.Errorf("decrypt chunk length: %w", err)
 	}
 
@@ -342,6 +395,11 @@ func (s *ssSession) readChunk() ([]byte, error) {
 	nonce = s.nextReadNonce()
 	payload, err := s.aead.Open(nil, nonce, payloadCipher, nil)
 	if err != nil {
+		s.secReport(SecurityEvent{
+			Type:        SecEventSSConnError,
+			Description: fmt.Sprintf("SS failed to decrypt chunk payload from %s: %v", s.conn.RemoteAddr(), err),
+			SourceIP:    s.conn.RemoteAddr().String(),
+		})
 		return nil, fmt.Errorf("decrypt chunk payload: %w", err)
 	}
 

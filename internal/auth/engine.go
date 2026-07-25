@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/config"
@@ -65,6 +66,11 @@ type CapabilityEngine struct {
 	// audit is the structured audit logger. Every Authorize call
 	// produces an audit entry regardless of outcome.
 	audit *AuditLogger
+
+	// denyCB is invoked on every Authorize denial. Set via SetDenyCallback.
+	// May be nil (no alerting). Accessed atomically so it is safe to
+	// read concurrently from logAudit without holding mu.
+	denyCB atomic.Pointer[DenyCallback]
 }
 
 // RevocationEntry records a key revocation.
@@ -321,21 +327,48 @@ func (e *CapabilityEngine) RevokedCount() int {
 	return len(e.revoked)
 }
 
+// DenyCallback is invoked whenever an Authorize call results in a denial.
+// The AuthResult contains the full context: peer ID, capability, resource,
+// reason, source IP, and timestamp. This allows an external system (e.g.
+// the web dashboard's AlertStore) to generate a security alert for every
+// denied capability check without coupling the auth package to the web layer.
+type DenyCallback func(result AuthResult)
+
+// SetDenyCallback installs a callback that is invoked on every Authorize
+// denial. Pass nil to clear the callback. The callback is invoked
+// synchronously within Authorize, so it must be fast (e.g. enqueue to a
+// buffer) and must not call back into the engine (deadlock risk).
+//
+// This is the primary hook for security alerting: the web layer installs a
+// callback that converts denial events into SecurityAlert entries for
+// dashboard display.
+func (e *CapabilityEngine) SetDenyCallback(cb DenyCallback) {
+	e.denyCB.Store(&cb)
+}
+
 // logAudit writes an audit entry if an audit logger is configured.
+// If the result is a denial and a deny callback is set, the callback
+// is invoked with the full AuthResult.
 func (e *CapabilityEngine) logAudit(result AuthResult) {
-	if e.audit == nil {
-		return
+	if e.audit != nil {
+		entry := AuditEntry{
+			Timestamp:           result.Timestamp.UTC().Format(time.RFC3339),
+			SourcePeer:          result.SourcePeer,
+			SourceIP:            result.SourceIP,
+			RequestedCapability: result.Capability,
+			TargetResource:      result.Resource,
+			Result:              allowDeny(result.Allowed),
+			Reason:              result.Reason,
+		}
+		e.audit.Log(entry)
 	}
-	entry := AuditEntry{
-		Timestamp:           result.Timestamp.UTC().Format(time.RFC3339),
-		SourcePeer:          result.SourcePeer,
-		SourceIP:            result.SourceIP,
-		RequestedCapability: result.Capability,
-		TargetResource:      result.Resource,
-		Result:              allowDeny(result.Allowed),
-		Reason:              result.Reason,
+
+	// Invoke deny callback for denials (atomic load — safe without mu).
+	if !result.Allowed {
+		if cbPtr := e.denyCB.Load(); cbPtr != nil && *cbPtr != nil {
+			(*cbPtr)(result)
+		}
 	}
-	e.audit.Log(entry)
 }
 
 func allowDeny(allowed bool) string {
