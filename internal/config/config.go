@@ -70,6 +70,14 @@ type PathSelectionConfig struct {
 	// Default: "manual".
 	Mode string `yaml:"mode,omitempty"`
 
+	// Strategy selects the path ranking algorithm used when Mode is
+	// "auto". Supported values:
+	//   "latency"     — pick the two lowest-RTT disjoint paths (default)
+	//   "random"      — random selection from healthy candidates
+	//   "round-robin" — cycle through available paths to distribute load
+	// Default: "latency".
+	Strategy string `yaml:"strategy,omitempty"`
+
 	// MaxRelaysPerPath is the maximum number of relay hops per path.
 	// Default: 2. Higher = more anonymity, more latency.
 	MaxRelaysPerPath int `yaml:"max_relays_per_path,omitempty"`
@@ -184,6 +192,11 @@ type SSListenerConfig struct {
 	// ListenAddr is the address to listen on. In production this
 	// is behind a CF Tunnel — the tunnel provides TLS.
 	ListenAddr string `yaml:"listen_addr"`
+
+	// Port is the Shadowsocks listener port. Default: 8388.
+	// Mutually exclusive with ListenAddr when ListenAddr includes
+	// an explicit port. When both are set, Port takes precedence.
+	Port int `yaml:"port,omitempty"`
 }
 
 // CircuitLifecycleConfig holds circuit lifecycle parameters.
@@ -220,6 +233,14 @@ type ExitConfig struct {
 	// AllowAllPorts removes the port restriction entirely.
 	// WARNING: full legal exposure. Not recommended.
 	AllowAllPorts bool `yaml:"allow_all_ports,omitempty"`
+
+	// DestinationFilter is a list of CIDR prefixes or FQDN patterns
+	// that the exit is allowed to connect to. When non-empty, the
+	// exit refuses connections to destinations that don't match at
+	// least one entry. Empty (default) allows all destinations
+	// subject to AllowedPorts/AllowAllPorts.
+	// Examples: "10.0.0.0/8", "*.example.com", "203.0.113.0/24".
+	DestinationFilter []string `yaml:"destination_filter,omitempty"`
 
 	// AuditLogDir is the directory for exit audit logs.
 	// Logs record circuit_id → dest_ip:port → timestamp (no payload).
@@ -333,6 +354,37 @@ type MonitoringConfig struct {
 // AuthConfig holds web UI auth settings.
 type AuthConfig struct {
 	WebUsers []WebUser `yaml:"web_users"`
+
+	// TOTPSecret is a base32-encoded 32-byte key used as the server-side
+	// HMAC secret for deriving TOTP authentication tokens. If empty on
+	// startup, a fresh secret is auto-generated and logged (but NOT
+	// persisted back to the config file — operators must manually save
+	// it to ensure stable key material across restarts).
+	TOTPSecret string `yaml:"totp_secret,omitempty"`
+
+	// TOTPIssuer is the issuer name embedded in otpauth:// URIs shown
+	// in QR codes during 2FA enrollment. Default: "MeshDesk".
+	TOTPIssuer string `yaml:"totp_issuer,omitempty"`
+
+	// Require2FA, when true, mandates that all web dashboard users
+	// complete TOTP enrollment before accessing any authenticated
+	// endpoint. When false (default), 2FA enrollment is optional.
+	Require2FA bool `yaml:"require_2fa,omitempty"`
+
+	// TOTPWindow is the ±skew tolerance in time steps (default 1).
+	// Each step is 30 seconds, so a value of 1 accepts codes from
+	// the previous, current, and next 30-second windows.
+	TOTPWindow int `yaml:"totp_window,omitempty"`
+
+	// StepUpTimeout is the lifetime of a step-up auth token in seconds
+	// (default 300 = 5 minutes). After this period, sensitive operations
+	// require re-authentication.
+	StepUpTimeout int `yaml:"step_up_timeout,omitempty"`
+
+	// AlertWebhookURL is an optional webhook endpoint for external
+	// security alert notifications. When empty, alerts are only stored
+	// in-memory and surfaced in the web UI.
+	AlertWebhookURL string `yaml:"alert_webhook_url,omitempty"`
 }
 
 // WebSSHConfig holds settings for the WebSSH bridge.
@@ -399,6 +451,13 @@ func Default() *Config {
 			MaxFileSize: DefaultMaxFileSize,
 			UploadDir:   DefaultUploadDir,
 		},
+		Auth: AuthConfig{
+			TOTPIssuer:    "MeshDesk",
+			TOTPWindow:    1,
+			StepUpTimeout: 300,
+			// TOTPSecret is auto-generated on first use; not set here.
+			// Require2FA defaults to false (2FA is opt-in).
+		},
 		Proxy: ProxyConfig{
 			ChunkerStrategy: "bounded-4k-64k",
 			Circuit: CircuitLifecycleConfig{
@@ -408,16 +467,23 @@ func Default() *Config {
 				OrphanTimeout:       30,
 				MaxReassemblyWindow: 256,
 			},
+			SS: SSListenerConfig{
+				Port: 8388,
+			},
 			Exit: ExitConfig{
 				AllowedPorts:       []int{80, 443},
 				AllowAllPorts:      false,
 				AuditRetentionDays: 7,
 			},
 			Relay: RelayNodeConfig{
-				JitterMinMs:    5,
-				JitterMaxMs:    50,
-				MaxCircuits:    1024,
-				MaxQueueDepth:  256,
+				JitterMinMs:   5,
+				JitterMaxMs:   50,
+				MaxCircuits:   1024,
+				MaxQueueDepth: 256,
+			},
+			PathSelection: PathSelectionConfig{
+				Mode:     "manual",
+				Strategy: "latency",
 			},
 		},
 	}
@@ -463,6 +529,16 @@ func Load(path string) (*Config, error) {
 	if cfg.Transfer.UploadDir == "" {
 		cfg.Transfer.UploadDir = DefaultUploadDir
 	}
+	// Auth config defaults.
+	if cfg.Auth.TOTPIssuer == "" {
+		cfg.Auth.TOTPIssuer = "MeshDesk"
+	}
+	if cfg.Auth.TOTPWindow == 0 {
+		cfg.Auth.TOTPWindow = 1
+	}
+	if cfg.Auth.StepUpTimeout == 0 {
+		cfg.Auth.StepUpTimeout = 300
+	}
 	// Proxy config defaults.
 	if cfg.Proxy.ChunkerStrategy == "" {
 		cfg.Proxy.ChunkerStrategy = "bounded-4k-64k"
@@ -481,6 +557,10 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Proxy.Circuit.MaxReassemblyWindow == 0 {
 		cfg.Proxy.Circuit.MaxReassemblyWindow = 256
+	}
+	// SS listener defaults.
+	if cfg.Proxy.SS.Port == 0 {
+		cfg.Proxy.SS.Port = 8388
 	}
 	if len(cfg.Proxy.Exit.AllowedPorts) == 0 && !cfg.Proxy.Exit.AllowAllPorts {
 		cfg.Proxy.Exit.AllowedPorts = []int{80, 443}
@@ -504,6 +584,9 @@ func Load(path string) (*Config, error) {
 	// Path selection defaults.
 	if cfg.Proxy.PathSelection.Mode == "" {
 		cfg.Proxy.PathSelection.Mode = "manual"
+	}
+	if cfg.Proxy.PathSelection.Strategy == "" {
+		cfg.Proxy.PathSelection.Strategy = "latency"
 	}
 	if cfg.Proxy.PathSelection.MaxRelaysPerPath == 0 {
 		cfg.Proxy.PathSelection.MaxRelaysPerPath = 2

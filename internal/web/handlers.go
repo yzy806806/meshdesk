@@ -22,8 +22,31 @@ const TransferPort = 4193
 
 // --- Login / Logout ---
 
+// twoFactorPendingCookie is the cookie name for the intermediate 2FA-pending
+// state. When a user with TOTP enrollment provides correct password+username,
+// instead of creating a full session immediately, the server issues this
+// short-lived cookie. The user must then POST a valid TOTP code (or recovery
+// code) to /api/2fa/verify to receive a full session cookie.
+const twoFactorPendingCookie = "meshdesk_2fa_pending"
+
+// twoFactorPendingTTL is the lifetime of the 2FA-pending cookie.
+const twoFactorPendingTTL = 5 * time.Minute
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
+		// If ?2fa=1 is present, render the 2FA code entry page
+		if r.URL.Query().Get("2fa") == "1" {
+			data := struct {
+				Title      string
+				ActivePage string
+				Error      string
+			}{
+				Title:      "Two-Factor Authentication",
+				ActivePage: "login",
+			}
+			s.renderPage(w, "login_2fa.html", data)
+			return
+		}
 		data := struct {
 			Title      string
 			ActivePage string
@@ -41,6 +64,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		password := r.FormValue("password")
 
 		if s.authenticate(username, password) {
+			// Check if the user has TOTP enrolled
+			if s.totpStore.IsEnrolled(username) {
+				// Password is correct, but TOTP is required.
+				// Set a 2FA-pending cookie (short-lived) and redirect to the challenge page.
+				pendingToken := generateToken()
+				s.sessions.SetPending(pendingToken, username)
+				http.SetCookie(w, &http.Cookie{
+					Name:     twoFactorPendingCookie,
+					Value:    pendingToken,
+					Path:     "/",
+					HttpOnly: true,
+					MaxAge:   int(twoFactorPendingTTL.Seconds()),
+					SameSite: http.SameSiteStrictMode,
+				})
+				http.Redirect(w, r, "/login?2fa=1", http.StatusSeeOther)
+				return
+			}
+
+			// No TOTP — proceed with normal session
 			session := s.sessions.Create(username)
 			http.SetCookie(w, &http.Cookie{
 				Name:     "meshdesk_session",
@@ -53,6 +95,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
+
+		// Log failed login attempt for alerting
+		s.alertStore.Add(SecurityAlert{
+			Type:        "login_failure",
+			Username:    username,
+			SourceIP:    r.RemoteAddr,
+			Description: "failed login attempt",
+			Severity:    AlertWarning,
+		})
 
 		data := struct {
 			Title      string
@@ -73,10 +124,24 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie("meshdesk_session")
 	if err == nil {
+		// Revoke any step-up tokens for this session
+		s.stepUpStore.Revoke(cookie.Value)
 		s.sessions.Delete(cookie.Value)
+	}
+	// Also clear 2FA pending cookie if present
+	pending, err := r.Cookie(twoFactorPendingCookie)
+	if err == nil {
+		s.sessions.ClearPending(pending.Value)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "meshdesk_session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     twoFactorPendingCookie,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,

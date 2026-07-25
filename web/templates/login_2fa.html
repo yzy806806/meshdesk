@@ -1,0 +1,33 @@
+{{define "content"}}
+<div class="login-view">
+  <article class="login-card">
+    <header>
+      <h2>⟁ Two-Factor Authentication</h2>
+      <p>Enter the 6-digit code from your authenticator app</p>
+    </header>
+    {{if .Error}}
+    <blockquote class="error">{{.Error}}</blockquote>
+    {{end}}
+    <form method="POST" action="/api/2fa/verify" id="2fa-form">
+      <label for="code">Authentication Code
+        <input type="text" id="code" name="code" inputmode="numeric"
+               pattern="[0-9]{6}" maxlength="6" minlength="6"
+               required autofocus
+               placeholder="123456"
+               autocomplete="one-time-code">
+      </label>
+      <button type="submit">Verify</button>
+    </form>
+    <details style="margin-top:1rem">
+      <summary>Use recovery code instead</summary>
+      <form method="POST" action="/api/2fa/verify" style="margin-top:0.5rem">
+        <label for="recovery">Recovery Code
+          <input type="text" id="recovery" name="recovery" placeholder="XXXXXXXX">
+        </label>
+        <button type="submit" class="secondary">Use Recovery Code</button>
+      </form>
+    </details>
+    <p style="margin-top:1rem"><a href="/login">Back to login</a></p>
+  </article>
+</div>
+{{end}}

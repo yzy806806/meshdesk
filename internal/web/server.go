@@ -35,6 +35,10 @@ type Server struct {
 	svcMgr       service.ServiceManager
 	meshDialer   MeshDialer // for remote file transfer + remote service management
 
+	totpStore   *TOTPStore
+	stepUpStore *StepUpStore
+	alertStore  *AlertStore
+
 	tmpl  *template.Template
 	pages map[string]*template.Template
 
@@ -59,6 +63,11 @@ type Deps struct {
 	AuthEngine   *auth.CapabilityEngine
 	ServiceMgr   service.ServiceManager
 	MeshDialer   MeshDialer
+
+	// 2FA / security stores. When nil, fresh empty stores are created.
+	TOTPStore   *TOTPStore
+	StepUpStore *StepUpStore
+	AlertStore  *AlertStore
 }
 
 // New creates a new web server from the given dependencies.
@@ -91,8 +100,8 @@ func New(deps Deps) (*Server, error) {
 	// Parse each page template by cloning the layout and adding the page
 	pageNames := []string{
 		"dashboard.html", "node_detail.html", "terminal.html",
-		"files.html", "services.html", "login.html", "peers.html",
-		"error.html",
+		"files.html", "services.html", "login.html", "login_2fa.html",
+		"peers.html", "error.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -120,10 +129,22 @@ func New(deps Deps) (*Server, error) {
 		pages:        pages,
 		sessions:     NewSessionStore(),
 		sseHub:       NewSSEHub(),
+		totpStore:    deps.TOTPStore,
+		stepUpStore:   deps.StepUpStore,
+		alertStore:    deps.AlertStore,
 	}
 
 	if s.monitorStore == nil {
 		s.monitorStore = monitor.NewStore()
+	}
+	if s.totpStore == nil {
+		s.totpStore = NewTOTPStore()
+	}
+	if s.stepUpStore == nil {
+		s.stepUpStore = NewStepUpStore()
+	}
+	if s.alertStore == nil {
+		s.alertStore = NewAlertStore()
 	}
 
 	return s, nil
@@ -175,8 +196,23 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login", s.handleLogin)
 	mux.HandleFunc("/logout", s.handleLogout)
 
+	// 2FA endpoints (no session required — /api/2fa/verify uses 2fa_pending cookie)
+	mux.HandleFunc("/api/2fa/verify", s.handle2FAVerify)
+	mux.HandleFunc("/api/2fa/enroll", s.requireAuth(s.handle2FAEnroll))
+	mux.HandleFunc("/api/2fa/disable", s.requireAuth(s.handle2FADisable))
+	mux.HandleFunc("/api/2fa/status", s.requireAuth(s.handle2FAStatus))
+
+	// Step-up auth endpoints (session required)
+	mux.HandleFunc("/api/stepup/challenge", s.requireAuth(s.handleStepUpChallenge))
+	mux.HandleFunc("/api/stepup/verify", s.requireAuth(s.handleStepUpVerify))
+
+	// Security alerts (session required)
+	mux.HandleFunc("/api/alerts", s.requireAuth(s.handleAlertsList))
+	mux.HandleFunc("/api/alerts/dismiss", s.requireAuth(s.handleAlertsDismiss))
+
 	// WebSocket terminal — middleware chain enforces:
 	//   sessionAuthMiddleware  → valid web session (if web users configured)
+	//   stepUpMiddleware       → valid step-up token for "terminal" operation
 	//   peerIDFromQueryMiddleware → extracts peer ID from ?node= query param
 	//   auth.RequireCapability  → ssh_proxy capability check (Decision E)
 	// The webssh handler itself no longer contains auth logic.
@@ -184,15 +220,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	var terminalChain http.Handler
 	if s.authEngine != nil {
 		terminalChain = s.sessionAuthMiddleware(
-			s.peerIDFromQueryMiddleware(
-				auth.RequireCapability(s.authEngine, auth.CapSSHProxy)(sshHandler),
+			s.stepUpMiddleware(OpTerminal,
+				s.peerIDFromQueryMiddleware(
+					auth.RequireCapability(s.authEngine, auth.CapSSHProxy)(sshHandler),
+				),
 			),
 		)
 	} else {
-		// No auth engine (testing mode) — still enforce session auth,
+		// No auth engine (testing mode) — still enforce session auth + step-up,
 		// but skip capability check.
 		terminalChain = s.sessionAuthMiddleware(
-			s.peerIDFromQueryMiddleware(sshHandler),
+			s.stepUpMiddleware(OpTerminal,
+				s.peerIDFromQueryMiddleware(sshHandler),
+			),
 		)
 	}
 	mux.Handle("/ws/terminal", terminalChain)
@@ -202,18 +242,18 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// API endpoints (auth required, return JSON or HTML fragments)
 	mux.HandleFunc("/api/dashboard/partial", s.requireAuth(s.handleDashboardPartial))
-	mux.HandleFunc("/api/files/upload", s.requireAuth(s.handleFileUpload))
+	mux.HandleFunc("/api/files/upload", s.requireAuth(s.requireStepUp(OpFileUpload, s.handleFileUpload)))
 	mux.HandleFunc("/api/files/list", s.requireAuth(s.handleFileList))
 	mux.HandleFunc("/api/services/list", s.requireAuth(s.handleServiceList))
-	mux.HandleFunc("/api/services/start", s.requireAuth(s.handleServiceAction("start")))
-	mux.HandleFunc("/api/services/stop", s.requireAuth(s.handleServiceAction("stop")))
-	mux.HandleFunc("/api/services/restart", s.requireAuth(s.handleServiceAction("restart")))
+	mux.HandleFunc("/api/services/start", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("start"))))
+	mux.HandleFunc("/api/services/stop", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("stop"))))
+	mux.HandleFunc("/api/services/restart", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("restart"))))
 
 	// Page routes (auth required)
 	mux.HandleFunc("/", s.requireAuth(s.handleDashboard))
 	mux.HandleFunc("/nodes", s.requireAuth(s.handleNodeList))
 	mux.HandleFunc("/nodes/", s.requireAuth(s.handleNodeDetail))
-	mux.HandleFunc("/terminal", s.requireAuth(s.handleTerminalPage))
+	mux.HandleFunc("/terminal", s.requireAuth(s.requireStepUpPage(OpTerminal, s.handleTerminalPage)))
 	mux.HandleFunc("/files", s.requireAuth(s.handleFilesPage))
 	mux.HandleFunc("/services", s.requireAuth(s.handleServicesPage))
 	mux.HandleFunc("/peers", s.requireAuth(s.handlePeersPage))
@@ -364,9 +404,127 @@ func (s *Server) sessionAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		ctx := context.WithValue(r.Context(), ctxUsernameKey{}, session.Username)
+		ctx = context.WithValue(ctx, ctxSessionTokenKey{}, session.Token)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+// requireStepUp wraps a handler with step-up authentication for the given
+// operation. If the session does not have a valid step-up token for the
+// operation, the request is rejected with 403 (JSON) or a redirect to the
+// step-up challenge page (browser). If no web users are configured, the
+// check is bypassed (first-run setup mode).
+func (s *Server) requireStepUp(operation string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if len(s.cfg.Auth.WebUsers) == 0 {
+			handler(w, r)
+			return
+		}
+
+		cookie, err := r.Cookie("meshdesk_session")
+		if err != nil {
+			if isHTMXRequest(r) {
+				w.Header().Set("HX-Redirect", "/login")
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+
+		session := s.sessions.Get(cookie.Value)
+		if session == nil {
+			if isHTMXRequest(r) {
+				w.Header().Set("HX-Redirect", "/login")
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+
+		if !s.stepUpStore.Validate(session.Token, operation) {
+			if isHTMXRequest(r) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("HX-Redirect", "/api/stepup/challenge?op="+operation)
+				w.WriteHeader(http.StatusForbidden)
+				return
+			}
+			http.Redirect(w, r, "/api/stepup/challenge?op="+operation, http.StatusSeeOther)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ctxUsernameKey{}, session.Username)
+		ctx = context.WithValue(ctx, ctxSessionTokenKey{}, session.Token)
+		handler(w, r.WithContext(ctx))
+	}
+}
+
+// requireStepUpPage is like requireStepUp but for page routes — it always
+// redirects to the step-up challenge page on failure (no JSON response).
+func (s *Server) requireStepUpPage(operation string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if len(s.cfg.Auth.WebUsers) == 0 {
+			handler(w, r)
+			return
+		}
+
+		cookie, err := r.Cookie("meshdesk_session")
+		if err != nil {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+
+		session := s.sessions.Get(cookie.Value)
+		if session == nil {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+
+		if !s.stepUpStore.Validate(session.Token, operation) {
+			http.Redirect(w, r, "/api/stepup/challenge?op="+operation, http.StatusSeeOther)
+			return
+		}
+
+		ctx := context.WithValue(r.Context(), ctxUsernameKey{}, session.Username)
+		ctx = context.WithValue(ctx, ctxSessionTokenKey{}, session.Token)
+		handler(w, r.WithContext(ctx))
+	}
+}
+
+// stepUpMiddleware is the http.Handler variant of requireStepUp, used in
+// the WebSocket terminal middleware chain. On failure it returns 403
+// (WebSocket clients don't follow redirects).
+func (s *Server) stepUpMiddleware(operation string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if len(s.cfg.Auth.WebUsers) == 0 {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		cookie, err := r.Cookie("meshdesk_session")
+		if err != nil {
+			http.Error(w, "Step-up authentication required", http.StatusForbidden)
+			return
+		}
+
+		session := s.sessions.Get(cookie.Value)
+		if session == nil {
+			http.Error(w, "Step-up authentication required", http.StatusForbidden)
+			return
+		}
+
+		if !s.stepUpStore.Validate(session.Token, operation) {
+			http.Error(w, "Step-up authentication required", http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// ctxSessionTokenKey is the context key for the session token string.
+type ctxSessionTokenKey struct{}
 
 // --- Template Rendering ---
 
@@ -540,6 +698,16 @@ func (s *Server) BroadcastMetrics() {
 type SessionStore struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
+	// pending holds 2FA-pending tokens: users who passed password auth
+	// but still need to provide a TOTP code before receiving a full session.
+	pending map[string]*pendingSession
+}
+
+// pendingSession holds a user who passed password auth but hasn't
+// completed TOTP verification yet.
+type pendingSession struct {
+	Username  string
+	ExpiresAt time.Time
 }
 
 // Session represents an authenticated web UI session.
@@ -554,6 +722,7 @@ type Session struct {
 func NewSessionStore() *SessionStore {
 	return &SessionStore{
 		sessions: make(map[string]*Session),
+		pending:  make(map[string]*pendingSession),
 	}
 }
 
@@ -591,6 +760,40 @@ func (s *SessionStore) Get(token string) *Session {
 func (s *SessionStore) Delete(token string) {
 	s.mu.Lock()
 	delete(s.sessions, token)
+	s.mu.Unlock()
+}
+
+// SetPending creates a 2FA-pending session for the given username.
+// This is used when password auth succeeds but TOTP is still required.
+func (s *SessionStore) SetPending(token, username string) {
+	s.mu.Lock()
+	s.pending[token] = &pendingSession{
+		Username:  username,
+		ExpiresAt: time.Now().Add(twoFactorPendingTTL),
+	}
+	s.mu.Unlock()
+}
+
+// GetPending retrieves a 2FA-pending session by token.
+// Returns nil if not found or expired.
+func (s *SessionStore) GetPending(token string) *pendingSession {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ps, ok := s.pending[token]
+	if !ok {
+		return nil
+	}
+	if time.Now().After(ps.ExpiresAt) {
+		delete(s.pending, token)
+		return nil
+	}
+	return ps
+}
+
+// ClearPending removes a 2FA-pending session.
+func (s *SessionStore) ClearPending(token string) {
+	s.mu.Lock()
+	delete(s.pending, token)
 	s.mu.Unlock()
 }
 

@@ -206,6 +206,10 @@ func TestVerification_UnauthenticatedRejected(t *testing.T) {
 
 	session := srv.sessions.Create("admin")
 
+	// Grant step-up auth for terminal so we can test the deeper middleware
+	// (peerIDFromQuery + RequireCapability) without being blocked by step-up.
+	srv.stepUpStore.Grant(session.Token, []string{OpTerminal})
+
 	tests := []struct {
 		name       string
 		url        string
