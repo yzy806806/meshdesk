@@ -316,6 +316,156 @@ func (s *Server) handle2FAStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // =============================================================================
+// TOTP Key Rotation Handlers
+// =============================================================================
+
+// handle2FARotate handles POST /api/2fa/rotate.
+// Initiates TOTP key rotation: generates a new secret (old remains valid
+// until confirm/cancel), returns the new QR provisioning URL, secret, and
+// fresh recovery codes for the user to enroll in their authenticator app.
+func (s *Server) handle2FARotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	username, ok := r.Context().Value(ctxUsernameKey{}).(string)
+	if !ok || username == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	result, err := s.totpStore.InitiateRotation(username)
+	if err != nil {
+		s.alertStore.Add(SecurityAlert{
+			Type:        "totp_rotation_initiated",
+			Username:    username,
+			SourceIP:    r.RemoteAddr,
+			Description: fmt.Sprintf("TOTP rotation initiation failed: %s", err.Error()),
+			Severity:    AlertWarning,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":"%s"}`, err.Error())
+		return
+	}
+
+	issuer := s.cfg.Auth.TOTPIssuer
+	if issuer == "" {
+		issuer = "MeshDesk"
+	}
+
+	resp := totpEnrollResponse{
+		Secret:    result.Secret,
+		QRURL:     QRURL(issuer, username, result.Secret),
+		Algorithm: "SHA256",
+		Digits:    totpDigits,
+		Period:    totpPeriod,
+		Recovery:  result.RecoveryCodes,
+	}
+
+	s.alertStore.Add(SecurityAlert{
+		Type:        "totp_rotation_initiated",
+		Username:    username,
+		SourceIP:    r.RemoteAddr,
+		Description: "TOTP key rotation initiated — new secret generated, awaiting confirmation",
+		Severity:    AlertWarning,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handle2FARotateConfirm handles POST /api/2fa/rotate/confirm.
+// Reads `code` from the form body and calls ConfirmRotation. On success,
+// the old secret is discarded and the new secret becomes primary.
+func (s *Server) handle2FARotateConfirm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	username, ok := r.Context().Value(ctxUsernameKey{}).(string)
+	if !ok || username == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	code := r.FormValue("code")
+	if code == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":"Missing 'code' field."}`)
+		return
+	}
+
+	if err := s.totpStore.ConfirmRotation(username, code); err != nil {
+		s.alertStore.Add(SecurityAlert{
+			Type:        "totp_rotation_confirmed",
+			Username:    username,
+			SourceIP:    r.RemoteAddr,
+			Description: fmt.Sprintf("TOTP rotation confirmation failed: %s", err.Error()),
+			Severity:    AlertWarning,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":"%s"}`, err.Error())
+		return
+	}
+
+	s.alertStore.Add(SecurityAlert{
+		Type:        "totp_rotation_confirmed",
+		Username:    username,
+		SourceIP:    r.RemoteAddr,
+		Description: "TOTP key rotation confirmed — new secret activated, old secret discarded",
+		Severity:    AlertInfo,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"rotated"}`)
+}
+
+// handle2FARotateCancel handles POST /api/2fa/rotate/cancel.
+// Cancels an in-progress rotation, restoring the old secret as primary.
+func (s *Server) handle2FARotateCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	username, ok := r.Context().Value(ctxUsernameKey{}).(string)
+	if !ok || username == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if err := s.totpStore.CancelRotation(username); err != nil {
+		s.alertStore.Add(SecurityAlert{
+			Type:        "totp_rotation_cancelled",
+			Username:    username,
+			SourceIP:    r.RemoteAddr,
+			Description: fmt.Sprintf("TOTP rotation cancel failed: %s", err.Error()),
+			Severity:    AlertWarning,
+		})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprintf(w, `{"error":"%s"}`, err.Error())
+		return
+	}
+
+	s.alertStore.Add(SecurityAlert{
+		Type:        "totp_rotation_cancelled",
+		Username:    username,
+		SourceIP:    r.RemoteAddr,
+		Description: "TOTP key rotation cancelled — old secret restored",
+		Severity:    AlertInfo,
+	})
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"cancelled"}`)
+}
+
+// =============================================================================
 // Step-Up Auth Handlers
 // =============================================================================
 

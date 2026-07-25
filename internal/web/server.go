@@ -297,6 +297,9 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/2fa/enroll", s.requireAuth(s.handle2FAEnroll))
 	mux.HandleFunc("/api/2fa/disable", s.requireAuth(s.handle2FADisable))
 	mux.HandleFunc("/api/2fa/status", s.requireAuth(s.handle2FAStatus))
+	mux.HandleFunc("/api/2fa/rotate", s.requireAuth(s.handle2FARotate))
+	mux.HandleFunc("/api/2fa/rotate/confirm", s.requireAuth(s.handle2FARotateConfirm))
+	mux.HandleFunc("/api/2fa/rotate/cancel", s.requireAuth(s.handle2FARotateCancel))
 
 	// Step-up auth endpoints (session required)
 	mux.HandleFunc("/api/stepup/challenge", s.requireAuth(s.handleStepUpChallenge))
