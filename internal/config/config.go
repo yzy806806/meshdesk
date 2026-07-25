@@ -280,6 +280,20 @@ type NodeConfig struct {
 	Identity string `yaml:"identity"` // WireGuard private key (hex); auto-generated if empty
 	Hostname string `yaml:"hostname"` // auto-detected if empty
 	WebAddr  string `yaml:"web"`      // e.g. ":8080"; empty = agent-only mode
+
+	// Position holds an optional manual 3D display position for topology
+	// visualization. When nil, positions are auto-derived from the node's
+	// public key (see topology.DerivePosition). This is display-only
+	// metadata and does not affect routing or proxy behavior.
+	Position *PositionConfig `yaml:"position,omitempty"`
+}
+
+// PositionConfig holds a manual 3D display position for the topology
+// visualization. Coordinates are in arbitrary screen-space units.
+type PositionConfig struct {
+	X float64 `yaml:"x"`
+	Y float64 `yaml:"y"`
+	Z float64 `yaml:"z"`
 }
 
 // MeshConfig holds mesh-level settings.

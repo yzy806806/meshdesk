@@ -18,6 +18,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/service"
+	"github.com/yzy806806/meshdesk/internal/topology"
 	"github.com/yzy806806/meshdesk/internal/webssh"
 	webembed "github.com/yzy806806/meshdesk/web"
 )
@@ -41,6 +42,16 @@ type Server struct {
 	alertStore  *AlertStore
 
 	proxyStatusProvider ProxyStatusProvider
+
+	// Topology providers — injected or auto-derived from mesh/monitor.
+	// When nil, the handler builds adapters from s.node and s.monitorStore.
+	topologyPeersProvider   topology.TopologyPeers
+	topologyMetricsProvider topology.TopologyMetrics
+	topologyPathsProvider   topology.TopologyPathInfo
+
+	// Mock topology support (development/testing).
+	mockTopologyQuery func() bool
+	mockSnapshotFn    func() topology.TopologySnapshot
 
 	tmpl  *template.Template
 	pages map[string]*template.Template
@@ -81,6 +92,13 @@ type Deps struct {
 	// /api/proxy/status dashboard endpoint. May be nil when the node
 	// is not running as a proxy entry point.
 	ProxyStatusProvider ProxyStatusProvider
+
+	// Topology providers for the 3D topology visualization API.
+	// When nil, handlers auto-build adapters from Node + MonitorStore.
+	// Inject these in tests to use mock data.
+	TopologyPeers   topology.TopologyPeers
+	TopologyMetrics topology.TopologyMetrics
+	TopologyPaths   topology.TopologyPathInfo
 }
 
 // New creates a new web server from the given dependencies.
@@ -147,6 +165,10 @@ func New(deps Deps) (*Server, error) {
 		stepUpStore:   deps.StepUpStore,
 		alertStore:    deps.AlertStore,
 		proxyStatusProvider: deps.ProxyStatusProvider,
+
+		topologyPeersProvider:   deps.TopologyPeers,
+		topologyMetricsProvider: deps.TopologyMetrics,
+		topologyPathsProvider:   deps.TopologyPaths,
 	}
 
 	if s.monitorStore == nil {
@@ -293,6 +315,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// SSE events stream (auth required)
 	mux.HandleFunc("/api/events", s.requireAuth(s.handleSSE))
+
+	// Topology API (auth required) — 3D visualization endpoints.
+	// GET /api/topology returns a JSON snapshot of nodes and edges.
+	// GET /api/topology/events streams real-time topology updates via SSE.
+	mux.HandleFunc("/api/topology", s.requireAuth(s.handleTopology))
+	mux.HandleFunc("/api/topology/events", s.requireAuth(s.handleTopologySSE))
 
 	// API endpoints (auth required, return JSON or HTML fragments)
 	mux.HandleFunc("/api/dashboard/partial", s.requireAuth(s.handleDashboardPartial))
