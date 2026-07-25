@@ -493,15 +493,20 @@ func TestDoSReassemblyWindowMultiplePaths(t *testing.T) {
 // TestDoSReassemblyChunkLimit verifies that the per-stream chunk count
 // limit (MaxReassemblyChunks) is enforced by the reassembler, preventing
 // an attacker from amassing unlimited chunks in the buffer.
+//
+// The streaming reassembler delivers contiguous chunks immediately, so
+// to test the chunk limit we send chunks out of order (starting from a
+// high sequence number). This creates a gap at sequence 0, preventing
+// immediate delivery and forcing the chunks to accumulate in the buffer.
 func TestDoSReassemblyChunkLimit(t *testing.T) {
 	cfg := DefaultExitConfig()
 	cfg.AllowAllPorts = true
 	cfg.ChunkerCfg = ChunkerConfig{
-		MaxChunkSize:         16,
-		MinChunkSize:         16,
-		DisablePadding:       true,
-		MaxReassemblyChunks:  10, // small limit for test
-		MaxReassemblyBytes:   32 * 1024 * 1024,
+		MaxChunkSize:        16,
+		MinChunkSize:        16,
+		DisablePadding:      true,
+		MaxReassemblyChunks: 10, // small limit for test
+		MaxReassemblyBytes:  32 * 1024 * 1024,
 	}
 	cfg.CircuitCfg.MaxReassemblyWindow = 1000
 	cfg.CircuitCfg.NACKTimeout = 100 * time.Hour
@@ -513,9 +518,11 @@ func TestDoSReassemblyChunkLimit(t *testing.T) {
 	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 	_ = e2eKey
 
-	// Send 10 chunks (should all be accepted).
-	for i := 0; i < 10; i++ {
-		chunk := Chunk{StreamID: 0, Sequence: uint32(i), Type: ChunkData, Payload: []byte{byte(i)}}
+	// Send 10 chunks starting from sequence 1 (skip seq=0 to create a gap).
+	// Since seq=0 is missing, these chunks can't be delivered and will
+	// accumulate in the reassembly buffer.
+	for i := uint32(1); i <= 10; i++ {
+		chunk := Chunk{StreamID: 0, Sequence: i, Type: ChunkData, Payload: []byte{byte(i)}}
 		wc := encodeChunks(t, []Chunk{chunk}, e2eKey)[0]
 		_, err := exit.HandleWireChunk(circuitIDHex, wc, 0)
 		if err != nil {
@@ -523,8 +530,8 @@ func TestDoSReassemblyChunkLimit(t *testing.T) {
 		}
 	}
 
-	// The 11th chunk should trigger ErrReassemblyChunksExceeded.
-	chunk11 := Chunk{StreamID: 0, Sequence: 10, Type: ChunkData, Payload: []byte{10}}
+	// The 11th buffered chunk should trigger ErrReassemblyChunksExceeded.
+	chunk11 := Chunk{StreamID: 0, Sequence: 11, Type: ChunkData, Payload: []byte{11}}
 	wc11 := encodeChunks(t, []Chunk{chunk11}, e2eKey)[0]
 	_, err := exit.HandleWireChunk(circuitIDHex, wc11, 0)
 	if err == nil {
@@ -535,15 +542,19 @@ func TestDoSReassemblyChunkLimit(t *testing.T) {
 // TestDoSReassemblyByteLimit verifies that the global byte limit
 // (MaxReassemblyBytes) is enforced across all streams, preventing
 // memory exhaustion via payload accumulation.
+//
+// The streaming reassembler delivers contiguous chunks immediately, so
+// to test the byte limit we send chunks out of order (starting from a
+// high sequence number) to prevent delivery and force buffering.
 func TestDoSReassemblyByteLimit(t *testing.T) {
 	cfg := DefaultExitConfig()
 	cfg.AllowAllPorts = true
 	cfg.ChunkerCfg = ChunkerConfig{
-		MaxChunkSize:         1024,
-		MinChunkSize:         1024,
-		DisablePadding:       true,
-		MaxReassemblyChunks:  10000,
-		MaxReassemblyBytes:   1024, // only 1KB total allowed
+		MaxChunkSize:        1024,
+		MinChunkSize:        1024,
+		DisablePadding:      true,
+		MaxReassemblyChunks: 10000,
+		MaxReassemblyBytes:  1024, // only 1KB total allowed
 	}
 	cfg.CircuitCfg.MaxReassemblyWindow = 1000
 	cfg.CircuitCfg.NACKTimeout = 100 * time.Hour
@@ -555,9 +566,10 @@ func TestDoSReassemblyByteLimit(t *testing.T) {
 	circuitIDHex, e2eKey := performCircuitSetup(t, exit, targetAddr, entryKeys, nil)
 	_ = e2eKey
 
-	// Send a 1024-byte chunk (fills the limit).
+	// Send a 1024-byte chunk at sequence 1 (skip seq=0 to create a gap).
+	// This fills the byte limit since the chunk can't be delivered.
 	payload := make([]byte, 1024)
-	chunk0 := Chunk{StreamID: 0, Sequence: 0, Type: ChunkData, Payload: payload}
+	chunk0 := Chunk{StreamID: 0, Sequence: 1, Type: ChunkData, Payload: payload}
 	wc0 := encodeChunks(t, []Chunk{chunk0}, e2eKey)[0]
 	_, err := exit.HandleWireChunk(circuitIDHex, wc0, 0)
 	if err != nil {
@@ -565,7 +577,7 @@ func TestDoSReassemblyByteLimit(t *testing.T) {
 	}
 
 	// Next chunk should exceed byte limit.
-	chunk1 := Chunk{StreamID: 0, Sequence: 1, Type: ChunkData, Payload: []byte{1}}
+	chunk1 := Chunk{StreamID: 0, Sequence: 2, Type: ChunkData, Payload: []byte{1}}
 	wc1 := encodeChunks(t, []Chunk{chunk1}, e2eKey)[0]
 	_, err = exit.HandleWireChunk(circuitIDHex, wc1, 0)
 	if err == nil {
@@ -575,15 +587,19 @@ func TestDoSReassemblyByteLimit(t *testing.T) {
 
 // TestDoSReassemblyByteLimitMultipleStreams verifies that the byte limit
 // is global across multiple streams on the same circuit.
+//
+// The streaming reassembler delivers contiguous chunks immediately, so
+// to test the cross-stream byte limit we send chunks with gaps (out of
+// order) on each stream, preventing delivery and forcing accumulation.
 func TestDoSReassemblyByteLimitMultipleStreams(t *testing.T) {
 	cfg := DefaultExitConfig()
 	cfg.AllowAllPorts = true
 	cfg.ChunkerCfg = ChunkerConfig{
-		MaxChunkSize:         256,
-		MinChunkSize:         256,
-		DisablePadding:       true,
-		MaxReassemblyChunks:  10000,
-		MaxReassemblyBytes:   768, // 3 x 256 = 768, so 4th chunk should fail
+		MaxChunkSize:        256,
+		MinChunkSize:        256,
+		DisablePadding:      true,
+		MaxReassemblyChunks: 10000,
+		MaxReassemblyBytes:  768, // 3 x 256 = 768, so 4th chunk should fail
 	}
 	cfg.CircuitCfg.MaxReassemblyWindow = 1000
 	cfg.CircuitCfg.NACKTimeout = 100 * time.Hour
@@ -597,8 +613,9 @@ func TestDoSReassemblyByteLimitMultipleStreams(t *testing.T) {
 
 	payload := make([]byte, 256)
 
-	// Stream 0: 2 chunks (512 bytes total).
-	for i := uint32(0); i < 2; i++ {
+	// Stream 0: 2 chunks at sequences 1 and 2 (skip seq=0 to create gap).
+	// 512 bytes total buffered.
+	for i := uint32(1); i <= 2; i++ {
 		chunk := Chunk{StreamID: 0, Sequence: i, Type: ChunkData, Payload: payload}
 		wc := encodeChunks(t, []Chunk{chunk}, e2eKey)[0]
 		_, err := exit.HandleWireChunk(circuitIDHex, wc, 0)
@@ -607,8 +624,9 @@ func TestDoSReassemblyByteLimitMultipleStreams(t *testing.T) {
 		}
 	}
 
-	// Stream 1: 1 chunk (256 bytes) = now 768 total. OK.
-	chunk1 := Chunk{StreamID: 1, Sequence: 0, Type: ChunkData, Payload: payload}
+	// Stream 1: 1 chunk at sequence 1 (skip seq=0 to create gap).
+	// 256 bytes = now 768 total. OK.
+	chunk1 := Chunk{StreamID: 1, Sequence: 1, Type: ChunkData, Payload: payload}
 	wc1 := encodeChunks(t, []Chunk{chunk1}, e2eKey)[0]
 	_, err := exit.HandleWireChunk(circuitIDHex, wc1, 0)
 	if err != nil {
@@ -616,7 +634,7 @@ func TestDoSReassemblyByteLimitMultipleStreams(t *testing.T) {
 	}
 
 	// Stream 2: 1 chunk — should exceed byte limit (768 + 256 > 768).
-	chunk2 := Chunk{StreamID: 2, Sequence: 0, Type: ChunkData, Payload: payload}
+	chunk2 := Chunk{StreamID: 2, Sequence: 1, Type: ChunkData, Payload: payload}
 	wc2 := encodeChunks(t, []Chunk{chunk2}, e2eKey)[0]
 	_, err = exit.HandleWireChunk(circuitIDHex, wc2, 0)
 	if err == nil {

@@ -107,7 +107,10 @@ type exitCircuit struct {
 	targetAddr string
 
 	// reassembler reconstructs the original data stream from chunks.
-	reassembler Reassembler
+	// Typed as ExitReassembler (not the Reassembler interface) so we can
+	// use AddStreaming for incremental delivery and NextExpected for
+	// correct ackBase advancement.
+	reassembler *ExitReassembler
 
 	// mu protects concurrent access to circuit state.
 	mu sync.Mutex
@@ -323,7 +326,11 @@ func (e *ExitNode) HandleCircuitSetup(setup *CircuitSetup) (*CircuitAck, error) 
 
 	// Create the reassembler.
 	strategy := e.cfg.ChunkerStrategy
-	reassembler := NewReassemblerWithConfig(strategy, e.cfg.ChunkerCfg)
+	// The exit node always uses ExitReassembler for streaming delivery,
+	// regardless of the configured chunker strategy name. ExitReassembler
+	// is chunk-size-agnostic and works with any Chunker implementation.
+	reassembler := NewExitReassembler(e.cfg.ChunkerCfg)
+	_ = strategy // strategy name is retained for future per-strategy config
 
 	// Create the circuit entry.
 	circuit := &exitCircuit{
@@ -427,72 +434,44 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 		}
 	}
 
-	// Feed the chunk to the reassembler.
-	complete, done, err := circuit.reassembler.Add(chunk)
+	// Feed the chunk to the reassembler via the streaming API.
+	// AddStreaming returns contiguous data as soon as it's available,
+	// rather than buffering everything until stream completion.
+	delivered, done, err := circuit.reassembler.AddStreaming(chunk)
 	if err != nil {
 		return nil, fmt.Errorf("reassemble chunk: %w", err)
 	}
 
-	// Remove this sequence from the gap set if it was there.
-	delete(circuit.gapSeqs, chunk.Sequence)
-
-	// Advance the ack base if we've filled gaps.
-	if chunk.Sequence == circuit.ackBase {
-		// Advance past contiguous received chunks.
-		// We need to check the reassembler's internal state, but since
-		// the reassembler is a black box, we advance conservatively:
-		// ackBase advances to chunk.Sequence + 1, and then as far as
-		// we can by checking if subsequent sequences are no longer gaps.
-		circuit.ackBase = chunk.Sequence + 1
-		for {
-			if circuit.gapSeqs[circuit.ackBase] {
-				// This sequence is still a gap — stop advancing.
-				break
-			}
-			// Check if we've received this sequence. We can infer this
-			// by checking if the gap set doesn't have it AND the
-			// reassembler has it. Since we can't peek into the
-			// reassembler, we use the gap set as our source of truth:
-			// if a sequence is not in gapSeqs and is >= old ackBase,
-			// it means we've received it.
-			//
-			// However, this is tricky. A sequence might not be in
-			// gapSeqs because we never detected a gap for it (it
-			// arrived in order). In that case, we should advance.
-			//
-			// The gap set only contains sequences that were identified
-			// as missing when a higher sequence arrived. If a sequence
-			// was never in gapSeqs, it means either:
-			// 1. It arrived in order (before any higher sequence), or
-			// 2. No higher sequence has arrived yet.
-			//
-			// For case 1, we can safely advance. For case 2, we
-			// shouldn't be here because the loop only runs when
-			// chunk.Sequence == ackBase (in-order arrival).
-			//
-			// Actually, the reassembler handles completion internally.
-			// The ackBase is our own bookkeeping for gap detection.
-			// We can only reliably advance by one (the just-received
-			// chunk). For gap filling, the reassembler.Add() call will
-			// signal completion when all chunks are present.
-			break
-		}
-
-		// If the gap is now filled, clear the gap state.
-		if len(circuit.gapSeqs) == 0 {
-			circuit.gapDetected = false
+	// Write any newly-delivered contiguous data to the target connection.
+	// This delivers data incrementally as chunks arrive in order,
+	// reducing latency for interactive protocols.
+	if len(delivered) > 0 {
+		if _, werr := circuit.targetConn.Write(delivered); werr != nil {
+			return nil, fmt.Errorf("write to target: %w", werr)
 		}
 	}
 
-	// Write reassembled data to the target connection.
-	if done && complete != nil {
-		if len(complete) > 0 {
-			if _, err := circuit.targetConn.Write(complete); err != nil {
-				return nil, fmt.Errorf("write to target: %w", err)
-			}
+	// Update ackBase using the reassembler's authoritative nextExpected
+	// value. This correctly advances past all contiguous received chunks,
+	// fixing the previous bug where ackBase only advanced by 1.
+	if nextExp, ok := circuit.reassembler.NextExpected(chunk.StreamID); ok {
+		if nextExp > circuit.ackBase {
+			circuit.ackBase = nextExp
 		}
-		// If the stream is done and it was a StreamEnd, the circuit
-		// may be ready for teardown. The caller handles that.
+	} else if done {
+		// Stream completed and cleaned up — advance ackBase past it.
+		circuit.ackBase = chunk.Sequence + 1
+	}
+
+	// Clear any gap sequences that have been filled (acked past).
+	// Since ackBase advanced, any gaps below ackBase are no longer relevant.
+	for seq := range circuit.gapSeqs {
+		if seq < circuit.ackBase {
+			delete(circuit.gapSeqs, seq)
+		}
+	}
+	if len(circuit.gapSeqs) == 0 {
+		circuit.gapDetected = false
 	}
 
 	// Check if we need to send a NACK for detected gaps.

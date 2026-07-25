@@ -528,17 +528,24 @@ func TestPaddingSeedIsolation(t *testing.T) {
 // TestReassemblerChunkBoundsEnforced verifies that MaxReassemblyChunks
 // is enforced: when a stream exceeds the limit, Add returns
 // ErrReassemblyChunksExceeded.
+//
+// The streaming reassembler delivers contiguous chunks immediately,
+// so to test the chunk limit we send chunks out of order (starting from
+// a high sequence number) to create a gap that prevents delivery and
+// forces chunks to accumulate in the buffer.
 func TestReassemblerChunkBoundsEnforced(t *testing.T) {
 	cfg := proxy.ChunkerConfig{
-		MaxChunkSize:         16,
-		MaxReassemblyChunks:  3, // low limit for testing
-		MaxReassemblyBytes:   1024 * 1024,
-		DisablePadding:       true,
+		MaxChunkSize:        16,
+		MaxReassemblyChunks: 3, // low limit for testing
+		MaxReassemblyBytes:  1024 * 1024,
+		DisablePadding:      true,
 	}
 	r := proxy.NewReassemblerWithConfig("fixed-16k", cfg)
 
-	// Send 3 chunks — should be OK, not yet complete (Total=10).
-	for i := uint32(0); i < 3; i++ {
+	// Send 3 chunks starting from sequence 1 (skip seq=0 to create a gap).
+	// Since seq=0 is missing, these chunks can't be delivered and will
+	// accumulate in the reassembly buffer.
+	for i := uint32(1); i <= 3; i++ {
 		_, done, err := r.Add(proxy.Chunk{
 			StreamID: 1,
 			Sequence: i,
@@ -548,14 +555,14 @@ func TestReassemblerChunkBoundsEnforced(t *testing.T) {
 		})
 		mustNoErr(t, err)
 		if done {
-			t.Fatalf("chunk %d: unexpected done=true (Total=10, only %d received)", i, i+1)
+			t.Fatalf("chunk %d: unexpected done=true (Total=10, only %d received)", i, i)
 		}
 	}
 
-	// The 4th chunk should exceed the limit.
+	// The 4th buffered chunk should exceed the limit.
 	_, done, err := r.Add(proxy.Chunk{
 		StreamID: 1,
-		Sequence: 3,
+		Sequence: 4,
 		Total:    10,
 		Type:     proxy.ChunkData,
 		Payload:  []byte("overflow"),
@@ -573,6 +580,11 @@ func TestReassemblerChunkBoundsEnforced(t *testing.T) {
 
 // TestReassemblerByteBoundsEnforced verifies that MaxReassemblyBytes
 // is enforced across all streams.
+//
+// The streaming reassembler delivers contiguous chunks immediately,
+// so to test the byte limit we send chunks out of order (starting from
+// a high sequence number) to create a gap that prevents delivery and
+// forces accumulation in the buffer.
 func TestReassemblerByteBoundsEnforced(t *testing.T) {
 	cfg := proxy.ChunkerConfig{
 		MaxChunkSize:        1024,
@@ -582,10 +594,12 @@ func TestReassemblerByteBoundsEnforced(t *testing.T) {
 	}
 	r := proxy.NewReassemblerWithConfig("fixed-16k", cfg)
 
-	// Send one chunk with 30 bytes — should be OK.
+	// Send one 30-byte chunk at sequence 1 (skip seq=0 to create a gap).
+	// Since seq=0 is missing, this chunk can't be delivered and will
+	// accumulate in the buffer.
 	_, done, err := r.Add(proxy.Chunk{
 		StreamID: 1,
-		Sequence: 0,
+		Sequence: 1,
 		Total:    10,
 		Type:     proxy.ChunkData,
 		Payload:  make([]byte, 30),
@@ -595,10 +609,10 @@ func TestReassemblerByteBoundsEnforced(t *testing.T) {
 		t.Fatal("unexpected done=true")
 	}
 
-	// Send another chunk with 30 bytes — total 60, exceeds 50 limit.
+	// Send another 30-byte chunk — total 60, exceeds 50 limit.
 	_, done, err = r.Add(proxy.Chunk{
 		StreamID: 1,
-		Sequence: 1,
+		Sequence: 2,
 		Total:    10,
 		Type:     proxy.ChunkData,
 		Payload:  make([]byte, 30),
@@ -616,6 +630,10 @@ func TestReassemblerByteBoundsEnforced(t *testing.T) {
 
 // TestReassemblerByteBoundsCrossStream verifies that MaxReassemblyBytes
 // is tracked across multiple independent streams.
+//
+// The streaming reassembler delivers contiguous chunks immediately,
+// so to test the cross-stream byte limit we send chunks with gaps (out
+// of order) on each stream, preventing delivery and forcing accumulation.
 func TestReassemblerByteBoundsCrossStream(t *testing.T) {
 	cfg := proxy.ChunkerConfig{
 		MaxChunkSize:        1024,
@@ -625,13 +643,13 @@ func TestReassemblerByteBoundsCrossStream(t *testing.T) {
 	}
 	r := proxy.NewReassemblerWithConfig("fixed-16k", cfg)
 
-	// Stream 1: 10 bytes.
-	r.Add(proxy.Chunk{StreamID: 1, Sequence: 0, Total: 10, Type: proxy.ChunkData, Payload: make([]byte, 10)})
-	// Stream 2: 10 bytes.
-	r.Add(proxy.Chunk{StreamID: 2, Sequence: 0, Total: 10, Type: proxy.ChunkData, Payload: make([]byte, 10)})
+	// Stream 1: 10 bytes at seq=1 (skip seq=0 to create gap).
+	r.Add(proxy.Chunk{StreamID: 1, Sequence: 1, Total: 10, Type: proxy.ChunkData, Payload: make([]byte, 10)})
+	// Stream 2: 10 bytes at seq=1 (skip seq=0 to create gap).
+	r.Add(proxy.Chunk{StreamID: 2, Sequence: 1, Total: 10, Type: proxy.ChunkData, Payload: make([]byte, 10)})
 
 	// Stream 3: 5 bytes — total 25, exceeds 24.
-	_, _, err := r.Add(proxy.Chunk{StreamID: 3, Sequence: 0, Total: 10, Type: proxy.ChunkData, Payload: make([]byte, 5)})
+	_, _, err := r.Add(proxy.Chunk{StreamID: 3, Sequence: 1, Total: 10, Type: proxy.ChunkData, Payload: make([]byte, 5)})
 	if err != proxy.ErrReassemblyBytesExceeded {
 		t.Errorf("expected ErrReassemblyBytesExceeded for cross-stream total, got %v", err)
 	}

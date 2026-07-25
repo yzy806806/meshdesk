@@ -13,7 +13,6 @@ package proxy
 import (
 	"encoding/binary"
 	"io"
-	"sort"
 )
 
 const fixed16kName = "fixed-16k"
@@ -125,152 +124,27 @@ func randomPaddingLen(src io.Reader, min, max int) int {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// fixedReassembler
+// fixedReassembler — delegates to ExitReassembler
 // ──────────────────────────────────────────────────────────────────────
 
-// fixedReassembler reconstructs the original data stream from received
-// chunks. It handles out-of-order arrival, deduplication, and signals
-// completion via either ChunkStreamEnd or Total-based counting.
+// fixedReassembler is a thin wrapper around ExitReassembler that implements
+// the Reassembler interface for the "fixed-16k" strategy. The reassembly
+// logic is chunk-size-agnostic, so there is no need for a separate
+// implementation — all strategies share the same ExitReassembler core.
+//
+// The wrapper exists to maintain backward compatibility with the registry
+// pattern: callers that request "fixed-16k" get a Reassembler that works
+// identically to the ExitReassembler.
 type fixedReassembler struct {
-	cfg        ChunkerConfig
-	streams    map[uint32]*reassemblyState
-	totalBytes int // running total of buffered payload bytes across all streams
-}
-
-// reassemblyState holds the state for a single stream being reassembled.
-type reassemblyState struct {
-	chunks    map[uint32][]byte // sequence → payload
-	total     uint32            // known total (0 = unknown)
-	totalSet  bool
-	completed bool
-	bytes     int // payload bytes buffered for this stream
+	inner *ExitReassembler
 }
 
 func newFixedReassembler(cfg ChunkerConfig) *fixedReassembler {
-	return &fixedReassembler{
-		cfg:     cfg,
-		streams: make(map[uint32]*reassemblyState),
-	}
+	return &fixedReassembler{inner: NewExitReassembler(cfg)}
 }
 
 func (r *fixedReassembler) Add(chunk Chunk) ([]byte, bool, error) {
-	st, ok := r.streams[chunk.StreamID]
-	if !ok {
-		st = &reassemblyState{chunks: make(map[uint32][]byte)}
-		r.streams[chunk.StreamID] = st
-	}
-
-	if st.completed {
-		return nil, false, nil
-	}
-
-	// Padding chunks are ignored.
-	if chunk.Type == ChunkPadding {
-		return nil, false, nil
-	}
-
-	// StreamEnd marker — store payload if present, then flush.
-	if chunk.Type == ChunkStreamEnd {
-		// A ChunkStreamEnd may carry a final data payload (e.g. the last
-		// chunk of the stream was re-typed as StreamEnd). Store it before
-		// assembling so no data is lost.
-		if len(chunk.Payload) > 0 {
-			if _, exists := st.chunks[chunk.Sequence]; !exists {
-				st.chunks[chunk.Sequence] = chunk.Payload
-				st.bytes += len(chunk.Payload)
-				r.totalBytes += len(chunk.Payload)
-			}
-		}
-		st.completed = true
-		result := r.assemble(st)
-		r.cleanupStream(chunk.StreamID)
-		return result, true, nil
-	}
-
-	// Data chunk — deduplicate by sequence number.
-	if _, exists := st.chunks[chunk.Sequence]; exists {
-		return nil, false, nil
-	}
-
-	// Reject chunks with sequence numbers outside [0, Total-1]
-	// when Total is known (from this chunk or a previous one).
-	if chunk.Total > 0 && chunk.Sequence >= chunk.Total {
-		return nil, false, nil
-	}
-	if st.totalSet && chunk.Sequence >= st.total {
-		return nil, false, nil
-	}
-
-	// ── Bounds enforcement ──────────────────────────────────────────
-	// Enforce per-stream chunk count limit.
-	maxChunks := r.cfg.MaxReassemblyChunks
-	if maxChunks > 0 && len(st.chunks) >= maxChunks {
-		return nil, false, ErrReassemblyChunksExceeded
-	}
-
-	// Enforce global byte limit.
-	pLen := len(chunk.Payload)
-	maxBytes := r.cfg.MaxReassemblyBytes
-	if maxBytes > 0 && r.totalBytes+pLen > maxBytes {
-		return nil, false, ErrReassemblyBytesExceeded
-	}
-
-	payload := make([]byte, pLen)
-	copy(payload, chunk.Payload)
-	st.chunks[chunk.Sequence] = payload
-	st.bytes += pLen
-	r.totalBytes += pLen
-
-	if chunk.Total > 0 {
-		st.total = chunk.Total
-		st.totalSet = true
-	}
-
-	// Total-based completion: verify every sequence 0..st.total-1
-	// exists in st.chunks. A count-based check (seqCount >= total)
-	// is insufficient because chunks outside the [0, total-1] range
-	// would inflate seqCount and trigger premature completion.
-	if st.totalSet {
-		complete := true
-		for i := uint32(0); i < st.total; i++ {
-			if _, exists := st.chunks[i]; !exists {
-				complete = false
-				break
-			}
-		}
-		if complete {
-			st.completed = true
-			result := r.assemble(st)
-			r.cleanupStream(chunk.StreamID)
-			return result, true, nil
-		}
-	}
-
-	return nil, false, nil
-}
-
-// assemble sorts chunks by sequence and concatenates their payloads.
-func (r *fixedReassembler) assemble(st *reassemblyState) []byte {
-	seqs := make([]uint32, 0, len(st.chunks))
-	for seq := range st.chunks {
-		seqs = append(seqs, seq)
-	}
-	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
-
-	var result []byte
-	for _, seq := range seqs {
-		result = append(result, st.chunks[seq]...)
-	}
-	return result
-}
-
-// cleanupStream removes the stream's state and subtracts its bytes from
-// the global total. Called after successful completion.
-func (r *fixedReassembler) cleanupStream(streamID uint32) {
-	if st, ok := r.streams[streamID]; ok {
-		r.totalBytes -= st.bytes
-		delete(r.streams, streamID)
-	}
+	return r.inner.Add(chunk)
 }
 
 // init registers the "fixed-16k" Chunker and Reassembler strategies.
