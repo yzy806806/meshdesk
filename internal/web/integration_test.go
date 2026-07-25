@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/service"
@@ -351,6 +352,80 @@ func TestHandleServiceAction_LocalWithAuth(t *testing.T) {
 	status, _ := mock.Status("nginx")
 	if status.ActiveState != "active" {
 		t.Errorf("expected nginx active, got %s", status.ActiveState)
+	}
+}
+
+// TestHandleServiceAction_LocalWithAuthEngine verifies that local service
+// operations work when the auth engine is configured. Previously the handler
+// wrapped the ServiceManager in an AuthorizedServiceManager with a fabricated
+// peerID "local-web-ui" — no grant existed for that peerID, so every local
+// start/stop/restart was rejected. The fix bypasses capability checks for
+// local operations (session auth already gates the endpoint).
+func TestHandleServiceAction_LocalWithAuthEngine(t *testing.T) {
+	mock := service.NewMockBackend()
+
+	// Build an auth engine with one peer that has service_manage on "nginx".
+	// No grant exists for "local-web-ui" — that's the whole point.
+	var auditBuf bytes.Buffer
+	engine := auth.NewCapabilityEngine(&config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:     "peer-c-key-0987654321fedcba",
+				Capabilities:  []string{auth.CapServiceManage},
+				ServiceManage: []string{"nginx", "meshdesk"},
+			},
+		},
+	}, auth.NewAuditLogger(&auditBuf))
+
+	cfg := config.Default()
+	store := monitor.NewStore()
+	srv, err := New(Deps{
+		Config:       cfg,
+		MonitorStore: store,
+		ServiceMgr:   mock,
+		AuthEngine:   engine,
+	})
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+
+	// Start — should succeed despite auth engine being set
+	form := "service=nginx"
+	req := httptest.NewRequest("POST", "/api/services/start", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	srv.handleServiceAction("start")(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("start: expected 200, got %d, body: %s", rr.Code, rr.Body.String())
+	}
+	status, _ := mock.Status("nginx")
+	if status.ActiveState != "active" {
+		t.Errorf("expected nginx active, got %s", status.ActiveState)
+	}
+
+	// Stop — should also succeed
+	req2 := httptest.NewRequest("POST", "/api/services/stop", strings.NewReader(form))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr2 := httptest.NewRecorder()
+	srv.handleServiceAction("stop")(rr2, req2)
+
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("stop: expected 200, got %d, body: %s", rr2.Code, rr2.Body.String())
+	}
+	status, _ = mock.Status("nginx")
+	if status.ActiveState != "inactive" {
+		t.Errorf("expected nginx inactive, got %s", status.ActiveState)
+	}
+
+	// Restart — should also succeed
+	req3 := httptest.NewRequest("POST", "/api/services/restart", strings.NewReader(form))
+	req3.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr3 := httptest.NewRecorder()
+	srv.handleServiceAction("restart")(rr3, req3)
+
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("restart: expected 200, got %d, body: %s", rr3.Code, rr3.Body.String())
 	}
 }
 

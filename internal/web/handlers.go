@@ -446,22 +446,20 @@ func (s *Server) handleServiceAction(action string) http.HandlerFunc {
 				return
 			}
 
-			// Use AuthorizedServiceManager if auth engine is available,
-			// to enforce capability checks and produce audit entries
-			// even for local operations.
-			mgr := s.svcMgr
-			if s.authEngine != nil {
-				mgr = service.NewAuthorizedServiceManager(s.svcMgr, s.authEngine, "local-web-ui")
-			}
-
+			// For local services, use the plain ServiceManager directly.
+			// The web UI user has already passed session-based authentication,
+			// so capability checks here would only break local operations
+			// (no grant exists for a fabricated "local" peerID).
+			// Remote service operations still go through AuthorizedServiceManager
+			// via the mesh request path.
 			var err error
 			switch action {
 			case "start":
-				err = mgr.Start(serviceName)
+				err = s.svcMgr.Start(serviceName)
 			case "stop":
-				err = mgr.Stop(serviceName)
+				err = s.svcMgr.Stop(serviceName)
 			case "restart":
-				err = mgr.Restart(serviceName)
+				err = s.svcMgr.Restart(serviceName)
 			}
 
 			if err != nil {
