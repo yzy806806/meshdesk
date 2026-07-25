@@ -132,7 +132,7 @@ func New(deps Deps) (*Server, error) {
 	pageNames := []string{
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "login_2fa.html",
-		"peers.html", "error.html",
+		"peers.html", "topology.html", "error.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -339,6 +339,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/files", s.requireAuth(s.handleFilesPage))
 	mux.HandleFunc("/services", s.requireAuth(s.handleServicesPage))
 	mux.HandleFunc("/peers", s.requireAuth(s.handlePeersPage))
+	mux.HandleFunc("/topology", s.requireAuth(s.handleTopologyPage))
 }
 
 // --- Middleware ---

@@ -647,6 +647,17 @@ func (s *Server) handlePeersPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, "peers.html", data)
 }
 
+// --- 3D Topology ---
+
+func (s *Server) handleTopologyPage(w http.ResponseWriter, r *http.Request) {
+	data := struct {
+		PageData
+	}{
+		PageData: PageData{Title: "3D Topology", ActivePage: "topology"},
+	}
+	s.renderPage(w, "topology.html", data)
+}
+
 func (s *Server) getPeerCapabilities(peerID string) []string {
 	if s.authEngine == nil {
 		return nil

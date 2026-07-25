@@ -1,0 +1,75 @@
+{{define "head"}}
+  <link rel="stylesheet" href="/static/css/topology.css">
+{{end}}
+
+{{define "content"}}
+<div class="topology-page">
+  <header class="topology-header">
+    <div>
+      <h2>3D Topology</h2>
+      <p class="topology-subtitle">Real-time mesh network visualization with force-directed layout and circuit path animation</p>
+    </div>
+    <div class="topology-controls">
+      <button class="small" onclick="MeshDeskTopology.refresh()" title="Refresh topology data">↻ Refresh</button>
+      <button class="small" onclick="MeshDeskTopology.toggleMock()" title="Toggle mock data mode">⚡ Mock</button>
+      <button class="small" onclick="MeshDeskTopology.reset()" title="Reset scene">⟲ Reset</button>
+    </div>
+  </header>
+
+  <div class="topology-toolbar">
+    <div class="topology-stats">
+      <span class="badge"><strong id="topology-node-count">0</strong> nodes</span>
+      <span class="badge"><strong id="topology-edge-count">0</strong> edges</span>
+      <span class="badge status-ok"><strong id="topology-online-count">0</strong> online</span>
+    </div>
+    <div id="topology-status" class="topology-status" style="display:none;"></div>
+  </div>
+
+  <div class="topology-canvas-wrapper">
+    <div id="topology-3d-canvas"></div>
+    <div id="topology-tooltip" class="topology-tooltip" style="display:none;"></div>
+  </div>
+
+  <div class="topology-legend">
+    <div class="legend-section">
+      <h5>Node Roles</h5>
+      <div class="legend-items">
+        <span class="legend-item"><span class="legend-dot" style="background:#58a6ff"></span> Entry</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#d29922"></span> Relay</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#3fb950"></span> Exit</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#bc8cff"></span> Dashboard</span>
+        <span class="legend-item"><span class="legend-dot" style="background:#8b949e"></span> Node</span>
+      </div>
+    </div>
+    <div class="legend-section">
+      <h5>Edges</h5>
+      <div class="legend-items">
+        <span class="legend-item"><span class="legend-line" style="background:#58a6ff;opacity:0.7"></span> Low latency (&lt;50ms)</span>
+        <span class="legend-item"><span class="legend-line" style="background:#58a6ff;opacity:0.5"></span> Medium (50-150ms)</span>
+        <span class="legend-item"><span class="legend-line" style="background:#58a6ff;opacity:0.3"></span> High (&gt;150ms)</span>
+      </div>
+    </div>
+    <div class="legend-section">
+      <h5>Controls</h5>
+      <div class="legend-items">
+        <span class="legend-item">🖱️ Drag to rotate</span>
+        <span class="legend-item">🔍 Scroll to zoom</span>
+        <span class="legend-item">✋ Right-drag to pan</span>
+        <span class="legend-item">💡 Hover node for details</span>
+      </div>
+    </div>
+  </div>
+
+  <noscript>
+    <div class="topology-noscript">
+      <p>⚠ JavaScript is required for the 3D topology visualization. Please enable JavaScript to view the mesh network topology.</p>
+    </div>
+  </noscript>
+</div>
+{{end}}
+
+{{define "scripts"}}
+  <script src="/static/js/three.min.js"></script>
+  <script src="/static/js/OrbitControls.js"></script>
+  <script src="/static/js/topology.js"></script>
+{{end}}

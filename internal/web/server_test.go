@@ -717,6 +717,33 @@ func TestHandlePeersPage(t *testing.T) {
 	}
 }
 
+func TestHandleTopologyPage(t *testing.T) {
+	srv := newTestServer(t)
+
+	req := httptest.NewRequest("GET", "/topology", nil)
+	rr := httptest.NewRecorder()
+
+	srv.handleTopologyPage(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("Status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "3D Topology") {
+		t.Error("body doesn't contain '3D Topology'")
+	}
+	if !strings.Contains(body, "topology-3d-canvas") {
+		t.Error("body doesn't contain topology canvas container")
+	}
+	if !strings.Contains(body, "three.min.js") {
+		t.Error("body doesn't include three.min.js script")
+	}
+	if !strings.Contains(body, "topology.js") {
+		t.Error("body doesn't include topology.js script")
+	}
+}
+
 func TestHandleTerminalPage(t *testing.T) {
 	srv := newTestServer(t)
 
