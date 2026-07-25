@@ -39,6 +39,8 @@ type Server struct {
 	stepUpStore *StepUpStore
 	alertStore  *AlertStore
 
+	proxyStatusProvider ProxyStatusProvider
+
 	tmpl  *template.Template
 	pages map[string]*template.Template
 
@@ -68,6 +70,11 @@ type Deps struct {
 	TOTPStore   *TOTPStore
 	StepUpStore *StepUpStore
 	AlertStore  *AlertStore
+
+	// ProxyStatusProvider supplies proxy subsystem status for the
+	// /api/proxy/status dashboard endpoint. May be nil when the node
+	// is not running as a proxy entry point.
+	ProxyStatusProvider ProxyStatusProvider
 }
 
 // New creates a new web server from the given dependencies.
@@ -132,6 +139,7 @@ func New(deps Deps) (*Server, error) {
 		totpStore:    deps.TOTPStore,
 		stepUpStore:   deps.StepUpStore,
 		alertStore:    deps.AlertStore,
+		proxyStatusProvider: deps.ProxyStatusProvider,
 	}
 
 	if s.monitorStore == nil {
@@ -157,7 +165,7 @@ func (s *Server) Start(addr string) error {
 
 	s.httpServer = &http.Server{
 		Addr:         addr,
-		Handler:      s.recoverMiddleware(s.authMiddleware(mux)),
+		Handler:      s.recoverMiddleware(s.authMiddleware(s.require2FAEnforcement(mux))),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 0, // no write timeout — SSE/WebSocket need long-lived conns
 		IdleTimeout:  120 * time.Second,
@@ -209,6 +217,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// Security alerts (session required)
 	mux.HandleFunc("/api/alerts", s.requireAuth(s.handleAlertsList))
 	mux.HandleFunc("/api/alerts/dismiss", s.requireAuth(s.handleAlertsDismiss))
+
+	// Proxy status (session required, but EXEMPT from 2FA enforcement
+	// even when Auth.Require2FA is true — see require2FAEnforcement).
+	// This endpoint shares the same HTTP router as all other dashboard
+	// routes, but must remain accessible to monitoring tools and the
+	// dashboard itself even when the admin has not completed TOTP.
+	mux.HandleFunc("/api/proxy/status", s.requireAuth(s.handleProxyStatus))
 
 	// WebSocket terminal — middleware chain enforces:
 	//   sessionAuthMiddleware  → valid web session (if web users configured)
