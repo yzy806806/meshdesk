@@ -191,10 +191,10 @@ func TestVerification_MiddlewareChainOrder(t *testing.T) {
 // unauthenticated connections are rejected.
 //
 // "Unauthenticated" here means two things:
-//   1. No web session (when web users are configured) → 401
-//   2. Valid web session but peer lacks ssh_proxy capability → 403
-//   3. Valid web session but peer is unknown (not in config) → 403
-//   4. Valid web session but peer is revoked → 403
+//  1. No web session (when web users are configured) → 401
+//  2. Valid web session but peer lacks ssh_proxy capability → 403
+//  3. Valid web session but peer is unknown (not in config) → 403
+//  4. Valid web session but peer is revoked → 403
 func TestVerification_UnauthenticatedRejected(t *testing.T) {
 	srv := newTerminalTestServer(t)
 	srv.cfg.Auth.WebUsers = []config.WebUser{

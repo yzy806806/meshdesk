@@ -12,8 +12,11 @@ meshdesk-*
 # Build artifacts
 /build/
 /frontend/build/
+/node_modules/
 /frontend/node_modules/
 /frontend/dist/
+*.test
+web.test
 
 # IDE
 .idea/

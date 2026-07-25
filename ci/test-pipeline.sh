@@ -157,6 +157,15 @@ else
     echo "[integration] SKIPPED"
 fi
 
+# --- Stage 5: Real-Device Harness ---
+if [ "${SKIP_HARNESS:-0}" -eq 0 ] && [ -x ./meshdesk ]; then
+    run_stage "harness" "Real-device integration test harness" "go test -v -count=1 -timeout 120s ./test/harness/ -run TestSuiteRealDevice 2>&1 | tee '$RESULTS_DIR/harness.log'" || PIPELINE_STATUS="fail-stage5"
+elif [ "${SKIP_HARNESS:-0}" -eq 1 ]; then
+    echo "[harness] SKIPPED"
+else
+    echo "[harness] SKIP (no binary — build first)"
+fi
+
 # --- Summary ---
 PIPELINE_END=$(date -u +%s)
 PIPELINE_DURATION=$((PIPELINE_END - PIPELINE_START))

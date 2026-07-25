@@ -31,5 +31,5 @@ func DerivePosition(peerID string) (x, y, z float64) {
 func scaleToRange(val uint64) float64 {
 	// Use the top 53 bits (mantissa width for float64) to avoid precision loss.
 	scaled := float64(val>>11) / float64(1<<53) // [0, 1)
-	return scaled*1000 - 500 // [-500, 500)
+	return scaled*1000 - 500                    // [-500, 500)
 }

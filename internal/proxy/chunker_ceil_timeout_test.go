@@ -1,11 +1,11 @@
 // Package proxy implements the MeshDesk anonymous proxy system.
 //
 // This file contains comprehensive table-driven tests for:
-//   1. Chunker TotalChunks ceil computation (fixed + bounded)
-//      — covers empty, exact boundary, single-byte-over, and large-data cases
-//   2. Reassembler timeout path (ErrStreamTimeout via ExpireStreams)
-//   3. Duplicate chunk detection (silent ignore)
-//   4. Backpressure (max reorder buffer enforcement)
+//  1. Chunker TotalChunks ceil computation (fixed + bounded)
+//     — covers empty, exact boundary, single-byte-over, and large-data cases
+//  2. Reassembler timeout path (ErrStreamTimeout via ExpireStreams)
+//  3. Duplicate chunk detection (silent ignore)
+//  4. Backpressure (max reorder buffer enforcement)
 //
 // These tests resolve the relay deadlock gap identified in the
 // MeshDesk Stop Condition v3 assessment (motion-ab7dcffe52e8).
@@ -143,9 +143,9 @@ func TestChunkerCeilRoundTripReassembly(t *testing.T) {
 		}
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := ChunkerConfig{
-				MaxChunkSize:   tt.chunkSize,
-				MinChunkSize:   tt.chunkSize,
-				DisablePadding: true,
+				MaxChunkSize:        tt.chunkSize,
+				MinChunkSize:        tt.chunkSize,
+				DisablePadding:      true,
 				MaxReassemblyChunks: 10000,
 				MaxReassemblyBytes:  100 * 1024 * 1024,
 			}
@@ -553,8 +553,8 @@ var backpressureTestCases = []struct {
 	maxChunks      int
 	maxBytes       int
 	chunks         []Chunk
-	wantErrOnLast  error  // expected error on the last chunk (nil if no error expected)
-	wantErrOnIndex int    // 0-based index of the chunk that should trigger the error
+	wantErrOnLast  error // expected error on the last chunk (nil if no error expected)
+	wantErrOnIndex int   // 0-based index of the chunk that should trigger the error
 }{
 	{
 		name:      "chunk limit exact (no overflow)",
@@ -750,11 +750,11 @@ func TestReassemblerBackpressureCrossStream(t *testing.T) {
 // Total-based completion, dedup, and backpressure all work together.
 func TestLargeDataRoundTripFixed(t *testing.T) {
 	cfg := ChunkerConfig{
-		MaxChunkSize:          16 * 1024,
-		MinChunkSize:          16 * 1024,
-		DisablePadding:        true,
-		MaxReassemblyChunks:   10000,
-		MaxReassemblyBytes:    10 * 1024 * 1024,
+		MaxChunkSize:        16 * 1024,
+		MinChunkSize:        16 * 1024,
+		DisablePadding:      true,
+		MaxReassemblyChunks: 10000,
+		MaxReassemblyBytes:  10 * 1024 * 1024,
 	}
 	c := newFixedChunker(cfg)
 	r := NewExitReassembler(cfg)
@@ -816,11 +816,11 @@ func TestLargeDataRoundTripFixed(t *testing.T) {
 // the reassembly.
 func TestLargeDataRoundTripWithDuplicates(t *testing.T) {
 	cfg := ChunkerConfig{
-		MaxChunkSize:          16 * 1024,
-		MinChunkSize:          16 * 1024,
-		DisablePadding:        true,
-		MaxReassemblyChunks:   10000,
-		MaxReassemblyBytes:    10 * 1024 * 1024,
+		MaxChunkSize:        16 * 1024,
+		MinChunkSize:        16 * 1024,
+		DisablePadding:      true,
+		MaxReassemblyChunks: 10000,
+		MaxReassemblyBytes:  10 * 1024 * 1024,
 	}
 	c := newFixedChunker(cfg)
 	r := NewExitReassembler(cfg)

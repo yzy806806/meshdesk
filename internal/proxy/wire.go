@@ -6,12 +6,12 @@
 //
 // Wire format (all integers big-endian):
 //
-//   [HeaderLen  (2 bytes)]  — always ForwardingHeaderSize (64)
-//   [Header     (64 bytes)] — onion-encrypted forwarding header
-//   [NonceLen   (2 bytes)]  — always NonceSize (12)
-//   [Nonce      (12 bytes)] — AEAD nonce
-//   [CipherLen  (4 bytes)]  — length of AEAD ciphertext
-//   [Ciphertext (variable)] — AEAD-encrypted payload
+//	[HeaderLen  (2 bytes)]  — always ForwardingHeaderSize (64)
+//	[Header     (64 bytes)] — onion-encrypted forwarding header
+//	[NonceLen   (2 bytes)]  — always NonceSize (12)
+//	[Nonce      (12 bytes)] — AEAD nonce
+//	[CipherLen  (4 bytes)]  — length of AEAD ciphertext
+//	[Ciphertext (variable)] — AEAD-encrypted payload
 //
 // The length prefixes allow a relay to read a complete chunk without
 // any framing protocol — it reads the fixed fields, then reads

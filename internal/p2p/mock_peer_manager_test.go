@@ -4,15 +4,15 @@ import "sync"
 
 // mockPeerManager is a test-only PeerManager that records calls.
 type mockPeerManager struct {
-	mu            sync.Mutex
-	addedPeers    []DynamicPeer
-	removedPeers  []string
-	updatedEPs    map[string]string
-	staticKeys    map[string]bool
-	healthyPeers  map[string]bool
+	mu             sync.Mutex
+	addedPeers     []DynamicPeer
+	removedPeers   []string
+	updatedEPs     map[string]string
+	staticKeys     map[string]bool
+	healthyPeers   map[string]bool
 	handshakeTimes map[string]int // publicKey → count of calls
-	addErr        error
-	removeErr     error
+	addErr         error
+	removeErr      error
 }
 
 func newMockPeerManager() *mockPeerManager {

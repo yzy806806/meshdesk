@@ -270,7 +270,7 @@ func TestHTTP_AlertsListWithExternalEvents(t *testing.T) {
 	srv.alertStore.HandleProxySecurityEvent(proxy.SecurityEvent{
 		Type:        proxy.SecEventExitPortDenied,
 		Description: "port 443 denied",
-		CircuitID:  "deadbeef",
+		CircuitID:   "deadbeef",
 	})
 
 	req := httptest.NewRequest("GET", "/api/alerts", nil)

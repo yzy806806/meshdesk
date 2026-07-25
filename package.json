@@ -1,0 +1,27 @@
+{
+  "name": "meshdesk",
+  "version": "1.0.0",
+  "description": "**Decentralized server mesh network + monitoring + WebSSH — in a single binary.**",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yzy806806/meshdesk.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/yzy806806/meshdesk/issues"
+  },
+  "homepage": "https://github.com/yzy806806/meshdesk#readme",
+  "dependencies": {
+    "puppeteer": "^25.3.0"
+  }
+}

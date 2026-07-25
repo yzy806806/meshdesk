@@ -133,8 +133,8 @@ type exitCircuit struct {
 
 	// gapDetected tracks whether a gap has been detected and when.
 	// If a gap persists beyond NACKTimeout, a NACK is sent.
-	gapDetected   bool
-	gapFirstSeen  time.Time
+	gapDetected  bool
+	gapFirstSeen time.Time
 	// gapSeqs records which sequence numbers in the window are missing.
 	gapSeqs map[uint32]bool
 
@@ -180,7 +180,7 @@ type streamTimer struct {
 // total relay count.
 type pathTracker struct {
 	mu     sync.Mutex
-	paths  map[int]bool      // path index → active
+	paths  map[int]bool          // path index → active
 	delays map[int]time.Duration // path index → last measured RTT (from keepalive)
 }
 
@@ -363,7 +363,7 @@ func (e *ExitNode) HandleCircuitSetup(setup *CircuitSetup) (*CircuitAck, error) 
 		return &CircuitAck{
 			CircuitID: setup.CircuitID,
 			Accepted:  false,
-			Reason:     fmt.Sprintf("dial target: %v", err),
+			Reason:    fmt.Sprintf("dial target: %v", err),
 		}, nil
 	}
 
@@ -483,7 +483,7 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 	if chunk.Sequence >= circuit.ackBase+uint32(maxWindow) {
 		// Chunk is too far ahead — reject to prevent memory exhaustion.
 		e.secReport(SecurityEvent{
-			Type:        SecEventExitWindowExceeded,
+			Type: SecEventExitWindowExceeded,
 			Description: fmt.Sprintf("exit rejected chunk seq %d beyond reassembly window (base=%d, max=%d) for circuit %s",
 				chunk.Sequence, circuit.ackBase, maxWindow, circuitID),
 			CircuitID: circuitID,
@@ -640,9 +640,9 @@ func (e *ExitNode) maybeGenerateNACK(circuit *exitCircuit, streamID uint32) (*NA
 	circuit.lastNACKSent = time.Now()
 
 	return &NACKMsg{
-		CircuitID:    circuitIDBytes,
-		StreamID:     streamID,
-		MissingSeqs:  missing,
+		CircuitID:   circuitIDBytes,
+		StreamID:    streamID,
+		MissingSeqs: missing,
 	}, nil
 }
 

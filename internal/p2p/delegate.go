@@ -113,7 +113,7 @@ type joinMsgHandler func(msg *JoinMessage) error
 
 // meshDelegate implements memberlist.Delegate to carry NodeMeta through gossip.
 type meshDelegate struct {
-	mu       sync.RWMutex
+	mu        sync.RWMutex
 	localMeta *NodeMeta
 
 	// relayHandler is called when a relay control message is received

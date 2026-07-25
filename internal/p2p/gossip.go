@@ -16,18 +16,18 @@ import (
 // It initializes memberlist, manages the delegate and event delegate, and
 // provides the API for starting/stopping gossip and querying the peer set.
 type GossipLayer struct {
-	cfg         P2pConfig
-	node        *mesh.MeshNode
-	delegate    *meshDelegate
-	events      *meshEventDelegate
-	wgDelegate  *WireGuardDelegate
-	relay       *RelaySelector
-	transport   *MeshTransport
-	memberlist  *memberlist.Memberlist
-	localMeta   *NodeMeta
-	mu          sync.RWMutex
-	started     bool
-	stopCh      chan struct{}
+	cfg          P2pConfig
+	node         *mesh.MeshNode
+	delegate     *meshDelegate
+	events       *meshEventDelegate
+	wgDelegate   *WireGuardDelegate
+	relay        *RelaySelector
+	transport    *MeshTransport
+	memberlist   *memberlist.Memberlist
+	localMeta    *NodeMeta
+	mu           sync.RWMutex
+	started      bool
+	stopCh       chan struct{}
 	healthTicker *time.Ticker
 
 	// relaySessionMgr manages relay circuits when this node is relay-capable.

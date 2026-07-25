@@ -15,14 +15,14 @@ import (
 
 // TOTP defaults (RFC 6238).
 const (
-	totpPeriod    = 30    // seconds
-	totpDigits    = 6     // 6-digit code
-	totpSkew      = 1     // ±1 window tolerance
-	totpKeySize   = 32    // 256-bit secret
-	maxFailedTOTP = 5     // lockout threshold
-	totpLockout   = 30 * time.Second // lockout duration
+	totpPeriod       = 30               // seconds
+	totpDigits       = 6                // 6-digit code
+	totpSkew         = 1                // ±1 window tolerance
+	totpKeySize      = 32               // 256-bit secret
+	maxFailedTOTP    = 5                // lockout threshold
+	totpLockout      = 30 * time.Second // lockout duration
 	numRecoveryCodes = 10
-	recoveryCodeLen  = 8   // alphanumeric chars
+	recoveryCodeLen  = 8 // alphanumeric chars
 
 	// pendingTTL is the time limit for completing enrollment after
 	// a secret is generated. If the user doesn't verify within this
@@ -41,7 +41,7 @@ const recoveryAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 type EnrollmentState int
 
 const (
-	StateDisabled         EnrollmentState = iota // DISABLED: no TOTP configured
+	StateDisabled        EnrollmentState = iota // DISABLED: no TOTP configured
 	StatePending                                // PENDING: secret generated, awaiting first verification
 	StateVerified                               // VERIFIED: fully enrolled and active
 	StateRotating                               // ROTATING: new secret generated, old key still valid for login

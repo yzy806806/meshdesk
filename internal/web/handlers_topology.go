@@ -20,8 +20,8 @@ import (
 // topology.TopologyPeers. It derives node roles from config and
 // positions from config override or DerivePosition.
 type meshTopologyPeers struct {
-	rt   *mesh.RoutingTable
-	cfg  *config.Config
+	rt  *mesh.RoutingTable
+	cfg *config.Config
 	// localNodeID is this node's own public key (so it appears in topology)
 	localNodeID string
 }

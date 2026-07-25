@@ -13,6 +13,7 @@ type Config struct {
 	Node       NodeConfig       `yaml:"node"`
 	Mesh       MeshConfig       `yaml:"mesh"`
 	Peers      []PeerConfig     `yaml:"peers"`
+	P2P        P2pConfig        `yaml:"p2p,omitempty"`
 	Monitoring MonitoringConfig `yaml:"monitoring"`
 	WebSSH     WebSSHConfig     `yaml:"webssh"`
 	Auth       AuthConfig       `yaml:"auth"`
@@ -299,6 +300,57 @@ type PositionConfig struct {
 // MeshConfig holds mesh-level settings.
 type MeshConfig struct {
 	Port int `yaml:"port"` // WireGuard listen port (default 51820)
+	// GossipPort is the TCP port for memberlist gossip on the mesh IP.
+	// Default: 7946. Only used when p2p.enabled is true.
+	GossipPort int `yaml:"gossip_port,omitempty"`
+}
+
+// P2pConfig holds settings for the P2P dynamic networking layer
+// (gossip discovery, NAT traversal, dynamic join).
+// When Enabled is false, the node uses static peers only (backward compat).
+type P2pConfig struct {
+	// Enabled controls whether dynamic P2P networking is active.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Seeds is the list of known mesh IP:gossip_port addresses used to
+	// bootstrap the gossip cluster.
+	Seeds []string `yaml:"seeds,omitempty"`
+
+	// NatTraversal enables STUN discovery and UDP hole-punching.
+	NatTraversal bool `yaml:"nat_traversal,omitempty"`
+
+	// StunServers is the list of STUN server addresses for NAT discovery.
+	StunServers []string `yaml:"stun_servers,omitempty"`
+
+	// RelayMode controls how relay fallback is handled:
+	//   "auto"     — automatically select relay peers (default)
+	//   "manual"   — use only manually configured relay peers
+	//   "disabled" — no relay fallback (direct-only)
+	RelayMode string `yaml:"relay_mode,omitempty"`
+
+	// MaxRelayHops is the maximum number of relay hops for relayed connections.
+	MaxRelayHops int `yaml:"max_relay_hops,omitempty"`
+
+	// JoinApproval controls the authentication mode for new nodes:
+	//   "auto"   — pre-authorized key list (authorized_keys)
+	//   "manual" — admin approval via dashboard
+	JoinApproval string `yaml:"join_approval,omitempty"`
+
+	// AuthorizedKeys is the list of WireGuard public keys (hex) pre-authorized
+	// to join the mesh. Used when JoinApproval is "auto".
+	AuthorizedKeys []string `yaml:"authorized_keys,omitempty"`
+
+	// GossipInterval is the PushPull interval in seconds (state sync). Default: 30.
+	GossipInterval int `yaml:"gossip_interval,omitempty"`
+
+	// GossipProbeInterval is the probe interval in seconds (health check). Default: 1.
+	GossipProbeInterval int `yaml:"gossip_probe_interval,omitempty"`
+
+	// DirectReprobeInterval is seconds between direct re-probes in relay mode. Default: 120.
+	DirectReprobeInterval int `yaml:"direct_reprobe_interval,omitempty"`
+
+	// MaxPeers is the hard limit on total peers. Default: 256.
+	MaxPeers int `yaml:"max_peers,omitempty"`
 }
 
 // PeerConfig describes a single mesh peer.
@@ -472,7 +524,8 @@ func Default() *Config {
 			WebAddr: "",
 		},
 		Mesh: MeshConfig{
-			Port: 51820,
+			Port:       51820,
+			GossipPort: 7946,
 		},
 		Monitoring: MonitoringConfig{
 			Interval: 15,
@@ -523,6 +576,18 @@ func Default() *Config {
 				Strategy: "latency",
 			},
 		},
+		P2P: P2pConfig{
+			Enabled:               false,
+			NatTraversal:          true,
+			StunServers:           []string{"stun.l.google.com:19302", "stun.cloudflare.com:3478"},
+			RelayMode:             "auto",
+			MaxRelayHops:          2,
+			JoinApproval:          "auto",
+			GossipInterval:        30,
+			GossipProbeInterval:   1,
+			DirectReprobeInterval: 120,
+			MaxPeers:              256,
+		},
 	}
 }
 
@@ -546,6 +611,39 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Mesh.Port == 0 {
 		cfg.Mesh.Port = 51820
+	}
+	if cfg.Mesh.GossipPort == 0 {
+		cfg.Mesh.GossipPort = 7946
+	}
+	// P2P config defaults.
+	if !cfg.P2P.NatTraversal && cfg.P2P.Enabled {
+		// If P2P is enabled but NatTraversal is explicitly false, respect that.
+	} else if cfg.P2P.Enabled {
+		cfg.P2P.NatTraversal = true
+	}
+	if len(cfg.P2P.StunServers) == 0 && cfg.P2P.Enabled {
+		cfg.P2P.StunServers = []string{"stun.l.google.com:19302", "stun.cloudflare.com:3478"}
+	}
+	if cfg.P2P.RelayMode == "" && cfg.P2P.Enabled {
+		cfg.P2P.RelayMode = "auto"
+	}
+	if cfg.P2P.MaxRelayHops == 0 && cfg.P2P.Enabled {
+		cfg.P2P.MaxRelayHops = 2
+	}
+	if cfg.P2P.JoinApproval == "" && cfg.P2P.Enabled {
+		cfg.P2P.JoinApproval = "auto"
+	}
+	if cfg.P2P.GossipInterval == 0 && cfg.P2P.Enabled {
+		cfg.P2P.GossipInterval = 30
+	}
+	if cfg.P2P.GossipProbeInterval == 0 && cfg.P2P.Enabled {
+		cfg.P2P.GossipProbeInterval = 1
+	}
+	if cfg.P2P.DirectReprobeInterval == 0 && cfg.P2P.Enabled {
+		cfg.P2P.DirectReprobeInterval = 120
+	}
+	if cfg.P2P.MaxPeers == 0 && cfg.P2P.Enabled {
+		cfg.P2P.MaxPeers = 256
 	}
 	if cfg.Monitoring.Interval == 0 {
 		cfg.Monitoring.Interval = 15
