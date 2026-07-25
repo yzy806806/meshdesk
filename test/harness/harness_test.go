@@ -449,8 +449,10 @@ func TestWebSSHLifecycle(t *testing.T) {
 		t.Skip("meshdesk binary not found")
 	}
 
+	// Use 2 nodes so the collector (node 0) has a peer with ssh_proxy
+	// capability — RequireCapability rejects unknown/unauthorized peers.
 	h := New(t, Config{
-		NodeCount:  1,
+		NodeCount:  2,
 		BinaryPath: binaryPath,
 	})
 	h.Start()
@@ -472,8 +474,9 @@ func TestWebSSHErrorPath(t *testing.T) {
 		t.Skip("meshdesk binary not found")
 	}
 
+	// Use 2 nodes so the collector has a real peer with ssh_proxy.
 	h := New(t, Config{
-		NodeCount:  1,
+		NodeCount:  2,
 		BinaryPath: binaryPath,
 	})
 	h.Start()
@@ -495,8 +498,9 @@ func TestWebSSHSessionCleanup(t *testing.T) {
 		t.Skip("meshdesk binary not found")
 	}
 
+	// Use 2 nodes so the collector has a real peer with ssh_proxy.
 	h := New(t, Config{
-		NodeCount:  1,
+		NodeCount:  2,
 		BinaryPath: binaryPath,
 	})
 	h.Start()
