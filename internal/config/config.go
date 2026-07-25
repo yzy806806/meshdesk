@@ -41,9 +41,42 @@ type ProxyConfig struct {
 	// Each path is a list of relay node IDs (hex public keys).
 	Paths [][]string `yaml:"paths,omitempty"`
 
+	// Relay holds relay-node-specific configuration.
+	// Only needed on nodes that serve as relay nodes.
+	Relay RelayNodeConfig `yaml:"relay,omitempty"`
+
 	// Exit holds exit-node-specific configuration.
 	// Only needed on nodes that serve as exit nodes.
 	Exit ExitConfig `yaml:"exit,omitempty"`
+}
+
+// RelayNodeConfig holds settings for a relay node in the anonymous
+// proxy system. Relay nodes blindly forward AEAD-encrypted ciphertext
+// chunks — they have no decryption key for the payload and only process
+// the forwarding header to determine the next hop.
+//
+// See PROXY_DESIGN.md §1.7 (Identity Trust Boundary) and §1.9
+// (Forwarding Header Obfuscation).
+type RelayNodeConfig struct {
+	// JitterMinMs is the minimum forwarding delay per chunk in
+	// milliseconds. Default: 5 (per PROXY_DESIGN.md §1.9).
+	JitterMinMs int `yaml:"jitter_min_ms,omitempty"`
+
+	// JitterMaxMs is the maximum forwarding delay per chunk in
+	// milliseconds. Default: 50 (per PROXY_DESIGN.md §1.9).
+	JitterMaxMs int `yaml:"jitter_max_ms,omitempty"`
+
+	// DisableJitter, when true, skips the random delay. MUST be
+	// false in production — timing side-channels would be exploitable.
+	DisableJitter bool `yaml:"disable_jitter,omitempty"`
+
+	// MaxCircuits limits the number of concurrent circuits a relay
+	// will accept. Default: 1024.
+	MaxCircuits int `yaml:"max_circuits,omitempty"`
+
+	// MaxQueueDepth is the maximum number of pending chunks per
+	// circuit before backpressure is applied. Default: 256.
+	MaxQueueDepth int `yaml:"max_queue_depth,omitempty"`
 }
 
 // SSListenerConfig configures the Shadowsocks entry listener.
@@ -287,6 +320,12 @@ func Default() *Config {
 				AllowAllPorts:      false,
 				AuditRetentionDays: 7,
 			},
+			Relay: RelayNodeConfig{
+				JitterMinMs:    5,
+				JitterMaxMs:    50,
+				MaxCircuits:    1024,
+				MaxQueueDepth:  256,
+			},
 		},
 	}
 }
@@ -355,6 +394,19 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Proxy.Exit.AuditRetentionDays == 0 {
 		cfg.Proxy.Exit.AuditRetentionDays = 7
+	}
+	// Relay config defaults.
+	if cfg.Proxy.Relay.JitterMinMs == 0 {
+		cfg.Proxy.Relay.JitterMinMs = 5
+	}
+	if cfg.Proxy.Relay.JitterMaxMs == 0 {
+		cfg.Proxy.Relay.JitterMaxMs = 50
+	}
+	if cfg.Proxy.Relay.MaxCircuits == 0 {
+		cfg.Proxy.Relay.MaxCircuits = 1024
+	}
+	if cfg.Proxy.Relay.MaxQueueDepth == 0 {
+		cfg.Proxy.Relay.MaxQueueDepth = 256
 	}
 	return cfg, nil
 }
