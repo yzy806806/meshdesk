@@ -5,6 +5,9 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/yzy806806/meshdesk/internal/auth"
+	"github.com/yzy806806/meshdesk/internal/config"
 )
 
 // inProcServiceMesh simulates mesh-internal connections for service RPC testing.
@@ -238,3 +241,161 @@ func TestRemoteServiceWithAuthorizedManager(t *testing.T) {
 		t.Errorf("expected nginx to be active after restart, got %s", status.ActiveState)
 	}
 }
+
+// TestRemoteServiceAuthRejectsEmptyPeerID verifies that when the server
+// has an auth engine configured, requests with an empty PeerID are rejected.
+func TestRemoteServiceAuthRejectsEmptyPeerID(t *testing.T) {
+	mesh := newInProcServiceMesh()
+	mock := NewMockBackend()
+
+	engine := newTestAuthEngine(t)
+	server := NewRemoteServerWithAuth(mock, engine, mesh, DefaultServicePort)
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewRemoteClient(mesh, DefaultServicePort, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := client.Call(ctx, "authorized-peer", &ServiceRequest{
+		// PeerID intentionally empty
+		Action:  "start",
+		Service: "nginx",
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.OK {
+		t.Error("expected OK=false for empty peer_id when auth is enabled")
+	}
+	if resp.Message == "" {
+		t.Error("expected error message")
+	}
+}
+
+// TestRemoteServiceAuthRejectsUnauthorizedPeer verifies that a peer without
+// the service_manage capability is denied.
+func TestRemoteServiceAuthRejectsUnauthorizedPeer(t *testing.T) {
+	mesh := newInProcServiceMesh()
+	mock := NewMockBackend()
+
+	engine := newTestAuthEngine(t)
+	server := NewRemoteServerWithAuth(mock, engine, mesh, DefaultServicePort)
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewRemoteClient(mesh, DefaultServicePort, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// "no-caps-peer" has no capabilities in the test engine.
+	resp, err := client.Call(ctx, "no-caps-peer", &ServiceRequest{
+		PeerID:  "no-caps-peer-key-xxxxxxxxxxxx",
+		Action:  "start",
+		Service: "nginx",
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.OK {
+		t.Error("expected OK=false for unauthorized peer")
+	}
+}
+
+// TestRemoteServiceAuthAllowsAuthorizedPeer verifies that a peer with
+// the service_manage capability (scoped to the requested service) is
+// allowed to perform the action.
+func TestRemoteServiceAuthAllowsAuthorizedPeer(t *testing.T) {
+	mesh := newInProcServiceMesh()
+	mock := NewMockBackend()
+
+	engine := newTestAuthEngine(t)
+	server := NewRemoteServerWithAuth(mock, engine, mesh, DefaultServicePort)
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewRemoteClient(mesh, DefaultServicePort, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// "peer-c-key-0987654321fedcba" has service_manage scoped to "nginx".
+	resp, err := client.Call(ctx, "peer-c-key-0987654321fedcba", &ServiceRequest{
+		PeerID:  "peer-c-key-0987654321fedcba",
+		Action:  "start",
+		Service: "nginx",
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !resp.OK {
+		t.Errorf("expected OK=true for authorized peer: %s", resp.Message)
+	}
+
+	// Verify the service was actually started
+	status, _ := mock.Status("nginx")
+	if status.ActiveState != "active" {
+		t.Errorf("expected nginx active, got %s", status.ActiveState)
+	}
+}
+
+// TestRemoteServiceAuthRejectsOutOfScopeService verifies that a peer with
+// service_manage scoped to "nginx" cannot manage "redis".
+func TestRemoteServiceAuthRejectsOutOfScopeService(t *testing.T) {
+	mesh := newInProcServiceMesh()
+	mock := NewMockBackend()
+
+	engine := newTestAuthEngine(t)
+	server := NewRemoteServerWithAuth(mock, engine, mesh, DefaultServicePort)
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewRemoteClient(mesh, DefaultServicePort, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// "peer-c-key-0987654321fedcba" is scoped to "nginx" only, not "redis".
+	resp, err := client.Call(ctx, "peer-c-key-0987654321fedcba", &ServiceRequest{
+		PeerID:  "peer-c-key-0987654321fedcba",
+		Action:  "start",
+		Service: "redis",
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if resp.OK {
+		t.Error("expected OK=false for out-of-scope service")
+	}
+}
+
+// --- helpers ---
+
+// newTestAuthEngine builds a CapabilityEngine with known test peers.
+func newTestAuthEngine(t *testing.T) *auth.CapabilityEngine {
+	t.Helper()
+	cfg := &config.Config{
+		Peers: []config.PeerConfig{
+			{
+				PublicKey:    "peer-c-key-0987654321fedcba",
+				Capabilities: []string{auth.CapServiceManage},
+				ServiceManage: []string{"nginx", "meshdesk"},
+			},
+			{
+				PublicKey:    "no-caps-peer-key-xxxxxxxxxxxx",
+				Capabilities: []string{},
+			},
+		},
+	}
+	return auth.NewCapabilityEngine(cfg, auth.NewAuditLogger(&nopWriter{}))
+}
+
+type nopWriter struct{}
+
+func (nopWriter) Write(p []byte) (int, error) { return len(p), nil }

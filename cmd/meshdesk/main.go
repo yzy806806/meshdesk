@@ -82,7 +82,8 @@ func main() {
 	// Start the remote service management server (listens on mesh).
 	// Every node accepts service management commands from authorized peers.
 	remoteSvcListener := &meshListenerAdapter{node: node}
-	// Wrap the service manager with AuthorizedServiceManager for capability enforcement.
+	// Use the raw service manager; the RemoteServer wraps it with
+	// AuthorizedServiceManager per-request using the caller's PeerID.
 	var remoteSvcMgr service.ServiceManager
 	if execBackend, err := service.NewExecBackend("", 30*time.Second); err != nil {
 		// Graceful degradation: use NullBackend when systemd is unavailable (Gap 5 fix).
@@ -91,13 +92,16 @@ func main() {
 	} else {
 		remoteSvcMgr = execBackend
 	}
-	if authEngine := auth.NewCapabilityEngine(cfg, auth.NewAuditLogger(log.Writer())); authEngine != nil {
-		// The remote server uses the source peer ID from the connection
-		// (set by the RPC layer). For now, we pass a placeholder that
-		// the handler will override with the actual source peer.
-		remoteSvcMgr = service.NewAuthorizedServiceManager(remoteSvcMgr, authEngine, "")
+	// Wire the auth engine into the remote server for per-peer capability
+	// enforcement. Each incoming request's PeerID field is used to construct
+	// an AuthorizedServiceManager scoped to that caller.
+	remoteAuthEngine := auth.NewCapabilityEngine(cfg, auth.NewAuditLogger(log.Writer()))
+	var remoteSvcServer *service.RemoteServer
+	if remoteAuthEngine != nil {
+		remoteSvcServer = service.NewRemoteServerWithAuth(remoteSvcMgr, remoteAuthEngine, remoteSvcListener, service.DefaultServicePort)
+	} else {
+		remoteSvcServer = service.NewRemoteServer(remoteSvcMgr, remoteSvcListener, service.DefaultServicePort)
 	}
-	remoteSvcServer := service.NewRemoteServer(remoteSvcMgr, remoteSvcListener, service.DefaultServicePort)
 	if err := remoteSvcServer.Start(); err != nil {
 		log.Printf("Warning: failed to start remote service server: %v", err)
 	} else {

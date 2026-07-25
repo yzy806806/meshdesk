@@ -488,7 +488,15 @@ func (s *Server) handleServiceAction(action string) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
+		// Populate PeerID with the local node's identity so the remote
+		// server can enforce per-peer capability checks.
+		localPeerID := ""
+		if s.node != nil {
+			localPeerID = s.node.Identity().PublicKey
+		}
+
 		resp, err := client.Call(ctx, node, &service.ServiceRequest{
+			PeerID:  localPeerID,
 			Action:  action,
 			Service: serviceName,
 		})

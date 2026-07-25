@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"time"
+
+	"github.com/yzy806806/meshdesk/internal/auth"
 )
 
 // DefaultServicePort is the mesh-internal port for the service management RPC.
@@ -16,6 +18,7 @@ const DefaultServicePort = 4192
 
 // ServiceRequest is a JSON command sent from the web server to a remote node.
 type ServiceRequest struct {
+	PeerID     string `json:"peer_id"`          // caller's peer ID (for capability checks)
 	Action     string `json:"action"`           // "start", "stop", "restart", "status", "list"
 	Service    string `json:"service"`          // service name (empty for "list")
 	FollowLogs bool   `json:"follow,omitempty"` // for "logs" action
@@ -86,12 +89,15 @@ func (c *RemoteClient) Call(ctx context.Context, peerID string, req *ServiceRequ
 }
 
 // RemoteServer listens on a mesh-internal port and handles incoming service
-// management requests. It wraps a ServiceManager with capability checks
-// via AuthorizedServiceManager before executing any command.
+// management requests. If an authEngine is provided, each request is wrapped
+// in an AuthorizedServiceManager scoped to the caller's PeerID so that
+// capability checks are enforced per-peer. If no authEngine is set
+// (testing/development mode), the raw ServiceManager is used directly.
 type RemoteServer struct {
-	mgr      ServiceManager
-	listener MeshListener
-	port     int
+	mgr        ServiceManager
+	listener   MeshListener
+	port       int
+	authEngine *auth.CapabilityEngine
 
 	stopCh chan struct{}
 }
@@ -102,8 +108,8 @@ type MeshListener interface {
 }
 
 // NewRemoteServer creates a server that accepts service management RPC calls
-// on the mesh. The provided ServiceManager should be wrapped with
-// AuthorizedServiceManager for capability enforcement.
+// on the mesh. The provided ServiceManager is used directly without
+// capability enforcement — use NewRemoteServerWithAuth for per-peer auth.
 func NewRemoteServer(mgr ServiceManager, listener MeshListener, port int) *RemoteServer {
 	if port == 0 {
 		port = DefaultServicePort
@@ -113,6 +119,23 @@ func NewRemoteServer(mgr ServiceManager, listener MeshListener, port int) *Remot
 		listener: listener,
 		port:     port,
 		stopCh:   make(chan struct{}),
+	}
+}
+
+// NewRemoteServerWithAuth creates a server that enforces per-peer capability
+// checks. Each incoming request's PeerID field is used to construct an
+// AuthorizedServiceManager, so capability checks are scoped to the caller.
+// The underlying ServiceManager should be the raw (non-authorized) backend.
+func NewRemoteServerWithAuth(mgr ServiceManager, engine *auth.CapabilityEngine, listener MeshListener, port int) *RemoteServer {
+	if port == 0 {
+		port = DefaultServicePort
+	}
+	return &RemoteServer{
+		mgr:        mgr,
+		listener:   listener,
+		port:       port,
+		authEngine: engine,
+		stopCh:     make(chan struct{}),
 	}
 }
 
@@ -171,42 +194,53 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 		return
 	}
 
+	// If auth is enabled, wrap the backend in an AuthorizedServiceManager
+	// scoped to the caller's PeerID for per-request capability enforcement.
+	mgr := s.mgr
+	if s.authEngine != nil {
+		if req.PeerID == "" {
+			writeFramedJSON(conn, &ServiceResponse{OK: false, Message: "unauthorized: missing peer_id in request"})
+			return
+		}
+		mgr = NewAuthorizedServiceManager(s.mgr, s.authEngine, req.PeerID)
+	}
+
 	// Execute the request
-	resp := s.execute(req)
+	resp := s.execute(mgr, req)
 
 	// Send response
 	writeFramedJSON(conn, resp)
 }
 
-func (s *RemoteServer) execute(req *ServiceRequest) *ServiceResponse {
+func (s *RemoteServer) execute(mgr ServiceManager, req *ServiceRequest) *ServiceResponse {
 	switch req.Action {
 	case "start":
-		if err := s.mgr.Start(req.Service); err != nil {
+		if err := mgr.Start(req.Service); err != nil {
 			return &ServiceResponse{OK: false, Message: err.Error()}
 		}
 		return &ServiceResponse{OK: true, Message: "started"}
 
 	case "stop":
-		if err := s.mgr.Stop(req.Service); err != nil {
+		if err := mgr.Stop(req.Service); err != nil {
 			return &ServiceResponse{OK: false, Message: err.Error()}
 		}
 		return &ServiceResponse{OK: true, Message: "stopped"}
 
 	case "restart":
-		if err := s.mgr.Restart(req.Service); err != nil {
+		if err := mgr.Restart(req.Service); err != nil {
 			return &ServiceResponse{OK: false, Message: err.Error()}
 		}
 		return &ServiceResponse{OK: true, Message: "restarted"}
 
 	case "status":
-		st, err := s.mgr.Status(req.Service)
+		st, err := mgr.Status(req.Service)
 		if err != nil {
 			return &ServiceResponse{OK: false, Message: err.Error()}
 		}
 		return &ServiceResponse{OK: true, Status: st}
 
 	case "list":
-		list, err := s.mgr.List()
+		list, err := mgr.List()
 		if err != nil {
 			return &ServiceResponse{OK: false, Message: err.Error()}
 		}
