@@ -436,5 +436,7 @@ func setPtySize(fd, rows, cols int) {
 		uintptr(TIOCSWINSZ),
 		uintptr(unsafe.Pointer(&ws)),
 	)
+	// PTY resize failures are non-fatal; ignore errno to avoid
+	// an "error value computed but not used" vet warning.
 	_ = errno
 }

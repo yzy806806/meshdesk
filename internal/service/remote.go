@@ -253,7 +253,7 @@ func (s *RemoteServer) execute(mgr ServiceManager, req *ServiceRequest) *Service
 
 // --- Framed JSON helpers (shared between client and server) ---
 
-func writeFramedJSON(w io.Writer, v interface{}) error {
+func writeFramedJSON(w io.Writer, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err

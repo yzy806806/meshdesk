@@ -309,7 +309,7 @@ type PageData struct {
 }
 
 // renderPage renders a full page using the layout template.
-func (s *Server) renderPage(w http.ResponseWriter, pageName string, data interface{}) {
+func (s *Server) renderPage(w http.ResponseWriter, pageName string, data any) {
 	tmpl, ok := s.pages[pageName]
 	if !ok {
 		log.Printf("template not found: %s", pageName)
@@ -323,7 +323,7 @@ func (s *Server) renderPage(w http.ResponseWriter, pageName string, data interfa
 }
 
 // renderPartial renders just a named block/template fragment (for htmx).
-func (s *Server) renderPartial(w http.ResponseWriter, templateName string, data interface{}) {
+func (s *Server) renderPartial(w http.ResponseWriter, templateName string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// For partials, we look up the named template from the layout template tree.
 	// The "node-cards" template is defined in dashboard.html.

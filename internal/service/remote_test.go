@@ -383,8 +383,8 @@ func newTestAuthEngine(t *testing.T) *auth.CapabilityEngine {
 	cfg := &config.Config{
 		Peers: []config.PeerConfig{
 			{
-				PublicKey:    "peer-c-key-0987654321fedcba",
-				Capabilities: []string{auth.CapServiceManage},
+				PublicKey:     "peer-c-key-0987654321fedcba",
+				Capabilities:  []string{auth.CapServiceManage},
 				ServiceManage: []string{"nginx", "meshdesk"},
 			},
 			{

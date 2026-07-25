@@ -598,16 +598,16 @@ func TestIsBcryptHash(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{"testpass", false},          // plaintext
-		{"password123", false},       // plaintext
-		{"$2b$10$abc", false},        // too short
-		{"$2b$notabcrypth", false},   // wrong length, bcrypt-like prefix
-		{"", false},                  // empty
-		{valid2a, true},              // valid $2a$
-		{valid2b, true},              // valid $2b$
-		{valid2y, true},              // valid $2y$
-		{"$1$abc$def", false},        // MD5 crypt, not bcrypt
-		{"$5$abc$def", false},        // SHA-256 crypt, not bcrypt
+		{"testpass", false},        // plaintext
+		{"password123", false},     // plaintext
+		{"$2b$10$abc", false},      // too short
+		{"$2b$notabcrypth", false}, // wrong length, bcrypt-like prefix
+		{"", false},                // empty
+		{valid2a, true},            // valid $2a$
+		{valid2b, true},            // valid $2b$
+		{valid2y, true},            // valid $2y$
+		{"$1$abc$def", false},      // MD5 crypt, not bcrypt
+		{"$5$abc$def", false},      // SHA-256 crypt, not bcrypt
 	}
 
 	for _, tt := range tests {

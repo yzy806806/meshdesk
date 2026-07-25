@@ -40,7 +40,7 @@ type AuditEntry struct {
 
 // Default audit rotation constants.
 const (
-	DefaultAuditMaxBytes    int64 = 100 * 1024 * 1024 // 100 MB
+	DefaultAuditMaxBytes   int64 = 100 * 1024 * 1024 // 100 MB
 	DefaultAuditMaxRotates int   = 5
 )
 

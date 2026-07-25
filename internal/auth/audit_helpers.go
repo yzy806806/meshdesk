@@ -1,9 +1,9 @@
 package auth
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"bytes"
 )
 
 // hashEntry computes the SHA-256 hex digest of a JSON-encoded
