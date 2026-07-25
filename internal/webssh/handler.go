@@ -17,6 +17,12 @@ type AuthChecker interface {
 	// terminal session. Returns true if allowed, false otherwise.
 	// Every call should produce an audit log entry.
 	AuthorizeSSH(peerID string) bool
+
+	// AuthorizeSSHWithIP is like AuthorizeSSH but also records the
+	// source IP (from the HTTP request's RemoteAddr) in the audit
+	// entry. Implementations that don't support source IP can fall
+	// back to AuthorizeSSH.
+	AuthorizeSSHWithIP(peerID, sourceIP string) bool
 }
 
 // Handler is the HTTP handler for the /ws/terminal WebSocket endpoint.
@@ -59,7 +65,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// This runs before the WebSocket upgrade, so unauthorized peers
 	// get a clean HTTP 403 instead of a WebSocket connection.
 	if h.authChecker != nil {
-		if !h.authChecker.AuthorizeSSH(peerID) {
+		if !h.authChecker.AuthorizeSSHWithIP(peerID, r.RemoteAddr) {
 			http.Error(w, "forbidden: ssh_proxy capability denied", http.StatusForbidden)
 			return
 		}

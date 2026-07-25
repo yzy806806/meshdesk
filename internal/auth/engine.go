@@ -43,6 +43,7 @@ type AuthResult struct {
 	Capability string
 	Resource   string
 	SourcePeer string
+	SourceIP   string
 	Timestamp  time.Time
 }
 
@@ -132,10 +133,18 @@ func (e *CapabilityEngine) LoadPeerConfig(peer config.PeerConfig) {
 //
 // Every call produces an audit log entry.
 func (e *CapabilityEngine) Authorize(sourcePeer, capability, resource string) AuthResult {
+	return e.AuthorizeWithSourceIP(sourcePeer, capability, resource, "")
+}
+
+// AuthorizeWithSourceIP is like Authorize but also records the source
+// IP address (from the HTTP layer or mesh connection) in the audit
+// entry. Pass an empty string if the source IP is not available.
+func (e *CapabilityEngine) AuthorizeWithSourceIP(sourcePeer, capability, resource, sourceIP string) AuthResult {
 	result := AuthResult{
 		Capability: capability,
 		Resource:   resource,
 		SourcePeer: sourcePeer,
+		SourceIP:   sourceIP,
 		Timestamp:  time.Now(),
 	}
 
@@ -320,6 +329,7 @@ func (e *CapabilityEngine) logAudit(result AuthResult) {
 	entry := AuditEntry{
 		Timestamp:           result.Timestamp.UTC().Format(time.RFC3339),
 		SourcePeer:          result.SourcePeer,
+		SourceIP:            result.SourceIP,
 		RequestedCapability: result.Capability,
 		TargetResource:      result.Resource,
 		Result:              allowDeny(result.Allowed),

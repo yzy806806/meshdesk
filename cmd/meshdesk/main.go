@@ -173,7 +173,9 @@ func main() {
 		}
 
 		// Create the auth capability engine.
-		auditLogger, err := auth.NewAuditFileLogger("/var/log/meshdesk-audit.jsonl")
+		// Use rotation-enabled audit logger: 100 MB max, 5 backups.
+		auditLogger, err := auth.NewAuditFileLoggerWithRotation("/var/log/meshdesk-audit.jsonl",
+			auth.DefaultAuditMaxBytes, auth.DefaultAuditMaxRotates)
 		if err != nil {
 			log.Printf("Warning: could not open audit log file: %v — using stderr", err)
 			auditLogger = auth.NewAuditLogger(log.Writer())

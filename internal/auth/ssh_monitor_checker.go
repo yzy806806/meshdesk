@@ -25,6 +25,16 @@ func (w *WebSSHAuthChecker) AuthorizeSSH(peerID string) bool {
 	return result.Allowed
 }
 
+// AuthorizeSSHWithIP is like AuthorizeSSH but also records the source
+// IP address in the audit entry for traceability.
+func (w *WebSSHAuthChecker) AuthorizeSSHWithIP(peerID, sourceIP string) bool {
+	if w.engine == nil {
+		return false // fail-closed when no engine
+	}
+	result := w.engine.AuthorizeWithSourceIP(peerID, CapSSHProxy, "", sourceIP)
+	return result.Allowed
+}
+
 // MonitorAuthChecker implements monitor.AuthChecker by wrapping
 // CapabilityEngine. It checks the monitor_write capability for
 // incoming metric pushes, producing an audit log entry for every

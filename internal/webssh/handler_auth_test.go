@@ -16,6 +16,10 @@ func (m *mockAuthChecker) AuthorizeSSH(peerID string) bool {
 	return m.allowedPeers[peerID]
 }
 
+func (m *mockAuthChecker) AuthorizeSSHWithIP(peerID, sourceIP string) bool {
+	return m.allowedPeers[peerID]
+}
+
 // newTestHub creates a minimal Hub suitable for handler auth tests.
 // The Hub has a valid WebSocket upgrader but no SSH backend — the
 // auth check runs before any SSH connection is attempted.
