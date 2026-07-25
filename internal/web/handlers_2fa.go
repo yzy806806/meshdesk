@@ -263,7 +263,7 @@ func (s *Server) handle2FADisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.totpStore.IsEnrolled(username) {
+	if !s.totpStore.Exists(username) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprintf(w, `{"error":"TOTP is not enrolled."}`)

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/monitor"
@@ -343,14 +344,20 @@ func TestRequire2FAEnforcement_EnrolledUserCanAccessAllEndpoints(t *testing.T) {
 
 	sessionToken := loginAndGetSession(t, srv)
 
-	// Enroll the user in TOTP
-	_, err := srv.totpStore.Enroll("admin")
+	// Enroll the user in TOTP and complete enrollment to VERIFIED state
+	result, err := srv.totpStore.Enroll("admin")
 	if err != nil {
 		t.Fatalf("failed to enroll admin in TOTP: %v", err)
 	}
 
+	// Complete enrollment: PENDING → VERIFIED
+	validCode := computeTOTP(result.Secret, time.Now())
+	if !srv.totpStore.ValidateCode("admin", validCode) {
+		t.Fatal("failed to complete TOTP enrollment")
+	}
+
 	if !srv.totpStore.IsEnrolled("admin") {
-		t.Fatal("admin should be enrolled after enrollment")
+		t.Fatal("admin should be enrolled after enrollment completion")
 	}
 
 	// Now the user should be able to access all endpoints.
@@ -374,10 +381,13 @@ func TestRequire2FAEnforcement_EnrolledUserProxyStatusAccessible(t *testing.T) {
 
 	sessionToken := loginAndGetSession(t, srv)
 
-	_, err := srv.totpStore.Enroll("admin")
+	// Enroll and complete to VERIFIED state
+	result, err := srv.totpStore.Enroll("admin")
 	if err != nil {
 		t.Fatalf("enroll error: %v", err)
 	}
+	validCode := computeTOTP(result.Secret, time.Now())
+	srv.totpStore.ValidateCode("admin", validCode)
 
 	req := httptest.NewRequest("GET", "/api/proxy/status", nil)
 	req.AddCookie(&http.Cookie{Name: "meshdesk_session", Value: sessionToken})

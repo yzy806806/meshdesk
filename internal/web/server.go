@@ -36,6 +36,7 @@ type Server struct {
 	meshDialer   MeshDialer // for remote file transfer + remote service management
 
 	totpStore   *TOTPStore
+	totpKM      *TOTPKeyManager
 	stepUpStore *StepUpStore
 	alertStore  *AlertStore
 
@@ -66,10 +67,15 @@ type Deps struct {
 	ServiceMgr   service.ServiceManager
 	MeshDialer   MeshDialer
 
-	// 2FA / security stores. When nil, fresh empty stores are created.
+	// 2FA / security stores. When nil, fresh stores are created.
 	TOTPStore   *TOTPStore
 	StepUpStore *StepUpStore
 	AlertStore  *AlertStore
+
+	// TOTPKeyManager handles encryption of per-user TOTP secrets.
+	// When nil, a new one is created from the node-local master secret
+	// at /var/lib/meshdesk/totp.ms (or a test path if configured).
+	TOTPKeyManager *TOTPKeyManager
 
 	// ProxyStatusProvider supplies proxy subsystem status for the
 	// /api/proxy/status dashboard endpoint. May be nil when the node
@@ -137,6 +143,7 @@ func New(deps Deps) (*Server, error) {
 		sessions:     NewSessionStore(),
 		sseHub:       NewSSEHub(),
 		totpStore:    deps.TOTPStore,
+		totpKM:       deps.TOTPKeyManager,
 		stepUpStore:   deps.StepUpStore,
 		alertStore:    deps.AlertStore,
 		proxyStatusProvider: deps.ProxyStatusProvider,
@@ -145,8 +152,23 @@ func New(deps Deps) (*Server, error) {
 	if s.monitorStore == nil {
 		s.monitorStore = monitor.NewStore()
 	}
+	if s.totpKM == nil && s.totpStore == nil {
+		// Create key manager from node-local master secret.
+		// In production, this reads/generates /var/lib/meshdesk/totp.ms.
+		// If the config has a legacy totp_secret, it's used for one-time migration.
+		legacySecret := ""
+		if deps.Config != nil {
+			legacySecret = deps.Config.Auth.LegacyTOTPSecret()
+		}
+		km, err := NewTOTPKeyManager(DefaultMasterSecretPath, legacySecret)
+		if err != nil {
+			log.Printf("[WARNING] failed to create TOTP key manager: %v — TOTP secrets will be stored unencrypted", err)
+		} else {
+			s.totpKM = km
+		}
+	}
 	if s.totpStore == nil {
-		s.totpStore = NewTOTPStore()
+		s.totpStore = NewTOTPStore(s.totpKM)
 	}
 	if s.stepUpStore == nil {
 		s.stepUpStore = NewStepUpStore()

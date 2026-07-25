@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -20,40 +21,167 @@ const (
 	totpLockout   = 30 * time.Second // lockout duration
 	numRecoveryCodes = 10
 	recoveryCodeLen  = 8   // alphanumeric chars
+
+	// pendingTTL is the time limit for completing enrollment after
+	// a secret is generated. If the user doesn't verify within this
+	// window, the PENDING state auto-transitions to DISABLED.
+	pendingTTL = 10 * time.Minute
+
+	// pendingSweepInterval is how often the background sweeper checks
+	// for expired PENDING enrollments.
+	pendingSweepInterval = 60 * time.Second
 )
 
 // recoveryAlphabet excludes ambiguous chars (0, O, 1, I, L).
 const recoveryAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
+// EnrollmentState models the 5-state TOTP enrollment lifecycle.
+type EnrollmentState int
+
+const (
+	StateDisabled         EnrollmentState = iota // DISABLED: no TOTP configured
+	StatePending                                // PENDING: secret generated, awaiting first verification
+	StateVerified                               // VERIFIED: fully enrolled and active
+	StateRotating                               // ROTATING: new secret generated, old key still valid for login
+	StateDisabledByAdmin                        // DISABLED_BY_ADMIN: admin override, user cannot self-re-enroll
+)
+
+// String returns a human-readable name for the enrollment state.
+func (s EnrollmentState) String() string {
+	switch s {
+	case StateDisabled:
+		return "DISABLED"
+	case StatePending:
+		return "PENDING"
+	case StateVerified:
+		return "VERIFIED"
+	case StateRotating:
+		return "ROTATING"
+	case StateDisabledByAdmin:
+		return "DISABLED_BY_ADMIN"
+	default:
+		return fmt.Sprintf("UNKNOWN(%d)", int(s))
+	}
+}
+
 // totpState holds the per-user TOTP enrollment state.
+// The TOTP secret is stored as AES-256-GCM ciphertext — the plaintext
+// secret exists only transiently on the stack during ValidateCode.
 type totpState struct {
-	Secret          string   // base32-encoded (no padding) key
-	RecoveryCodes   []string // one-time-use recovery codes
-	Enrolled        bool
-	FailedAttempts  int
-	LockedUntil     time.Time
+	// EncryptedSecret holds the AES-256-GCM ciphertext of the base32
+	// TOTP secret, sealed with the user's username as AAD.
+	EncryptedSecret []byte
+
+	// OldEncryptedSecret is used during ROTATING: the previous secret
+	// remains valid for login until the new secret is verified.
+	OldEncryptedSecret []byte
+
+	// RecoveryCodes are one-time-use recovery codes (plaintext by design —
+	// they are consumed and discarded, not persistent secrets).
+	RecoveryCodes []string
+
+	// State is the current enrollment lifecycle state.
+	State EnrollmentState
+
+	// PendingSince is when the PENDING state began (for TTL expiry).
+	PendingSince time.Time
+
+	// FailedAttempts tracks consecutive failed TOTP verifications.
+	FailedAttempts int
+
+	// LockedUntil is the lockout expiry time (rate-limiting).
+	LockedUntil time.Time
 }
 
 // TOTPStore manages per-user TOTP enrollment and verification state.
-// All state is held in-memory; it does not persist across restarts.
+// Secrets are encrypted at rest with AES-256-GCM using a key derived
+// from a node-local master secret (see TOTPKeyManager).
 type TOTPStore struct {
-	mu    sync.Mutex
-	users map[string]*totpState
+	mu         sync.Mutex
+	users      map[string]*totpState
+	km         *TOTPKeyManager
+	stopSweeper chan struct{}
 }
 
-// NewTOTPStore creates a new in-memory TOTP store.
-func NewTOTPStore() *TOTPStore {
-	return &TOTPStore{users: make(map[string]*totpState)}
+// NewTOTPStore creates a new TOTP store with the given key manager.
+// If km is nil, the store operates in a legacy plaintext mode (for
+// backward compatibility — secrets are stored unencrypted). Production
+// code should always provide a non-nil key manager.
+func NewTOTPStore(km *TOTPKeyManager) *TOTPStore {
+	s := &TOTPStore{
+		users:       make(map[string]*totpState),
+		km:          km,
+		stopSweeper: make(chan struct{}),
+	}
+	// Start the PENDING expiry sweeper.
+	go s.sweepPending()
+	return s
+}
+
+// sweepPending periodically checks for expired PENDING enrollments
+// and transitions them to DISABLED.
+func (s *TOTPStore) sweepPending() {
+	ticker := time.NewTicker(pendingSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for username, st := range s.users {
+				if st.State == StatePending && now.Sub(st.PendingSince) > pendingTTL {
+					log.Printf("[INFO] TOTP PENDING enrollment for user %s expired after %v, removing", username, pendingTTL)
+					delete(s.users, username)
+				}
+			}
+			s.mu.Unlock()
+		case <-s.stopSweeper:
+			return
+		}
+	}
+}
+
+// Close stops the background PENDING sweeper goroutine.
+func (s *TOTPStore) Close() {
+	select {
+	case <-s.stopSweeper:
+		// already closed
+	default:
+		close(s.stopSweeper)
+	}
+}
+
+// EnrollResult is returned by Enroll — the plaintext secret is provided
+// once for QR code display and is never stored in plaintext.
+type EnrollResult struct {
+	Secret        string   // base32-encoded TOTP secret (plaintext, one-time)
+	RecoveryCodes []string // one-time recovery codes
+	State         EnrollmentState
 }
 
 // Enroll generates a new TOTP secret and recovery codes for the user.
-// If the user is already enrolled, it returns an error (must disable first).
-func (s *TOTPStore) Enroll(username string) (*totpState, error) {
+// The secret is encrypted (Seal) before storage; only the plaintext is
+// returned for one-time QR display.
+//
+// If the user is already enrolled (VERIFIED), returns an error (must
+// disable first). If the user is in PENDING, replaces the pending secret.
+// If the user is DISABLED_BY_ADMIN, returns an error (admin must re-enable).
+func (s *TOTPStore) Enroll(username string) (*EnrollResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if st, ok := s.users[username]; ok && st.Enrolled {
-		return nil, fmt.Errorf("TOTP already enrolled for user %s", username)
+	if st, ok := s.users[username]; ok {
+		switch st.State {
+		case StateVerified, StateRotating:
+			return nil, fmt.Errorf("TOTP already enrolled for user %s", username)
+		case StateDisabledByAdmin:
+			return nil, fmt.Errorf("TOTP enrollment disabled by admin for user %s", username)
+		case StatePending:
+			// Replace the pending secret — user is re-trying enrollment
+			st.EncryptedSecret = nil
+			st.OldEncryptedSecret = nil
+			st.RecoveryCodes = nil
+		}
 	}
 
 	secret, err := generateTOTPSecret()
@@ -61,13 +189,50 @@ func (s *TOTPStore) Enroll(username string) (*totpState, error) {
 		return nil, fmt.Errorf("generate TOTP secret: %w", err)
 	}
 
+	var encrypted []byte
+	if s.km != nil {
+		encrypted, err = s.km.Seal(username, secret)
+		if err != nil {
+			return nil, fmt.Errorf("encrypt TOTP secret: %w", err)
+		}
+	} else {
+		// Legacy mode: no encryption (for backward compat / testing).
+		encrypted = []byte(secret)
+	}
+
+	recoveryCodes := generateRecoveryCodes()
+
 	state := &totpState{
-		Secret:        secret,
-		RecoveryCodes: generateRecoveryCodes(),
-		Enrolled:      true,
+		EncryptedSecret: encrypted,
+		RecoveryCodes:   recoveryCodes,
+		State:           StatePending,
+		PendingSince:    time.Now(),
 	}
 	s.users[username] = state
-	return state, nil
+
+	return &EnrollResult{
+		Secret:        secret,
+		RecoveryCodes: recoveryCodes,
+		State:         StatePending,
+	}, nil
+}
+
+// CompleteEnrollment transitions a PENDING user to VERIFIED after they
+// provide a valid first TOTP code. This is called when ValidateCode
+// succeeds for a PENDING user.
+func (s *TOTPStore) CompleteEnrollment(username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.users[username]
+	if !ok {
+		return false
+	}
+	if st.State != StatePending {
+		return false
+	}
+	st.State = StateVerified
+	st.PendingSince = time.Time{}
+	return true
 }
 
 // Get returns the TOTP state for a user, or nil if not enrolled.
@@ -78,14 +243,30 @@ func (s *TOTPStore) Get(username string) *totpState {
 }
 
 // IsEnrolled reports whether the user has completed TOTP enrollment.
+// Returns true only for VERIFIED and ROTATING states (the two states
+// where 2FA is enforced at login).
 func (s *TOTPStore) IsEnrolled(username string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, ok := s.users[username]
-	return ok && st.Enrolled
+	if !ok {
+		return false
+	}
+	return st.State == StateVerified || st.State == StateRotating
 }
 
-// Disable removes TOTP enrollment for a user.
+// Exists reports whether the user has any TOTP state (including PENDING
+// and DISABLED_BY_ADMIN). Used by the disable handler to allow cancelling
+// a PENDING enrollment, not just a VERIFIED one.
+func (s *TOTPStore) Exists(username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.users[username]
+	return ok
+}
+
+// Disable removes TOTP enrollment for a user (self-service).
+// Has no effect on DISABLED_BY_ADMIN users (admin must re-enable).
 func (s *TOTPStore) Disable(username string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -96,14 +277,55 @@ func (s *TOTPStore) Disable(username string) bool {
 	return true
 }
 
+// DisableByAdmin transitions a user to DISABLED_BY_ADMIN.
+// The user cannot self-re-enroll without admin action.
+func (s *TOTPStore) DisableByAdmin(username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.users[username]
+	if !ok {
+		return false
+	}
+	st.State = StateDisabledByAdmin
+	st.EncryptedSecret = nil
+	st.OldEncryptedSecret = nil
+	st.RecoveryCodes = nil
+	st.PendingSince = time.Time{}
+	return true
+}
+
+// AdminEnable transitions a DISABLED_BY_ADMIN user back to DISABLED,
+// allowing the user to self-enroll again.
+func (s *TOTPStore) AdminEnable(username string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, ok := s.users[username]
+	if !ok || st.State != StateDisabledByAdmin {
+		return false
+	}
+	delete(s.users, username) // → back to DISABLED (absent = not enrolled)
+	return true
+}
+
 // ValidateCode checks a TOTP code against the user's secret with ±skew tolerance.
 // Returns true if the code is valid for the current, previous, or next window.
+//
+// For PENDING users, a valid code completes enrollment (PENDING → VERIFIED).
+// For ROTATING users, if the code matches the NEW secret, rotation completes
+// (ROTATING → VERIFIED). If it matches the OLD secret, it's accepted for login
+// but rotation remains in progress.
 func (s *TOTPStore) ValidateCode(username, code string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	st, ok := s.users[username]
-	if !ok || !st.Enrolled {
+	if !ok {
+		return false
+	}
+
+	// Only PENDING, VERIFIED, and ROTATING states accept TOTP codes.
+	switch st.State {
+	case StateDisabled, StateDisabledByAdmin:
 		return false
 	}
 
@@ -112,12 +334,61 @@ func (s *TOTPStore) ValidateCode(username, code string) bool {
 		return false
 	}
 
-	valid := validateTOTP(st.Secret, code, time.Now(), totpSkew)
+	// Decrypt the secret for validation.
+	plaintext, err := s.decryptSecret(username, st.EncryptedSecret)
+	if err != nil {
+		// If decryption fails (e.g., master secret rotated), can't validate.
+		return false
+	}
+
+	valid := validateTOTP(plaintext, code, time.Now(), totpSkew)
+
 	if valid {
+		// If PENDING, complete enrollment.
+		if st.State == StatePending {
+			st.State = StateVerified
+			st.PendingSince = time.Time{}
+		}
+		// If ROTATING and code matches the NEW secret, complete rotation.
+		if st.State == StateRotating {
+			st.State = StateVerified
+			st.OldEncryptedSecret = nil
+		}
 		st.FailedAttempts = 0
 		st.LockedUntil = time.Time{}
 	}
+
 	return valid
+}
+
+// ValidateCodeWithOld checks a TOTP code against the OLD secret (for
+// ROTATING state). Returns true if the code matches the previous secret.
+// This allows login during key rotation without completing the rotation.
+func (s *TOTPStore) ValidateCodeWithOld(username, code string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st, ok := s.users[username]
+	if !ok || st.State != StateRotating || len(st.OldEncryptedSecret) == 0 {
+		return false
+	}
+
+	plaintext, err := s.decryptSecret(username, st.OldEncryptedSecret)
+	if err != nil {
+		return false
+	}
+
+	return validateTOTP(plaintext, code, time.Now(), totpSkew)
+}
+
+// decryptSecret decrypts an encrypted TOTP secret for on-stack use.
+// If the key manager is nil (legacy mode), treats the stored value
+// as plaintext.
+func (s *TOTPStore) decryptSecret(username string, encrypted []byte) (string, error) {
+	if s.km == nil {
+		return string(encrypted), nil
+	}
+	return s.km.Open(username, encrypted)
 }
 
 // RecordFailedAttempt increments the failure counter and locks the account
@@ -168,6 +439,10 @@ func (s *TOTPStore) ConsumeRecoveryCode(username, code string) bool {
 	defer s.mu.Unlock()
 	st, ok := s.users[username]
 	if !ok {
+		return false
+	}
+	// Recovery codes are only valid in VERIFIED and ROTATING states.
+	if st.State != StateVerified && st.State != StateRotating {
 		return false
 	}
 	for i, rc := range st.RecoveryCodes {

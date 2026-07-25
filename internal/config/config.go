@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -367,13 +368,6 @@ type MonitoringConfig struct {
 type AuthConfig struct {
 	WebUsers []WebUser `yaml:"web_users"`
 
-	// TOTPSecret is a base32-encoded 32-byte key used as the server-side
-	// HMAC secret for deriving TOTP authentication tokens. If empty on
-	// startup, a fresh secret is auto-generated and logged (but NOT
-	// persisted back to the config file — operators must manually save
-	// it to ensure stable key material across restarts).
-	TOTPSecret string `yaml:"totp_secret,omitempty"`
-
 	// TOTPIssuer is the issuer name embedded in otpauth:// URIs shown
 	// in QR codes during 2FA enrollment. Default: "MeshDesk".
 	TOTPIssuer string `yaml:"totp_issuer,omitempty"`
@@ -397,6 +391,12 @@ type AuthConfig struct {
 	// security alert notifications. When empty, alerts are only stored
 	// in-memory and surfaced in the web UI.
 	AlertWebhookURL string `yaml:"alert_webhook_url,omitempty"`
+
+	// legacyTOTPSecret captures a deprecated totp_secret value found in
+	// config.yaml during Load(). It is NOT serialized (no yaml tag) and
+	// is used only for one-time migration to the node-local master secret.
+	// Access via LegacyTOTPSecret() method.
+	legacyTOTPSecret string `yaml:"-"`
 }
 
 // WebSSHConfig holds settings for the WebSSH bridge.
@@ -467,7 +467,6 @@ func Default() *Config {
 			TOTPIssuer:    "MeshDesk",
 			TOTPWindow:    1,
 			StepUpTimeout: 300,
-			// TOTPSecret is auto-generated on first use; not set here.
 			// Require2FA defaults to false (2FA is opt-in).
 		},
 		Proxy: ProxyConfig{
@@ -511,6 +510,14 @@ func Load(path string) (*Config, error) {
 	cfg := Default()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	// Detect deprecated totp_secret in config.yaml (removed field).
+	// The TOTP encryption key is now node-local at /var/lib/meshdesk/totp.ms.
+	if legacySecret := extractLegacyTOTPSecret(data); legacySecret != "" {
+		cfg.Auth.legacyTOTPSecret = legacySecret
+		log.Printf("[WARNING] config.yaml contains deprecated field 'totp_secret' — " +
+			"TOTP encryption now uses node-local /var/lib/meshdesk/totp.ms. " +
+			"The config field is ignored and should be removed.")
 	}
 	if cfg.Mesh.Port == 0 {
 		cfg.Mesh.Port = 51820
@@ -645,4 +652,35 @@ func Save(path string, cfg *Config) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil
+}
+
+// LegacyTOTPSecret returns the deprecated totp_secret value found in
+// config.yaml during Load(), or empty string if none. Used for one-time
+// migration to the node-local master secret at /var/lib/meshdesk/totp.ms.
+func (a *AuthConfig) LegacyTOTPSecret() string {
+	return a.legacyTOTPSecret
+}
+
+// extractLegacyTOTPSecret scans raw YAML bytes for a top-level
+// auth.totp_secret field and returns its string value if present.
+// This is needed because the TOTPSecret struct field was removed;
+// the value is captured for migration only.
+func extractLegacyTOTPSecret(data []byte) string {
+	var raw map[string]map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return ""
+	}
+	auth, ok := raw["auth"]
+	if !ok {
+		return ""
+	}
+	secret, ok := auth["totp_secret"]
+	if !ok {
+		return ""
+	}
+	s, ok := secret.(string)
+	if !ok {
+		return ""
+	}
+	return s
 }

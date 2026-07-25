@@ -373,3 +373,51 @@ func TestRelayEnabledRoundTripSaveLoad(t *testing.T) {
 		t.Errorf("MaxCircuits = %d, want 512", loaded.Proxy.Relay.MaxCircuits)
 	}
 }
+
+// TestLegacyTOTPSecretDetection verifies that a deprecated totp_secret
+// in config.yaml is detected and exposed via LegacyTOTPSecret().
+func TestLegacyTOTPSecretDetection(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := []byte("node:\n  hostname: test\nauth:\n  totp_secret: \"JBSWY3DPEHPK3PXP\"\n  totp_issuer: \"TestIssuer\"\n")
+	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	// The legacy secret should be captured for migration
+	if cfg.Auth.LegacyTOTPSecret() != "JBSWY3DPEHPK3PXP" {
+		t.Errorf("LegacyTOTPSecret = %q, want 'JBSWY3DPEHPK3PXP'", cfg.Auth.LegacyTOTPSecret())
+	}
+
+	// TOTPIssuer should still be loaded normally
+	if cfg.Auth.TOTPIssuer != "TestIssuer" {
+		t.Errorf("TOTPIssuer = %q, want 'TestIssuer'", cfg.Auth.TOTPIssuer)
+	}
+}
+
+// TestNoLegacyTOTPSecret verifies LegacyTOTPSecret is empty when
+// the config doesn't contain totp_secret.
+func TestNoLegacyTOTPSecret(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := []byte("node:\n  hostname: test\nauth:\n  totp_issuer: \"TestIssuer\"\n")
+	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if cfg.Auth.LegacyTOTPSecret() != "" {
+		t.Errorf("LegacyTOTPSecret should be empty, got %q", cfg.Auth.LegacyTOTPSecret())
+	}
+}

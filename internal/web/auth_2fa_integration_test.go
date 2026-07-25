@@ -237,6 +237,27 @@ func enrollTOTPHelper(srv *Server, sessionToken string) *httptest.ResponseRecord
 	return rr
 }
 
+// enrollAndCompleteTOTP enrolls a user and completes the PENDING→VERIFIED
+// transition by validating the first TOTP code. Returns the plaintext secret
+// (for generating subsequent TOTP codes in tests).
+func enrollAndCompleteTOTP(t *testing.T, srv *Server, sessionToken string) string {
+	t.Helper()
+	rr := enrollTOTPHelper(srv, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("enrollment failed: %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]interface{}
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+	secret := resp["secret"].(string)
+
+	// Complete enrollment: PENDING → VERIFIED
+	validCode := computeTOTP(secret, time.Now())
+	if !srv.totpStore.ValidateCode("admin", validCode) {
+		t.Fatal("failed to complete enrollment with valid TOTP code")
+	}
+	return secret
+}
+
 // ====================================================================
 // TESTS: TOTP Store (production store, not test double)
 // ====================================================================
@@ -244,14 +265,14 @@ func enrollTOTPHelper(srv *Server, sessionToken string) *httptest.ResponseRecord
 // TestTOTPStore_EnrollAndValidate verifies that the production TOTPStore
 // can enroll a user and validate a correct TOTP code.
 func TestTOTPStore_EnrollAndValidate(t *testing.T) {
-	store := NewTOTPStore()
-	state, err := store.Enroll("admin")
+	store := NewTOTPStore(nil)
+	result, err := store.Enroll("admin")
 	if err != nil {
 		t.Fatalf("enroll failed: %v", err)
 	}
 
 	// Secret must be valid base32, ≥16 raw bytes
-	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(state.Secret)
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(result.Secret)
 	if err != nil {
 		t.Fatalf("TOTP secret must be valid base32: %v", err)
 	}
@@ -260,19 +281,25 @@ func TestTOTPStore_EnrollAndValidate(t *testing.T) {
 	}
 
 	// Recovery codes must be generated
-	if len(state.RecoveryCodes) != 10 {
-		t.Errorf("expected 10 recovery codes, got %d", len(state.RecoveryCodes))
+	if len(result.RecoveryCodes) != 10 {
+		t.Errorf("expected 10 recovery codes, got %d", len(result.RecoveryCodes))
 	}
 
-	// Enrolled check
-	if !store.IsEnrolled("admin") {
-		t.Error("admin should be enrolled after enrollment")
+	// After Enroll, user is in PENDING state — IsEnrolled returns false
+	// until the first valid TOTP code completes enrollment.
+	if store.IsEnrolled("admin") {
+		t.Error("admin should not be fully enrolled (VERIFIED) until first TOTP code is verified")
 	}
 
-	// Valid code
-	validCode := computeTOTP(state.Secret, time.Now())
+	// Valid code — this auto-completes PENDING → VERIFIED
+	validCode := computeTOTP(result.Secret, time.Now())
 	if !store.ValidateCode("admin", validCode) {
 		t.Error("valid TOTP code should be accepted")
+	}
+
+	// Now IsEnrolled should return true
+	if !store.IsEnrolled("admin") {
+		t.Error("admin should be enrolled after first valid TOTP code")
 	}
 
 	// Invalid code
@@ -285,12 +312,19 @@ func TestTOTPStore_EnrollAndValidate(t *testing.T) {
 // TestTOTPStore_PreventsDoubleEnrollment verifies that re-enrollment
 // without disabling first returns an error.
 func TestTOTPStore_PreventsDoubleEnrollment(t *testing.T) {
-	store := NewTOTPStore()
-	_, err := store.Enroll("admin")
+	store := NewTOTPStore(nil)
+	result, err := store.Enroll("admin")
 	if err != nil {
 		t.Fatalf("first enroll: %v", err)
 	}
 
+	// Complete enrollment: PENDING → VERIFIED
+	validCode := computeTOTP(result.Secret, time.Now())
+	if !store.ValidateCode("admin", validCode) {
+		t.Fatalf("failed to complete enrollment with valid code")
+	}
+
+	// Now in VERIFIED state — second enroll should fail
 	_, err = store.Enroll("admin")
 	if err == nil {
 		t.Error("second enrollment should fail with error")
@@ -300,7 +334,7 @@ func TestTOTPStore_PreventsDoubleEnrollment(t *testing.T) {
 // TestTOTPStore_RateLimitAfterConsecutiveFailures verifies that after 5
 // consecutive failed TOTP attempts, the user is locked out for 30 seconds.
 func TestTOTPStore_RateLimitAfterConsecutiveFailures(t *testing.T) {
-	store := NewTOTPStore()
+	store := NewTOTPStore(nil)
 	store.Enroll("admin")
 
 	for i := 0; i < 5; i++ {
@@ -320,10 +354,14 @@ func TestTOTPStore_RateLimitAfterConsecutiveFailures(t *testing.T) {
 
 // TestTOTPStore_RecoveryCodesOneTimeUse verifies recovery code consumption.
 func TestTOTPStore_RecoveryCodesOneTimeUse(t *testing.T) {
-	store := NewTOTPStore()
-	state, _ := store.Enroll("admin")
+	store := NewTOTPStore(nil)
+	result, _ := store.Enroll("admin")
 
-	rc := state.RecoveryCodes[0]
+	// Complete enrollment so recovery codes become usable
+	validCode := computeTOTP(result.Secret, time.Now())
+	store.ValidateCode("admin", validCode)
+
+	rc := result.RecoveryCodes[0]
 
 	// First use succeeds
 	if !store.ConsumeRecoveryCode("admin", rc) {
@@ -344,7 +382,7 @@ func TestTOTPStore_RecoveryCodesOneTimeUse(t *testing.T) {
 
 // TestTOTPStore_Disable removes enrollment.
 func TestTOTPStore_Disable(t *testing.T) {
-	store := NewTOTPStore()
+	store := NewTOTPStore(nil)
 	store.Enroll("admin")
 
 	if !store.Disable("admin") {
@@ -539,9 +577,10 @@ func TestHTTP_2FAEnrollment_Success(t *testing.T) {
 		t.Errorf("QR URL must start with otpauth://totp/, got %s", qrURL)
 	}
 
-	// Verify enrollment is persisted
-	if !srv.totpStore.IsEnrolled("admin") {
-		t.Error("admin should be enrolled after enrollment call")
+	// With the 5-state model, enrollment creates a PENDING state.
+	// IsEnrolled returns true only after the first valid TOTP code is verified.
+	if srv.totpStore.IsEnrolled("admin") {
+		t.Error("admin should be in PENDING state (not VERIFIED) after enrollment")
 	}
 }
 
@@ -561,21 +600,26 @@ func TestHTTP_2FAEnrollment_RequiresAuth(t *testing.T) {
 	}
 }
 
-// TestHTTP_2FAEnrollment_PreventsDoubleEnrollment verifies 409 on re-enroll.
+// TestHTTP_2FAEnrollment_PreventsDoubleEnrollment verifies 409 on re-enroll
+// when already in VERIFIED state. In PENDING state, re-enrolling is allowed
+// (user is retrying — old pending secret is replaced).
 func TestHTTP_2FAEnrollment_PreventsDoubleEnrollment(t *testing.T) {
 	srv := new2FATestServer(t)
 	session := srv.sessions.Create("admin")
 
-	// First enrollment
-	rr1 := enrollTOTPHelper(srv, session.Token)
-	if rr1.Code != http.StatusOK {
-		t.Fatalf("first enrollment failed: %d", rr1.Code)
-	}
+	// Enroll and complete to VERIFIED state
+	secret := enrollAndCompleteTOTP(t, srv, session.Token)
 
-	// Second enrollment → 409
+	// Second enrollment → 409 Conflict (already VERIFIED)
 	rr2 := enrollTOTPHelper(srv, session.Token)
 	if rr2.Code != http.StatusConflict {
 		t.Errorf("expected 409 Conflict, got %d", rr2.Code)
+	}
+
+	// Verify the original secret is still active (not replaced)
+	validCode := computeTOTP(secret, time.Now())
+	if !srv.totpStore.ValidateCode("admin", validCode) {
+		t.Error("original secret should still be valid after rejected re-enrollment")
 	}
 }
 
@@ -605,8 +649,9 @@ func TestHTTP_2FAEnroll_DisableAndStatus(t *testing.T) {
 
 	var status map[string]interface{}
 	json.Unmarshal(rr.Body.Bytes(), &status)
-	if enrolled, _ := status["enrolled"].(bool); !enrolled {
-		t.Error("status should report enrolled=true")
+	// After enrollment, user is in PENDING state — enrolled=false
+	if enrolled, _ := status["enrolled"].(bool); enrolled {
+		t.Error("status should report enrolled=false in PENDING state")
 	}
 
 	// Disable
@@ -642,15 +687,9 @@ func TestHTTP_2FAEnroll_DisableAndStatus(t *testing.T) {
 func TestHTTP_2FALoginFlow(t *testing.T) {
 	srv := new2FATestServer(t)
 
-	// Enroll admin via HTTP
+	// Enroll admin and complete enrollment to VERIFIED state
 	session := srv.sessions.Create("admin")
-	rr := enrollTOTPHelper(srv, session.Token)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("enrollment failed: %d", rr.Code)
-	}
-	var enrollResp map[string]interface{}
-	json.Unmarshal(rr.Body.Bytes(), &enrollResp)
-	secret := enrollResp["secret"].(string)
+	secret := enrollAndCompleteTOTP(t, srv, session.Token)
 
 	// Step 1: Password login with TOTP enrolled
 	rr1 := loginHelper(srv, "admin", "testpassword")
@@ -715,12 +754,9 @@ func TestHTTP_2FALoginFlow(t *testing.T) {
 func TestHTTP_2FAVerify_InvalidCodeRejected(t *testing.T) {
 	srv := new2FATestServer(t)
 
-	// Enroll
+	// Enroll and complete to VERIFIED state
 	session := srv.sessions.Create("admin")
-	rr := enrollTOTPHelper(srv, session.Token)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("enrollment failed: %d", rr.Code)
-	}
+	enrollAndCompleteTOTP(t, srv, session.Token)
 
 	// Login to get pending cookie
 	rrLogin := loginHelper(srv, "admin", "testpassword")
@@ -736,7 +772,7 @@ func TestHTTP_2FAVerify_InvalidCodeRejected(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/2fa/verify", strings.NewReader(form))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: twoFactorPendingCookie, Value: pendingToken})
-	rr = httptest.NewRecorder()
+	rr := httptest.NewRecorder()
 	srv.handle2FAVerify(rr, req)
 
 	if rr.Code != http.StatusUnauthorized {
@@ -754,9 +790,9 @@ func TestHTTP_2FAVerify_InvalidCodeRejected(t *testing.T) {
 func TestHTTP_2FAVerify_RateLimitAfter5Failures(t *testing.T) {
 	srv := new2FATestServer(t)
 
-	// Enroll
+	// Enroll and complete to VERIFIED state
 	session := srv.sessions.Create("admin")
-	enrollTOTPHelper(srv, session.Token)
+	enrollAndCompleteTOTP(t, srv, session.Token)
 
 	// Login to get pending cookie
 	rrLogin := loginHelper(srv, "admin", "testpassword")
@@ -794,7 +830,7 @@ func TestHTTP_2FAVerify_RateLimitAfter5Failures(t *testing.T) {
 func TestHTTP_2FAVerify_RecoveryCode(t *testing.T) {
 	srv := new2FATestServer(t)
 
-	// Enroll
+	// Enroll and complete to VERIFIED state
 	session := srv.sessions.Create("admin")
 	rr := enrollTOTPHelper(srv, session.Token)
 	if rr.Code != http.StatusOK {
@@ -802,8 +838,13 @@ func TestHTTP_2FAVerify_RecoveryCode(t *testing.T) {
 	}
 	var resp map[string]interface{}
 	json.Unmarshal(rr.Body.Bytes(), &resp)
+	secret := resp["secret"].(string)
 	recoveryCodes := resp["recovery"].([]interface{})
 	recoveryCode := recoveryCodes[0].(string)
+
+	// Complete enrollment: PENDING → VERIFIED
+	validCode := computeTOTP(secret, time.Now())
+	srv.totpStore.ValidateCode("admin", validCode)
 
 	// Login to get pending cookie
 	rrLogin := loginHelper(srv, "admin", "testpassword")
@@ -1154,15 +1195,9 @@ func TestTOTPSecretEntropy(t *testing.T) {
 func TestFullIntegration_TOTPAndStepUp(t *testing.T) {
 	srv := new2FATestServer(t)
 
-	// Enroll admin in TOTP via HTTP
+	// Enroll admin and complete to VERIFIED state
 	session := srv.sessions.Create("admin")
-	rr := enrollTOTPHelper(srv, session.Token)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("enrollment failed: %d", rr.Code)
-	}
-	var resp map[string]interface{}
-	json.Unmarshal(rr.Body.Bytes(), &resp)
-	secret := resp["secret"].(string)
+	secret := enrollAndCompleteTOTP(t, srv, session.Token)
 
 	// Step 1: Password login → redirect to 2FA
 	rrLogin := loginHelper(srv, "admin", "testpassword")
@@ -1240,9 +1275,9 @@ func TestFullIntegration_TOTPAndStepUp(t *testing.T) {
 func TestFullIntegration_TOTPFailureTriggersAlertAndLockout(t *testing.T) {
 	srv := new2FATestServer(t)
 
-	// Enroll
+	// Enroll and complete to VERIFIED state
 	session := srv.sessions.Create("admin")
-	enrollTOTPHelper(srv, session.Token)
+	enrollAndCompleteTOTP(t, srv, session.Token)
 
 	// Login to get pending cookie
 	rrLogin := loginHelper(srv, "admin", "testpassword")
