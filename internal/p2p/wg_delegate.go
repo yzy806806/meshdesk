@@ -278,9 +278,9 @@ func (d *WireGuardDelegate) DynamicPeerCount() int {
 	return len(d.health)
 }
 
-// deriveMeshIPFromHex computes a mesh IP from a hex public key,
+// DeriveMeshIPFromHex computes a mesh IP from a hex public key,
 // using the same algorithm as mesh.deriveMeshIP.
-func deriveMeshIPFromHex(pubKeyHex string) string {
+func DeriveMeshIPFromHex(pubKeyHex string) string {
 	if len(pubKeyHex) < 4 {
 		return "10.10.0.1"
 	}

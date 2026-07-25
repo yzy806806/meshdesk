@@ -27,14 +27,22 @@ import (
 )
 
 func main() {
+	// Handle "join" subcommand: meshdesk join <bootstrap-addr>
+	if len(os.Args) >= 2 && os.Args[1] == "join" {
+		runJoinSubcommand(os.Args[2:])
+		return
+	}
+
 	var (
 		configPath string
 		webMode    bool
 		genKey     bool
+		relayMode  bool
 	)
 	flag.StringVar(&configPath, "config", "/etc/meshdesk/config.yaml", "path to config file")
 	flag.BoolVar(&webMode, "web", false, "enable web UI mode")
 	flag.BoolVar(&genKey, "gen-key", false, "generate a new WireGuard keypair and exit")
+	flag.BoolVar(&relayMode, "relay", false, "enable relay mode (accept relay circuits from peers)")
 	flag.Parse()
 
 	if genKey {
@@ -125,6 +133,22 @@ func main() {
 				cfg.Mesh.GossipPort, len(cfg.P2P.Seeds))
 		}
 
+		// Enable relay mode if --relay flag or config proxy.relay.enabled is set.
+		// This initializes the RelaySessionManager, which handles circuit
+		// setup/teardown/ping messages via gossip and tracks active circuits
+		// for load-aware relay selection (P2P_NETWORKING_SPEC.md §5).
+		if relayMode || cfg.Proxy.Relay.Enabled {
+			maxCircuits := cfg.Proxy.Relay.MaxCircuits
+			if maxCircuits <= 0 {
+				maxCircuits = 1024
+			}
+			if err := gossipLayer.EnableRelayMode(maxCircuits); err != nil {
+				log.Printf("Warning: failed to enable relay mode: %v", err)
+			} else {
+				log.Printf("  P2P:       relay mode active (maxCircuits=%d)", maxCircuits)
+			}
+		}
+
 		// Initialize and start NAT traversal (if enabled).
 		if cfg.P2P.NatTraversal {
 			natCfg := p2p.NatTraversalFromP2pConfig(p2pCfg)
@@ -154,6 +178,10 @@ func main() {
 			} else {
 				log.Printf("  P2P:       NAT traversal active (STUN + hole-punch + relay fallback)")
 			}
+
+			// Wire the gossip layer to the NAT traversal so it can send
+			// relay control messages (SETUP, TEARDOWN) via gossip.
+			natTraversal.SetGossipLayer(gossipLayer)
 		}
 
 		defer func() {
@@ -374,6 +402,18 @@ func main() {
 	<-sigCh
 
 	log.Printf("Shutting down...")
+
+	// Send graceful leave notice before tearing down (§4).
+	// The gossip layer's Stop() also sends a LeaveNotice, but sending
+	// here ensures it goes out before the web server stops.
+	if gossipLayer != nil && gossipLayer.IsStarted() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := gossipLayer.SendLeaveNotice(ctx); err != nil {
+			log.Printf("Warning: leave notice: %v", err)
+		}
+		cancel()
+	}
+
 	_ = webServer     // silence unused warning if not web mode
 	_ = gossipLayer   // silence unused warning if P2P disabled
 	_ = natTraversal  // silence unused warning if NAT traversal disabled
@@ -409,4 +449,204 @@ type meshListenerAdapter struct {
 
 func (a *meshListenerAdapter) ListenMesh(port int) (net.Listener, error) {
 	return a.node.Net().ListenTCP(&net.TCPAddr{Port: port})
+}
+
+// runJoinSubcommand implements `meshdesk join <bootstrap-addr>`.
+//
+// It creates a mesh node, configures the bootstrap as a static peer,
+// starts the gossip layer, sends a JoinRequest to the bootstrap, and
+// on success triggers full memberlist state sync. This implements the
+// Dynamic Join Protocol from P2P_NETWORKING_SPEC.md §4.
+//
+// Usage:
+//
+//	meshdesk join 203.0.113.5:51820            # bootstrap endpoint
+//	meshdesk join 10.10.0.5:7946                # bootstrap mesh IP:gossip port
+//	meshdesk join --config /path/to/config.yaml 203.0.113.5:51820
+func runJoinSubcommand(args []string) {
+	fs := flag.NewFlagSet("join", flag.ExitOnError)
+	configPath := fs.String("config", "/etc/meshdesk/config.yaml", "path to config file")
+	bootstrapKey := fs.String("bootstrap-key", "", "bootstrap node's WireGuard public key (hex, required if not in config peers)")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		log.Fatalf("Usage: meshdesk join <bootstrap-addr>\n\n" +
+			"bootstrap-addr is the bootstrap node's endpoint (host:port)\n" +
+			"or mesh IP:gossip port.")
+	}
+
+	bootstrapAddr := fs.Arg(0)
+
+	// Load config.
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("Config file %s not found, using defaults", *configPath)
+			cfg = config.Default()
+		} else {
+			log.Fatalf("Failed to load config: %v", err)
+		}
+	}
+
+	// Enable P2P for join mode.
+	cfg.P2P.Enabled = true
+	if cfg.Mesh.GossipPort == 0 {
+		cfg.Mesh.GossipPort = 7946
+	}
+
+	// If no seeds configured, add the bootstrap address as a seed.
+	if len(cfg.P2P.Seeds) == 0 {
+		// Parse the bootstrap address to extract host:port.
+		host, port, err := p2p.ParseBootstrapAddr(bootstrapAddr, cfg.Mesh.GossipPort)
+		if err != nil {
+			log.Fatalf("Invalid bootstrap address %q: %v", bootstrapAddr, err)
+		}
+		seedAddr := net.JoinHostPort(host, port)
+		cfg.P2P.Seeds = []string{seedAddr}
+		log.Printf("Using bootstrap seed: %s", seedAddr)
+	}
+
+	// If a bootstrap public key was provided, add it as a static peer
+	// so WireGuard can establish the initial connection.
+	if *bootstrapKey != "" {
+		// Parse the bootstrap address for the endpoint.
+		host, port, err := p2p.ParseBootstrapAddr(bootstrapAddr, cfg.Mesh.Port)
+		if err != nil {
+			log.Fatalf("Invalid bootstrap address: %v", err)
+		}
+		endpoint := net.JoinHostPort(host, port)
+
+		// Compute the bootstrap's mesh IP from its public key.
+		bootstrapMeshIP := p2p.DeriveMeshIPFromHex(*bootstrapKey)
+
+		peerCfg := config.PeerConfig{
+			PublicKey:   *bootstrapKey,
+			Endpoint:    endpoint,
+			AllowedIPs:  []string{bootstrapMeshIP + "/32"},
+			Obfuscation: "padded",
+		}
+		cfg.Peers = append(cfg.Peers, peerCfg)
+		log.Printf("Added bootstrap as static peer: %s@%s (mesh IP %s)",
+			(*bootstrapKey)[:8], endpoint, bootstrapMeshIP)
+	}
+
+	// Create the mesh node.
+	node, err := mesh.New(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create mesh node: %v", err)
+	}
+	defer node.Close()
+
+	if err := node.Start(); err != nil {
+		log.Fatalf("Failed to start mesh node: %v", err)
+	}
+
+	log.Printf("MeshDesk join mode starting...")
+	log.Printf("  Public key: %s", node.Identity().PublicKey)
+	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
+
+	// Create the WireGuard delegate for dynamic peer management.
+	wgDelegate := p2p.NewWireGuardDelegate(node)
+
+	// Mark statically-configured peers (the bootstrap) as static.
+	for _, peerCfg := range cfg.Peers {
+		wgDelegate.MarkStaticPeer(peerCfg.PublicKey)
+	}
+
+	// Create the gossip layer.
+	p2pCfg := p2p.FromConfig(cfg.P2P)
+	p2pCfg.GossipPort = cfg.Mesh.GossipPort
+
+	gl, err := p2p.NewGossipLayer(p2pCfg, node, wgDelegate)
+	if err != nil {
+		log.Fatalf("Failed to create gossip layer: %v", err)
+	}
+
+	// Set local identity.
+	hostname := cfg.Node.Hostname
+	if hostname == "" {
+		hostname, _ = os.Hostname()
+	}
+	gl.SetLocalIdentity(hostname, "agent")
+	gl.SetLocalCapabilities(
+		cfg.Proxy.Relay.Enabled,
+		len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
+		cfg.Proxy.SS.Port != 0,
+	)
+
+	if err := gl.Start(); err != nil {
+		log.Fatalf("Failed to start gossip layer: %v", err)
+	}
+	defer gl.Stop()
+
+	// Wait a moment for the transport to come up, then join seeds.
+	time.Sleep(500 * time.Millisecond)
+
+	log.Printf("Joining mesh via bootstrap %s...", bootstrapAddr)
+
+	// Join the gossip cluster via the bootstrap seed.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	contacted, err := gl.JoinSeeds(ctx, cfg.P2P.Seeds)
+	if err != nil {
+		log.Printf("Warning: initial seed join: %v (contacted %d)", err, contacted)
+	} else {
+		log.Printf("Joined gossip cluster (%d seed contacted)", contacted)
+	}
+
+	// If we know the bootstrap's public key, send a JoinRequest
+	// to authenticate and get the full peer list.
+	if *bootstrapKey != "" {
+		joinCtx, joinCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer joinCancel()
+
+		result, err := gl.RequestJoin(joinCtx, *bootstrapKey)
+		if err != nil {
+			log.Fatalf("Join request failed: %v", err)
+		}
+
+		if !result.Accepted {
+			log.Fatalf("Join rejected: %s", result.RejectReason)
+		}
+
+		log.Printf("Join accepted by bootstrap")
+		if result.Bootstrap != nil {
+			log.Printf("  Bootstrap mesh IP: %s", result.Bootstrap.MeshIP)
+		}
+		log.Printf("  Known peers from bootstrap: %d", len(result.KnownPeers))
+		for _, peer := range result.KnownPeers {
+			log.Printf("    - %s (mesh IP %s, role %s)",
+				peer.PublicKey[:8], peer.MeshIP, peer.Role)
+		}
+	} else {
+		log.Printf("No bootstrap key provided — relying on memberlist push/pull for peer discovery")
+	}
+
+	log.Printf("MeshDesk joined the mesh. Waiting for peers to converge...")
+
+	// Give the gossip layer time to converge.
+	convergeTimer := time.NewTimer(10 * time.Second)
+	defer convergeTimer.Stop()
+
+	// Wait for shutdown signal (like normal mode, but join-only).
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case <-sigCh:
+		log.Printf("Shutting down...")
+	case <-convergeTimer.C:
+		log.Printf("Initial convergence complete (%d members in cluster)", gl.MemberCount())
+		// Continue running as a normal mesh node.
+		<-sigCh
+		log.Printf("Shutting down...")
+	}
+
+	// Send graceful leave notice.
+	leaveCtx, leaveCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if err := gl.SendLeaveNotice(leaveCtx); err != nil {
+		log.Printf("Warning: leave notice: %v", err)
+	}
+	leaveCancel()
 }
