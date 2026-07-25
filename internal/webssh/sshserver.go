@@ -106,6 +106,16 @@ func NewSSHServer(hostKeyPEM, shell string) (*SSHServer, error) {
 	return srv, nil
 }
 
+// HasNoClientAuth reports whether the SSH server is configured with
+// NoClientAuth=true. This is the expected configuration for mesh-internal
+// SSH servers — authentication is enforced at the mesh+capability layer
+// (RequireCapability middleware at the WebSocket endpoint), not at the
+// SSH protocol level. The SSH server only accepts connections that have
+// already passed the capability check.
+func (s *SSHServer) HasNoClientAuth() bool {
+	return s.config.NoClientAuth
+}
+
 // Shell returns the configured shell path.
 func (s *SSHServer) Shell() string { return s.shell }
 

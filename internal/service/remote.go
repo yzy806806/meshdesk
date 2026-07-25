@@ -139,6 +139,14 @@ func NewRemoteServerWithAuth(mgr ServiceManager, engine *auth.CapabilityEngine, 
 	}
 }
 
+// HasAuthEngine reports whether this server was constructed with an
+// auth capability engine (via NewRemoteServerWithAuth). When true,
+// each incoming request's PeerID is checked against the engine before
+// the request is executed.
+func (s *RemoteServer) HasAuthEngine() bool {
+	return s.authEngine != nil
+}
+
 // Start begins accepting connections on the mesh port.
 func (s *RemoteServer) Start() error {
 	ln, err := s.listener.ListenMesh(s.port)
