@@ -554,10 +554,11 @@ func TestNewObfuscatorWithConfig(t *testing.T) {
 func TestObfuscatingBindSetGet(t *testing.T) {
 	bind := NewObfuscatingBind(nil)
 
-	// Default obfuscator should be padded.
+	// Default obfuscator should be none (pass-through) so that peers
+	// configured with obfuscation: "none" are not accidentally padded.
 	o := bind.GetObfuscator("unknown-peer")
-	if o.Mode() != ObfuscationPadded {
-		t.Errorf("default obfuscator mode = %v, want %v", o.Mode(), ObfuscationPadded)
+	if o.Mode() != ObfuscationNone {
+		t.Errorf("default obfuscator mode = %v, want %v", o.Mode(), ObfuscationNone)
 	}
 
 	// Set a specific mode.
