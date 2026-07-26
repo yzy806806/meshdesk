@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,5 +155,118 @@ func TestMeshNodeGenerateIdentity(t *testing.T) {
 	}
 	if id.PublicKey == "" || id.PrivateKey == "" {
 		t.Error("GenerateIdentity returned empty keys")
+	}
+}
+
+// TestMeshNodeRealityPeerWiring verifies that a peer configured with
+// obfuscation=reality causes a RealityTransport to be created and a
+// realityBind to be installed on the obfuscatingBind. The peer should
+// use RealityTransport (not raw UDP) for outbound packets.
+func TestMeshNodeRealityPeerWiring(t *testing.T) {
+	// Generate a reality key pair for the config.
+	_, pubKey, err := GenerateRealityKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateRealityKeyPair() error: %v", err)
+	}
+
+	cfg := config.Default()
+	cfg.Mesh.Port = 0
+
+	cfg.Peers = []config.PeerConfig{
+		{
+			PublicKey:   "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+			Endpoint:    "127.0.0.1:443",
+			AllowedIPs:  []string{"10.10.1.1/32"},
+			Obfuscation: "reality",
+			Reality: &config.RealityPeerConfig{
+				ServerName: "www.apple.com",
+				PublicKey:  pubKey,
+				ShortID:    "0123456789abcdef",
+			},
+		},
+	}
+
+	node, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer node.Close()
+
+	// The TransportRegistry should have "udp" and "reality" registered.
+	if node.Registry() == nil {
+		t.Fatal("Registry() is nil")
+	}
+	names := node.Registry().List()
+	hasUDP := false
+	hasReality := false
+	for _, n := range names {
+		if n == "udp" {
+			hasUDP = true
+		}
+		if n == "reality" {
+			hasReality = true
+		}
+	}
+	if !hasUDP {
+		t.Error("Registry does not contain 'udp' transport")
+	}
+	if !hasReality {
+		t.Error("Registry does not contain 'reality' transport")
+	}
+
+	// The obfuscatingBind should have a realityBind installed.
+	node.bind.mu.RLock()
+	rb := node.bind.reality
+	node.bind.mu.RUnlock()
+	if rb == nil {
+		t.Fatal("realityBind not installed on obfuscatingBind")
+	}
+
+	// Verify the realityBind's transport is a RealityTransport.
+	if rb.transport == nil {
+		t.Fatal("realityBind.transport is nil")
+	}
+	if rb.transport.Name() != "reality" {
+		t.Errorf("realityBind transport Name = %q, want %q",
+			rb.transport.Name(), "reality")
+	}
+}
+
+// TestMeshNodeRealityPeerMissingConfig verifies that a peer configured with
+// obfuscation=reality but no reality config block returns an error.
+func TestMeshNodeRealityPeerMissingConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.Mesh.Port = 0
+
+	cfg.Peers = []config.PeerConfig{
+		{
+			PublicKey:   "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+			Endpoint:    "127.0.0.1:443",
+			AllowedIPs:  []string{"10.10.1.1/32"},
+			Obfuscation: "reality",
+			// Reality config intentionally missing
+		},
+	}
+
+	_, err := New(cfg)
+	if err == nil {
+		t.Fatal("New() should fail when obfuscation=reality but no reality config")
+	}
+	if !strings.Contains(err.Error(), "no reality config") {
+		t.Errorf("error should mention missing reality config, got: %v", err)
+	}
+}
+
+// TestParseObfuscationModeReality verifies that "reality" maps to
+// ObfuscationReality and the String() method round-trips correctly.
+func TestParseObfuscationModeReality(t *testing.T) {
+	mode := ParseObfuscationMode("reality")
+	if mode != ObfuscationReality {
+		t.Errorf("ParseObfuscationMode(\"reality\") = %v, want %v",
+			mode, ObfuscationReality)
+	}
+	if mode.String() != "reality" {
+		t.Errorf("ObfuscationReality.String() = %q, want %q",
+			mode.String(), "reality")
 	}
 }

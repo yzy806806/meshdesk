@@ -4,6 +4,7 @@ package mesh
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -46,6 +47,7 @@ const (
 	ObfuscationNone      ObfuscationMode = iota // pass-through, no transformation
 	ObfuscationPadded                           // AmneziaWG-style header randomization + padding + anti-probe
 	ObfuscationWebSocket                        // wrap in WebSocket frames over TCP+TLS
+	ObfuscationReality                          // Reality TLS transport (xray-core REALITY protocol)
 )
 
 // ParseObfuscationMode converts a string to an ObfuscationMode.
@@ -58,6 +60,8 @@ func ParseObfuscationMode(s string) ObfuscationMode {
 		return ObfuscationPadded
 	case "websocket":
 		return ObfuscationWebSocket
+	case "reality":
+		return ObfuscationReality
 	default:
 		return ObfuscationPadded
 	}
@@ -72,6 +76,8 @@ func (m ObfuscationMode) String() string {
 		return "padded"
 	case ObfuscationWebSocket:
 		return "websocket"
+	case ObfuscationReality:
+		return "reality"
 	default:
 		return "padded"
 	}
@@ -715,6 +721,16 @@ func init() {
 	})
 }
 
+func init() {
+	// Reality mode uses a pass-through obfuscator — the TLS wrapping and
+	// authentication happen at the transport layer (RealityTransport),
+	// not at the packet obfuscation layer. WireGuard packets are sent
+	// raw through the established REALITY TLS channel.
+	RegisterObfuscator("reality", func(cfg ObfuscationConfig) Obfuscator {
+		return noneObfuscator{}
+	})
+}
+
 // --- Obfuscating Bind (conn.Bind wrapper) ---
 
 // obfuscatingBind wraps a conn.Bind to apply per-peer obfuscation transforms
@@ -724,7 +740,8 @@ type obfuscatingBind struct {
 	inner       conn.Bind
 	obfuscators map[string]Obfuscator // keyed by hex public key
 	configs     map[string]ObfuscationConfig
-	ws          *wsBind // websocket transport (nil when no peer uses websocket mode)
+	ws          *wsBind       // websocket transport (nil when no peer uses websocket mode)
+	reality     *realityBind  // reality TLS transport (nil when no peer uses reality mode)
 	mu          sync.RWMutex
 	rngMu       sync.Mutex
 	rng         *mrand.Rand
@@ -793,6 +810,15 @@ func (b *obfuscatingBind) SetWSBind(wb *wsBind) {
 	b.ws = wb
 }
 
+// SetRealityBind installs a realityBind that handles Reality TLS transport for
+// peers configured with ObfuscationReality mode. When set, packets to
+// reality-mode peers are routed through realityBind instead of the inner UDP bind.
+func (b *obfuscatingBind) SetRealityBind(rb *realityBind) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.reality = rb
+}
+
 // Open delegates to the inner bind. If a wsBind is installed, its listener
 // is also opened so that websocket-mode peers can connect.
 func (b *obfuscatingBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error) {
@@ -809,6 +835,7 @@ func (b *obfuscatingBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error)
 	// Start the websocket listener if configured.
 	b.mu.RLock()
 	wb := b.ws
+	rb := b.reality
 	b.mu.RUnlock()
 	if wb != nil {
 		if err := wb.open(); err != nil {
@@ -816,6 +843,12 @@ func (b *obfuscatingBind) Open(uport uint16) ([]conn.ReceiveFunc, uint16, error)
 		}
 		// Inject websocket-received packets as an additional receive function.
 		wrapped = append(wrapped, wb.makeReceiveFunc(b))
+	}
+	if rb != nil {
+		// The realityBind listener is opened separately in MeshNode.Start()
+		// because it needs the listen address and context. Here we just
+		// inject the receive function for inbound reality packets.
+		wrapped = append(wrapped, rb.makeReceiveFunc())
 	}
 
 	return wrapped, port, nil
@@ -826,10 +859,16 @@ func (b *obfuscatingBind) Close() error {
 	err := b.inner.Close()
 	b.mu.RLock()
 	wb := b.ws
+	rb := b.reality
 	b.mu.RUnlock()
 	if wb != nil {
 		if werr := wb.close(); werr != nil && err == nil {
 			err = werr
+		}
+	}
+	if rb != nil {
+		if rerr := rb.close(); rerr != nil && err == nil {
+			err = rerr
 		}
 	}
 	return err
@@ -843,7 +882,8 @@ func (b *obfuscatingBind) SetMark(mark uint32) error {
 // Send applies the peer's obfuscation transform before delegating to inner Send.
 // For padded-mode peers with Jc > 0, junk train packets are sent before any
 // initiation packet. For websocket-mode peers, packets are routed through the
-// wsBind (TCP+TLS) instead of the inner UDP bind.
+// wsBind (TCP+TLS) instead of the inner UDP bind. For reality-mode peers,
+// packets are routed through the realityBind (REALITY TLS) instead.
 func (b *obfuscatingBind) Send(bufs [][]byte, endpoint conn.Endpoint) error {
 	peerKey := endpoint.DstToString()
 	o := b.GetObfuscator(peerKey)
@@ -858,6 +898,17 @@ func (b *obfuscatingBind) Send(bufs [][]byte, endpoint conn.Endpoint) error {
 			return wb.send(bufs, endpoint, o)
 		}
 		// No wsBind installed — fall through to inner send with obfuscation.
+	}
+
+	// Route through reality TLS transport if the peer is in reality mode.
+	if o.Mode() == ObfuscationReality {
+		b.mu.RLock()
+		rb := b.reality
+		b.mu.RUnlock()
+		if rb != nil {
+			return rb.send(context.Background(), bufs, endpoint)
+		}
+		// No realityBind installed — fall through to inner send.
 	}
 
 	transformed := make([][]byte, 0, len(bufs))
@@ -1476,3 +1527,200 @@ func (wb *wsBind) BatchSize() int { return 1 }
 
 // SetMark is a no-op for websocket transport (no kernel socket mark).
 func (wb *wsBind) SetMark(mark uint32) error { return nil }
+
+// --- realityBind: conn.Bind implementation for Reality TLS transport ---
+//
+// realityBind implements conn.Bind for peers configured with ObfuscationReality
+// mode. It maintains a TCP+TLS (REALITY) listener for inbound connections
+// and a pool of outbound REALITY connections keyed by peer address.
+// WireGuard packets are sent raw through the established REALITY TLS channel
+// — no packet-level obfuscation is needed because the TLS layer provides
+// encryption and GFW resistance.
+//
+// The realityBind is used in conjunction with the obfuscatingBind: when a
+// peer's obfuscation mode is ObfuscationReality, obfuscatingBind.Send routes
+// packets through realityBind.send() instead of the inner UDP bind.
+type realityBind struct {
+	// transport is the RealityTransport used for outbound connections.
+	transport Transport
+
+	// listener is the inbound REALITY TLS listener (server-side).
+	listener net.Listener
+
+	// Outbound connection pool, keyed by peer endpoint string (host:port).
+	connMu sync.Mutex
+	conns  map[string]net.Conn
+
+	// Inbound packet queue: received REALITY frames are placed here
+	// for delivery via makeReceiveFunc.
+	recvMu    sync.Mutex
+	recvQueue [][]byte
+	recvEPs   []conn.Endpoint
+
+	closed bool
+}
+
+// newRealityBind creates a new realityBind with the given outbound transport.
+// The transport must be a RealityTransport configured with the server's
+// public key, short ID, and SNI for client-side REALITY handshakes.
+func newRealityBind(transport Transport) *realityBind {
+	return &realityBind{
+		transport: transport,
+		conns:     make(map[string]net.Conn),
+	}
+}
+
+// open starts the inbound REALITY listener. Only called when this node
+// is a relay/shared node accepting Reality connections.
+// The listener address and reality config come from the transport's config.
+func (rb *realityBind) open(ctx context.Context, addr string) error {
+	if addr == "" {
+		return nil // no listen address; outbound-only
+	}
+	l, err := rb.transport.Listen(ctx, addr)
+	if err != nil {
+		return fmt.Errorf("realityBind listen %s: %w", addr, err)
+	}
+	rb.listener = l
+	go rb.acceptLoop()
+	return nil
+}
+
+// close shuts down the listener and all connections.
+func (rb *realityBind) close() error {
+	rb.connMu.Lock()
+	rb.closed = true
+	rb.connMu.Unlock()
+
+	var err error
+	if rb.listener != nil {
+		err = rb.listener.Close()
+	}
+	rb.connMu.Lock()
+	for _, c := range rb.conns {
+		c.Close()
+	}
+	rb.conns = make(map[string]net.Conn)
+	rb.connMu.Unlock()
+	return err
+}
+
+// acceptLoop accepts inbound REALITY connections and reads packets.
+func (rb *realityBind) acceptLoop() {
+	for {
+		conn, err := rb.listener.Accept()
+		if err != nil {
+			return
+		}
+		go rb.handleConn(conn)
+	}
+}
+
+// handleConn reads WireGuard packets from an accepted REALITY connection
+// and enqueues them for delivery to the wireguard device.
+func (rb *realityBind) handleConn(c net.Conn) {
+	defer c.Close()
+	remoteAddr := c.RemoteAddr().String()
+	buf := make([]byte, 1500) // WireGuard max packet size
+	for {
+		n, err := c.Read(buf)
+		if err != nil {
+			return
+		}
+		if n > 0 {
+			pkt := make([]byte, n)
+			copy(pkt, buf[:n])
+			rb.enqueueInbound(pkt, remoteAddr)
+		}
+	}
+}
+
+// enqueueInbound adds a received packet to the queue for delivery to the
+// wireguard device via makeReceiveFunc.
+func (rb *realityBind) enqueueInbound(packet []byte, remoteAddr string) {
+	ep := &wsEndpoint{addr: remoteAddr} // reuse wsEndpoint — same interface
+	rb.recvMu.Lock()
+	rb.recvQueue = append(rb.recvQueue, packet)
+	rb.recvEPs = append(rb.recvEPs, ep)
+	rb.recvMu.Unlock()
+}
+
+// getOrCreateConn returns an existing REALITY connection for the peer,
+// or dials a new one.
+func (rb *realityBind) getOrCreateConn(ctx context.Context, addr string) (net.Conn, error) {
+	rb.connMu.Lock()
+	if c, ok := rb.conns[addr]; ok {
+		rb.connMu.Unlock()
+		return c, nil
+	}
+	rb.connMu.Unlock()
+
+	pc, err := rb.transport.Connect(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	conn := pc // PeerConn satisfies net.Conn
+
+	rb.connMu.Lock()
+	if rb.closed {
+		rb.connMu.Unlock()
+		conn.Close()
+		return nil, fmt.Errorf("realityBind closed")
+	}
+	rb.conns[addr] = conn
+	rb.connMu.Unlock()
+	return conn, nil
+}
+
+// send writes WireGuard packets through a REALITY TLS connection.
+// Packets are sent raw — the TLS channel provides encryption.
+func (rb *realityBind) send(ctx context.Context, bufs [][]byte, endpoint conn.Endpoint) error {
+	addr := endpoint.DstToString()
+	conn, err := rb.getOrCreateConn(ctx, addr)
+	if err != nil {
+		return fmt.Errorf("realityBind dial %s: %w", addr, err)
+	}
+	for _, buf := range bufs {
+		if _, err := conn.Write(buf); err != nil {
+			// Connection might be stale — drop it and retry once.
+			rb.connMu.Lock()
+			delete(rb.conns, addr)
+			rb.connMu.Unlock()
+			conn.Close()
+			return fmt.Errorf("realityBind write: %w", err)
+		}
+	}
+	return nil
+}
+
+// makeReceiveFunc returns a conn.ReceiveFunc that drains the inbound
+// REALITY packet queue, delivering packets to the wireguard device.
+func (rb *realityBind) makeReceiveFunc() conn.ReceiveFunc {
+	return func(packets [][]byte, sizes []int, eps []conn.Endpoint) (int, error) {
+		rb.recvMu.Lock()
+		if len(rb.recvQueue) == 0 {
+			rb.recvMu.Unlock()
+			// Block briefly — the wireguard device expects ReceiveFuncs to
+			// block until packets are available.
+			time.Sleep(10 * time.Millisecond)
+			return 0, nil
+		}
+		n := len(rb.recvQueue)
+		if n > len(packets) {
+			n = len(packets)
+		}
+		for i := 0; i < n; i++ {
+			pkt := rb.recvQueue[i]
+			ep := rb.recvEPs[i]
+			copy(packets[i], pkt)
+			sizes[i] = len(pkt)
+			if eps != nil && i < len(eps) {
+				eps[i] = ep
+			}
+		}
+		rb.recvQueue = rb.recvQueue[n:]
+		rb.recvEPs = rb.recvEPs[n:]
+		rb.recvMu.Unlock()
+		return n, nil
+	}
+}
