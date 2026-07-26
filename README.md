@@ -112,6 +112,39 @@ A built-in multi-path dispersed transport proxy for censorship-resistant interne
 - **Performance-adaptive** — reduces particle count on low FPS
 - Mock-data fallback when no real mesh nodes exist
 
+### Feature Maturity
+
+Features carry an explicit maturity label so you know what to expect:
+
+| Feature | Maturity | Notes |
+|---|---|---|
+| Mesh VPN & P2P Dynamic Networking | **Stable** | WireGuard mesh, gossip discovery, NAT traversal, dynamic join — all unit-tested |
+| Monitoring | **Stable** | Real-time metrics, push collectors, SSE dashboard updates |
+| Web Terminal | **Stable** | xterm.js + WebSocket, multi-tab, SIGWINCH support |
+| File Transfer | **Stable** | Upload/download via web UI, capability-scoped paths |
+| Service Management | **Stable** | Start/stop/restart systemd services, per-peer authorization |
+| Dashboard Security (TOTP 2FA) | **Stable** | TOTP enrollment, step-up auth, encrypted key storage, webhook alerts |
+| Multi-path Anonymous Proxy | **Beta** | Circuit routing functional; chunker/reassembly needs real-machine validation |
+| 3D Topology Visualization | **Beta** | Node graph + latency edges complete; circuit particles use mock data |
+
+**Maturity definitions:**
+- **Stable** — Feature is implemented, unit-tested, and has been verified by the team. Suitable for production use with standard safeguards.
+- **Beta** — Feature is functionally complete and passes all unit tests, but has NOT been validated on physical multi-node hardware. Use with caution; report issues on GitHub.
+
+Maturity labels graduate from Beta to Stable when acceptance tests pass on real hardware — not when a commit lands.
+
+## Known Caveats
+
+The following issues were discovered during pre-release validation and have been fixed at HEAD. They are documented here because they illustrate gaps that automated testing alone cannot close:
+
+1. **Working tree corruption (fixed).** `cmd/meshdesk/main.go` was truncated to zero bytes in the working tree. `go test ./...` passed because it operates on compiled packages, not working tree file integrity. A `git checkout` restored the 652-line entrypoint. **Lesson:** always run `go build ./...` before declaring a release buildable — tests alone are not sufficient.
+
+2. **Duplicate StreamEnd after completion (fixed).** When a `ChunkStreamEnd` arrived for an already-completed stream, `AddStreaming` created a brand-new stream state because the old one had been cleaned up. The fix tracks recently-completed stream IDs in a `completedStreams` map so that duplicate completions are silently ignored rather than re-processed.
+
+3. **StreamEnd payload injection at delivered sequence (fixed).** The deduplication check in `processChunk` used `st.chunks[sequence]` existence to detect duplicates, but delivered chunks are removed from that map. A StreamEnd arriving at an already-delivered sequence bypassed the check and stored replacement payload. The fix adds a `sequence < st.nextExpected` guard to reject payloads at already-delivered positions.
+
+All three were missed by `go test ./...` because the test suite operates on committed, tracked Go packages — it cannot detect working tree corruption, missing deduplication in edge cases that were not yet tested, or race conditions between stream lifecycle and chunk arrival. Real-machine deployment remains the only reliable way to surface these categories of issues.
+
 ## Installation
 
 **Requires root.** The agent needs root to:
