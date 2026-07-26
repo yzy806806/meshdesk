@@ -1,0 +1,84 @@
+{
+  "phase": "1",
+  "title": "Single-Machine Multi-Instance Network Namespace P2P Test",
+  "timestamp": "2026-07-26T01:23:18Z",
+  "meshdesk_version": "v1.0.0-rc1",
+  "host_arch": "aarch64",
+  "host_kernel": "6.17.0-1018-oracle",
+  "nodes": [
+    {
+      "hostname": "meshdesk-node-a",
+      "role": "public-vps",
+      "namespace": "md-ns-a",
+      "ip": "10.200.0.2",
+      "pubkey": "bb0c222570c96472c206c8cee5bddf82e65d84e25083e979dd1f38e1ccd86324"
+    },
+    {
+      "hostname": "meshdesk-node-b",
+      "role": "behind-nat",
+      "namespace": "md-ns-b",
+      "ip": "10.200.0.3",
+      "pubkey": "1ca423b70111d12f27919c18326789e86316a7be9cd5eed197293ba8f8dbed12"
+    }
+  ],
+  "results": [
+    {
+      "id": "P1-ns-01",
+      "description": "Gossip discovery finds the peer within 60s",
+      "result": "PASS",
+      "duration_s": 0,
+      "details": "Both nodes show peer discovery events (peer pubkey in logs, NotifyJoin, or member count > 1)"
+    },
+    {
+      "id": "P1-ns-02",
+      "description": "WireGuard handshake completes (confirmed in logs)",
+      "result": "PASS",
+      "duration_s": 0,
+      "details": "WireGuard tunnel proven operational: Stream connections from peer mesh IP 10.10.29.165 in Node A logs (TCP through WG tunnel); Stream connections from peer mesh IP 10.10.188.13 in Node B logs; Node B joined gossip cluster via seed (tunnel operational); Node A received NotifyJoin for peer at 10.10.29.165; Node B received NotifyJoin for peer at 10.10.188.13"
+    },
+    {
+      "id": "P1-ns-03",
+      "description": "Bidirectional data transfer works through the tunnel",
+      "result": "PASS",
+      "duration_s": 0,
+      "details": "Bidirectional mesh data transfer confirmed: B->A stream connections confirmed; A->B stream connections confirmed; push/pull sync completed; NotifyJoin on both sides; Web UI accessible (HTTP 200); Cross-namespace HTTP access (HTTP 200)"
+    },
+    {
+      "id": "P1-ns-04",
+      "description": "NAT hole-punch succeeds or relay fallback engages cleanly",
+      "result": "PASS",
+      "duration_s": 0,
+      "details": "NAT traversal activity detected (STUN/relay/hole-punch) with successful resolution"
+    },
+    {
+      "id": "P1-ns-05",
+      "description": "Graceful leave detection works (peer removed within 60s)",
+      "result": "PASS",
+      "duration_s": 0,
+      "details": "Node B detected Node A's departure within timeout"
+    },
+    {
+      "id": "P1-ns-06",
+      "description": "meshdesk status shows peer as connected within 30s of startup",
+      "result": "PASS",
+      "duration_s": 0,
+      "details": "Peer count > 0 reported in logs"
+    }
+  ],
+  "summary": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "duration_s": 0
+  },
+  "caveats": [
+    "Does not test multi-hop routing (only 2 instances)",
+    "Network namespace NAT is Linux netfilter, not carrier-grade NAT",
+    "No real latency or packet loss simulation",
+    "STUN server is public (stun.l.google.com:19302)",
+    "Gossip uses loopback bridge, not real WAN",
+    "Mesh IPs derived from pubkey first 2 bytes (10.10.x.y)",
+    "Static WireGuard peers pre-configured to bootstrap tunnel before gossip"
+  ]
+}
