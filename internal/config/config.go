@@ -59,6 +59,12 @@ type XrayYAMLConfig struct {
 	// successful health check before returning an error (seconds).
 	// Default: 15.
 	ReadinessTimeout int `yaml:"readiness_timeout,omitempty"`
+
+	// DrainTimeout is how long Stop() waits for active connections
+	// to drain after signaling xray-core to stop accepting new
+	// inbound connections (seconds). Set to 0 to disable the drain
+	// phase entirely. Default: 10.
+	DrainTimeout int `yaml:"drain_timeout,omitempty"`
 }
 
 // ProxyConfig holds settings for the anonymous proxy subsystem
