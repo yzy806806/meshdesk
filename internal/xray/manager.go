@@ -31,6 +31,16 @@ const DefaultLogLines = 1000
 // DefaultBinaryPath is used when no binary path is configured.
 const DefaultBinaryPath = "xray"
 
+// DefaultDrainTimeout is how long Stop() waits for active connections
+// to drain after signaling xray-core to stop accepting new inbound
+// connections. During this period, existing TCP connections are allowed
+// to finish naturally. Set to 0 to disable the drain phase entirely.
+const DefaultDrainTimeout = 10 * time.Second
+
+// DefaultTerminateTimeout is how long Stop() waits for the xray-core
+// process to exit after sending SIGTERM before escalating to SIGKILL.
+const DefaultTerminateTimeout = 5 * time.Second
+
 // MaxRestartBackoff is the maximum delay between crash restart attempts
 // once exponential backoff has escalated beyond this value.
 const MaxRestartBackoff = 60 * time.Second
@@ -216,6 +226,15 @@ type XrayConfigManager struct {
 	// readinessTimeout is how long Start() waits for the first
 	// successful health check before returning an error.
 	readinessTimeout time.Duration
+
+	// drainTimeout is how long Stop() waits for active connections
+	// to drain after removing inbound listeners. 0 disables the
+	// drain phase (jumps straight to SIGTERM).
+	drainTimeout time.Duration
+
+	// terminateTimeout is how long Stop() waits for the process to
+	// exit after SIGTERM before sending SIGKILL.
+	terminateTimeout time.Duration
 }
 
 // ConfigStore is an optional interface for persisting xray inbound/outbound
@@ -254,6 +273,18 @@ type ManagerOptions struct {
 	// successful health check before returning an error.
 	// Default: 15s. Set to 0 to skip the readiness gate (not recommended).
 	ReadinessTimeout time.Duration
+
+	// DrainTimeout is how long Stop() waits for active connections
+	// to drain after signaling xray-core to stop accepting new
+	// inbound connections. During this period, existing TCP
+	// connections finish naturally. Default: 10s. Set to 0 to
+	// disable the drain phase entirely (jumps straight to SIGTERM).
+	DrainTimeout time.Duration
+
+	// TerminateTimeout is how long Stop() waits for the xray-core
+	// process to exit after SIGTERM before escalating to SIGKILL.
+	// Default: 5s.
+	TerminateTimeout time.Duration
 }
 
 // NewManager creates a new XrayConfigManager with the given options.
@@ -309,6 +340,14 @@ func NewManager(opts ManagerOptions) (*XrayConfigManager, error) {
 	m.readinessTimeout = opts.ReadinessTimeout
 	if m.readinessTimeout == 0 {
 		m.readinessTimeout = DefaultReadinessTimeout
+	}
+	m.drainTimeout = opts.DrainTimeout
+	if m.drainTimeout == 0 {
+		m.drainTimeout = DefaultDrainTimeout
+	}
+	m.terminateTimeout = opts.TerminateTimeout
+	if m.terminateTimeout == 0 {
+		m.terminateTimeout = DefaultTerminateTimeout
 	}
 
 	// Create the health checker (unless explicitly disabled)
@@ -1192,13 +1231,159 @@ func (m *XrayConfigManager) Reload() error {
 	return nil
 }
 
-// Stop gracefully stops the xray-core subprocess.
-// Sends SIGTERM, waits up to 5 seconds, then SIGKILL if still running.
-func (m *XrayConfigManager) Stop() error {
+// --- Graceful Shutdown (Drain-on-Stop) ---
+
+// drainConnectionsUnlocked signals xray-core to stop accepting new
+// connections on all proxy inbounds, allowing active connections to
+// drain naturally.
+//
+// It works by rewriting the config with all proxy inbounds removed
+// (keeping only the API inbound if present), then sending SIGHUP for
+// hot-reload. xray-core closes the listener sockets for the removed
+// inbounds, which prevents new connections, while existing connections
+// continue until they complete or the process is terminated.
+//
+// After signaling, it waits up to drainTimeout for the process to
+// exit on its own (which happens if all connections drain quickly).
+// If the process is still running after the timeout, the caller
+// should proceed to the terminate phase (SIGTERM/SIGKILL).
+//
+// process and pid are passed in from the caller (Stop) because it
+// already snapshotted them before clearing m.status.PID.
+//
+// Returns true if the process exited during the drain wait,
+// false if it is still running (or drain was skipped).
+//
+// Caller must NOT hold m.mu (this method acquires it internally
+// for config operations, then releases it during the wait).
+func (m *XrayConfigManager) drainConnectionsUnlocked(process *os.Process, pid int) bool {
+	if m.drainTimeout <= 0 {
+		return false
+	}
+
+	if process == nil {
+		return false
+	}
+
+	// Rewrite config with proxy inbounds removed (drain config).
+	// We temporarily swap m.inbounds to an empty map, generate the
+	// drain config, write it, then restore. This keeps the API
+	// inbound (if present) but removes all proxy listeners.
+	if err := m.writeDrainConfig(); err != nil {
+		log.Printf("[xray] drain: failed to write drain config: %v — skipping drain phase", err)
+		return false
+	}
+
+	// Send SIGHUP to trigger hot-reload of the drain config
+	if err := process.Signal(syscall.SIGHUP); err != nil {
+		log.Printf("[xray] drain: SIGHUP failed: %v — skipping drain phase", err)
+		return false
+	}
+
+	log.Printf("[xray] drain: SIGHUP sent (pid=%d) — waiting up to %v for connections to drain",
+		pid, m.drainTimeout)
+
+	// Wait for the process to exit (all connections drained) or timeout.
+	// We use process.Wait() in a goroutine with a timeout. If the process
+	// exits, it means all connections have drained and xray shut down.
+	// If it's still running after the timeout, we proceed to terminate.
+	done := make(chan struct{})
+	go func() {
+		_, _ = process.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Printf("[xray] drain: process exited after drain (pid=%d)", pid)
+		return true
+	case <-time.After(m.drainTimeout):
+		log.Printf("[xray] drain: %v timeout — connections may still be active, proceeding to terminate",
+			m.drainTimeout)
+		return false
+	}
+}
+
+// writeDrainConfig writes a config that has all proxy inbounds removed
+// but retains the API inbound (if configured). This causes xray-core
+// to close proxy listener sockets on hot-reload, preventing new
+// connections while existing ones drain.
+func (m *XrayConfigManager) writeDrainConfig() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Save current inbounds, temporarily clear them
+	savedInbounds := m.inbounds
+	m.inbounds = make(map[string]*InboundConfig)
+	defer func() { m.inbounds = savedInbounds }()
+
+	// Write the drain config (only API inbound, if present)
+	if err := m.writeConfigUnlocked(); err != nil {
+		return fmt.Errorf("write drain config: %w", err)
+	}
+
+	return nil
+}
+
+// resetCircuitBreakerUnlocked resets all circuit breaker state.
+// Used by Stop() and ForceStop() to clean up on intentional shutdown.
+//
+// Caller must hold m.mu.
+func (m *XrayConfigManager) resetCircuitBreakerUnlocked() {
+	m.crashTimestamps = nil
+	m.circuitState = CircuitClosed
+	m.circuitTrippedAt = time.Time{}
+	m.backoffIndex = 0
+	m.currentBackoff = InitialRestartBackoff
+	m.status.CircuitState = CircuitClosed
+	m.status.CircuitTrippedAt = time.Time{}
+	m.status.CrashCount = 0
+}
+
+// waitForProcessExit waits up to timeout for the process to exit.
+// If it doesn't exit, sends SIGKILL and waits for exit.
+// Returns true if the process exited gracefully (within timeout),
+// false if SIGKILL was needed.
+//
+// Caller must NOT hold m.mu.
+func (m *XrayConfigManager) waitForProcessExit(process *os.Process, pid int, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		_, _ = process.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		log.Printf("[xray] process stopped gracefully (pid=%d)", pid)
+		return true
+	case <-time.After(timeout):
+		log.Printf("[xray] process did not exit in %v — sending SIGKILL (pid=%d)", timeout, pid)
+		_ = process.Kill()
+		<-done
+		return false
+	}
+}
+
+// Stop gracefully stops the xray-core subprocess with drain-on-stop.
+//
+// The shutdown proceeds in two phases:
+//
+//  1. Drain phase: Rewrites the xray config with all proxy inbounds
+//     removed and sends SIGHUP for hot-reload. This causes xray-core
+//     to close proxy listener sockets (no new connections accepted)
+//     while existing connections continue to flow. Waits up to
+//     drainTimeout (default 10s) for the process to exit naturally.
+//
+//  2. Terminate phase: Sends SIGTERM, waits up to terminateTimeout
+//     (default 5s), then SIGKILL if still running.
+//
+// If drainTimeout is 0, the drain phase is skipped entirely.
+func (m *XrayConfigManager) Stop() error {
+	m.mu.Lock()
+
 	if !m.status.Running {
+		m.mu.Unlock()
 		return nil
 	}
 
@@ -1218,45 +1403,110 @@ func (m *XrayConfigManager) Stop() error {
 
 	if m.process == nil {
 		m.status.Running = false
+		m.mu.Unlock()
 		return nil
 	}
 
-	// Send SIGTERM
-	if err := m.process.Signal(syscall.SIGTERM); err != nil {
-		log.Printf("[xray] SIGTERM failed: %v — trying SIGKILL", err)
-		_ = m.process.Kill()
+	// Snapshot process info for the drain/terminate phases
+	process := m.process
+	pid := m.status.PID
+	terminateTimeout := m.terminateTimeout
+
+	// Mark as not running so monitorProcess won't restart
+	m.status.Running = false
+	m.status.PID = 0
+
+	m.mu.Unlock()
+
+	// --- Phase 1: Drain ---
+	// Signal xray to stop accepting new connections, wait for active
+	// connections to finish. If the process exits during drain, we're done.
+	drained := m.drainConnectionsUnlocked(process, pid)
+	if drained {
+		// Process exited during drain — clean up state
+		m.mu.Lock()
+		m.process = nil
+		m.cmd = nil
+		m.resetCircuitBreakerUnlocked()
+		m.mu.Unlock()
+		return nil
 	}
 
-	// Wait for exit (with timeout)
-	done := make(chan struct{})
-	go func() {
-		m.process.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		log.Printf("[xray] process stopped gracefully (pid=%d)", m.status.PID)
-	case <-time.After(5 * time.Second):
-		log.Printf("[xray] process did not exit in 5s — sending SIGKILL")
-		_ = m.process.Kill()
-		<-done
+	// --- Phase 2: Terminate ---
+	// Send SIGTERM, wait for exit, escalate to SIGKILL
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		log.Printf("[xray] SIGTERM failed: %v — trying SIGKILL (pid=%d)", err, pid)
+		_ = process.Kill()
 	}
+
+	m.waitForProcessExit(process, pid, terminateTimeout)
+
+	// Clean up state
+	m.mu.Lock()
+	m.process = nil
+	m.cmd = nil
+	m.resetCircuitBreakerUnlocked()
+	m.mu.Unlock()
+
+	return nil
+}
+
+// ForceStop immediately terminates the xray-core subprocess without
+// the drain phase. Sends SIGTERM, waits up to terminateTimeout,
+// then SIGKILL.
+//
+// Use this when you need to stop xray-core quickly (e.g., emergency
+// shutdown, config corruption, debugging) and don't care about
+// in-flight connections.
+func (m *XrayConfigManager) ForceStop() error {
+	m.mu.Lock()
+
+	if !m.status.Running {
+		m.mu.Unlock()
+		return nil
+	}
+
+	m.stopped = true
+	if m.stopCh != nil {
+		close(m.stopCh)
+	}
+
+	// Stop the background health monitor
+	if m.healthCancel != nil {
+		m.healthCancel()
+		m.healthCancel = nil
+	}
+
+	m.healthStatus = HealthStatus{State: HealthUnknown}
+
+	if m.process == nil {
+		m.status.Running = false
+		m.mu.Unlock()
+		return nil
+	}
+
+	process := m.process
+	pid := m.status.PID
+	terminateTimeout := m.terminateTimeout
 
 	m.status.Running = false
 	m.status.PID = 0
+	m.mu.Unlock()
+
+	// Send SIGTERM, wait, escalate to SIGKILL
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		log.Printf("[xray] ForceStop: SIGTERM failed: %v — trying SIGKILL (pid=%d)", err, pid)
+		_ = process.Kill()
+	}
+
+	m.waitForProcessExit(process, pid, terminateTimeout)
+
+	// Clean up state
+	m.mu.Lock()
 	m.process = nil
 	m.cmd = nil
-
-	// Reset circuit breaker state on explicit stop
-	m.crashTimestamps = nil
-	m.circuitState = CircuitClosed
-	m.circuitTrippedAt = time.Time{}
-	m.backoffIndex = 0
-	m.currentBackoff = InitialRestartBackoff
-	m.status.CircuitState = CircuitClosed
-	m.status.CircuitTrippedAt = time.Time{}
-	m.status.CrashCount = 0
+	m.resetCircuitBreakerUnlocked()
+	m.mu.Unlock()
 
 	return nil
 }

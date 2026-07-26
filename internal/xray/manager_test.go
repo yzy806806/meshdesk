@@ -1339,3 +1339,404 @@ func TestCircuitBreakerDoesNotTripOnStableProcess(t *testing.T) {
 	m.Stop()
 }
 
+// --- Drain-on-Stop Tests ---
+
+// drainMockBinaryPath creates a mock binary that exits on SIGHUP
+// (simulating xray-core draining all connections and exiting cleanly).
+// This lets us test that Stop()'s drain phase works: SIGHUP is sent,
+// the process exits, and no SIGTERM is needed.
+func drainMockBinaryPath(t *testing.T) string {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "mock-xray-drain")
+	script := `#!/bin/sh
+# Mock xray-core that exits on SIGHUP (drain + exit)
+echo "started mock xray"
+trap 'echo "got SIGHUP — draining and exiting" >&2; exit 0' HUP
+trap 'echo "got SIGTERM" >&2; exit 0' TERM
+while true; do
+  sleep 0.1
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write drain mock binary: %v", err)
+	}
+	return scriptPath
+}
+
+// noDrainMockBinaryPath creates a mock binary that ignores SIGHUP
+// (simulating xray-core that doesn't exit during the drain timeout).
+// This lets us test that Stop() falls through from drain to SIGTERM.
+func noDrainMockBinaryPath(t *testing.T) string {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "mock-xray-nodrain")
+	script := `#!/bin/sh
+# Mock xray-core that ignores SIGHUP (stays alive during drain)
+echo "started mock xray"
+trap 'echo "got SIGHUP — ignoring" >&2' HUP
+trap 'echo "got SIGTERM" >&2; exit 0' TERM
+while true; do
+  sleep 0.1
+done
+`
+	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write no-drain mock binary: %v", err)
+	}
+	return scriptPath
+}
+
+func TestStopWithDrain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := drainMockBinaryPath(t)
+	dir := t.TempDir()
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath: mockPath,
+		ApiPort:    -1,
+		ConfigDir:  dir,
+		ConfigPath: filepath.Join(dir, "config.json"),
+		// Short drain timeout for test speed
+		DrainTimeout:     2 * time.Second,
+		TerminateTimeout: 2 * time.Second,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Stop should drain (SIGHUP -> process exits) without needing SIGTERM
+	start := time.Now()
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Should have exited quickly via drain, not waited the full drain timeout
+	if elapsed > 5*time.Second {
+		t.Fatalf("Stop took too long (%v) — drain may not have worked", elapsed)
+	}
+
+	status := m.Status()
+	if status.Running {
+		t.Fatal("expected not running after stop")
+	}
+}
+
+func TestStopDrainFallbackToTerminate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := noDrainMockBinaryPath(t)
+	dir := t.TempDir()
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath: mockPath,
+		ApiPort:    -1,
+		ConfigDir:  dir,
+		ConfigPath: filepath.Join(dir, "config.json"),
+		// Short timeouts for test speed
+		DrainTimeout:     1 * time.Second,
+		TerminateTimeout: 2 * time.Second,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Stop should drain (SIGHUP -> ignored -> timeout), then SIGTERM -> exit
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	status := m.Status()
+	if status.Running {
+		t.Fatal("expected not running after stop")
+	}
+
+	// Verify the drain config was written (inbounds removed)
+	// by checking the config file on disk
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+	// After drain, the config should have no proxy inbounds.
+	// When inbounds is nil, JSON produces "inbounds":null.
+	inboundsVal, ok := raw["inbounds"]
+	if !ok {
+		t.Fatal("config missing inbounds key")
+	}
+	if inboundsVal == nil {
+		// nil means no inbounds — this is what we expect
+		return
+	}
+	inbounds, ok := inboundsVal.([]interface{})
+	if !ok {
+		t.Fatalf("inbounds is not an array: %T", inboundsVal)
+	}
+	if len(inbounds) != 0 {
+		t.Fatalf("expected 0 inbounds in drain config, got %d", len(inbounds))
+	}
+}
+
+func TestForceStop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := noDrainMockBinaryPath(t)
+	dir := t.TempDir()
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath:        mockPath,
+		ApiPort:           -1,
+		ConfigDir:         dir,
+		ConfigPath:        filepath.Join(dir, "config.json"),
+		DrainTimeout:      10 * time.Second, // would be slow if ForceStop drained
+		TerminateTimeout:  2 * time.Second,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// ForceStop should skip drain and go straight to SIGTERM
+	start := time.Now()
+	if err := m.ForceStop(); err != nil {
+		t.Fatalf("ForceStop: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Should be fast — no drain wait
+	if elapsed > 5*time.Second {
+		t.Fatalf("ForceStop took too long (%v) — may have drained", elapsed)
+	}
+
+	status := m.Status()
+	if status.Running {
+		t.Fatal("expected not running after force stop")
+	}
+}
+
+func TestStopDrainDisabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := drainMockBinaryPath(t)
+	dir := t.TempDir()
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath:        mockPath,
+		ApiPort:           -1,
+		ConfigDir:         dir,
+		ConfigPath:        filepath.Join(dir, "config.json"),
+		DrainTimeout:      -1, // disable drain
+		TerminateTimeout:  2 * time.Second,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Stop with drain disabled should go straight to SIGTERM
+	// The drain mock exits on SIGHUP, but since drain is disabled,
+	// we should send SIGTERM directly. The mock also handles SIGTERM.
+	start := time.Now()
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Should be fast — no drain wait
+	if elapsed > 5*time.Second {
+		t.Fatalf("Stop took too long (%v) with drain disabled", elapsed)
+	}
+
+	status := m.Status()
+	if status.Running {
+		t.Fatal("expected not running after stop")
+	}
+}
+
+func TestStopResetsCircuitBreakerWithDrain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := drainMockBinaryPath(t)
+	dir := t.TempDir()
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath:        mockPath,
+		ApiPort:           -1,
+		ConfigDir:         dir,
+		ConfigPath:        filepath.Join(dir, "config.json"),
+		DrainTimeout:      2 * time.Second,
+		TerminateTimeout:  2 * time.Second,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Simulate crash history
+	m.mu.Lock()
+	m.crashTimestamps = []time.Time{time.Now(), time.Now()}
+	m.circuitState = CircuitHalfOpen
+	m.status.CrashCount = 2
+	m.mu.Unlock()
+
+	// Stop should drain and reset everything
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	status := m.Status()
+	if status.CircuitState != CircuitClosed {
+		t.Fatalf("expected circuit closed after stop, got %s", status.CircuitState)
+	}
+	if status.CrashCount != 0 {
+		t.Fatalf("expected crash_count 0 after stop, got %d", status.CrashCount)
+	}
+}
+
+func TestStopNotRunning(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{
+		ConfigDir: t.TempDir(),
+		ApiPort:   -1,
+	})
+
+	// Stop on a never-started manager should be a no-op
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop on non-running manager: %v", err)
+	}
+	if err := m.ForceStop(); err != nil {
+		t.Fatalf("ForceStop on non-running manager: %v", err)
+	}
+}
+
+func TestWriteDrainConfig(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+
+	m, _ := NewManager(ManagerOptions{
+		ConfigDir:  dir,
+		ConfigPath: configPath,
+		ApiPort:    -1,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	// Write normal config first
+	if err := m.WriteConfig(); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+
+	// Verify normal config has the inbound
+	data, _ := os.ReadFile(configPath)
+	var raw map[string]interface{}
+	json.Unmarshal(data, &raw)
+	inbounds, _ := raw["inbounds"].([]interface{})
+	if len(inbounds) != 1 {
+		t.Fatalf("expected 1 inbound in normal config, got %d", len(inbounds))
+	}
+
+	// Write drain config
+	if err := m.writeDrainConfig(); err != nil {
+		t.Fatalf("writeDrainConfig: %v", err)
+	}
+
+	// Verify drain config has no proxy inbounds
+	data, _ = os.ReadFile(configPath)
+	json.Unmarshal(data, &raw)
+	inbounds, _ = raw["inbounds"].([]interface{})
+	if len(inbounds) != 0 {
+		t.Fatalf("expected 0 inbounds in drain config, got %d", len(inbounds))
+	}
+
+	// Verify inbounds are restored on the manager after writeDrainConfig
+	list := m.ListInbounds()
+	if len(list) != 1 {
+		t.Fatalf("expected 1 inbound restored after drain config write, got %d", len(list))
+	}
+}
+
