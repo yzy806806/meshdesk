@@ -180,6 +180,7 @@ func (g *GossipLayer) Start() error {
 	if err != nil {
 		return fmt.Errorf("create memberlist: %w", err)
 	}
+	g.mu.Lock()
 	g.memberlist = ml
 	g.started = true
 	g.mu.Unlock()

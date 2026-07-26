@@ -763,7 +763,15 @@ func (b *obfuscatingBind) GetObfuscator(peerKey string) Obfuscator {
 	if o, ok := b.obfuscators[peerKey]; ok {
 		return o
 	}
-	return NewObfuscator(ObfuscationPadded)
+	// Default to ObfuscationNone (pass-through) when no obfuscator is
+	// registered for the peer. This is correct for peers configured with
+	// obfuscation: "none" and also for the initial handshake before the
+	// peer's endpoint address is mapped to a registered obfuscator.
+	// Previously this defaulted to ObfuscationPadded, which corrupted
+	// WireGuard packets for "none"-mode peers because the obfuscator
+	// lookup key (endpoint address from DstToString) did not match the
+	// key used at registration (public key).
+	return NewObfuscator(ObfuscationNone)
 }
 
 // GetConfig returns the obfuscation config for a peer, or the default if unset.
