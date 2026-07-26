@@ -314,6 +314,7 @@ type transportState struct {
 	latency       *latencyEWMA
 	failures      int         // consecutive failures (reset on success)
 	quarantineN   int         // total quarantine cycles (reset on success)
+	quarantinedAt time.Time   // when quarantine started (for LRQ selection)
 	cooldownUntil time.Time   // when quarantine expires
 	stableBetter  int         // consecutive probes where alternative was better
 	lastProbeAt   time.Time   // last active probe time
@@ -812,8 +813,9 @@ func (pm *PeerManager) handleDialResult(ctx context.Context, result dialResult) 
 	if ts.failures >= threshold {
 		ts.quarantineN++
 		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = time.Now()
 		cooldown := pm.cooldownDuration(ts.quarantineN)
-		ts.cooldownUntil = time.Now().Add(cooldown)
+		ts.cooldownUntil = ts.quarantinedAt.Add(cooldown)
 
 		if ts.quarantineN >= pm.cfg.BlackoutThreshold {
 			ts.subState = TransportSubFailed
@@ -883,6 +885,7 @@ func (pm *PeerManager) checkQuarantineExpiry(ctx context.Context) {
 		if ts.subState == TransportSubQuarantined && now.After(ts.cooldownUntil) {
 			ts.subState = TransportSubActive
 			ts.failures = 0 // reset for fresh attempt
+			ts.quarantinedAt = time.Time{}
 			anyExpired = true
 		}
 	}
@@ -1116,6 +1119,7 @@ func (pm *PeerManager) handleReconnect(ctx context.Context) {
 		ts.subState = TransportSubActive
 		ts.quarantineN = 0
 		ts.failures = 0
+		ts.quarantinedAt = time.Time{}
 		ts.cooldownUntil = time.Time{}
 		ts.failureTimes = nil
 		ts.latency.reset()
@@ -1195,9 +1199,11 @@ func (pm *PeerManager) blackoutEscapeCandidates() []string {
 			return []string{name} // never-tried transport
 		}
 		if ts.subState == TransportSubQuarantined {
-			if best == "" || ts.cooldownUntil.Before(bestTime) {
+			// LRQ: select the transport with the oldest quarantine
+			// timestamp (quarantined the longest), per spec §3.3.
+			if best == "" || ts.quarantinedAt.Before(bestTime) {
 				best = name
-				bestTime = ts.cooldownUntil
+				bestTime = ts.quarantinedAt
 			}
 		}
 	}
