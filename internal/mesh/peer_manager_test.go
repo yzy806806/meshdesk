@@ -17,8 +17,8 @@
 //  2. Blackout escape: all transports quarantined → bypass, try LRQ
 //  3. Hedging: slow transport → fallback races after 5s → first wins
 //  4. Fallback chain: UDP → Reality → WS → relay in priority order
-//  5. Path selection: score = latency × (1 + failure_penalty)
-//  6. Latency baseline: moving median of 10, 2x trigger, 3 consecutive probes
+//  5. Path selection: score = e_lat + s_pen (additive, spec §6.1)
+//  6. Latency baseline: EWMA with split-alpha (α_rise=0.7, α_fall=0.3)
 //  7. State transitions: disconnected→connecting→connected with per-transport sub-states
 package mesh
 
@@ -894,20 +894,24 @@ func TestFallbackChainRecoversWhenHigherPriorityRecovers(t *testing.T) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Test 5: Path selection — score = latency × (1 + failure_penalty)
+// Test 5: Path selection — score = e_lat + s_pen (additive, spec §6.1)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // TestPathSelectionScoreFormula verifies the path selection scoring:
-// score = latency × (1 + failure_penalty)
-// where failure_penalty = recent_failures / max(attempts, 10), lookback 60s.
+// score = e_lat + s_pen
+// where s_pen = e_lat × (recent_failures / max(attempts, 10)), lookback 60s.
 func TestPathSelectionScoreFormula(t *testing.T) {
 	// Transport A: 5ms latency, 50% failure rate (5 failures in 10 attempts)
-	//   score = 5 × (1 + 5/10) = 5 × 1.5 = 7.5
+	//   s_pen = 5 × (5/10) = 2.5
+	//   score = 5 + 2.5 = 7.5
 	// Transport B: 15ms latency, 0% failure rate (0 failures in 10 attempts)
-	//   score = 15 × (1 + 0/10) = 15 × 1.0 = 15.0
+	//   s_pen = 15 × (0/10) = 0
+	//   score = 15 + 0 = 15.0
 
-	scoreA := 5.0 * (1.0 + 5.0/10.0)  // 7.5
-	scoreB := 15.0 * (1.0 + 0.0/10.0) // 15.0
+	eLatA, failA, attA := 5.0, 5.0, 10.0
+	eLatB, failB, attB := 15.0, 0.0, 10.0
+	scoreA := eLatA + eLatA*(failA/attA)  // 7.5
+	scoreB := eLatB + eLatB*(failB/attB) // 15.0
 
 	// Lower score wins.
 	if scoreA >= scoreB {
@@ -918,6 +922,7 @@ func TestPathSelectionScoreFormula(t *testing.T) {
 }
 
 // TestPathSelectionScoreWithEdgeCases verifies edge cases in the scoring formula.
+// score = e_lat + s_pen where s_pen = e_lat × (recent_failures / max(attempts, 10))
 func TestPathSelectionScoreWithEdgeCases(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -969,7 +974,8 @@ func TestPathSelectionScoreWithEdgeCases(t *testing.T) {
 			if attempts < 10 {
 				attempts = 10
 			}
-			score := tt.latency * (1.0 + float64(tt.recentFailures)/float64(attempts))
+			sPen := tt.latency * (float64(tt.recentFailures) / float64(attempts))
+			score := tt.latency + sPen
 
 			epsilon := 0.01
 			if diff := score - tt.expectedScore; diff < -epsilon || diff > epsilon {
@@ -1012,7 +1018,8 @@ func TestPathSelectionFailureLookback(t *testing.T) {
 	}
 
 	latency := 10.0
-	score := latency * (1.0 + float64(recentFailures)/10.0)
+	sPen := latency * (float64(recentFailures) / 10.0)
+	score := latency + sPen
 	expectedScore := 13.0
 	if score != expectedScore {
 		t.Errorf("score = %v, want %v (only 3 recent failures counted)", score, expectedScore)
@@ -1978,23 +1985,23 @@ func TestCooldownDurationSequence30to300(t *testing.T) {
 // Test 9: Hysteresis bonus (motion-a255c77a7674)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// TestHysteresisBonusDefaults verifies the three modes of HysteresisBonus:
-//   - 0 (default) → 10% of active score
-//   - positive value → used as fixed ms bonus
-//   - negative value → hysteresis disabled (returns 0)
+// TestHysteresisBonusDefaults verifies the semantics of HysteresisBonus:
+//   - default 0.10 → 10% of e_lat (raw EWMA latency)
+//   - custom fraction (e.g. 0.25) → 25% of e_lat
+//   - 0 → hysteresis disabled (returns 0)
 func TestHysteresisBonusDefaults(t *testing.T) {
 	tests := []struct {
-		name        string
-		bonus       float64
-		activeScore float64
-		want        float64
+		name  string
+		bonus float64
+		eLat  float64 // raw EWMA latency in ms
+		want  float64
 	}{
-		{"default (0) → 10%", 0, 100.0, 10.0},
-		{"default (0) → 10% of 50", 0, 50.0, 5.0},
-		{"fixed 5ms bonus", 5.0, 100.0, 5.0},
-		{"fixed 5ms on score 8", 5.0, 8.0, 5.0},
-		{"disabled (-1)", -1.0, 100.0, 0.0},
-		{"disabled (-0.1)", -0.1, 100.0, 0.0},
+		{"default 0.10 → 10% of 100ms", 0.10, 100.0, 10.0},
+		{"default 0.10 → 10% of 50ms", 0.10, 50.0, 5.0},
+		{"custom 0.25 → 25% of 100ms", 0.25, 100.0, 25.0},
+		{"custom 0.25 → 25% of 8ms", 0.25, 8.0, 2.0},
+		{"disabled (0)", 0, 100.0, 0.0},
+		{"disabled (0) on 50ms", 0, 50.0, 0.0},
 	}
 
 	for _, tt := range tests {
@@ -2002,11 +2009,11 @@ func TestHysteresisBonusDefaults(t *testing.T) {
 			cfg := DefaultPeerManagerConfig()
 			cfg.HysteresisBonus = tt.bonus
 			pm := NewPeerManager(cfg, NewTransportRegistry())
-			got := pm.hysteresisBonus(tt.activeScore)
+			got := pm.hysteresisBonus(tt.eLat)
 			epsilon := 0.001
 			if diff := got - tt.want; diff < -epsilon || diff > epsilon {
-				t.Errorf("hysteresisBonus(%.1f) = %.4f, want %.4f",
-					tt.activeScore, got, tt.want)
+				t.Errorf("hysteresisBonus(eLat=%.1f) = %.4f, want %.4f",
+					tt.eLat, got, tt.want)
 			}
 		})
 	}
@@ -2019,15 +2026,15 @@ func TestHysteresisBonusDefaults(t *testing.T) {
 //
 // Scenario: active "udp" at 20ms, alternative "reality" at 19ms.
 // Without hysteresis, reality is 5% better and could trigger a switch.
-// With the default 10% hysteresis bonus, the effective active score
-// drops to 18ms, so reality (19ms) does NOT beat it and the active
-// transport wins the tie.
+// With the default 0.10 hysteresis bonus, h_bonus = 0.10 × 20 = 2.0ms,
+// so effective active = 20.0 - 2.0 = 18.0ms, and reality (19ms) does NOT
+// beat it.
 func TestPathSelectionHysteresisPreventsFlapping(t *testing.T) {
 	cfg := quickConfig("peer-1", "10.0.0.1:51820", "udp", "reality")
 	cfg.MinSamplesForScoring = 1
 	cfg.ScoreSwitchThreshold = 0.05 // 5% threshold — sensitive
 	cfg.ScoreStableProbes = 1       // switch after just 1 cycle
-	cfg.HysteresisBonus = 0         // default: 10% dynamic
+	// Use default HysteresisBonus = 0.10 (10% of e_lat).
 
 	fix := newTestPeerManagerFixture("udp", "reality")
 	pm := NewPeerManager(cfg, fix.registry)
@@ -2059,8 +2066,9 @@ func TestPathSelectionHysteresisPreventsFlapping(t *testing.T) {
 			realityScore, udpScore)
 	}
 
-	// Hysteresis bonus for active (udp) at 20ms → 2.0ms.
-	bonus := pm.hysteresisBonus(udpScore)
+	// Hysteresis bonus for active (udp): h_bonus = 0.10 × 20ms = 2.0ms.
+	udpELat := float64(udpTS.latency.current().Milliseconds()) // 20.0
+	bonus := pm.hysteresisBonus(udpELat)
 	effectiveActive := udpScore - bonus
 
 	t.Logf("udp score=%.2f, reality score=%.2f, hysteresis bonus=%.2f, effective active=%.2f",
@@ -2096,7 +2104,7 @@ func TestPathSelectionHysteresisAllowsSwitchWhenSignificantlyBetter(t *testing.T
 	cfg.MinSamplesForScoring = 1
 	cfg.ScoreSwitchThreshold = 0.05 // 5%
 	cfg.ScoreStableProbes = 1
-	cfg.HysteresisBonus = 0         // default 10%
+	// Use default HysteresisBonus = 0.10 (10% of e_lat).
 
 	fix := newTestPeerManagerFixture("udp", "reality")
 	pm := NewPeerManager(cfg, fix.registry)
@@ -2120,7 +2128,8 @@ func TestPathSelectionHysteresisAllowsSwitchWhenSignificantlyBetter(t *testing.T
 
 	udpScore := pm.computeScore(udpTS)       // 50.0
 	realityScore := pm.computeScore(realityTS) // 5.0
-	bonus := pm.hysteresisBonus(udpScore)     // 5.0
+	udpELat := float64(udpTS.latency.current().Milliseconds()) // 50.0
+	bonus := pm.hysteresisBonus(udpELat)     // 0.10 × 50 = 5.0
 	effectiveActive := udpScore - bonus        // 45.0
 
 	threshold := pm.cfg.ScoreSwitchThreshold
