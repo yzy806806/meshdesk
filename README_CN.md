@@ -45,6 +45,29 @@ Nezha 有监控和 WebSSH 但没有 mesh 组网——dashboard 挂了就全没�
 - **中继回退** — 直连失败时通过 mesh 节点中继流量
 - 传输混淆：填充模式（AmneziaWG 风格）或 WebSocket+TLS 模式（uTLS 指纹模拟）
 - 细粒度节点权限——限制每个节点能访问哪些功能（监控、SSH、文件传输、服务管理）
+- 可插拔传输层，内嵌 Reality TLS 握手劫持（无子进程依赖）——参见[传输层](#传输层)
+
+### 传输层
+
+传输层抽象了 MeshDesk 节点间的通信方式。每个节点可使用不同的传输方式，[PeerManager](#peermanager) 负责自动回退切换。
+
+- **传输接口** — 通用 `Transport` 接口（`Connect`、`Listen`、`LatencyProbe`、`IsHealthy`）解耦 WireGuard 与底层网络。任何实现此接口的传输均可承载 mesh 流量——无需修改 WireGuard 代码即可添加新传输。
+- **UDP 传输** — 原始 WireGuard UDP。用于局域网节点和直连。最低延迟，零开销。
+- **Reality 传输** — xray-core Reality TLS 握手劫持，**直接内嵌于 MeshDesk**（无子进程、无外部二进制）。uTLS ClientHello 指纹模拟（Chrome、Firefox、Safari），使连接与真实浏览器访问大型网站（如 apple.com）无异。被动 DPI 看到的是合法 TLS 1.3。主动探测收到的是真实网站响应。目前最强的 GFW 抗检测传输。
+- **WebSocket 传输** — WebSocket + TLS 配合 uTLS 指纹模拟，作为 Reality 不必要或不可用时的后备方案。
+- **自动回退** — PeerManager 按优先级顺序尝试传输（UDP → Reality → WS → 中继）。如果主传输 5 秒后无响应，则并行竞速下一个传输（Happy Eyeballs 对冲）。详见 [docs/ARCHITECTURE_REFACTOR.md](./docs/ARCHITECTURE_REFACTOR.md)（英文）。
+
+### PeerManager
+
+PeerManager 是每个 mesh 节点的连接生命周期管理器。每个节点拥有一个专用 goroutine，监控所有传输的连接状态、处理故障恢复并选择最佳路径。
+
+- **指数退避自动重连** — 连接断开后自动重试，指数退避（30s → 60s → 120s → 240s → 最高300s）。连接成功后重置定时器。
+- **多传输回退** — 主传输失败时，PeerManager 自动沿回退链（UDP → Reality → WS → 中继）切换。隔离的传输按指数冷却期等待重试。**全隔离逃生**（尝试最近隔离的传输）防止所有传输不可用时的永久断连。
+- **EWMA 延迟探测** — 分裂系数 EWMA（α_rise=0.7、α_fall=0.3）追踪每种传输的延迟。快速上升可在 2 个采样周期（约60秒）内检测到延迟恶化；慢速下降防止路径震荡。采样来自被动源（WireGuard 握手耗时、TCP RTT via getsockopt）和主动探测（定时 LatencyProbe 调用）。
+- **带滞后的最优路径选择** — 复合加法评分（EWMA 延迟 + 稳定性惩罚 − 滞后奖励）选择最佳传输。当前活跃传输享有 10% 滞后折扣，防止两传输延迟相近时的路径震荡。
+- **按传输隔离** — 重复故障按传输类型隔离，指数冷却（最高300秒上限）。故障阈值因传输类型而异（UDP: 3、WebSocket: 2、Reality: 2、中继: 3），反映实际网络可靠性特征。
+
+详见 [docs/PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md)（英文）。
 
 ### 监控
 
@@ -119,6 +142,8 @@ Nezha 有监控和 WebSSH 但没有 mesh 组网——dashboard 挂了就全没�
 | 功能 | 成熟度 | 说明 |
 |---|---|---|
 | Mesh VPN 与 P2P 动态组网 | **稳定** | WireGuard mesh、gossip 发现、NAT 穿透、动态加入——全部通过单元测试 |
+| 传输层 | **测试版** | 可插拔传输：UDP、Reality（xray-core 内嵌）、WebSocket；自动回退 |
+| PeerManager | **测试版** | 自动重连、多传输回退、EWMA 延迟探测、最优路径选择 |
 | 监控 | **稳定** | 实时指标、推送到采集节点、SSE 仪表盘更新 |
 | Web 终端 | **稳定** | xterm.js + WebSocket、多标签、SIGWINCH 支持 |
 | 文件传输 | **稳定** | Web UI 上传/下载、基于权限的路径控制 |
@@ -126,6 +151,7 @@ Nezha 有监控和 WebSSH 但没有 mesh 组网——dashboard 挂了就全没�
 | 仪表盘安全（TOTP 2FA） | **稳定** | TOTP 注册、逐步认证、加密密钥存储、Webhook 告警 |
 | 多路径匿名代理 | **测试版** | 电路路由功能完整；分块/重组需要实机验证 |
 | 3D 拓扑可视化 | **测试版** | 节点图 + 延迟边完成；电路粒子动画使用模拟数据 |
+| x-ui 面板集成 | **测试版** | 入站/出站配置、用户管理、Reality 配置生成，通过仪表盘操作 |
 
 **成熟度定义：**
 - **稳定** — 功能已实现、已通过单元测试、团队已验证。适合生产使用（遵循标准安全策略）。
@@ -346,23 +372,33 @@ proxy:
 │  │   Mesh   │  │ 监控      │  │WebSSH │  │ 代理   │ │
 │  │ WireGuard│  │ 采集+推送 │  │ Hub  │  │ 入口/  │ │
 │  │ +netstack│  │          │  │(SSH  │  │ 中继/  │ │
-│  │ + gossip │  │          │  │ proxy)│ │ 出口   │ │
-│  └────┬─────┘  └────┬─────┘  └───┬───┘  └───┬────┘ │
+│  │ + gossip │  │          │  │ proxy)│  │ 出口   │ │
+│  └────┬─────┘  └────┬─────┘  └───┬───┘  └───┬───┘ │
 │       │             │            │           │       │
-│       └──────┬──────┴────────────┴───────────┘       │
-│              │                                      │
-│  ┌───────────┴──────────────────────────┐           │
-│  │           HTTP 服务器                  │           │
-│  │  (仅 --web 模式)                      │           │
-│  │                                       │           │
-│  │  • 仪表盘 (htmx + SSE)               │           │
-│  │  • WebSSH 终端                        │           │
-│  │  • 文件传输界面                       │           │
-│  │  • 服务管理界面                       │           │
-│  │  • 3D 拓扑 (Three.js + SSE)         │           │
-│  │  • TOTP 2FA + 逐步认证               │           │
-│  │  • 安全告警 + Webhook                │           │
-│  └───────────────────────────────────────┘           │
+│  ┌────┴─────────────┴────────────┴───────────┴────┐ │
+│  │              PeerManager                       │ │
+│  │   自动重连 • 多传输回退                        │ │
+│  │   EWMA 延迟探测 • 最优路径选择                 │ │
+│  └────┬───────────────────────────────────────────┘ │
+│       │                                             │
+│  ┌────┴──────────────────────────────────────────┐  │
+│  │              传输层                           │  │
+│  │   UDP • Reality（内嵌）• WebSocket            │  │
+│  └────┬──────────────────────────────────────────┘  │
+│       │                                             │
+│  ┌────┴──────────────────────────────────────────┐  │
+│  │           HTTP 服务器                          │  │
+│  │  (仅 --web 模式)                              │  │
+│  │                                               │  │
+│  │  • 仪表盘 (htmx + SSE)                       │  │
+│  │  • WebSSH 终端                                │  │
+│  │  • 文件传输界面                               │  │
+│  │  • 服务管理界面                               │  │
+│  │  • 3D 拓扑 (Three.js + SSE)                 │  │
+│  │  • TOTP 2FA + 逐步认证                       │  │
+│  │  • 安全告警 + Webhook                         │  │
+│  │  • x-ui 面板集成                              │  │
+│  └──────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -371,12 +407,16 @@ proxy:
 详细设计文档位于 [`docs/`](./docs/)：
 
 - [ARCHITECTURE.md](./docs/ARCHITECTURE.md) — 系统架构概览
-- [PROXY_DESIGN.md](./docs/PROXY_DESIGN.md) — 多路径匿名代理设计
-- [CIRCUIT_MANAGER_SPEC.md](./docs/CIRCUIT_MANAGER_SPEC.md) — 电路生命周期管理
-- [CHUNKER_CONTRACT.md](./docs/CHUNKER_CONTRACT.md) — 分块器/重组器接口
-- [TOTP_KEY_ENCRYPTION_SPEC.md](./docs/TOTP_KEY_ENCRYPTION_SPEC.md) — TOTP 密钥加密
-- [3D_TOPOLOGY_DESIGN.md](./docs/3D_TOPOLOGY_DESIGN.md) — 3D 拓扑可视化
-- [THREAT_MODEL.md](./THREAT_MODEL.md) — 安全威胁模型
+- [ARCHITECTURE_REFACTOR.md](./docs/ARCHITECTURE_REFACTOR.md) — 传输层抽象、Reality 和 PeerManager 重构方案（英文）
+- [PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md) — PeerManager 状态机、隔离、延迟探测、路径选择（英文）
+- [OBFUSCATION_RESEARCH.md](./docs/OBFUSCATION_RESEARCH.md) — GFW 混淆调研与 Reality 集成方案（英文）
+- [TRANSPORT_CONTRACT.md](./docs/TRANSPORT_CONTRACT.md) — 传输层接口契约（PeerConn、Transport、TransportRegistry）（英文）
+- [PROXY_DESIGN.md](./docs/PROXY_DESIGN.md) — 多路径匿名代理设计（英文）
+- [CIRCUIT_MANAGER_SPEC.md](./docs/CIRCUIT_MANAGER_SPEC.md) — 电路生命周期管理（英文）
+- [CHUNKER_CONTRACT.md](./docs/CHUNKER_CONTRACT.md) — 分块器/重组器接口（英文）
+- [TOTP_KEY_ENCRYPTION_SPEC.md](./docs/TOTP_KEY_ENCRYPTION_SPEC.md) — TOTP 密钥加密（英文）
+- [3D_TOPOLOGY_DESIGN.md](./docs/3D_TOPOLOGY_DESIGN.md) — 3D 拓扑可视化（英文）
+- [THREAT_MODEL.md](./THREAT_MODEL.md) — 安全威胁模型（英文）
 
 ## License
 
