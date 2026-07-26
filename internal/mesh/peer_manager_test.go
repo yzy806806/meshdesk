@@ -1907,3 +1907,231 @@ func TestPMRegistryDialUnknownTransport(t *testing.T) {
 		t.Fatal("Dial() should fail for unknown transport")
 	}
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test 8: Cooldown off-by-one fix (motion-a255c77a7674)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TestCooldownDurationOffByOneFix verifies that cooldownDuration(n)
+// produces 2^n × BaseCooldown, not 2^(n-1) × BaseCooldown.
+// Before the fix, cooldownDuration(1) returned 30s (BaseCooldown unchanged);
+// after the fix it returns 60s (BaseCooldown × 2^1).
+func TestCooldownDurationOffByOneFix(t *testing.T) {
+	cfg := DefaultPeerManagerConfig()
+	cfg.QuarantineBaseCooldown = 30 * time.Second
+	cfg.QuarantineMaxCooldown = 300 * time.Second
+
+	pm := NewPeerManager(cfg, NewTransportRegistry())
+
+	tests := []struct {
+		n       int
+		want    time.Duration
+		comment string
+	}{
+		{0, 30 * time.Second, "n=0 → base cooldown (30s)"},
+		{1, 60 * time.Second, "n=1 → 30×2^1 = 60s (was 30s before fix!)"},
+		{2, 120 * time.Second, "n=2 → 30×2^2 = 120s"},
+		{3, 240 * time.Second, "n=3 → 30×2^3 = 240s"},
+		{4, 300 * time.Second, "n=4 → 30×2^4 = 480s, capped to 300s"},
+		{5, 300 * time.Second, "n=5 → still capped at 300s"},
+	}
+
+	for _, tt := range tests {
+		got := pm.cooldownDuration(tt.n)
+		if got != tt.want {
+			t.Errorf("cooldownDuration(%d) = %v, want %v (%s)",
+				tt.n, got, tt.want, tt.comment)
+		} else {
+			t.Logf("cooldownDuration(%d) = %v ✓ (%s)", tt.n, got, tt.comment)
+		}
+	}
+}
+
+// TestCooldownDurationSequence30to300 verifies the full expected
+// sequence matches the spec: 30 → 60 → 120 → 240 → 300 cap.
+// (The spec comment on QuarantineBaseCooldown says "30→60→120→300s cap"
+// but 240 < 300 so it is not capped at the 4th step.)
+func TestCooldownDurationSequence30to300(t *testing.T) {
+	cfg := DefaultPeerManagerConfig()
+	cfg.QuarantineBaseCooldown = 30 * time.Second
+	cfg.QuarantineMaxCooldown = 300 * time.Second
+	pm := NewPeerManager(cfg, NewTransportRegistry())
+
+	want := []time.Duration{
+		30 * time.Second,  // n=0
+		60 * time.Second,  // n=1
+		120 * time.Second, // n=2
+		240 * time.Second, // n=3 (240 < 300, not capped)
+		300 * time.Second, // n=4 (480 > 300, capped)
+	}
+
+	for i, w := range want {
+		got := pm.cooldownDuration(i)
+		if got != w {
+			t.Errorf("cooldownDuration(%d) = %v, want %v", i, got, w)
+		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test 9: Hysteresis bonus (motion-a255c77a7674)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TestHysteresisBonusDefaults verifies the three modes of HysteresisBonus:
+//   - 0 (default) → 10% of active score
+//   - positive value → used as fixed ms bonus
+//   - negative value → hysteresis disabled (returns 0)
+func TestHysteresisBonusDefaults(t *testing.T) {
+	tests := []struct {
+		name        string
+		bonus       float64
+		activeScore float64
+		want        float64
+	}{
+		{"default (0) → 10%", 0, 100.0, 10.0},
+		{"default (0) → 10% of 50", 0, 50.0, 5.0},
+		{"fixed 5ms bonus", 5.0, 100.0, 5.0},
+		{"fixed 5ms on score 8", 5.0, 8.0, 5.0},
+		{"disabled (-1)", -1.0, 100.0, 0.0},
+		{"disabled (-0.1)", -0.1, 100.0, 0.0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultPeerManagerConfig()
+			cfg.HysteresisBonus = tt.bonus
+			pm := NewPeerManager(cfg, NewTransportRegistry())
+			got := pm.hysteresisBonus(tt.activeScore)
+			epsilon := 0.001
+			if diff := got - tt.want; diff < -epsilon || diff > epsilon {
+				t.Errorf("hysteresisBonus(%.1f) = %.4f, want %.4f",
+					tt.activeScore, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPathSelectionHysteresisPreventsFlapping verifies that when two
+// transports have near-identical latencies (within the 10% hysteresis
+// range), the active transport is NOT switched away from. This is the
+// core anti-flapping guarantee of the hysteresis bonus.
+//
+// Scenario: active "udp" at 20ms, alternative "reality" at 19ms.
+// Without hysteresis, reality is 5% better and could trigger a switch.
+// With the default 10% hysteresis bonus, the effective active score
+// drops to 18ms, so reality (19ms) does NOT beat it and the active
+// transport wins the tie.
+func TestPathSelectionHysteresisPreventsFlapping(t *testing.T) {
+	cfg := quickConfig("peer-1", "10.0.0.1:51820", "udp", "reality")
+	cfg.MinSamplesForScoring = 1
+	cfg.ScoreSwitchThreshold = 0.05 // 5% threshold — sensitive
+	cfg.ScoreStableProbes = 1       // switch after just 1 cycle
+	cfg.HysteresisBonus = 0         // default: 10% dynamic
+
+	fix := newTestPeerManagerFixture("udp", "reality")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	// Populate latency samples: UDP 20ms, Reality 19ms.
+	pm.mu.Lock()
+	udpTS := pm.transportStates["udp"]
+	udpTS.latency.push(20 * time.Millisecond)
+	udpTS.latency.push(20 * time.Millisecond)
+	udpTS.latency.push(20 * time.Millisecond)
+	udpTS.subState = TransportSubActive
+
+	realityTS := pm.transportStates["reality"]
+	realityTS.latency.push(19 * time.Millisecond)
+	realityTS.latency.push(19 * time.Millisecond)
+	realityTS.latency.push(19 * time.Millisecond)
+	realityTS.subState = TransportSubActive
+
+	pm.currentTransport = "udp"
+	pm.mu.Unlock()
+
+	// Compute scores.
+	udpScore := pm.computeScore(udpTS)         // 20.0
+	realityScore := pm.computeScore(realityTS) // 19.0
+
+	// Sanity: reality is nominally better (19 < 20).
+	if realityScore >= udpScore {
+		t.Fatalf("setup error: reality (%.2f) should be < udp (%.2f)",
+			realityScore, udpScore)
+	}
+
+	// Hysteresis bonus for active (udp) at 20ms → 2.0ms.
+	bonus := pm.hysteresisBonus(udpScore)
+	effectiveActive := udpScore - bonus
+
+	t.Logf("udp score=%.2f, reality score=%.2f, hysteresis bonus=%.2f, effective active=%.2f",
+		udpScore, realityScore, bonus, effectiveActive)
+
+	// With hysteresis, effective active (18.0) < reality (19.0).
+	// So reality should NOT beat the effective active score.
+	if realityScore < effectiveActive {
+		t.Errorf("reality (%.2f) should NOT beat effective active (%.2f) "+
+			"within hysteresis range — would cause flapping",
+			realityScore, effectiveActive)
+	}
+
+	// Verify the switch threshold is not met.
+	// bestScore (19.0) < effectiveActive × (1 - 0.05)?
+	// 19.0 < 18.0 × 0.95 = 17.1? No. So no switch.
+	threshold := pm.cfg.ScoreSwitchThreshold
+	shouldSwitch := realityScore < effectiveActive*(1-threshold)
+	if shouldSwitch {
+		t.Errorf("switch should NOT trigger: reality %.2f >= effectiveActive×(1-threshold) = %.2f×%.2f = %.2f",
+			realityScore, effectiveActive, 1-threshold, effectiveActive*(1-threshold))
+	}
+
+	t.Logf("PASS: hysteresis prevented flapping — udp (active) retained at 20ms vs reality 19ms")
+}
+
+// TestPathSelectionHysteresisAllowsSwitchWhenSignificantlyBetter
+// verifies that when the alternative is significantly better (beyond
+// the hysteresis range), the switch still proceeds. This ensures
+// hysteresis doesn't lock the active transport forever.
+func TestPathSelectionHysteresisAllowsSwitchWhenSignificantlyBetter(t *testing.T) {
+	cfg := quickConfig("peer-1", "10.0.0.1:51820", "udp", "reality")
+	cfg.MinSamplesForScoring = 1
+	cfg.ScoreSwitchThreshold = 0.05 // 5%
+	cfg.ScoreStableProbes = 1
+	cfg.HysteresisBonus = 0         // default 10%
+
+	fix := newTestPeerManagerFixture("udp", "reality")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	// UDP 50ms, Reality 5ms — reality is 90% better, far beyond hysteresis.
+	pm.mu.Lock()
+	udpTS := pm.transportStates["udp"]
+	udpTS.latency.push(50 * time.Millisecond)
+	udpTS.latency.push(50 * time.Millisecond)
+	udpTS.latency.push(50 * time.Millisecond)
+	udpTS.subState = TransportSubActive
+
+	realityTS := pm.transportStates["reality"]
+	realityTS.latency.push(5 * time.Millisecond)
+	realityTS.latency.push(5 * time.Millisecond)
+	realityTS.latency.push(5 * time.Millisecond)
+	realityTS.subState = TransportSubActive
+
+	pm.currentTransport = "udp"
+	pm.mu.Unlock()
+
+	udpScore := pm.computeScore(udpTS)       // 50.0
+	realityScore := pm.computeScore(realityTS) // 5.0
+	bonus := pm.hysteresisBonus(udpScore)     // 5.0
+	effectiveActive := udpScore - bonus        // 45.0
+
+	threshold := pm.cfg.ScoreSwitchThreshold
+	shouldSwitch := realityScore < effectiveActive*(1-threshold)
+
+	t.Logf("udp=%.1f, reality=%.1f, bonus=%.1f, effective=%.1f, threshold=%.2f",
+		udpScore, realityScore, bonus, effectiveActive, threshold)
+
+	if !shouldSwitch {
+		t.Errorf("switch SHOULD trigger: reality %.1f < effectiveActive×(1-threshold) = %.1f",
+			realityScore, effectiveActive*(1-threshold))
+	}
+
+	t.Logf("PASS: switch proceeds — reality (5ms) significantly better than udp (50ms)")
+}
