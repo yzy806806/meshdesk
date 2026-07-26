@@ -2691,3 +2691,199 @@ func (t *permanentErrorTransport) LatencyProbe(ctx context.Context, addr string)
 func (t *permanentErrorTransport) IsHealthy() bool { return true }
 
 func (t *permanentErrorTransport) Close() {}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test: LRQ selection — oldest quarantine, not soonest cooldown expiry
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TestLRQSelectsOldestQuarantineStart verifies that blackoutEscapeCandidates
+// selects the transport with the oldest quarantineStart timestamp, NOT the
+// transport whose cooldown expires soonest. Per spec §3.3, the LRQ is the
+// transport quarantined the longest.
+//
+// Acceptance criteria (1) & (2): LRQ pop returns oldest quarantineStart;
+// cooldownUntil is no longer the selection key.
+func TestLRQSelectsOldestQuarantineStart(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality", "websocket")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality", "websocket")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	now := time.Now()
+
+	// Setup: all three transports are quarantined.
+	// Key insight: the transport with the LATEST cooldown expiry (reality)
+	// should still NOT be selected because it was quarantined most recently.
+	// The transport with the OLDEST quarantine (udp) has the LONGEST cooldown
+	// remaining — yet it should be selected per spec §3.3.
+	pm.mu.Lock()
+	// udp: quarantined 3 min ago, cooldown expires in 1 hour (far future)
+	if ts := pm.transportStates["udp"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = now.Add(-3 * time.Minute)
+		ts.cooldownUntil = now.Add(1 * time.Hour) // far future — longest remaining
+	}
+	// reality: quarantined 30s ago, cooldown expires in 30s (soonest)
+	if ts := pm.transportStates["reality"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = now.Add(-30 * time.Second)
+		ts.cooldownUntil = now.Add(30 * time.Second) // soonest expiry
+	}
+	// websocket: quarantined 1 min ago, cooldown expires in 5 min
+	if ts := pm.transportStates["websocket"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = now.Add(-1 * time.Minute)
+		ts.cooldownUntil = now.Add(5 * time.Minute)
+	}
+	pm.mu.Unlock()
+
+	candidates := pm.blackoutEscapeCandidates()
+	if len(candidates) != 1 {
+		t.Fatalf("blackoutEscapeCandidates() returned %d candidates, want 1", len(candidates))
+	}
+	if candidates[0] != "udp" {
+		t.Errorf("LRQ = %q, want %q (oldest quarantineStart, not soonest cooldownUntil)",
+			candidates[0], "udp")
+	}
+}
+
+// TestLRQDoesNotSelectSoonestCooldown verifies that the transport with the
+// soonest cooldown expiry is NOT selected when its quarantineStart is more
+// recent than another transport's. This is the core regression test for the
+// old soonest-expiry behavior.
+func TestLRQDoesNotSelectSoonestCooldown(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	now := time.Now()
+
+	pm.mu.Lock()
+	// udp: quarantined 5 min ago, cooldown expires in 2 hours
+	if ts := pm.transportStates["udp"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = now.Add(-5 * time.Minute)
+		ts.cooldownUntil = now.Add(2 * time.Hour)
+	}
+	// reality: quarantined 10s ago, cooldown expires in 10s (soonest)
+	if ts := pm.transportStates["reality"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = now.Add(-10 * time.Second)
+		ts.cooldownUntil = now.Add(10 * time.Second)
+	}
+	pm.mu.Unlock()
+
+	candidates := pm.blackoutEscapeCandidates()
+	if len(candidates) != 1 {
+		t.Fatalf("blackoutEscapeCandidates() returned %d candidates, want 1", len(candidates))
+	}
+	if candidates[0] == "reality" {
+		t.Error("LRQ selected 'reality' (soonest cooldown) — should select oldest quarantineStart instead")
+	}
+	if candidates[0] != "udp" {
+		t.Errorf("LRQ = %q, want 'udp' (oldest quarantineStart)", candidates[0])
+	}
+}
+
+// TestLRQEqualQuarantineTimestamps verifies the edge case where two
+// transports have equal (or near-simultaneous) quarantine timestamps.
+// The first transport in TransportNames order should win the tiebreak.
+func TestLRQEqualQuarantineTimestamps(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality", "websocket")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality", "websocket")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	now := time.Now()
+
+	pm.mu.Lock()
+	// All three quarantined at the exact same timestamp.
+	for _, name := range []string{"udp", "reality", "websocket"} {
+		if ts := pm.transportStates[name]; ts != nil {
+			ts.subState = TransportSubQuarantined
+			ts.quarantinedAt = now
+			ts.cooldownUntil = now.Add(1 * time.Hour)
+		}
+	}
+	pm.mu.Unlock()
+
+	candidates := pm.blackoutEscapeCandidates()
+	if len(candidates) != 1 {
+		t.Fatalf("blackoutEscapeCandidates() returned %d candidates, want 1", len(candidates))
+	}
+	// With equal timestamps, the first transport in TransportNames order wins
+	// (because Before() is false for equal times, so the initial "best" sticks).
+	if candidates[0] != "udp" {
+		t.Errorf("LRQ with equal timestamps = %q, want 'udp' (first in TransportNames order)",
+			candidates[0])
+	}
+}
+
+// TestLRQSingleQuarantinedTransport verifies that when only one transport
+// is quarantined (and others are in other states), it is correctly selected.
+func TestLRQSingleQuarantinedTransport(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality", "websocket")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality", "websocket")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	now := time.Now()
+
+	pm.mu.Lock()
+	// Only reality is quarantined; udp is active, websocket is failed.
+	if ts := pm.transportStates["udp"]; ts != nil {
+		ts.subState = TransportSubActive
+	}
+	if ts := pm.transportStates["reality"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = now.Add(-2 * time.Minute)
+		ts.cooldownUntil = now.Add(30 * time.Minute)
+	}
+	if ts := pm.transportStates["websocket"]; ts != nil {
+		ts.subState = TransportSubFailed
+	}
+	pm.mu.Unlock()
+
+	candidates := pm.blackoutEscapeCandidates()
+	if len(candidates) != 1 {
+		t.Fatalf("blackoutEscapeCandidates() returned %d candidates, want 1", len(candidates))
+	}
+	if candidates[0] != "reality" {
+		t.Errorf("LRQ = %q, want 'reality' (only quarantined transport)", candidates[0])
+	}
+}
+
+// TestLRQQuarantineResetOnExpiry verifies that quarantinedAt is reset to
+// zero when quarantine expires (cooldown elapsed), so a subsequent
+// quarantine starts fresh.
+func TestLRQQuarantineResetOnExpiry(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	now := time.Now()
+
+	pm.mu.Lock()
+	// udp: quarantined, but cooldown already expired
+	if ts := pm.transportStates["udp"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.quarantinedAt = now.Add(-5 * time.Minute)
+		ts.cooldownUntil = now.Add(-1 * time.Minute) // expired 1 min ago
+	}
+	pm.mu.Unlock()
+
+	// Simulate quarantine expiry check.
+	pm.checkQuarantineExpiry(context.Background())
+
+	// After expiry, quarantinedAt should be zero.
+	pm.mu.RLock()
+	ts := pm.transportStates["udp"]
+	pm.mu.RUnlock()
+	if ts == nil {
+		t.Fatal("transportStates['udp'] is nil")
+	}
+	if !ts.quarantinedAt.IsZero() {
+		t.Errorf("after cooldown expiry, quarantinedAt should be zero, got %v", ts.quarantinedAt)
+	}
+	if ts.subState != TransportSubActive {
+		t.Errorf("after cooldown expiry, subState = %s, want active", ts.subState.String())
+	}
+}
+
