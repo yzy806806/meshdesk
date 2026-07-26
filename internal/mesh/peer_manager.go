@@ -7,7 +7,7 @@
 //   - Per-transport quarantine with exponential backoff (30s→60s→120s→300s cap)
 //   - Happy Eyeballs hedging (RFC 8305): race fallback after configurable delay
 //   - Hybrid latency probing: active probe on idle transports, passive on active
-//   - Score-based path selection: score = median_latency × (1 + failure_penalty)
+//   - Score-based path selection: score = ewma_latency × (1 + failure_penalty)
 //   - Per-peer goroutine with channel-driven select loop
 //
 // Design: motion motion-3911ff2db1df (adopted).
@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -142,7 +141,19 @@ type PeerManagerConfig struct {
 	ProbeIntervalQuarantinedReality time.Duration
 
 	// BaselineWindow is the number of samples for the moving median.
+	// Deprecated: replaced by EWMA smoothing (AlphaRise/AlphaFall).
+	// Kept for backward compatibility — no longer used by latencyEWMA.
 	BaselineWindow int
+
+	// AlphaRise is the EWMA smoothing factor for increasing latency
+	// (degradation detection). Higher = faster reaction to degradation.
+	// Spec §5.1 default: 0.7.
+	AlphaRise float64
+
+	// AlphaFall is the EWMA smoothing factor for decreasing latency
+	// (recovery). Lower = slower recovery, prevents flapping.
+	// Spec §5.1 default: 0.3.
+	AlphaFall float64
 
 	// TriggerThreshold is the latency multiplier that triggers a
 	// degraded-transport decision (2.0 = 2x baseline).
@@ -196,7 +207,9 @@ func DefaultPeerManagerConfig() PeerManagerConfig {
 		SlowTransports:                  map[string]bool{"reality": true, "websocket": true},
 		ProbeInterval:                   30 * time.Second,
 		ProbeIntervalQuarantinedReality: 5 * time.Minute,
-		BaselineWindow:                  10,
+		BaselineWindow:                  10, // deprecated, kept for compat
+		AlphaRise:                       defaultAlphaRise,
+		AlphaFall:                       defaultAlphaFall,
 		TriggerThreshold:                2.0,
 		TriggerConsecutive:              3,
 		FailureLookback:                 60 * time.Second,
@@ -209,54 +222,82 @@ func DefaultPeerManagerConfig() PeerManagerConfig {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// latencyWindow — sliding window of latency samples with median
+// latencyEWMA — exponentially weighted moving average with split-alpha smoothing
 // ──────────────────────────────────────────────────────────────────────────────
 
-// latencyWindow is a fixed-size ring buffer of latency samples.
-// It stores the last N samples (default 10) and computes the median
-// for robust path selection scoring.
-type latencyWindow struct {
-	samples []time.Duration
-	head    int
-	count   int
-	cap     int
+// Default EWMA smoothing constants per spec §5.1.
+// alpha_rise=0.7 makes the EWMA react quickly to latency increases (degradation),
+// so degradation is detected within 30-60s instead of ~2min with a median window.
+// alpha_fall=0.3 makes the EWMA recover slowly from latency drops, preventing
+// oscillation when latency briefly dips after a degradation event.
+const (
+	defaultAlphaRise = 0.7
+	defaultAlphaFall = 0.3
+)
+
+// latencyEWMA is a split-alpha exponentially weighted moving average of latency.
+//
+// On each sample:
+//   - If sample > current EWMA (latency rising): ewma = ewma + alpha_rise × (sample - ewma)
+//   - If sample ≤ current EWMA (latency falling): ewma = ewma + alpha_fall × (sample - ewma)
+//
+// This gives fast detection of degradation (alpha_rise=0.7) while preventing
+// flapping on recovery (alpha_fall=0.3). The first sample initializes the EWMA.
+type latencyEWMA struct {
+	value   float64       // current EWMA value in nanoseconds
+	hasValue bool         // whether we have received at least one sample
+	count   int           // total samples received
+	alphaRise float64     // smoothing factor for increasing latency
+	alphaFall float64     // smoothing factor for decreasing latency
 }
 
-// newLatencyWindow creates a window with the given capacity.
-func newLatencyWindow(capacity int) *latencyWindow {
-	if capacity <= 0 {
-		capacity = 10
+// newLatencyEWMA creates a latencyEWMA with the given alpha values.
+// Zero values default to defaultAlphaRise / defaultAlphaFall.
+func newLatencyEWMA(alphaRise, alphaFall float64) *latencyEWMA {
+	if alphaRise <= 0 {
+		alphaRise = defaultAlphaRise
 	}
-	return &latencyWindow{
-		samples: make([]time.Duration, capacity),
-		cap:     capacity,
+	if alphaFall <= 0 {
+		alphaFall = defaultAlphaFall
 	}
-}
-
-// push adds a latency sample to the window, overwriting the oldest.
-func (w *latencyWindow) push(d time.Duration) {
-	w.samples[w.head] = d
-	w.head = (w.head + 1) % w.cap
-	if w.count < w.cap {
-		w.count++
+	return &latencyEWMA{
+		alphaRise: alphaRise,
+		alphaFall: alphaFall,
 	}
 }
 
-// median returns the median of the stored samples, or 0 if empty.
-func (w *latencyWindow) median() time.Duration {
-	if w.count == 0 {
+// push applies a new latency sample to the EWMA.
+func (e *latencyEWMA) push(d time.Duration) {
+	sample := float64(d)
+	if !e.hasValue {
+		e.value = sample
+		e.hasValue = true
+		e.count = 1
+		return
+	}
+	e.count++
+	if sample > e.value {
+		// Latency rising — use alpha_rise for fast detection.
+		e.value += e.alphaRise * (sample - e.value)
+	} else {
+		// Latency falling — use alpha_fall for stable recovery.
+		e.value += e.alphaFall * (sample - e.value)
+	}
+}
+
+// value returns the current EWMA as a time.Duration, or 0 if no samples.
+func (e *latencyEWMA) current() time.Duration {
+	if !e.hasValue {
 		return 0
 	}
-	sorted := make([]time.Duration, w.count)
-	copy(sorted, w.samples[:w.count])
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
-	return sorted[w.count/2]
+	return time.Duration(e.value)
 }
 
-// reset clears all samples.
-func (w *latencyWindow) reset() {
-	w.head = 0
-	w.count = 0
+// reset clears the EWMA state.
+func (e *latencyEWMA) reset() {
+	e.value = 0
+	e.hasValue = false
+	e.count = 0
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -270,7 +311,7 @@ type transportState struct {
 	name          string
 	subState      TransportSubState
 	conn          PeerConn
-	latency       *latencyWindow
+	latency       *latencyEWMA
 	failures      int         // consecutive failures (reset on success)
 	quarantineN   int         // total quarantine cycles (reset on success)
 	cooldownUntil time.Time   // when quarantine expires
@@ -376,6 +417,12 @@ func NewPeerManager(cfg PeerManagerConfig, registry *TransportRegistry) *PeerMan
 	if cfg.BaselineWindow == 0 {
 		cfg.BaselineWindow = def.BaselineWindow
 	}
+	if cfg.AlphaRise == 0 {
+		cfg.AlphaRise = def.AlphaRise
+	}
+	if cfg.AlphaFall == 0 {
+		cfg.AlphaFall = def.AlphaFall
+	}
 	if cfg.TriggerThreshold == 0 {
 		cfg.TriggerThreshold = def.TriggerThreshold
 	}
@@ -403,7 +450,7 @@ func NewPeerManager(cfg PeerManagerConfig, registry *TransportRegistry) *PeerMan
 		transportStates[name] = &transportState{
 			name:     name,
 			subState: TransportSubActive,
-			latency:  newLatencyWindow(cfg.BaselineWindow),
+			latency:  newLatencyEWMA(cfg.AlphaRise, cfg.AlphaFall),
 		}
 	}
 
@@ -543,7 +590,7 @@ func (pm *PeerManager) TransportStates() map[string]TransportPeerState {
 		result[name] = TransportPeerState{
 			Name:                name,
 			SubState:            ts.subState,
-			LatencyMedian:       ts.latency.median(),
+			LatencyMedian:       ts.latency.current(),
 			LatencySamples:      ts.latency.count,
 			ConsecutiveFailures: ts.failures,
 			QuarantineCycles:    ts.quarantineN,
@@ -993,12 +1040,12 @@ func (pm *PeerManager) hysteresisBonus(activeScore float64) float64 {
 }
 
 // computeScore calculates the path selection score for a transport.
-// score = median_latency_ms × (1 + failure_penalty)
+// score = ewma_latency_ms × (1 + failure_penalty)
 // where failure_penalty = recent_failures / max(attempts, 10)
 // Recent failures are those within the FailureLookback window.
 func (pm *PeerManager) computeScore(ts *transportState) float64 {
-	median := ts.latency.median()
-	if median == 0 {
+	ewma := ts.latency.current()
+	if ewma == 0 {
 		return 0
 	}
 	// Count recent failures within lookback window.
@@ -1018,7 +1065,7 @@ func (pm *PeerManager) computeScore(ts *transportState) float64 {
 		attempts = ts.latency.count + recentFailures
 	}
 	failurePenalty := float64(recentFailures) / float64(attempts)
-	return float64(median.Milliseconds()) * (1 + failurePenalty)
+	return float64(ewma.Milliseconds()) * (1 + failurePenalty)
 }
 
 // triggerSwitch closes the current active connection and starts a new
@@ -1159,7 +1206,7 @@ func (pm *PeerManager) getOrCreateTransportState(name string) *transportState {
 		ts = &transportState{
 			name:     name,
 			subState: TransportSubActive,
-			latency:  newLatencyWindow(pm.cfg.BaselineWindow),
+			latency:  newLatencyEWMA(pm.cfg.AlphaRise, pm.cfg.AlphaFall),
 		}
 		pm.transportStates[name] = ts
 	}

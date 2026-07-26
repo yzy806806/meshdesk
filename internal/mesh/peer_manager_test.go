@@ -2135,3 +2135,280 @@ func TestPathSelectionHysteresisAllowsSwitchWhenSignificantlyBetter(t *testing.T
 
 	t.Logf("PASS: switch proceeds — reality (5ms) significantly better than udp (50ms)")
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Test 10: EWMA split-alpha smoothing (spec §5.1)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TestLatencyEWMAFirstSampleInitializes verifies that the first sample
+// sets the EWMA value directly.
+func TestLatencyEWMAFirstSampleInitializes(t *testing.T) {
+	e := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+	if e.current() != 0 {
+		t.Errorf("empty EWMA current() = %v, want 0", e.current())
+	}
+	if e.count != 0 {
+		t.Errorf("empty EWMA count = %d, want 0", e.count)
+	}
+
+	e.push(10 * time.Millisecond)
+	if e.current() != 10*time.Millisecond {
+		t.Errorf("after first push, current() = %v, want 10ms", e.current())
+	}
+	if e.count != 1 {
+		t.Errorf("after first push, count = %d, want 1", e.count)
+	}
+}
+
+// TestLatencyEWMARiseTrajectory verifies that when latency increases,
+// the EWMA uses alpha_rise (0.7) and converges upward quickly.
+func TestLatencyEWMARiseTrajectory(t *testing.T) {
+	e := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+
+	// Start at 10ms.
+	e.push(10 * time.Millisecond)
+	if e.current() != 10*time.Millisecond {
+		t.Fatalf("initial EWMA = %v, want 10ms", e.current())
+	}
+
+	// Push 100ms — should jump toward 100ms using alpha_rise=0.7.
+	// ewma = 10 + 0.7 * (100 - 10) = 10 + 63 = 73ms
+	e.push(100 * time.Millisecond)
+	expected := 73 * time.Millisecond
+	if e.current() != expected {
+		t.Errorf("after rise sample: current() = %v, want %v (alpha_rise=0.7)", e.current(), expected)
+	}
+
+	// Push another 100ms — should converge further.
+	// ewma = 73 + 0.7 * (100 - 73) = 73 + 18.9 = 91.9ms
+	e.push(100 * time.Millisecond)
+	expected = 91900 * time.Microsecond // 91.9ms
+	tolerance := 100 * time.Microsecond
+	if diff := e.current() - expected; diff > tolerance || diff < -tolerance {
+		t.Errorf("after 2nd rise sample: current() = %v, want ~%v (tolerance %v)", e.current(), expected, tolerance)
+	}
+}
+
+// TestLatencyEWMAFallTrajectory verifies that when latency decreases,
+// the EWMA uses alpha_fall (0.3) and recovers downward slowly.
+func TestLatencyEWMAFallTrajectory(t *testing.T) {
+	e := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+
+	// Start at 100ms.
+	e.push(100 * time.Millisecond)
+
+	// Push 10ms — should drop toward 10ms using alpha_fall=0.3.
+	// ewma = 100 + 0.3 * (10 - 100) = 100 - 27 = 73ms
+	e.push(10 * time.Millisecond)
+	expected := 73 * time.Millisecond
+	if e.current() != expected {
+		t.Errorf("after fall sample: current() = %v, want %v (alpha_fall=0.3)", e.current(), expected)
+	}
+
+	// Push another 10ms — should continue converging downward.
+	// ewma = 73 + 0.3 * (10 - 73) = 73 - 18.9 = 54.1ms
+	e.push(10 * time.Millisecond)
+	expected = 54100 * time.Microsecond // 54.1ms
+	tolerance := 100 * time.Microsecond
+	if diff := e.current() - expected; diff > tolerance || diff < -tolerance {
+		t.Errorf("after 2nd fall sample: current() = %v, want ~%v (tolerance %v)", e.current(), expected, tolerance)
+	}
+}
+
+// TestLatencyEWMASplitAlphaAsymmetry verifies that alpha_rise and alpha_fall
+// produce different convergence rates for the same delta. A rise from 10→100
+// should converge faster than a fall from 100→10.
+func TestLatencyEWMASplitAlphaAsymmetry(t *testing.T) {
+	// Rise: 10 → 100
+	riseEWMA := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+	riseEWMA.push(10 * time.Millisecond)
+	riseEWMA.push(100 * time.Millisecond)
+	riseVal := riseEWMA.current()
+
+	// Fall: 100 → 10
+	fallEWMA := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+	fallEWMA.push(100 * time.Millisecond)
+	fallEWMA.push(10 * time.Millisecond)
+	fallVal := fallEWMA.current()
+
+	// After one sample of the same delta (90ms), the rise EWMA should be
+	// closer to the target (100ms) than the fall EWMA is to its target (10ms).
+	// Rise: 73ms (distance 27ms from 100ms target)
+	// Fall: 73ms (distance 63ms from 10ms target)
+	// Both are 73ms numerically, but the rise is 73/100 = 73% of the way to target,
+	// while fall is (100-73)/(100-10) = 27/90 = 30% of the way to target.
+	riseProgress := float64(riseVal.Milliseconds()-10) / float64(100-10)  // 0.7
+	fallProgress := float64(100-fallVal.Milliseconds()) / float64(100-10)  // 0.3
+
+	if riseProgress <= fallProgress {
+		t.Errorf("alpha_rise should converge faster: riseProgress=%.2f, fallProgress=%.2f",
+			riseProgress, fallProgress)
+	}
+
+	// Verify exact values.
+	if riseProgress < 0.69 || riseProgress > 0.71 {
+		t.Errorf("riseProgress = %.4f, want ~0.70 (alpha_rise)", riseProgress)
+	}
+	if fallProgress < 0.29 || fallProgress > 0.31 {
+		t.Errorf("fallProgress = %.4f, want ~0.30 (alpha_fall)", fallProgress)
+	}
+
+	t.Logf("Asymmetry verified: riseProgress=%.2f (alpha_rise=0.7), fallProgress=%.2f (alpha_fall=0.3)",
+		riseProgress, fallProgress)
+}
+
+// TestLatencyEWMASteadyStateConverges verifies that repeated identical samples
+// converge to that value (important for path selection scoring).
+func TestLatencyEWMASteadyStateConverges(t *testing.T) {
+	e := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+
+	// Push 10 samples of 20ms.
+	for i := 0; i < 10; i++ {
+		e.push(20 * time.Millisecond)
+	}
+
+	val := e.current()
+	tolerance := time.Microsecond
+	if diff := val - 20*time.Millisecond; diff > tolerance || diff < -tolerance {
+		t.Errorf("after 10 identical samples: current() = %v, want ~20ms (tolerance %v)", val, tolerance)
+	}
+}
+
+// TestLatencyEWMADegradationDetectionSpeed verifies acceptance criterion (2):
+// degradation is detected within 30-60s of onset (vs ~2min with median window).
+// With alpha_rise=0.7, after 3 probes (at 30s intervals = 90s total) the EWMA
+// should be >90% of the degraded value.
+func TestLatencyEWMADegradationDetectionSpeed(t *testing.T) {
+	e := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+
+	// Baseline: 10ms.
+	e.push(10 * time.Millisecond)
+
+	// Degradation onset: latency jumps to 100ms.
+	// With probe interval 30s, after N probes the EWMA is:
+	//   N=1 (30s): 10 + 0.7*(100-10) = 73ms → 73% of degraded value
+	//   N=2 (60s): 73 + 0.7*(100-73) = 91.9ms → 91.9% of degraded value
+	e.push(100 * time.Millisecond) // 30s after onset
+	val30s := e.current()
+	e.push(100 * time.Millisecond) // 60s after onset
+	val60s := e.current()
+
+	// After 30s: should be > 50% of the degraded value (73%).
+	if pct := float64(val30s.Milliseconds()) / 100.0; pct < 0.5 {
+		t.Errorf("after 30s: EWMA = %dms (%.1f%% of degraded), want >50%%",
+			val30s.Milliseconds(), pct*100)
+	}
+
+	// After 60s: should be > 80% of the degraded value (91.9%).
+	if pct := float64(val60s.Milliseconds()) / 100.0; pct < 0.8 {
+		t.Errorf("after 60s: EWMA = %dms (%.1f%% of degraded), want >80%%",
+			val60s.Milliseconds(), pct*100)
+	}
+
+	t.Logf("Degradation detection: 30s→%dms, 60s→%dms",
+		val30s.Milliseconds(), val60s.Milliseconds())
+}
+
+// TestLatencyEWMAReset verifies that reset clears the EWMA state.
+func TestLatencyEWMAReset(t *testing.T) {
+	e := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+	e.push(10 * time.Millisecond)
+	e.push(20 * time.Millisecond)
+
+	if e.count != 2 {
+		t.Fatalf("count = %d, want 2 before reset", e.count)
+	}
+
+	e.reset()
+
+	if e.current() != 0 {
+		t.Errorf("after reset: current() = %v, want 0", e.current())
+	}
+	if e.count != 0 {
+		t.Errorf("after reset: count = %d, want 0", e.count)
+	}
+
+	// Should work normally after reset.
+	e.push(15 * time.Millisecond)
+	if e.current() != 15*time.Millisecond {
+		t.Errorf("after reset+push: current() = %v, want 15ms", e.current())
+	}
+}
+
+// TestLatencyEWMAConfigDefaults verifies that the PeerManagerConfig has
+// the correct default alpha values matching spec §5.1.
+func TestLatencyEWMAConfigDefaults(t *testing.T) {
+	cfg := DefaultPeerManagerConfig()
+	if cfg.AlphaRise != defaultAlphaRise {
+		t.Errorf("AlphaRise = %v, want %v (spec §5.1)", cfg.AlphaRise, defaultAlphaRise)
+	}
+	if cfg.AlphaFall != defaultAlphaFall {
+		t.Errorf("AlphaFall = %v, want %v (spec §5.1)", cfg.AlphaFall, defaultAlphaFall)
+	}
+}
+
+// TestLatencyEWMACustomAlphas verifies that custom alpha values are respected.
+func TestLatencyEWMACustomAlphas(t *testing.T) {
+	cfg := DefaultPeerManagerConfig()
+	cfg.AlphaRise = 0.5
+	cfg.AlphaFall = 0.1
+	pm := NewPeerManager(cfg, NewTransportRegistry())
+
+	if pm.cfg.AlphaRise != 0.5 {
+		t.Errorf("AlphaRise = %v, want 0.5", pm.cfg.AlphaRise)
+	}
+	if pm.cfg.AlphaFall != 0.1 {
+		t.Errorf("AlphaFall = %v, want 0.1", pm.cfg.AlphaFall)
+	}
+
+	// Verify the transport state uses custom alphas.
+	ts, ok := pm.transportStates["udp"]
+	_ = ok // might not exist if TransportNames is empty, just check if it does
+	if ts != nil && ts.latency != nil {
+		if ts.latency.alphaRise != 0.5 {
+			t.Errorf("transport alphaRise = %v, want 0.5", ts.latency.alphaRise)
+		}
+		if ts.latency.alphaFall != 0.1 {
+			t.Errorf("transport alphaFall = %v, want 0.1", ts.latency.alphaFall)
+		}
+	}
+}
+
+// TestLatencyEWMASpikeDoesNotPersist verifies that a single latency spike
+// does not permanently skew the EWMA — it recovers over subsequent normal samples.
+func TestLatencyEWMASpikeDoesNotPersist(t *testing.T) {
+	e := newLatencyEWMA(defaultAlphaRise, defaultAlphaFall)
+
+	// Establish baseline at 10ms.
+	for i := 0; i < 5; i++ {
+		e.push(10 * time.Millisecond)
+	}
+
+	// Single spike to 200ms.
+	e.push(200 * time.Millisecond)
+	afterSpike := e.current()
+
+	// The spike should have raised the EWMA (using alpha_rise).
+	// ewma = 10 + 0.7 * (200 - 10) = 10 + 133 = 143ms
+	if afterSpike != 143*time.Millisecond {
+		t.Errorf("after spike: current() = %v, want 143ms", afterSpike)
+	}
+
+	// Push 5 more normal samples at 10ms — should recover (using alpha_fall).
+	for i := 0; i < 5; i++ {
+		e.push(10 * time.Millisecond)
+	}
+
+	// After 5 fall samples from 143ms toward 10ms:
+	// Each step: ewma = ewma + 0.3 * (10 - ewma) = 0.7*ewma + 3
+	// 143 → 103.1 → 75.17 → 55.619 → 41.9333 → 32.3533
+	finalVal := e.current()
+	if finalVal > 40*time.Millisecond {
+		t.Errorf("after 5 recovery samples: current() = %v, want <40ms (recovery)", finalVal)
+	}
+	if finalVal < 25*time.Millisecond {
+		t.Errorf("after 5 recovery samples: current() = %v, want >25ms (slow recovery is expected with alpha_fall=0.3)", finalVal)
+	}
+
+	t.Logf("Spike recovery: spike→%v, after 5 normal samples→%v", afterSpike, finalVal)
+}
