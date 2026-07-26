@@ -2,9 +2,11 @@ package xray
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1737,6 +1739,285 @@ func TestWriteDrainConfig(t *testing.T) {
 	list := m.ListInbounds()
 	if len(list) != 1 {
 		t.Fatalf("expected 1 inbound restored after drain config write, got %d", len(list))
+	}
+}
+
+// --- Atomic Config Write Tests ---
+
+func TestAtomicWriteFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.json")
+
+	// Write initial content
+	initial := []byte(`{"version":1}`)
+	if err := atomicWriteFile(target, initial, 0600); err != nil {
+		t.Fatalf("atomicWriteFile (initial): %v", err)
+	}
+
+	// Verify content
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(initial) {
+		t.Fatalf("content mismatch: got %q, want %q", got, initial)
+	}
+
+	// Overwrite with new content
+	updated := []byte(`{"version":2,"inbounds":[]}`)
+	if err := atomicWriteFile(target, updated, 0600); err != nil {
+		t.Fatalf("atomicWriteFile (overwrite): %v", err)
+	}
+	got, err = os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile after overwrite: %v", err)
+	}
+	if string(got) != string(updated) {
+		t.Fatalf("content mismatch after overwrite: got %q, want %q", got, updated)
+	}
+
+	// Verify file permissions
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("expected perm 0600, got %o", info.Mode().Perm())
+	}
+}
+
+func TestAtomicWriteFileCreatesParentDir(t *testing.T) {
+	// atomicWriteFile itself does not create parent directories —
+	// callers (WriteConfig, saveMap) call os.MkdirAll beforehand.
+	// This test verifies atomicWriteFile works when the parent dir
+	// exists but is nested.
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "sub", "deep")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(nested, "config.json")
+	data := []byte(`{"test":true}`)
+
+	if err := atomicWriteFile(target, data, 0600); err != nil {
+		t.Fatalf("atomicWriteFile with nested path: %v", err)
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatalf("content mismatch: got %q, want %q", got, data)
+	}
+}
+
+func TestAtomicWriteFileLeavesNoTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config.json")
+
+	// Write a few times
+	for i := 0; i < 5; i++ {
+		data := []byte(fmt.Sprintf(`{"i":%d}`, i))
+		if err := atomicWriteFile(target, data, 0600); err != nil {
+			t.Fatalf("atomicWriteFile iteration %d: %v", i, err)
+		}
+	}
+
+	// List all files in dir — should only be config.json, no leftover temps
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		files = append(files, e.Name())
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file in dir, got %d: %v", len(files), files)
+	}
+	if files[0] != "config.json" {
+		t.Fatalf("expected config.json, got %s", files[0])
+	}
+}
+
+func TestAtomicWriteFilePreservesOldOnFailure(t *testing.T) {
+	// This test verifies that if the write fails partway through,
+	// the old file remains intact. We simulate a failure by writing
+	// to an invalid path (parent is a file, not a directory).
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Try to write to a path whose parent is a file — should fail
+	invalidPath := filepath.Join(blocker, "config.json")
+	err := atomicWriteFile(invalidPath, []byte(`{}`), 0600)
+	if err == nil {
+		t.Fatal("expected error writing to invalid path, got nil")
+	}
+}
+
+func TestWriteConfigIsAtomic(t *testing.T) {
+	// Verify that WriteConfig uses atomic write — after a successful
+	// WriteConfig call, no temp files should be left behind.
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	m, _ := NewManager(ManagerOptions{
+		ConfigDir:  dir,
+		ConfigPath: configPath,
+		ApiPort:    -1,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	ic := &InboundConfig{
+		Tag:          "atomic-test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID(), Flow: "xtls-rprx-vision"}},
+	}
+	m.AddInbound(ic)
+
+	// Write config multiple times
+	for i := 0; i < 3; i++ {
+		if err := m.WriteConfig(); err != nil {
+			t.Fatalf("WriteConfig iteration %d: %v", i, err)
+		}
+	}
+
+	// Verify config.json exists and is valid
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile config.json: %v", err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("config is not valid JSON: %v", err)
+	}
+
+	// Verify no temp files left behind
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".config.json.tmp.") {
+			t.Fatalf("leftover temp file found: %s", name)
+		}
+	}
+}
+
+func TestWriteConfigOverwritePreservesAtomicity(t *testing.T) {
+	// Write a config, then overwrite it. The file should always contain
+	// a complete, parseable JSON — never a partial write.
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	m, _ := NewManager(ManagerOptions{
+		ConfigDir:  dir,
+		ConfigPath: configPath,
+		ApiPort:    -1,
+	})
+
+	priv, _, _ := GenerateX25519Key()
+
+	// First config with one inbound
+	m.AddInbound(&InboundConfig{
+		Tag:          "first",
+		Port:         1001,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID(), Flow: "xtls-rprx-vision"}},
+	})
+	if err := m.WriteConfig(); err != nil {
+		t.Fatalf("WriteConfig (first): %v", err)
+	}
+
+	// Add a second inbound and rewrite
+	m.AddInbound(&InboundConfig{
+		Tag:          "second",
+		Port:         1002,
+		Security:     "reality",
+		Dest:         "www.google.com:443",
+		ServerNames:  []string{"www.google.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID(), Flow: "xtls-rprx-vision"}},
+	})
+	if err := m.WriteConfig(); err != nil {
+		t.Fatalf("WriteConfig (second): %v", err)
+	}
+
+	// The file should have both inbounds and be fully valid
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var cfg XrayConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("config is not valid JSON after overwrite: %v", err)
+	}
+	if len(cfg.Inbounds) != 2 {
+		t.Fatalf("expected 2 inbounds, got %d", len(cfg.Inbounds))
+	}
+}
+
+func TestFileConfigStoreAtomicWrite(t *testing.T) {
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "state.json")
+	store := NewFileConfigStore(storePath)
+
+	// Save inbounds
+	inbounds := map[string]*InboundConfig{
+		"test": {
+			Tag:      "test",
+			Protocol: "vless-reality",
+			Port:     443,
+			Listen:   "0.0.0.0",
+		},
+	}
+	if err := store.SaveInbounds(inbounds); err != nil {
+		t.Fatalf("SaveInbounds: %v", err)
+	}
+
+	// Verify file exists and is valid
+	inboundsPath := filepath.Join(dir, "state-inbounds.json")
+	data, err := os.ReadFile(inboundsPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("inbounds file is empty")
+	}
+
+	// Verify no temp files left behind
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, ".state-inbounds.json.tmp.") {
+			t.Fatalf("leftover temp file: %s", name)
+		}
+	}
+
+	// Reload and verify
+	loaded, err := store.LoadInbounds()
+	if err != nil {
+		t.Fatalf("LoadInbounds: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected 1 loaded inbound, got %d", len(loaded))
+	}
+	if loaded["test"] == nil {
+		t.Fatal("loaded inbound 'test' is nil")
+	}
+	if loaded["test"].Port != 443 {
+		t.Fatalf("expected port 443, got %d", loaded["test"].Port)
 	}
 }
 

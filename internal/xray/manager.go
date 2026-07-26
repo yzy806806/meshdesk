@@ -758,7 +758,7 @@ func (m *XrayConfigManager) WriteConfig() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(m.configPath, data, 0600); err != nil {
+	if err := atomicWriteFile(m.configPath, data, 0600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
 
@@ -1727,7 +1727,7 @@ func (m *XrayConfigManager) writeConfigUnlocked() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(m.configPath, data, 0600); err != nil {
+	if err := atomicWriteFile(m.configPath, data, 0600); err != nil {
 		return fmt.Errorf("write config file: %w", err)
 	}
 

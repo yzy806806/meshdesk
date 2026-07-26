@@ -8,6 +8,52 @@ import (
 	"log"
 )
 
+// atomicWriteFile writes data to the target path atomically by first writing
+// to a temporary file in the same directory, then renaming it over the
+// target. On Unix, rename(2) is atomic — a crash during write leaves
+// either the old file intact or the new file fully written, never a
+// partial/truncated config.
+//
+// The temp file is created with pattern "<basename>.tmp.<random>" in the
+// same directory as the target (so the rename stays on the same filesystem
+// and is truly atomic). If the write or rename fails, the temp file is
+// cleaned up.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+
+	// Create a temp file in the same directory (same filesystem → atomic rename).
+	tmp, err := os.CreateTemp(dir, "."+base+".tmp.*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	// Best-effort cleanup if anything below fails.
+	defer os.Remove(tmpPath)
+
+	// Write data to the temp file.
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// fsync the temp file so the data reaches disk before we swap.
+	// This protects against power-loss scenarios where the rename
+	// completes but the file contents are not yet flushed.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	// Apply the requested permission bits (CreateTemp uses 0600).
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	// Atomically replace the target with the temp file.
+	return os.Rename(tmpPath, path)
+}
+
 // FileConfigStore is a file-based implementation of ConfigStore.
 // It persists inbound and outbound configs as JSON files.
 type FileConfigStore struct {
@@ -69,7 +115,7 @@ func (s *FileConfigStore) LoadOutbounds() (map[string]*OutboundConfig, error) {
 	return result, nil
 }
 
-// saveMap writes a map as JSON to the given path.
+// saveMap writes a map as JSON to the given path atomically.
 func (s *FileConfigStore) saveMap(path string, v interface{}) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -79,7 +125,7 @@ func (s *FileConfigStore) saveMap(path string, v interface{}) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return atomicWriteFile(path, data, 0600)
 }
 
 // loadMap reads JSON from the given path into v.
