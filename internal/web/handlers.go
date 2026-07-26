@@ -1007,6 +1007,34 @@ func listUploadFiles() []fileEntry {
 	return result
 }
 
+// --- Proxy Nodes ---
+
+// proxyNodesData holds the template data for the proxy nodes page.
+type proxyNodesData struct {
+	PageData
+	XrayAvailable bool
+	BinaryHint    string
+}
+
+// handleProxyNodesPage renders the proxy node management page.
+// It shows the xray-core status bar, deployed inbound list, and the
+// create-new-inbound form when xray is configured. When xrayManager
+// is nil, it renders an informational "not configured" panel.
+func (s *Server) handleProxyNodesPage(w http.ResponseWriter, r *http.Request) {
+	xrayAvailable := s.xrayManager != nil
+	binaryHint := "not configured"
+	if xrayAvailable {
+		binaryHint = s.xrayManager.BinaryPath()
+	}
+
+	data := proxyNodesData{
+		PageData:      PageData{Title: "Proxy Nodes", ActivePage: "proxy_nodes"},
+		XrayAvailable: xrayAvailable,
+		BinaryHint:    binaryHint,
+	}
+	s.renderPage(w, "proxy_nodes.html", data)
+}
+
 // --- Misc helpers ---
 
 func getHostname() (string, error) {
