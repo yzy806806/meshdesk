@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
 	"github.com/yzy806806/meshdesk/internal/webssh"
+	"github.com/yzy806806/meshdesk/internal/xray"
 )
 
 func main() {
@@ -272,6 +274,7 @@ func main() {
 	defer reporter.Stop()
 
 	var webServer *web.Server
+	var xrayMgr *xray.XrayConfigManager
 	if webMode {
 		// Create the auth capability engine first, so it can be wired
 		// into the aggregator for monitor_write enforcement (Decision E).
@@ -338,6 +341,38 @@ func main() {
 			svcMgr = execBackend
 		}
 
+		// Create the xray-core config manager (if enabled in config).
+		if cfg.Xray.Enabled {
+			xrayOpts := xray.ManagerOptions{
+				BinaryPath: cfg.Xray.BinaryPath,
+				ConfigDir:  cfg.Xray.ConfigDir,
+				LogLines:   cfg.Xray.LogLines,
+			}
+			// Use a file-based config store for persistence across restarts.
+			if xrayOpts.ConfigDir == "" {
+				xrayOpts.ConfigDir = xray.DefaultConfigDir
+			}
+			xrayOpts.Store = xray.NewFileConfigStore(
+				filepath.Join(xrayOpts.ConfigDir, "state.json"),
+			)
+			mgr, err := xray.NewManager(xrayOpts)
+			if err != nil {
+				log.Printf("Warning: failed to create xray config manager: %v — xray integration disabled", err)
+			} else {
+				xrayMgr = mgr
+				// Auto-start xray if there are configured inbounds.
+				if len(mgr.ListInbounds()) > 0 {
+					if err := mgr.Start(); err != nil {
+						log.Printf("Warning: failed to start xray-core: %v — use /api/xray/start to retry", err)
+					} else {
+						log.Printf("  Xray:       started (pid=%d, config=%s)", mgr.Status().PID, mgr.ConfigPath())
+					}
+				} else {
+					log.Printf("  Xray:       manager ready (no inbounds configured — use /api/xray/inbound to add)")
+				}
+			}
+		}
+
 		// Create and start the web server.
 		webServer, err = web.New(web.Deps{
 			Config:       cfg,
@@ -347,6 +382,7 @@ func main() {
 			AuthEngine:   authEngine,
 			ServiceMgr:   svcMgr,
 			MeshDialer:   web.NewPeerMeshDialer(node),
+			XrayManager:  xrayMgr,
 		})
 		if err != nil {
 			log.Fatalf("Failed to create web server: %v", err)
@@ -414,7 +450,13 @@ func main() {
 		cancel()
 	}
 
-	_ = webServer    // silence unused warning if not web mode
+	if webServer != nil {
+		webServer.Stop()
+	}
+	// Stop xray-core subprocess if running.
+	if xrayMgr != nil {
+		_ = xrayMgr.Stop()
+	}
 	_ = gossipLayer  // silence unused warning if P2P disabled
 	_ = natTraversal // silence unused warning if NAT traversal disabled
 }
