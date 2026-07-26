@@ -27,6 +27,11 @@ type XrayManager interface {
 	TailLogs(n int) []xray.LogEntry
 	ConfigPath() string
 	BinaryPath() string
+
+	// Health / readiness
+	IsReady() bool
+	HealthStatus() xray.HealthStatus
+	CheckHealthNow() error
 }
 
 // --- Request/Response types ---
@@ -69,12 +74,20 @@ type inboundResponse struct {
 // statusResponse is the JSON response for GET /api/xray/status.
 type statusResponse struct {
 	Running      bool   `json:"running"`
+	Ready        bool   `json:"ready"`
+	HealthState  string `json:"health_state"`
 	PID          int    `json:"pid,omitempty"`
 	StartedAt    string `json:"started_at,omitempty"`
 	RestartCount int    `json:"restart_count"`
 	ConfigPath   string `json:"config_path"`
 	BinaryPath   string `json:"binary_path"`
 	InboundCount int    `json:"inbound_count"`
+
+	// Health details
+	LastHealthy  string `json:"last_healthy,omitempty"`
+	LastFailure  string `json:"last_failure,omitempty"`
+	CheckCount   int64  `json:"check_count"`
+	FailureCount int64  `json:"failure_count"`
 }
 
 // logsResponse is the JSON response for GET /api/xray/logs.
@@ -307,17 +320,28 @@ func (s *Server) handleXrayStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := s.xrayManager.Status()
+	health := s.xrayManager.HealthStatus()
 	resp := statusResponse{
 		Running:      status.Running,
+		Ready:        s.xrayManager.IsReady(),
+		HealthState:  health.State.String(),
 		PID:          status.PID,
 		StartedAt:    "",
 		RestartCount: status.RestartCount,
 		ConfigPath:   status.ConfigPath,
 		BinaryPath:   status.BinaryPath,
 		InboundCount: len(s.xrayManager.ListInbounds()),
+		CheckCount:   health.CheckCount,
+		FailureCount: health.FailureCount,
 	}
 	if !status.StartedAt.IsZero() {
 		resp.StartedAt = status.StartedAt.Format("2006-01-02T15:04:05Z")
+	}
+	if !health.LastHealthy.IsZero() {
+		resp.LastHealthy = health.LastHealthy.Format("2006-01-02T15:04:05Z")
+	}
+	if health.LastFailure != "" {
+		resp.LastFailure = health.LastFailure
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -407,6 +431,46 @@ func (s *Server) handleXrayReload(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"reloaded": true,
 	})
+}
+
+// handleXrayHealth handles POST /api/xray/health.
+// Triggers an immediate health check and returns the result.
+func (s *Server) handleXrayHealth(w http.ResponseWriter, r *http.Request) {
+	if s.xrayManager == nil {
+		http.Error(w, `{"error":"xray manager not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	err := s.xrayManager.CheckHealthNow()
+	health := s.xrayManager.HealthStatus()
+
+	resp := map[string]interface{}{
+		"state":         health.State.String(),
+		"ready":         s.xrayManager.IsReady(),
+		"last_checked":  "",
+		"check_count":   health.CheckCount,
+		"failure_count": health.FailureCount,
+	}
+	if !health.LastChecked.IsZero() {
+		resp["last_checked"] = health.LastChecked.Format("2006-01-02T15:04:05Z")
+	}
+	if !health.LastHealthy.IsZero() {
+		resp["last_healthy"] = health.LastHealthy.Format("2006-01-02T15:04:05Z")
+	}
+	if health.LastFailure != "" {
+		resp["last_failure"] = health.LastFailure
+	}
+	if err != nil {
+		resp["error"] = err.Error()
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // writeJSONError writes a JSON error response with the given status code.

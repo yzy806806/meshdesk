@@ -37,6 +37,11 @@ type XrayConfig struct {
 	Inbounds  []Inbound      `json:"inbounds"`
 	Outbounds []Outbound     `json:"outbounds"`
 	Routing   *RoutingConfig `json:"routing,omitempty"`
+
+	// API enables xray-core's built-in gRPC API for health checking.
+	// When present, xray-core exposes a gRPC server that responds
+	// to health probes on the "api" tagged inbound.
+	Api *ApiConfig `json:"api,omitempty"`
 }
 
 // LogConfig controls xray-core's internal logging.
@@ -127,7 +132,8 @@ type RoutingConfig struct {
 // RoutingRule is a single routing rule.
 type RoutingRule struct {
 	Type        string   `json:"type,omitempty"` // "field" (default)
-	OutboundTag string   `json:"outboundTag"`    // target outbound tag
+	OutboundTag string   `json:"outboundTag"`
+	InboundTag  []string `json:"inboundTag,omitempty"`
 	Domain      []string `json:"domain,omitempty"`
 	IP          []string `json:"ip,omitempty"`
 	Port        string   `json:"port,omitempty"`
