@@ -1312,6 +1312,7 @@ func TestStateTransitionsTransportSubStateDiagram(t *testing.T) {
 		{TransportSubConnecting, TransportSubActive, "dial succeeded"},
 		{TransportSubActive, TransportSubProbing, "latency probe started"},
 		{TransportSubProbing, TransportSubActive, "probe completed"},
+		{TransportSubProbing, TransportSubFailed, "permanent probe error"},
 		{TransportSubActive, TransportSubQuarantined, "threshold failures reached"},
 		{TransportSubConnecting, TransportSubQuarantined, "failures during connect"},
 		{TransportSubQuarantined, TransportSubConnecting, "cooldown expired"},
@@ -2412,3 +2413,281 @@ func TestLatencyEWMASpikeDoesNotPersist(t *testing.T) {
 
 	t.Logf("Spike recovery: spike→%v, after 5 normal samples→%v", afterSpike, finalVal)
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// TransportSubProbing state transition tests (spec §2.3)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// TestProbeAndEvaluateSetsProbingState verifies that probeAndEvaluate
+// transitions the transport sub-state to TransportSubProbing before
+// invoking LatencyProbe, and back to TransportSubActive on success.
+//
+// Acceptance criterion (1): state-dump shows TransportSubProbing during
+// active probes.
+//
+// We call probeAndEvaluate directly (package-private) with a mock
+// transport that records its state when LatencyProbe is invoked.
+func TestProbeAndEvaluateSetsProbingState(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality")
+	cfg.ProbeInterval = 50 * time.Millisecond
+	pm := NewPeerManager(cfg, fix.registry)
+
+	ctx := context.Background()
+
+	// Simulate a connected state so probeAndEvaluate enters the probe path.
+	pm.stateAtomic.Store(int32(PeerConnected))
+	pm.mu.Lock()
+	pm.currentTransport = "udp"
+	// Reset lastProbeAt so the probe interval check passes.
+	for _, ts := range pm.transportStates {
+		ts.lastProbeAt = time.Time{}
+	}
+	pm.mu.Unlock()
+
+	// Create a custom transport that records the sub-state at probe time.
+	probeObservedState := TransportSubActive
+	originalTransport := fix.transports["reality"]
+	fix.factories["reality"].NewTransportFn = func(cfg TransportConfig) (Transport, error) {
+		return &probeRecordingTransport{
+			name:        "reality",
+			inner:       originalTransport,
+			stateAtCall: &probeObservedState,
+			pm:          pm,
+		}, nil
+	}
+
+	// Call probeAndEvaluate directly.
+	pm.probeAndEvaluate(ctx)
+
+	// The probe should have been called, and at the time of the call
+	// the sub-state should have been TransportSubProbing.
+	if probeObservedState != TransportSubProbing {
+		t.Errorf("during LatencyProbe, TransportState(reality) = %s, want probing",
+			probeObservedState.String())
+	}
+
+	// After probeAndEvaluate completes, the transport should be back to Active.
+	if s := pm.TransportState("reality"); s != TransportSubActive {
+		t.Errorf("after probe, TransportState(reality) = %s, want active", s.String())
+	}
+
+	t.Log("probeAndEvaluate: probing state transition confirmed — state is probing during LatencyProbe, returns to active after")
+}
+
+// TestProbeAndEvaluatePermanentErrorTransitionsToFailed verifies that
+// when LatencyProbe returns a permanent (non-retryable) error, the
+// transport sub-state transitions to TransportSubFailed.
+//
+// This tests the Probing → Failed transition path.
+func TestProbeAndEvaluatePermanentErrorTransitionsToFailed(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality")
+	cfg.ProbeInterval = 50 * time.Millisecond
+	pm := NewPeerManager(cfg, fix.registry)
+
+	ctx := context.Background()
+
+	// Simulate a connected state.
+	pm.stateAtomic.Store(int32(PeerConnected))
+	pm.mu.Lock()
+	pm.currentTransport = "udp"
+	for _, ts := range pm.transportStates {
+		ts.lastProbeAt = time.Time{}
+	}
+	pm.mu.Unlock()
+
+	// Use a custom transport that returns a permanent error on LatencyProbe.
+	fix.factories["reality"].NewTransportFn = func(cfg TransportConfig) (Transport, error) {
+		return &permanentErrorTransport{name: "reality"}, nil
+	}
+
+	// Call probeAndEvaluate directly.
+	pm.probeAndEvaluate(ctx)
+
+	// reality should now be in TransportSubFailed state.
+	if s := pm.TransportState("reality"); s != TransportSubFailed {
+		t.Errorf("after permanent probe error, TransportState(reality) = %s, want failed", s.String())
+	}
+
+	// udp should still be active (its probe succeeded).
+	if s := pm.TransportState("udp"); s == TransportSubFailed {
+		t.Errorf("TransportState(udp) = failed — udp probe should have succeeded")
+	}
+
+	t.Log("Permanent probe error → TransportSubFailed transition confirmed")
+}
+
+// TestBlackoutEscapeExcludesFailedTransports verifies that
+// TransportSubFailed transports are NOT included in
+// blackoutEscapeCandidates. Per spec §2.3, failed transports require
+// an explicit Reconnect() call.
+//
+// Acceptance criterion (2): TransportSubFailed transports are excluded
+// from blackoutEscapeCandidates.
+// Acceptance criterion (3): failed transports only recover via
+// explicit Reconnect().
+func TestBlackoutEscapeExcludesFailedTransports(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality", "websocket")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality", "websocket")
+	pm := NewPeerManager(cfg, fix.registry)
+
+	// Set reality to failed, udp and websocket to quarantined.
+	pm.mu.Lock()
+	if ts := pm.transportStates["reality"]; ts != nil {
+		ts.subState = TransportSubFailed
+	}
+	if ts := pm.transportStates["udp"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.cooldownUntil = time.Now().Add(1 * time.Hour) // far future
+	}
+	if ts := pm.transportStates["websocket"]; ts != nil {
+		ts.subState = TransportSubQuarantined
+		ts.cooldownUntil = time.Now().Add(30 * time.Minute)
+	}
+	pm.mu.Unlock()
+
+	// blackoutEscapeCandidates should return only quarantined transports,
+	// NOT the failed one.
+	candidates := pm.blackoutEscapeCandidates()
+	if len(candidates) == 0 {
+		t.Fatal("blackoutEscapeCandidates() returned empty — expected at least one quarantined transport")
+	}
+
+	for _, name := range candidates {
+		if pm.TransportState(name) == TransportSubFailed {
+			t.Errorf("blackoutEscapeCandidates() included %q which is TransportSubFailed — should be excluded", name)
+		}
+	}
+
+	// Now set ALL transports to failed — blackoutEscapeCandidates should
+	// return nil (no escape possible without explicit Reconnect).
+	pm.mu.Lock()
+	for _, ts := range pm.transportStates {
+		ts.subState = TransportSubFailed
+	}
+	pm.mu.Unlock()
+
+	candidates = pm.blackoutEscapeCandidates()
+	if len(candidates) != 0 {
+		t.Errorf("blackoutEscapeCandidates() = %v, want empty when all transports are failed", candidates)
+	}
+
+	t.Log("blackoutEscapeCandidates excludes TransportSubFailed — all-failed returns nil")
+}
+
+// TestFailedTransportRecoversViaReconnect verifies that a
+// TransportSubFailed transport recovers to TransportSubActive only
+// after an explicit Reconnect() call.
+//
+// Acceptance criterion (3): failed transports only recover via
+// explicit Reconnect().
+func TestFailedTransportRecoversViaReconnect(t *testing.T) {
+	fix := newTestPeerManagerFixture("udp", "reality")
+	cfg := pmTestConfig("127.0.0.1:51820", "udp", "reality")
+	cfg.ProbeInterval = 50 * time.Millisecond
+	pm := NewPeerManager(cfg, fix.registry)
+
+	ctx := context.Background()
+	if err := pm.Start(ctx); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer pm.Stop()
+
+	if !waitForState(pm, PeerConnected, 2*time.Second) {
+		t.Fatalf("State() = %s, want %s", pm.State(), PeerConnected)
+	}
+
+	// Set reality to failed.
+	pm.mu.Lock()
+	if ts := pm.transportStates["reality"]; ts != nil {
+		ts.subState = TransportSubFailed
+	}
+	pm.mu.Unlock()
+
+	// Verify it stays failed.
+	time.Sleep(50 * time.Millisecond)
+	if s := pm.TransportState("reality"); s != TransportSubFailed {
+		t.Fatalf("TransportState(reality) = %s, want failed before Reconnect", s)
+	}
+
+	// Explicit Reconnect should reset all transport states to Active.
+	if err := pm.Reconnect(); err != nil {
+		t.Fatalf("Reconnect() error: %v", err)
+	}
+
+	// Wait for reconnect to process.
+	if !waitForState(pm, PeerConnected, 2*time.Second) {
+		t.Fatalf("State() = %s after Reconnect, want connected", pm.State())
+	}
+
+	// After Reconnect, the previously-failed transport should be active
+	// (not failed).
+	if s := pm.TransportState("reality"); s == TransportSubFailed {
+		t.Errorf("TransportState(reality) = failed after Reconnect — should have been reset")
+	}
+
+	t.Log("Failed transport recovers only via explicit Reconnect()")
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Test helper transports for probing state tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+// probeRecordingTransport wraps a managedMockTransport and records the
+// PeerManager's transport sub-state at the time LatencyProbe is called.
+type probeRecordingTransport struct {
+	name        string
+	inner       *managedMockTransport
+	stateAtCall *TransportSubState
+	pm          *PeerManager
+}
+
+func (t *probeRecordingTransport) Name() string { return t.name }
+
+func (t *probeRecordingTransport) Connect(ctx context.Context, addr string) (PeerConn, error) {
+	return t.inner.Connect(ctx, addr)
+}
+
+func (t *probeRecordingTransport) Listen(ctx context.Context, addr string) (net.Listener, error) {
+	return t.inner.Listen(ctx, addr)
+}
+
+func (t *probeRecordingTransport) LatencyProbe(ctx context.Context, addr string) (time.Duration, error) {
+	// Record the sub-state at the moment LatencyProbe is called.
+	*t.stateAtCall = t.pm.TransportState(t.name)
+	return t.inner.LatencyProbe(ctx, addr)
+}
+
+func (t *probeRecordingTransport) IsHealthy() bool {
+	return t.inner.IsHealthy()
+}
+
+func (t *probeRecordingTransport) Close() {
+	t.inner.Close()
+}
+
+// permanentErrorTransport is a Transport whose LatencyProbe always
+// returns a permanent (non-retryable) TransportError.
+type permanentErrorTransport struct {
+	name string
+}
+
+func (t *permanentErrorTransport) Name() string { return t.name }
+
+func (t *permanentErrorTransport) Connect(ctx context.Context, addr string) (PeerConn, error) {
+	return nil, NewTransportError("connect", t.name, addr, errors.New("permanent failure"), false)
+}
+
+func (t *permanentErrorTransport) Listen(ctx context.Context, addr string) (net.Listener, error) {
+	return &mockListener{addr: mockAddr{network: "pipe", address: t.name + "-pipe"}}, nil
+}
+
+func (t *permanentErrorTransport) LatencyProbe(ctx context.Context, addr string) (time.Duration, error) {
+	return 0, NewTransportError("latency_probe", t.name, addr,
+		errors.New("permanent probe failure"), false)
+}
+
+func (t *permanentErrorTransport) IsHealthy() bool { return true }
+
+func (t *permanentErrorTransport) Close() {}

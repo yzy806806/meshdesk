@@ -929,13 +929,32 @@ func (pm *PeerManager) probeAndEvaluate(ctx context.Context) {
 			continue
 		}
 
+		// Transition to probing state so active probes are observable
+		// in telemetry and state dumps (spec §2.3).
+		prevState := ts.subState
+		pm.mu.Lock()
+		ts.subState = TransportSubProbing
+		pm.mu.Unlock()
+
 		// Run active probe.
 		rtt, err := transport.LatencyProbe(ctx, pm.cfg.Addr)
-		if err != nil {
-			continue
-		}
 
 		pm.mu.Lock()
+		if err != nil {
+			// Permanent error → mark transport as failed.
+			var tErr *TransportError
+			if errors.As(err, &tErr) && !tErr.IsRetryable() {
+				ts.subState = TransportSubFailed
+			} else {
+				// Transient probe failure → restore previous state.
+				ts.subState = prevState
+			}
+			ts.lastProbeAt = time.Now()
+			pm.mu.Unlock()
+			continue
+		}
+		// Probe succeeded → transition back to active.
+		ts.subState = TransportSubActive
 		ts.latency.push(rtt)
 		ts.lastProbeAt = time.Now()
 		if name == activeName {
@@ -1162,6 +1181,8 @@ func (pm *PeerManager) candidateTransports() []string {
 
 // blackoutEscapeCandidates returns transports for blackout escape:
 // the least-recently-quarantined transport(s), tried immediately.
+// Per spec §2.3, TransportSubFailed transports are excluded — they
+// require an explicit Reconnect() call and must not be auto-escaped.
 func (pm *PeerManager) blackoutEscapeCandidates() []string {
 	pm.mu.RLock()
 	defer pm.mu.RUnlock()
@@ -1173,7 +1194,7 @@ func (pm *PeerManager) blackoutEscapeCandidates() []string {
 		if ts == nil {
 			return []string{name} // never-tried transport
 		}
-		if ts.subState == TransportSubFailed || ts.subState == TransportSubQuarantined {
+		if ts.subState == TransportSubQuarantined {
 			if best == "" || ts.cooldownUntil.Before(bestTime) {
 				best = name
 				bestTime = ts.cooldownUntil
