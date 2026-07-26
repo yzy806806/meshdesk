@@ -20,6 +20,7 @@ type Config struct {
 	Transfer   TransferConfig   `yaml:"transfer"`
 	Proxy      ProxyConfig      `yaml:"proxy,omitempty"`
 	Xray       XrayYAMLConfig   `yaml:"xray,omitempty"`
+	Reality    RealityServerConfig `yaml:"reality,omitempty"`
 }
 
 // XrayYAMLConfig holds settings for the xray-core managed subprocess layer.
@@ -405,9 +406,13 @@ type PeerConfig struct {
 	Endpoint     string           `yaml:"endpoint"`             // host:port; empty for roaming
 	AllowedIPs   []string         `yaml:"allowed_ips"`          // mesh IPs routed to this peer
 	Capabilities []string         `yaml:"capabilities"`         // what this peer can do on us
-	Obfuscation  string           `yaml:"obfuscation"`          // none | padded | websocket
+	Obfuscation  string           `yaml:"obfuscation"`          // none | padded | websocket | reality
 	PresharedKey string           `yaml:"preshared_key"`        // optional WireGuard PSK
 	ObfConfig    *ObfuscationOpts `yaml:"obf_config,omitempty"` // per-peer obfuscation parameters
+
+	// Reality holds per-peer Reality TLS transport configuration.
+	// Only used when Obfuscation is "reality". See docs/ARCHITECTURE_REFACTOR.md.
+	Reality *RealityPeerConfig `yaml:"reality,omitempty"`
 
 	// ServiceManage holds the list of service names this peer is allowed to
 	// manage (start/stop/restart). Only meaningful when "service_manage"
@@ -423,6 +428,57 @@ type PeerConfig struct {
 	// MonitorScopes restricts monitor_read/monitor_write to specific
 	// metric categories. If empty, all metrics are accessible.
 	MonitorScopes []string `yaml:"monitor_scopes,omitempty"`
+}
+
+// RealityPeerConfig holds per-peer Reality TLS client-side configuration.
+// Used when a peer's obfuscation mode is "reality".
+type RealityPeerConfig struct {
+	// ServerName is the SNI hostname sent in the TLS ClientHello.
+	// e.g. "www.apple.com". Must match one of the server's accepted
+	// server_names.
+	ServerName string `yaml:"server_name"`
+
+	// PublicKey is the server's X25519 public key (hex-encoded).
+	// Used client-side to derive the REALITY auth key via ECDH.
+	PublicKey string `yaml:"public_key"`
+
+	// ShortID is the per-client short ID for REALITY authentication
+	// (hex-encoded, up to 8 bytes). Must be in the server's short_ids list.
+	ShortID string `yaml:"short_id"`
+
+	// TLSFingerprint is the browser ClientHello to mimic.
+	// Default: "chrome". Supported: chrome, firefox, safari, edge, ios, android.
+	TLSFingerprint string `yaml:"tls_fingerprint,omitempty"`
+}
+
+// RealityServerConfig holds server-side Reality TLS configuration.
+// Only needed on nodes that serve as relay/shared nodes accepting
+// Reality TLS connections.
+type RealityServerConfig struct {
+	// Enabled controls whether the Reality TLS listener is started.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// ListenAddr is the address to listen on. Default: ":443".
+	ListenAddr string `yaml:"listen_addr,omitempty"`
+
+	// ListenPort overrides the port in ListenAddr. Default: 443.
+	ListenPort int `yaml:"listen_port,omitempty"`
+
+	// Dest is the camouflage target — the real website to proxy
+	// non-mesh traffic to (failing REALITY auth).
+	// e.g. "www.apple.com:443"
+	Dest string `yaml:"dest"`
+
+	// ServerNames is the list of accepted SNI values.
+	// Only connections presenting one of these SNIs pass auth.
+	ServerNames []string `yaml:"server_names,omitempty"`
+
+	// PrivateKey is the X25519 private key (hex-encoded) used
+	// server-side for REALITY ECDH authentication.
+	PrivateKey string `yaml:"private_key"`
+
+	// ShortIDs is the list of accepted short IDs (hex-encoded).
+	ShortIDs []string `yaml:"short_ids,omitempty"`
 }
 
 // ObfuscationOpts holds per-peer obfuscation parameters (AmneziaWG-style).
