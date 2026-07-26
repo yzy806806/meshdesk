@@ -468,6 +468,89 @@ func (m *XrayConfigManager) ListInbounds() []*InboundConfig {
 	return result
 }
 
+// AddClient adds a VLESS client to an existing inbound.
+// If a client with the same UUID already exists, it's replaced.
+func (m *XrayConfigManager) AddClient(inboundTag string, client VLESSClient) error {
+	if client.ID == "" {
+		return fmt.Errorf("client UUID is required")
+	}
+	m.mu.Lock()
+	ic, ok := m.inbounds[inboundTag]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("inbound %q not found", inboundTag)
+	}
+
+	// Replace if exists, otherwise append
+	found := false
+	for i, c := range ic.VLESSClients {
+		if c.ID == client.ID {
+			ic.VLESSClients[i] = client
+			found = true
+			break
+		}
+	}
+	if !found {
+		ic.VLESSClients = append(ic.VLESSClients, client)
+	}
+	m.mu.Unlock()
+
+	if m.store != nil {
+		if err := m.store.SaveInbounds(m.inbounds); err != nil {
+			log.Printf("[xray] warning: failed to persist inbounds: %v", err)
+		}
+	}
+	return nil
+}
+
+// RemoveClient removes a VLESS client from an inbound by UUID.
+func (m *XrayConfigManager) RemoveClient(inboundTag, clientUUID string) error {
+	m.mu.Lock()
+	ic, ok := m.inbounds[inboundTag]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("inbound %q not found", inboundTag)
+	}
+
+	found := false
+	for i, c := range ic.VLESSClients {
+		if c.ID == clientUUID {
+			ic.VLESSClients = append(ic.VLESSClients[:i], ic.VLESSClients[i+1:]...)
+			found = true
+			break
+		}
+	}
+	m.mu.Unlock()
+
+	if !found {
+		return fmt.Errorf("client %q not found in inbound %q", clientUUID, inboundTag)
+	}
+
+	if m.store != nil {
+		if err := m.store.SaveInbounds(m.inbounds); err != nil {
+			log.Printf("[xray] warning: failed to persist inbounds: %v", err)
+		}
+	}
+	return nil
+}
+
+// GetClients returns the VLESS clients for an inbound.
+func (m *XrayConfigManager) GetClients(inboundTag string) ([]VLESSClient, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ic, ok := m.inbounds[inboundTag]
+	if !ok {
+		return nil, false
+	}
+	return append([]VLESSClient{}, ic.VLESSClients...), true
+}
+
+// APIAddr returns the gRPC API address (host:port) for the xray-core
+// API inbound, used for stats queries and health checks.
+func (m *XrayConfigManager) APIAddr() string {
+	return defaultAPIAddr(m.apiListen, m.apiPort)
+}
+
 // AddOutbound adds or replaces an outbound configuration.
 func (m *XrayConfigManager) AddOutbound(cfg *OutboundConfig) error {
 	if cfg.Tag == "" {

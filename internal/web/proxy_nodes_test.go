@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -70,6 +71,53 @@ func (m *mockXrayManager) SelfTest() *xray.SelfTestResult {
 		},
 		Summary: xray.SelfTestSummary{Total: 1, Failed: 1},
 	}
+}
+
+// New interface methods for x-ui panel features
+
+func (m *mockXrayManager) AddClient(inboundTag string, client xray.VLESSClient) error {
+	for _, ib := range m.inbounds {
+		if ib.Tag == inboundTag {
+			// Replace if exists
+			for i, c := range ib.VLESSClients {
+				if c.ID == client.ID {
+					ib.VLESSClients[i] = client
+					return nil
+				}
+			}
+			ib.VLESSClients = append(ib.VLESSClients, client)
+			return nil
+		}
+	}
+	return fmt.Errorf("inbound %q not found", inboundTag)
+}
+
+func (m *mockXrayManager) RemoveClient(inboundTag, clientUUID string) error {
+	for _, ib := range m.inbounds {
+		if ib.Tag == inboundTag {
+			for i, c := range ib.VLESSClients {
+				if c.ID == clientUUID {
+					ib.VLESSClients = append(ib.VLESSClients[:i], ib.VLESSClients[i+1:]...)
+					return nil
+				}
+			}
+			return fmt.Errorf("client %q not found", clientUUID)
+		}
+	}
+	return fmt.Errorf("inbound %q not found", inboundTag)
+}
+
+func (m *mockXrayManager) GetClients(inboundTag string) ([]xray.VLESSClient, bool) {
+	for _, ib := range m.inbounds {
+		if ib.Tag == inboundTag {
+			return append([]xray.VLESSClient{}, ib.VLESSClients...), true
+		}
+	}
+	return nil, false
+}
+
+func (m *mockXrayManager) APIAddr() string {
+	return "127.0.0.1:8421"
 }
 
 // TestProxyNodesPageNotConfigured verifies that the proxy nodes page
