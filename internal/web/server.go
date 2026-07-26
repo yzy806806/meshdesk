@@ -328,17 +328,19 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 
 	// Xray-core managed subprocess API (auth required).
 	// POST/GET/DELETE /api/xray/inbound — manage xray inbounds
-	// GET  /api/xray/status — process status
+	// GET  /api/xray/status — process status + health/readiness
 	// GET  /api/xray/logs   — captured stdout/stderr
 	// POST /api/xray/start  — start xray subprocess
 	// POST /api/xray/stop   — stop xray subprocess
 	// POST /api/xray/reload — SIGHUP hot-reload
+	// POST /api/xray/health — trigger immediate health check
 	mux.HandleFunc("/api/xray/inbound", s.requireAuth(s.handleXrayInbound))
 	mux.HandleFunc("/api/xray/status", s.requireAuth(s.handleXrayStatus))
 	mux.HandleFunc("/api/xray/logs", s.requireAuth(s.handleXrayLogs))
 	mux.HandleFunc("/api/xray/start", s.requireAuth(s.handleXrayStart))
 	mux.HandleFunc("/api/xray/stop", s.requireAuth(s.handleXrayStop))
 	mux.HandleFunc("/api/xray/reload", s.requireAuth(s.handleXrayReload))
+	mux.HandleFunc("/api/xray/health", s.requireAuth(s.handleXrayHealth))
 
 	// WebSocket terminal — middleware chain enforces:
 	//   sessionAuthMiddleware  → valid web session (if web users configured)

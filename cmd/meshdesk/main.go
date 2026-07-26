@@ -347,6 +347,14 @@ func main() {
 				BinaryPath: cfg.Xray.BinaryPath,
 				ConfigDir:  cfg.Xray.ConfigDir,
 				LogLines:   cfg.Xray.LogLines,
+				ApiPort:    cfg.Xray.ApiPort,
+				ApiListen:  cfg.Xray.ApiListen,
+			}
+			if cfg.Xray.HealthCheckInterval > 0 {
+				xrayOpts.HealthCheckInterval = time.Duration(cfg.Xray.HealthCheckInterval) * time.Second
+			}
+			if cfg.Xray.ReadinessTimeout > 0 {
+				xrayOpts.ReadinessTimeout = time.Duration(cfg.Xray.ReadinessTimeout) * time.Second
 			}
 			// Use a file-based config store for persistence across restarts.
 			if xrayOpts.ConfigDir == "" {
