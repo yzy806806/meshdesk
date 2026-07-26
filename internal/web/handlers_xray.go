@@ -33,6 +33,9 @@ type XrayManager interface {
 	IsReady() bool
 	HealthStatus() xray.HealthStatus
 	CheckHealthNow() error
+
+	// Self-test
+	SelfTest() *xray.SelfTestResult
 }
 
 // --- Request/Response types ---
@@ -482,6 +485,34 @@ func (s *Server) handleXrayHealth(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleXraySelfTest handles GET /api/xray/selftest.
+//
+// Runs a comprehensive diagnostic of the xray-core subsystem and
+// returns a structured result with an overall status (healthy /
+// degraded / unhealthy) and individual check results. Designed
+// for monitoring and alerting systems.
+//
+// HTTP status codes:
+//   - 200 OK: overall status is healthy or degraded
+//   - 503 Service Unavailable: overall status is unhealthy
+//   - 503: xray manager not configured
+func (s *Server) handleXraySelfTest(w http.ResponseWriter, r *http.Request) {
+	if s.xrayManager == nil {
+		http.Error(w, `{"error":"xray manager not configured"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	result := s.xrayManager.SelfTest()
+
+	w.Header().Set("Content-Type", "application/json")
+	if result.Overall == xray.OverallUnhealthy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	} else {
+		w.WriteHeader(http.StatusOK)
+	}
+	json.NewEncoder(w).Encode(result)
 }
 
 // writeJSONError writes a JSON error response with the given status code.
