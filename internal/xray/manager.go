@@ -30,11 +30,61 @@ const DefaultLogLines = 1000
 // DefaultBinaryPath is used when no binary path is configured.
 const DefaultBinaryPath = "xray"
 
-// MaxRestartBackoff is the maximum delay between crash restart attempts.
+// MaxRestartBackoff is the maximum delay between crash restart attempts
+// once exponential backoff has escalated beyond this value.
 const MaxRestartBackoff = 60 * time.Second
 
 // InitialRestartBackoff is the initial delay before the first restart.
 const InitialRestartBackoff = 1 * time.Second
+
+// --- Circuit Breaker Configuration ---
+
+// MaxRestartsPerWindow is the maximum number of crash-restarts allowed
+// within CrashWindow before the circuit breaker trips (opens).
+// Once tripped, no further restarts happen until the window elapses
+// and the breaker is reset.
+const MaxRestartsPerWindow = 3
+
+// CrashWindow is the sliding time window for counting crash-restarts.
+const CrashWindow = 60 * time.Second
+
+// ExponentialBackoffSchedule defines the backoff delays applied after
+// MaxRestartsPerWindow restarts have occurred within CrashWindow.
+// Index 0 applies after the 3rd crash, index 1 after the 4th, etc.
+// After the schedule is exhausted, MaxRestartBackoff is used.
+var ExponentialBackoffSchedule = []time.Duration{
+	5 * time.Second,
+	10 * time.Second,
+	20 * time.Second,
+}
+
+// CircuitState represents the state of the circuit breaker.
+type CircuitState int
+
+const (
+	// CircuitClosed means the process is healthy and restarts are allowed.
+	CircuitClosed CircuitState = iota
+	// CircuitOpen means the breaker has tripped: too many crashes in the
+	// window. No restarts will be attempted until the cooldown elapses.
+	CircuitOpen
+	// CircuitHalfOpen means the breaker is testing whether the process
+	// can stay alive after a cooldown. A crash in this state re-opens
+	// the circuit.
+	CircuitHalfOpen
+)
+
+func (s CircuitState) String() string {
+	switch s {
+	case CircuitClosed:
+		return "closed"
+	case CircuitOpen:
+		return "open"
+	case CircuitHalfOpen:
+		return "half-open"
+	default:
+		return "unknown"
+	}
+}
 
 // LogEntry is a single captured log line from xray-core's stdout/stderr.
 type LogEntry struct {
@@ -52,6 +102,11 @@ type ProcessStatus struct {
 	LastRestart  time.Time `json:"last_restart,omitempty"`
 	ConfigPath   string    `json:"config_path"`
 	BinaryPath   string    `json:"binary_path"`
+
+	// Circuit breaker state
+	CircuitState    CircuitState `json:"circuit_state"`
+	CircuitTrippedAt time.Time   `json:"circuit_tripped_at,omitempty"`
+	CrashCount      int          `json:"crash_count"` // crashes in current window
 }
 
 // logRingBuffer is a fixed-size ring buffer for log entries.
@@ -126,6 +181,12 @@ type XrayConfigManager struct {
 	// Restart backoff state
 	currentBackoff time.Duration
 
+	// Circuit breaker state
+	crashTimestamps []time.Time // timestamps of recent crashes (sliding window)
+	circuitState    CircuitState
+	circuitTrippedAt time.Time
+	backoffIndex    int // index into ExponentialBackoffSchedule
+
 	// KeyValueStore is an optional interface for persisting inbound configs.
 	// When nil, configs are in-memory only (lost on restart).
 	store ConfigStore
@@ -179,8 +240,9 @@ func NewManager(opts ManagerOptions) (*XrayConfigManager, error) {
 		logBuffer:  newLogRingBuffer(opts.LogLines),
 		store:      opts.Store,
 		status: ProcessStatus{
-			ConfigPath: opts.ConfigPath,
-			BinaryPath: binaryPath,
+			ConfigPath:    opts.ConfigPath,
+			BinaryPath:    binaryPath,
+			CircuitState:  CircuitClosed,
 		},
 		currentBackoff: InitialRestartBackoff,
 	}
@@ -561,6 +623,16 @@ func (m *XrayConfigManager) Start() error {
 		return fmt.Errorf("manager has been stopped, create a new one")
 	}
 
+	// Reset circuit breaker for a fresh start
+	m.crashTimestamps = nil
+	m.circuitState = CircuitClosed
+	m.circuitTrippedAt = time.Time{}
+	m.backoffIndex = 0
+	m.currentBackoff = InitialRestartBackoff
+	m.status.CircuitState = CircuitClosed
+	m.status.CircuitTrippedAt = time.Time{}
+	m.status.CrashCount = 0
+
 	// Write config to disk
 	if err := m.writeConfigUnlocked(); err != nil {
 		return err
@@ -572,7 +644,17 @@ func (m *XrayConfigManager) Start() error {
 		return fmt.Errorf("xray binary not found: %s — install xray-core and ensure it is in PATH", binaryPath)
 	}
 
-	return m.startProcessUnlocked()
+	if err := m.startProcessUnlocked(); err != nil {
+		return err
+	}
+
+	// Start process monitor goroutine (handles crash auto-restart)
+	// Started here (not in startProcessUnlocked) to prevent goroutine
+	// pileup: monitorProcess calls startProcessUnlocked() in its own
+	// restart loop.
+	go m.monitorProcess()
+
+	return nil
 }
 
 // startProcessUnlocked starts the xray subprocess (caller must hold m.mu).
@@ -610,8 +692,10 @@ func (m *XrayConfigManager) startProcessUnlocked() error {
 	go m.captureLogs(stdout, "stdout")
 	go m.captureLogs(stderr, "stderr")
 
-	// Start process monitor goroutine (handles crash auto-restart)
-	go m.monitorProcess()
+	// NOTE: monitorProcess is started by Start(), not here.
+	// This prevents goroutine pileup on restart: monitorProcess calls
+	// startProcessUnlocked() in its own loop, so starting a new
+	// monitor goroutine here would create a new one every restart.
 
 	log.Printf("[xray] started (pid=%d, config=%s)", m.status.PID, m.configPath)
 	return nil
@@ -665,7 +749,15 @@ func (m *XrayConfigManager) captureLogs(reader io.Reader, stream string) {
 }
 
 // monitorProcess waits for the xray process to exit and handles
-// crash auto-restart with exponential backoff.
+// crash auto-restart with a circuit breaker:
+//
+//   - MaxRestartsPerWindow (3) restarts per CrashWindow (60s) are allowed.
+//   - After that, exponential backoff (5s, 10s, 20s) kicks in.
+//   - If the process keeps crashing despite backoff, the circuit breaker
+//     opens and stops all restart attempts until the window elapses.
+//   - After the cooldown, the breaker goes half-open: one restart is
+//     attempted. If it survives, the breaker closes. If it crashes,
+//     the breaker re-opens.
 func (m *XrayConfigManager) monitorProcess() {
 	for {
 		process := func() *os.Process {
@@ -680,37 +772,90 @@ func (m *XrayConfigManager) monitorProcess() {
 		// Wait for the process to exit
 		state, err := process.Wait()
 
+		// Record crash and compute backoff under lock, then release
+		var wasStopped bool
+		var exitCode int = -1
+		var backoff time.Duration
+		var shouldRestart bool
+		var cooldown time.Duration
+
 		m.mu.Lock()
-		wasStopped := m.stopped
+		wasStopped = m.stopped
 		m.status.Running = false
 		m.status.PID = 0
-		m.mu.Unlock()
 
 		if wasStopped {
 			// Intentional stop — don't restart
+			m.mu.Unlock()
 			log.Printf("[xray] process exited (intentional stop): %v", err)
 			return
 		}
 
 		// Process crashed or exited unexpectedly
-		exitCode := -1
 		if state != nil {
 			exitCode = state.ExitCode()
 		}
-		log.Printf("[xray] process exited unexpectedly (code=%d, err=%v) — will restart in %v",
-			exitCode, err, m.currentBackoff)
 
-		// Wait for backoff or stop signal
+		// Record this crash in the sliding window
+		now := time.Now()
+		m.crashTimestamps = append(m.crashTimestamps, now)
+		m.pruneCrashTimestampsLocked(now)
+
+		// Update status fields
+		m.status.CrashCount = len(m.crashTimestamps)
+		m.status.CircuitState = m.circuitState
+		m.status.CircuitTrippedAt = m.circuitTrippedAt
+
+		// Determine backoff and whether to restart
+		var circuitTransitioned bool
+		backoff, shouldRestart, circuitTransitioned = m.computeBackoffLocked(now)
+
+		if circuitTransitioned {
+			log.Printf("[xray] circuit breaker OPENED — too many crashes (%d in %v), halting restarts",
+				len(m.crashTimestamps), CrashWindow)
+		}
+
+		log.Printf("[xray] process exited unexpectedly (code=%d, err=%v) — crashes=%d, circuit=%s, backoff=%v",
+			exitCode, err, len(m.crashTimestamps), m.circuitState.String(), backoff)
+
+		if !shouldRestart {
+			// Circuit breaker is open — compute cooldown, then unlock
+			cooldown = m.circuitCooldownLocked(now)
+		}
+		m.mu.Unlock()
+
+		if !shouldRestart {
+			// Circuit breaker is open — wait for the cooldown period
+			// before transitioning to half-open and trying again.
+			// Mutex is NOT held during this wait.
+			log.Printf("[xray] circuit breaker open — waiting %v cooldown before half-open probe", cooldown)
+			select {
+			case <-time.After(cooldown):
+				m.mu.Lock()
+				// Transition to half-open: we'll attempt one restart
+				m.circuitState = CircuitHalfOpen
+				m.status.CircuitState = CircuitHalfOpen
+				// Prune timestamps again in case the window has moved
+				m.pruneCrashTimestampsLocked(time.Now())
+				m.status.CrashCount = len(m.crashTimestamps)
+				log.Printf("[xray] circuit breaker → half-open — attempting probe restart")
+				m.mu.Unlock()
+			case <-m.stopCh:
+				return
+			}
+		}
+
+		// Wait for backoff before restarting.
+		// Mutex is NOT held during this wait — other operations can proceed.
 		select {
-		case <-time.After(m.currentBackoff):
-			// Increase backoff for next time
+		case <-time.After(backoff):
 			m.mu.Lock()
+			// Prune stale crashes before deciding to proceed
+			m.pruneCrashTimestampsLocked(time.Now())
+			m.status.CrashCount = len(m.crashTimestamps)
+
 			m.status.RestartCount++
 			m.status.LastRestart = time.Now()
-			m.currentBackoff = m.currentBackoff * 2
-			if m.currentBackoff > MaxRestartBackoff {
-				m.currentBackoff = MaxRestartBackoff
-			}
 
 			// Rewrite config (in case inbounds changed during the crash)
 			if err := m.writeConfigUnlocked(); err != nil {
@@ -725,13 +870,143 @@ func (m *XrayConfigManager) monitorProcess() {
 				m.mu.Unlock()
 				continue
 			}
-			log.Printf("[xray] restarted (attempt %d, pid=%d)", m.status.RestartCount, m.status.PID)
+
+			log.Printf("[xray] restarted (attempt %d, pid=%d, circuit=%s)",
+				m.status.RestartCount, m.status.PID, m.circuitState.String())
 			m.mu.Unlock()
 
 		case <-m.stopCh:
 			return
 		}
 	}
+}
+
+// computeBackoffLocked determines the backoff duration and whether
+// a restart should be attempted. It also manages circuit breaker
+// state transitions (Closed → Open).
+//
+// The backoff schedule is indexed by the number of crashes beyond
+// MaxRestartsPerWindow:
+//   - Crashes 1..3: normal restart with InitialRestartBackoff
+//   - Crash 4: ExponentialBackoffSchedule[0] (5s)
+//   - Crash 5: ExponentialBackoffSchedule[1] (10s)
+//   - Crash 6: ExponentialBackoffSchedule[2] (20s)
+//   - Crash 7+: circuit breaker opens (no restart)
+//
+// Returns:
+//   - backoff: duration to wait before next restart attempt
+//   - shouldRestart: false if circuit breaker is open (skip restart)
+//   - circuitTransitioned: true if breaker just opened this call
+//
+// Caller must hold m.mu.
+func (m *XrayConfigManager) computeBackoffLocked(now time.Time) (backoff time.Duration, shouldRestart bool, circuitTransitioned bool) {
+	crashCount := len(m.crashTimestamps)
+
+	// If circuit is already open, don't restart
+	if m.circuitState == CircuitOpen {
+		return 0, false, false
+	}
+
+	// If we've exceeded the restart limit within the window,
+	// apply exponential backoff
+	if crashCount > MaxRestartsPerWindow {
+		// Index into the schedule based on how many crashes beyond the limit
+		scheduleIdx := crashCount - MaxRestartsPerWindow - 1 // 0-based
+
+		if scheduleIdx < len(ExponentialBackoffSchedule) {
+			// Still within the backoff schedule
+			backoff = ExponentialBackoffSchedule[scheduleIdx]
+			return backoff, true, false
+		}
+
+		// Schedule exhausted — open the circuit breaker
+		m.circuitState = CircuitOpen
+		m.circuitTrippedAt = now
+		m.status.CircuitState = CircuitOpen
+		m.status.CircuitTrippedAt = now
+		circuitTransitioned = true
+		return 0, false, true
+	}
+
+	// Normal restart with initial backoff
+	// If we were in half-open, close the circuit since we're restarting
+	// within the normal limit
+	if m.circuitState == CircuitHalfOpen {
+		m.circuitState = CircuitClosed
+		m.status.CircuitState = CircuitClosed
+		log.Printf("[xray] circuit breaker → closed (crashes within window: %d)", crashCount)
+	}
+
+	return m.currentBackoff, true, false
+}
+
+// circuitCooldownLocked returns how long to wait when the circuit is open
+// before attempting a half-open probe. This is the remaining time until
+// the oldest crash in the window falls outside CrashWindow.
+//
+// Caller must hold m.mu.
+func (m *XrayConfigManager) circuitCooldownLocked(now time.Time) time.Duration {
+	if len(m.crashTimestamps) == 0 {
+		return CrashWindow
+	}
+
+	// Cooldown = time until the oldest crash exits the window,
+	// at which point crashCount drops below the threshold
+	oldest := m.crashTimestamps[0]
+	cooldown := CrashWindow - now.Sub(oldest)
+	if cooldown < 0 {
+		cooldown = 0
+	}
+	return cooldown
+}
+
+// pruneCrashTimestampsLocked removes crash timestamps older than CrashWindow.
+//
+// Caller must hold m.mu.
+func (m *XrayConfigManager) pruneCrashTimestampsLocked(now time.Time) {
+	cutoff := now.Add(-CrashWindow)
+	idx := 0
+	for i, ts := range m.crashTimestamps {
+		if ts.After(cutoff) {
+			m.crashTimestamps[i] = ts
+			m.crashTimestamps[idx] = ts
+			idx++
+		}
+	}
+	m.crashTimestamps = m.crashTimestamps[:idx]
+
+	// If all crashes have expired, reset the circuit breaker
+	if len(m.crashTimestamps) == 0 && m.circuitState != CircuitOpen {
+		m.circuitState = CircuitClosed
+		m.status.CircuitState = CircuitClosed
+		m.backoffIndex = 0
+	}
+}
+
+// ResetCircuitBreaker manually resets the circuit breaker to closed state
+// and clears all crash history. This can be used by an operator to force
+// a restart attempt after the breaker has tripped.
+func (m *XrayConfigManager) ResetCircuitBreaker() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.crashTimestamps = nil
+	m.circuitState = CircuitClosed
+	m.circuitTrippedAt = time.Time{}
+	m.backoffIndex = 0
+	m.currentBackoff = InitialRestartBackoff
+	m.status.CircuitState = CircuitClosed
+	m.status.CircuitTrippedAt = time.Time{}
+	m.status.CrashCount = 0
+
+	log.Printf("[xray] circuit breaker manually reset")
+}
+
+// CircuitBreakerState returns the current circuit breaker state.
+func (m *XrayConfigManager) CircuitBreakerState() CircuitState {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.circuitState
 }
 
 // Reload sends SIGHUP to the xray-core process for hot-reload.
@@ -755,8 +1030,11 @@ func (m *XrayConfigManager) Reload() error {
 		return fmt.Errorf("send SIGHUP: %w", err)
 	}
 
-	// Reset backoff on successful manual reload
+	// Reset backoff and circuit breaker on successful manual reload
 	m.currentBackoff = InitialRestartBackoff
+	m.backoffIndex = 0
+	// Don't clear crash history — only a clean process restart does that.
+	// But allow the next crash to start fresh if reload succeeded.
 
 	log.Printf("[xray] SIGHUP sent for hot-reload (pid=%d)", m.status.PID)
 	return nil
@@ -808,6 +1086,16 @@ func (m *XrayConfigManager) Stop() error {
 	m.status.PID = 0
 	m.process = nil
 	m.cmd = nil
+
+	// Reset circuit breaker state on explicit stop
+	m.crashTimestamps = nil
+	m.circuitState = CircuitClosed
+	m.circuitTrippedAt = time.Time{}
+	m.backoffIndex = 0
+	m.currentBackoff = InitialRestartBackoff
+	m.status.CircuitState = CircuitClosed
+	m.status.CircuitTrippedAt = time.Time{}
+	m.status.CrashCount = 0
 
 	return nil
 }

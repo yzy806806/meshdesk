@@ -828,3 +828,501 @@ func TestStartAlreadyRunning(t *testing.T) {
 
 	m.Stop()
 }
+
+// --- Circuit Breaker Tests ---
+
+func TestCircuitBreakerStartsClosed(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	if state := m.CircuitBreakerState(); state != CircuitClosed {
+		t.Fatalf("expected circuit breaker to start closed, got %s", state)
+	}
+
+	status := m.Status()
+	if status.CircuitState != CircuitClosed {
+		t.Fatalf("expected status circuit_state closed, got %s", status.CircuitState)
+	}
+	if status.CrashCount != 0 {
+		t.Fatalf("expected crash_count 0, got %d", status.CrashCount)
+	}
+}
+
+func TestPruneCrashTimestamps(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	now := time.Now()
+
+	// Add 5 crashes: 3 old (outside window), 2 recent
+	m.mu.Lock()
+	m.crashTimestamps = []time.Time{
+		now.Add(-2 * time.Minute), // old
+		now.Add(-90 * time.Second), // old
+		now.Add(-70 * time.Second), // old
+		now.Add(-30 * time.Second), // recent
+		now.Add(-10 * time.Second), // recent
+	}
+	m.pruneCrashTimestampsLocked(now)
+	count := len(m.crashTimestamps)
+	m.mu.Unlock()
+
+	if count != 2 {
+		t.Fatalf("expected 2 crashes after pruning, got %d", count)
+	}
+}
+
+func TestPruneCrashTimestampsAllExpired(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	now := time.Now()
+
+	m.mu.Lock()
+	m.crashTimestamps = []time.Time{
+		now.Add(-2 * time.Minute),
+		now.Add(-3 * time.Minute),
+	}
+	// Set circuit to half-open to verify it gets reset to closed
+	m.circuitState = CircuitHalfOpen
+	m.pruneCrashTimestampsLocked(now)
+	count := len(m.crashTimestamps)
+	state := m.circuitState
+	m.mu.Unlock()
+
+	if count != 0 {
+		t.Fatalf("expected 0 crashes after pruning all, got %d", count)
+	}
+	if state != CircuitClosed {
+		t.Fatalf("expected circuit closed after all crashes expired, got %s", state)
+	}
+}
+
+func TestComputeBackoffNormalRestart(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// 1 crash — within normal limit
+	m.crashTimestamps = []time.Time{time.Now()}
+	backoff, shouldRestart, transitioned := m.computeBackoffLocked(time.Now())
+
+	if !shouldRestart {
+		t.Fatal("expected shouldRestart=true for 1 crash")
+	}
+	if transitioned {
+		t.Fatal("expected no circuit transition for 1 crash")
+	}
+	if backoff != InitialRestartBackoff {
+		t.Fatalf("expected initial backoff %v, got %v", InitialRestartBackoff, backoff)
+	}
+}
+
+func TestComputeBackoffExponentialSchedule(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	now := time.Now()
+
+	// 4 crashes — exceeds MaxRestartsPerWindow (3)
+	// First call to computeBackoffLocked should return schedule[0] = 5s
+	m.mu.Lock()
+	m.crashTimestamps = []time.Time{
+		now.Add(-3 * time.Second),
+		now.Add(-2 * time.Second),
+		now.Add(-1 * time.Second),
+		now, // 4th crash
+	}
+	backoff, shouldRestart, transitioned := m.computeBackoffLocked(now)
+	m.mu.Unlock()
+
+	if !shouldRestart {
+		t.Fatal("expected shouldRestart=true for 4th crash (within backoff schedule)")
+	}
+	if transitioned {
+		t.Fatal("expected no circuit transition yet")
+	}
+	if backoff != ExponentialBackoffSchedule[0] {
+		t.Fatalf("expected backoff %v (schedule[0]), got %v", ExponentialBackoffSchedule[0], backoff)
+	}
+}
+
+func TestComputeBackoffScheduleProgression(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	now := time.Now()
+
+	tests := []struct {
+		name           string
+		crashCount     int
+		expectedBackoff time.Duration
+	}{
+		{"4th crash → 5s", 4, ExponentialBackoffSchedule[0]},
+		{"5th crash → 10s", 5, ExponentialBackoffSchedule[1]},
+		{"6th crash → 20s", 6, ExponentialBackoffSchedule[2]},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m.mu.Lock()
+			// Reset state
+			m.crashTimestamps = nil
+			m.backoffIndex = 0
+			m.circuitState = CircuitClosed
+
+			// Add crashes
+			for i := 0; i < tt.crashCount; i++ {
+				m.crashTimestamps = append(m.crashTimestamps, now.Add(-time.Duration(tt.crashCount-i)*time.Second))
+			}
+
+			backoff, shouldRestart, _ := m.computeBackoffLocked(now)
+			m.mu.Unlock()
+
+			if !shouldRestart {
+				t.Fatal("expected shouldRestart=true")
+			}
+			if backoff != tt.expectedBackoff {
+				t.Fatalf("expected backoff %v, got %v", tt.expectedBackoff, backoff)
+			}
+		})
+	}
+}
+
+func TestCircuitOpensAfterBackoffExhausted(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	now := time.Now()
+
+	// After MaxRestartsPerWindow (3) + len(schedule) (3) = 6 crashes,
+	// the next (7th) crash should open the circuit.
+	m.mu.Lock()
+	m.crashTimestamps = make([]time.Time, 7)
+	for i := 0; i < 7; i++ {
+		m.crashTimestamps[i] = now.Add(-time.Duration(7-i) * time.Second)
+	}
+
+	_, shouldRestart, transitioned := m.computeBackoffLocked(now)
+	m.mu.Unlock()
+
+	if !transitioned {
+		t.Fatal("expected circuit breaker to open after 7 crashes (3+3+1)")
+	}
+	if shouldRestart {
+		t.Fatal("expected shouldRestart=false when circuit opens")
+	}
+	if m.CircuitBreakerState() != CircuitOpen {
+		t.Fatalf("expected circuit state open, got %s", m.CircuitBreakerState())
+	}
+}
+
+func TestResetCircuitBreaker(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	// Set up a tripped circuit breaker
+	m.mu.Lock()
+	m.crashTimestamps = []time.Time{time.Now(), time.Now(), time.Now()}
+	m.circuitState = CircuitOpen
+	m.circuitTrippedAt = time.Now()
+	m.backoffIndex = 5
+	m.status.CircuitState = CircuitOpen
+	m.status.CrashCount = 3
+	m.mu.Unlock()
+
+	// Reset
+	m.ResetCircuitBreaker()
+
+	if state := m.CircuitBreakerState(); state != CircuitClosed {
+		t.Fatalf("expected circuit closed after reset, got %s", state)
+	}
+
+	status := m.Status()
+	if status.CrashCount != 0 {
+		t.Fatalf("expected crash_count 0 after reset, got %d", status.CrashCount)
+	}
+	if status.CircuitState != CircuitClosed {
+		t.Fatalf("expected status circuit_state closed, got %s", status.CircuitState)
+	}
+}
+
+func TestStopResetsCircuitBreaker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := mockBinaryPath(t)
+	dir := t.TempDir()
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath: mockPath,
+		ConfigDir:  dir,
+		ConfigPath: filepath.Join(dir, "config.json"),
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Simulate crash history
+	m.mu.Lock()
+	m.crashTimestamps = []time.Time{time.Now(), time.Now()}
+	m.circuitState = CircuitHalfOpen
+	m.status.CrashCount = 2
+	m.mu.Unlock()
+
+	// Stop should reset everything
+	if err := m.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	status := m.Status()
+	if status.CircuitState != CircuitClosed {
+		t.Fatalf("expected circuit closed after stop, got %s", status.CircuitState)
+	}
+	if status.CrashCount != 0 {
+		t.Fatalf("expected crash_count 0 after stop, got %d", status.CrashCount)
+	}
+}
+
+func TestStartResetsCircuitBreaker(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := mockBinaryPath(t)
+	dir := t.TempDir()
+
+	priv, _, _ := GenerateX25519Key()
+	ic := &InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	}
+
+	// First lifecycle: start, simulate stale circuit breaker state, stop
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath: mockPath,
+		ConfigDir:  dir,
+		ConfigPath:  filepath.Join(dir, "config.json"),
+	})
+	m.AddInbound(ic)
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	m.Stop()
+
+	// Simulate stale circuit breaker state from a previous lifecycle
+	m.mu.Lock()
+	m.crashTimestamps = []time.Time{time.Now(), time.Now(), time.Now(), time.Now()}
+	m.circuitState = CircuitOpen
+	m.backoffIndex = 3
+	m.mu.Unlock()
+
+	// A stopped manager can't be restarted — create a new one.
+	// The new manager should start with a clean circuit breaker.
+	m2, _ := NewManager(ManagerOptions{
+		BinaryPath: mockPath,
+		ConfigDir:  dir,
+		ConfigPath: filepath.Join(dir, "config.json"),
+	})
+	m2.AddInbound(ic)
+
+	if err := m2.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	status := m2.Status()
+	if status.CircuitState != CircuitClosed {
+		t.Fatalf("expected circuit closed after fresh start, got %s", status.CircuitState)
+	}
+	if status.CrashCount != 0 {
+		t.Fatalf("expected crash_count 0 after fresh start, got %d", status.CrashCount)
+	}
+
+	m2.Stop()
+}
+
+func TestCircuitCooldownCalculation(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	now := time.Now()
+
+	m.mu.Lock()
+	// Oldest crash was 40s ago → cooldown = 60s - 40s = 20s
+	m.crashTimestamps = []time.Time{
+		now.Add(-40 * time.Second),
+		now.Add(-20 * time.Second),
+		now.Add(-5 * time.Second),
+	}
+	cooldown := m.circuitCooldownLocked(now)
+	m.mu.Unlock()
+
+	expected := 20 * time.Second
+	if cooldown != expected {
+		t.Fatalf("expected cooldown %v, got %v", expected, cooldown)
+	}
+}
+
+func TestCircuitCooldownAllExpired(t *testing.T) {
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+
+	now := time.Now()
+
+	m.mu.Lock()
+	// Oldest crash was 120s ago → already outside window
+	m.crashTimestamps = []time.Time{now.Add(-120 * time.Second)}
+	cooldown := m.circuitCooldownLocked(now)
+	m.mu.Unlock()
+
+	if cooldown != 0 {
+		t.Fatalf("expected cooldown 0 for expired crashes, got %v", cooldown)
+	}
+}
+
+func TestCircuitStateString(t *testing.T) {
+	tests := []struct {
+		state    CircuitState
+		expected string
+	}{
+		{CircuitClosed, "closed"},
+		{CircuitOpen, "open"},
+		{CircuitHalfOpen, "half-open"},
+	}
+
+	for _, tt := range tests {
+		if got := tt.state.String(); got != tt.expected {
+			t.Fatalf("expected %s, got %s", tt.expected, got)
+		}
+	}
+}
+
+// TestCrashLoopIntegration tests the full circuit breaker lifecycle
+// with a mock binary that crashes immediately on each start.
+// We use a binary that exits after a very short time to simulate crashes.
+func TestCrashLoopIntegration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	// Create a mock binary that exits immediately (simulating a crash)
+	dir := t.TempDir()
+	crashBinary := filepath.Join(dir, "crash-xray")
+	crashScript := `#!/bin/sh
+echo "crash mock starting"
+exit 1
+`
+	if err := os.WriteFile(crashBinary, []byte(crashScript), 0755); err != nil {
+		t.Fatalf("write crash binary: %v", err)
+	}
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath: crashBinary,
+		ConfigDir:  dir,
+		ConfigPath: filepath.Join(dir, "config.json"),
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for crashes to accumulate and circuit breaker to engage.
+	// The circuit breaker should eventually open after:
+	// 3 normal restarts + 3 exponential backoff restarts (5s, 10s, 20s)
+	// Total time: ~1s + 1s + 1s + 5s + 10s + 20s = ~38s
+	// But we can check intermediate state much sooner.
+	time.Sleep(5 * time.Second)
+
+	state := m.CircuitBreakerState()
+	status := m.Status()
+
+	// After 5 seconds, we should have accumulated several crashes.
+	// The exact count depends on timing, but we should definitely have
+	// more than MaxRestartsPerWindow crashes and be in either:
+	// - CircuitClosed with exponential backoff active, or
+	// - CircuitOpen (if backoff schedule already exhausted)
+	t.Logf("after 5s: state=%s, crashes=%d, restarts=%d",
+		state.String(), status.CrashCount, status.RestartCount)
+
+	if status.RestartCount < MaxRestartsPerWindow {
+		t.Fatalf("expected at least %d restarts after 5s, got %d",
+			MaxRestartsPerWindow, status.RestartCount)
+	}
+
+	// Clean up
+	m.Stop()
+}
+
+// TestCircuitBreakerDoesNotTripOnStableProcess verifies that a process
+// that runs stably does not trigger the circuit breaker.
+func TestCircuitBreakerDoesNotTripOnStableProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess tests are unreliable on Windows")
+	}
+
+	mockPath := mockBinaryPath(t)
+	dir := t.TempDir()
+
+	m, _ := NewManager(ManagerOptions{
+		BinaryPath: mockPath,
+		ConfigDir:  dir,
+		ConfigPath: filepath.Join(dir, "config.json"),
+	})
+
+	priv, _, _ := GenerateX25519Key()
+	m.AddInbound(&InboundConfig{
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
+		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
+	})
+
+	if err := m.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Let it run stably for 2 seconds
+	time.Sleep(2 * time.Second)
+
+	status := m.Status()
+	if status.CircuitState != CircuitClosed {
+		t.Fatalf("expected circuit closed for stable process, got %s",
+			status.CircuitState)
+	}
+	if status.CrashCount != 0 {
+		t.Fatalf("expected 0 crashes for stable process, got %d",
+			status.CrashCount)
+	}
+	if status.RestartCount != 0 {
+		t.Fatalf("expected 0 restarts for stable process, got %d",
+			status.RestartCount)
+	}
+
+	m.Stop()
+}
+
