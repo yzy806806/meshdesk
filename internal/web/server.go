@@ -334,6 +334,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// POST /api/xray/stop   — stop xray subprocess
 	// POST /api/xray/reload — SIGHUP hot-reload
 	// POST /api/xray/health — trigger immediate health check
+	// GET  /api/xray/selftest — comprehensive diagnostic for monitoring
 	mux.HandleFunc("/api/xray/inbound", s.requireAuth(s.handleXrayInbound))
 	mux.HandleFunc("/api/xray/status", s.requireAuth(s.handleXrayStatus))
 	mux.HandleFunc("/api/xray/logs", s.requireAuth(s.handleXrayLogs))
@@ -341,6 +342,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/xray/stop", s.requireAuth(s.handleXrayStop))
 	mux.HandleFunc("/api/xray/reload", s.requireAuth(s.handleXrayReload))
 	mux.HandleFunc("/api/xray/health", s.requireAuth(s.handleXrayHealth))
+	mux.HandleFunc("/api/xray/selftest", s.requireAuth(s.handleXraySelfTest))
 
 	// WebSocket terminal — middleware chain enforces:
 	//   sessionAuthMiddleware  → valid web session (if web users configured)

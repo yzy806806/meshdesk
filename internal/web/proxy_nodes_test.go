@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/yzy806806/meshdesk/internal/xray"
 )
@@ -60,6 +61,16 @@ func (m *mockXrayManager) HealthStatus() xray.HealthStatus {
 	return xray.HealthStatus{State: xray.HealthUnknown}
 }
 func (m *mockXrayManager) CheckHealthNow() error { return nil }
+func (m *mockXrayManager) SelfTest() *xray.SelfTestResult {
+	return &xray.SelfTestResult{
+		Overall: xray.OverallUnhealthy,
+		Time:    time.Now(),
+		Checks: []xray.SelfTestCheck{
+			{Name: "binary_present", Status: xray.CheckFail, Message: "mock: not configured"},
+		},
+		Summary: xray.SelfTestSummary{Total: 1, Failed: 1},
+	}
+}
 
 // TestProxyNodesPageNotConfigured verifies that the proxy nodes page
 // renders correctly when the xray manager is not configured (nil).
