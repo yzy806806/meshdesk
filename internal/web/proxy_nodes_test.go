@@ -54,6 +54,11 @@ func (m *mockXrayManager) Logs() []xray.LogEntry          { return nil }
 func (m *mockXrayManager) TailLogs(n int) []xray.LogEntry { return nil }
 func (m *mockXrayManager) ConfigPath() string             { return "/tmp/test-config.json" }
 func (m *mockXrayManager) BinaryPath() string             { return "/usr/bin/xray" }
+func (m *mockXrayManager) IsReady() bool                  { return false }
+func (m *mockXrayManager) HealthStatus() xray.HealthStatus {
+	return xray.HealthStatus{State: xray.HealthUnknown}
+}
+func (m *mockXrayManager) CheckHealthNow() error { return nil }
 
 // TestProxyNodesPageNotConfigured verifies that the proxy nodes page
 // renders correctly when the xray manager is not configured (nil).

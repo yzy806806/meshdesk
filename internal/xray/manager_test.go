@@ -111,6 +111,7 @@ func TestGenerateX25519Key(t *testing.T) {
 func TestInboundCRUD(t *testing.T) {
 	m, err := NewManager(ManagerOptions{
 		ConfigDir: t.TempDir(),
+		ApiPort:   -1,
 	})
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -166,7 +167,7 @@ func TestInboundCRUD(t *testing.T) {
 }
 
 func TestAddInboundValidation(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	// Empty tag
 	err := m.AddInbound(&InboundConfig{Port: 443})
@@ -188,7 +189,7 @@ func TestAddInboundValidation(t *testing.T) {
 }
 
 func TestGenerateConfig(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	priv, _, _ := GenerateX25519Key()
 	uuid := GenerateVLESSUUID()
@@ -287,7 +288,7 @@ func TestGenerateConfig(t *testing.T) {
 }
 
 func TestGenerateConfigRealityValidation(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	// Missing private key
 	ic := &InboundConfig{
@@ -359,6 +360,7 @@ func TestWriteConfig(t *testing.T) {
 	m, _ := NewManager(ManagerOptions{
 		ConfigDir:  dir,
 		ConfigPath: configPath,
+		ApiPort:    -1,
 	})
 
 	priv, _, _ := GenerateX25519Key()
@@ -446,7 +448,7 @@ func TestLogRingBufferNotFull(t *testing.T) {
 }
 
 func TestOutboundCRUD(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	oc := &OutboundConfig{
 		Tag:         "test-outbound",
@@ -469,7 +471,7 @@ func TestOutboundCRUD(t *testing.T) {
 }
 
 func TestGenerateConfigWithVLESSOutbound(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	oc := &OutboundConfig{
 		Tag:         "peer-outbound",
@@ -556,6 +558,7 @@ func TestManagerWithFileStore(t *testing.T) {
 	m, _ := NewManager(ManagerOptions{
 		ConfigDir: dir,
 		Store:     store,
+		ApiPort:   -1,
 	})
 
 	ic := &InboundConfig{
@@ -573,6 +576,7 @@ func TestManagerWithFileStore(t *testing.T) {
 	m2, _ := NewManager(ManagerOptions{
 		ConfigDir: dir,
 		Store:     store,
+		ApiPort:   -1,
 	})
 	list := m2.ListInbounds()
 	if len(list) != 1 {
@@ -584,7 +588,7 @@ func TestManagerWithFileStore(t *testing.T) {
 }
 
 func TestProcessStatus(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	status := m.Status()
 	if status.Running {
@@ -602,7 +606,7 @@ func TestFindBinary(t *testing.T) {
 }
 
 func TestLogsEmpty(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 	logs := m.Logs()
 	if len(logs) != 0 {
 		t.Fatalf("expected 0 logs, got %d", len(logs))
@@ -617,6 +621,7 @@ func TestStartNoBinary(t *testing.T) {
 	m, _ := NewManager(ManagerOptions{
 		ConfigDir:  t.TempDir(),
 		BinaryPath: "/nonexistent/xray-binary",
+		ApiPort:    -1,
 	})
 
 	// Add a valid inbound so config generation succeeds
@@ -674,6 +679,7 @@ func TestStartStopMockBinary(t *testing.T) {
 
 	m, _ := NewManager(ManagerOptions{
 		BinaryPath: mockPath,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath: filepath.Join(dir, "config.json"),
 	})
@@ -745,6 +751,7 @@ func TestReloadMockBinary(t *testing.T) {
 
 	m, _ := NewManager(ManagerOptions{
 		BinaryPath: mockPath,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath: filepath.Join(dir, "config.json"),
 	})
@@ -785,7 +792,7 @@ func TestReloadMockBinary(t *testing.T) {
 }
 
 func TestReloadNotRunning(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 	err := m.Reload()
 	if err == nil {
 		t.Fatal("expected error when reloading while not running")
@@ -802,6 +809,7 @@ func TestStartAlreadyRunning(t *testing.T) {
 
 	m, _ := NewManager(ManagerOptions{
 		BinaryPath: mockPath,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath: filepath.Join(dir, "config.json"),
 	})
@@ -832,7 +840,7 @@ func TestStartAlreadyRunning(t *testing.T) {
 // --- Circuit Breaker Tests ---
 
 func TestCircuitBreakerStartsClosed(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	if state := m.CircuitBreakerState(); state != CircuitClosed {
 		t.Fatalf("expected circuit breaker to start closed, got %s", state)
@@ -848,7 +856,7 @@ func TestCircuitBreakerStartsClosed(t *testing.T) {
 }
 
 func TestPruneCrashTimestamps(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	now := time.Now()
 
@@ -871,7 +879,7 @@ func TestPruneCrashTimestamps(t *testing.T) {
 }
 
 func TestPruneCrashTimestampsAllExpired(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	now := time.Now()
 
@@ -896,7 +904,7 @@ func TestPruneCrashTimestampsAllExpired(t *testing.T) {
 }
 
 func TestComputeBackoffNormalRestart(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -917,7 +925,7 @@ func TestComputeBackoffNormalRestart(t *testing.T) {
 }
 
 func TestComputeBackoffExponentialSchedule(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	now := time.Now()
 
@@ -945,7 +953,7 @@ func TestComputeBackoffExponentialSchedule(t *testing.T) {
 }
 
 func TestComputeBackoffScheduleProgression(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	now := time.Now()
 
@@ -986,7 +994,7 @@ func TestComputeBackoffScheduleProgression(t *testing.T) {
 }
 
 func TestCircuitOpensAfterBackoffExhausted(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	now := time.Now()
 
@@ -1013,7 +1021,7 @@ func TestCircuitOpensAfterBackoffExhausted(t *testing.T) {
 }
 
 func TestResetCircuitBreaker(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	// Set up a tripped circuit breaker
 	m.mu.Lock()
@@ -1051,6 +1059,7 @@ func TestStopResetsCircuitBreaker(t *testing.T) {
 
 	m, _ := NewManager(ManagerOptions{
 		BinaryPath: mockPath,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath: filepath.Join(dir, "config.json"),
 	})
@@ -1113,6 +1122,7 @@ func TestStartResetsCircuitBreaker(t *testing.T) {
 	// First lifecycle: start, simulate stale circuit breaker state, stop
 	m, _ := NewManager(ManagerOptions{
 		BinaryPath: mockPath,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath:  filepath.Join(dir, "config.json"),
 	})
@@ -1134,6 +1144,7 @@ func TestStartResetsCircuitBreaker(t *testing.T) {
 	// The new manager should start with a clean circuit breaker.
 	m2, _ := NewManager(ManagerOptions{
 		BinaryPath: mockPath,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath: filepath.Join(dir, "config.json"),
 	})
@@ -1155,7 +1166,7 @@ func TestStartResetsCircuitBreaker(t *testing.T) {
 }
 
 func TestCircuitCooldownCalculation(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	now := time.Now()
 
@@ -1176,7 +1187,7 @@ func TestCircuitCooldownCalculation(t *testing.T) {
 }
 
 func TestCircuitCooldownAllExpired(t *testing.T) {
-	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir()})
+	m, _ := NewManager(ManagerOptions{ConfigDir: t.TempDir(), ApiPort: -1})
 
 	now := time.Now()
 
@@ -1229,6 +1240,7 @@ exit 1
 
 	m, _ := NewManager(ManagerOptions{
 		BinaryPath: crashBinary,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath: filepath.Join(dir, "config.json"),
 	})
@@ -1287,6 +1299,7 @@ func TestCircuitBreakerDoesNotTripOnStableProcess(t *testing.T) {
 
 	m, _ := NewManager(ManagerOptions{
 		BinaryPath: mockPath,
+		ApiPort:    -1,
 		ConfigDir:  dir,
 		ConfigPath: filepath.Join(dir, "config.json"),
 	})

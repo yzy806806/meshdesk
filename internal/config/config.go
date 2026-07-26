@@ -41,6 +41,24 @@ type XrayYAMLConfig struct {
 	// LogLines is the max number of log lines kept in the ring buffer
 	// for the Dashboard log viewer. Default: 1000.
 	LogLines int `yaml:"log_lines,omitempty"`
+
+	// ApiPort is the port for xray-core's gRPC API inbound, used
+	// for the healthy-before-ready self-check. Default: 8421.
+	// Set to -1 to disable health checking entirely.
+	ApiPort int `yaml:"api_port,omitempty"`
+
+	// ApiListen is the listen address for the API inbound.
+	// Default: "127.0.0.1" (localhost only).
+	ApiListen string `yaml:"api_listen,omitempty"`
+
+	// HealthCheckInterval is how often the background monitor
+	// polls xray-core's health. Default: 10s.
+	HealthCheckInterval int `yaml:"health_check_interval,omitempty"`
+
+	// ReadinessTimeout is how long Start() waits for the first
+	// successful health check before returning an error (seconds).
+	// Default: 15.
+	ReadinessTimeout int `yaml:"readiness_timeout,omitempty"`
 }
 
 // ProxyConfig holds settings for the anonymous proxy subsystem

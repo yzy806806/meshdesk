@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -190,6 +191,31 @@ type XrayConfigManager struct {
 	// KeyValueStore is an optional interface for persisting inbound configs.
 	// When nil, configs are in-memory only (lost on restart).
 	store ConfigStore
+
+	// --- Health / Readiness ---
+
+	// apiPort is the port xray-core's gRPC API inbound listens on.
+	// Used for the gRPC self-check (healthy-before-ready gate).
+	apiPort int
+
+	// apiListen is the listen address for the API inbound.
+	apiListen string
+
+	// healthChecker probes xray-core's gRPC API port.
+	healthChecker *HealthChecker
+
+	// healthStatus is the current health state.
+	healthStatus HealthStatus
+
+	// healthCancel cancels the background health monitor goroutine.
+	healthCancel context.CancelFunc
+
+	// healthInterval is how often the background monitor polls.
+	healthInterval time.Duration
+
+	// readinessTimeout is how long Start() waits for the first
+	// successful health check before returning an error.
+	readinessTimeout time.Duration
 }
 
 // ConfigStore is an optional interface for persisting xray inbound/outbound
@@ -208,6 +234,26 @@ type ManagerOptions struct {
 	ConfigPath string
 	LogLines   int
 	Store      ConfigStore
+
+	// --- Health / Readiness ---
+
+	// ApiPort is the port for xray-core's gRPC API inbound.
+	// If 0, DefaultApiPort (8421) is used. Set to -1 to disable
+	// the API inbound and health checking entirely.
+	ApiPort int
+
+	// ApiListen is the listen address for the API inbound.
+	// Default: "127.0.0.1" (localhost only, for security).
+	ApiListen string
+
+	// HealthCheckInterval is how often the background monitor
+	// polls xray-core's health. Default: 10s.
+	HealthCheckInterval time.Duration
+
+	// ReadinessTimeout is how long Start() waits for the first
+	// successful health check before returning an error.
+	// Default: 15s. Set to 0 to skip the readiness gate (not recommended).
+	ReadinessTimeout time.Duration
 }
 
 // NewManager creates a new XrayConfigManager with the given options.
@@ -240,12 +286,38 @@ func NewManager(opts ManagerOptions) (*XrayConfigManager, error) {
 		logBuffer:  newLogRingBuffer(opts.LogLines),
 		store:      opts.Store,
 		status: ProcessStatus{
-			ConfigPath:    opts.ConfigPath,
-			BinaryPath:    binaryPath,
-			CircuitState:  CircuitClosed,
+			ConfigPath:   opts.ConfigPath,
+			BinaryPath:   binaryPath,
+			CircuitState: CircuitClosed,
 		},
 		currentBackoff: InitialRestartBackoff,
 	}
+
+	// Initialize health / readiness configuration
+	m.apiPort = opts.ApiPort
+	if m.apiPort == 0 {
+		m.apiPort = DefaultApiPort
+	}
+	m.apiListen = opts.ApiListen
+	if m.apiListen == "" {
+		m.apiListen = DefaultApiListen
+	}
+	m.healthInterval = opts.HealthCheckInterval
+	if m.healthInterval == 0 {
+		m.healthInterval = DefaultHealthCheckInterval
+	}
+	m.readinessTimeout = opts.ReadinessTimeout
+	if m.readinessTimeout == 0 {
+		m.readinessTimeout = DefaultReadinessTimeout
+	}
+
+	// Create the health checker (unless explicitly disabled)
+	if opts.ApiPort >= 0 {
+		apiAddr := defaultAPIAddr(m.apiListen, m.apiPort)
+		m.healthChecker = NewHealthChecker(apiAddr, DefaultHealthCheckTimeout)
+	}
+
+	m.healthStatus = HealthStatus{State: HealthUnknown}
 
 	// Load persisted configs if a store is available.
 	if m.store != nil {
@@ -412,6 +484,36 @@ func (m *XrayConfigManager) generateConfigUnlocked() (*XrayConfig, error) {
 			return nil, fmt.Errorf("inbound %s: %w", ic.Tag, err)
 		}
 		xrayCfg.Inbounds = append(xrayCfg.Inbounds, *inbound)
+	}
+
+	// Inject the gRPC API inbound (dokodemo-door) for health checking,
+	// unless explicitly disabled (apiPort < 0).
+	if m.apiPort > 0 {
+		// Top-level API configuration
+		xrayCfg.Api = &ApiConfig{
+			Tag: "api",
+			Services: []string{
+				"HandlerService",
+				"LoggerService",
+				"StatsService",
+			},
+		}
+
+		// API inbound (dokodemo-door that routes to the API handler)
+		apiInbound := m.buildAPIInbound()
+		xrayCfg.Inbounds = append(xrayCfg.Inbounds, apiInbound)
+
+		// Add routing rule: traffic on "api" inbound → "api" outbound
+		if xrayCfg.Routing == nil {
+			xrayCfg.Routing = &RoutingConfig{
+				DomainStrategy: "AsIs",
+			}
+		}
+		xrayCfg.Routing.Rules = append(xrayCfg.Routing.Rules, RoutingRule{
+			Type:        "field",
+			InboundTag:  []string{"api"},
+			OutboundTag: "api",
+		})
 	}
 
 	// Always add a "freedom" outbound as the default direct route
@@ -582,6 +684,24 @@ func (m *XrayConfigManager) buildOutbound(oc *OutboundConfig) (*Outbound, error)
 	return outbound, nil
 }
 
+// buildAPIInbound constructs the dokodemo-door inbound that xray-core
+// uses to expose its gRPC API for health checking.
+// The inbound listens on 127.0.0.1:<apiPort> and routes to the
+// "api" outbound via a routing rule.
+func (m *XrayConfigManager) buildAPIInbound() Inbound {
+	settings, _ := json.Marshal(DokodemoDoorSettings{
+		Address: "127.0.0.1",
+		Network: "tcp",
+	})
+	return Inbound{
+		Tag:      "api",
+		Listen:   m.apiListen,
+		Port:     m.apiPort,
+		Protocol: "dokodemo-door",
+		Settings: settings,
+	}
+}
+
 // WriteConfig generates the xray config JSON and writes it to disk.
 func (m *XrayConfigManager) WriteConfig() error {
 	cfg, err := m.GenerateConfig()
@@ -611,15 +731,22 @@ func (m *XrayConfigManager) WriteConfig() error {
 // Start launches the xray-core subprocess with the current config.
 // If xray is already running, it returns nil (no-op).
 // The config is written to disk before starting.
+//
+// Healthy-before-ready gate: after the process starts, Start() waits
+// for a successful gRPC self-check before returning nil. If xray-core
+// doesn't pass a health check within ReadinessTimeout, Start() returns
+// an error (but the process keeps running — the background monitor
+// continues probing).
 func (m *XrayConfigManager) Start() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	if m.status.Running {
+		m.mu.Unlock()
 		return nil // already running
 	}
 
 	if m.stopped {
+		m.mu.Unlock()
 		return fmt.Errorf("manager has been stopped, create a new one")
 	}
 
@@ -633,18 +760,24 @@ func (m *XrayConfigManager) Start() error {
 	m.status.CircuitTrippedAt = time.Time{}
 	m.status.CrashCount = 0
 
+	// Reset health state
+	m.healthStatus = HealthStatus{State: HealthUnknown}
+
 	// Write config to disk
 	if err := m.writeConfigUnlocked(); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
 	// Check binary exists
 	binaryPath := m.binaryPath
 	if _, err := exec.LookPath(binaryPath); err != nil {
+		m.mu.Unlock()
 		return fmt.Errorf("xray binary not found: %s — install xray-core and ensure it is in PATH", binaryPath)
 	}
 
 	if err := m.startProcessUnlocked(); err != nil {
+		m.mu.Unlock()
 		return err
 	}
 
@@ -653,6 +786,25 @@ func (m *XrayConfigManager) Start() error {
 	// pileup: monitorProcess calls startProcessUnlocked() in its own
 	// restart loop.
 	go m.monitorProcess()
+
+	// Grab values we need for the readiness gate, then release the lock.
+	healthChecker := m.healthChecker
+	readinessTimeout := m.readinessTimeout
+	m.mu.Unlock()
+
+	// Start the background health monitor
+	m.startHealthMonitor()
+
+	// --- Healthy-before-ready gate ---
+	// Wait for xray-core to pass a gRPC self-check before reporting
+	// success. If health checking is disabled, skip the gate.
+	if healthChecker == nil || readinessTimeout <= 0 {
+		return nil
+	}
+
+	if err := m.waitForHealthy(readinessTimeout); err != nil {
+		return fmt.Errorf("xray started but not healthy within %v: %w", readinessTimeout, err)
+	}
 
 	return nil
 }
@@ -1055,6 +1207,15 @@ func (m *XrayConfigManager) Stop() error {
 		close(m.stopCh)
 	}
 
+	// Stop the background health monitor
+	if m.healthCancel != nil {
+		m.healthCancel()
+		m.healthCancel = nil
+	}
+
+	// Reset health state
+	m.healthStatus = HealthStatus{State: HealthUnknown}
+
 	if m.process == nil {
 		m.status.Running = false
 		return nil
@@ -1098,6 +1259,179 @@ func (m *XrayConfigManager) Stop() error {
 	m.status.CrashCount = 0
 
 	return nil
+}
+
+// --- Health / Readiness ---
+
+// waitForHealthy polls the gRPC API port until it succeeds or timeout.
+// The mutex is NOT held during this wait — other operations can proceed.
+// It uses a short initial delay (200ms) to give xray-core time to start
+// listening, then polls every 500ms.
+func (m *XrayConfigManager) waitForHealthy(timeout time.Duration) error {
+	// Give xray-core a brief moment to start listening on the API port.
+	initialDelay := 200 * time.Millisecond
+	pollInterval := 500 * time.Millisecond
+
+	// If the timeout is shorter than the initial delay, just do one check.
+	if timeout <= initialDelay {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		return m.healthChecker.CheckAndUpdate(ctx)
+	}
+
+	select {
+	case <-time.After(initialDelay):
+	case <-m.stopCh:
+		return fmt.Errorf("manager stopped during readiness wait")
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		// Check if process is still running (might have crashed already)
+		m.mu.Lock()
+		running := m.status.Running
+		m.mu.Unlock()
+		if !running {
+			return fmt.Errorf("xray process exited during readiness wait")
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), pollInterval)
+		err := m.healthChecker.CheckAndUpdate(ctx)
+		cancel()
+
+		if err == nil {
+			// Update our health status
+			m.mu.Lock()
+			m.healthStatus = m.healthChecker.Status()
+			m.mu.Unlock()
+			log.Printf("[xray] health check passed — xray-core is ready (api=%s)", m.healthChecker.addr)
+			return nil
+		}
+
+		// Wait before retrying
+		select {
+		case <-time.After(pollInterval):
+		case <-m.stopCh:
+			return fmt.Errorf("manager stopped during readiness wait")
+		}
+	}
+
+	return fmt.Errorf("timeout after %v — last failure: %s", timeout, m.healthChecker.Status().LastFailure)
+}
+
+// startHealthMonitor launches a background goroutine that periodically
+// probes xray-core's gRPC API. This runs independently of the readiness
+// gate and keeps the health status fresh for /api/xray/status queries.
+func (m *XrayConfigManager) startHealthMonitor() {
+	// Cancel any previous monitor
+	if m.healthCancel != nil {
+		m.healthCancel()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.healthCancel = cancel
+	interval := m.healthInterval
+	checker := m.healthChecker
+	m.mu.Unlock()
+
+	if checker == nil {
+		cancel()
+		return
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				// Don't check if process isn't running
+				m.mu.Lock()
+				running := m.status.Running
+				m.mu.Unlock()
+				if !running {
+					continue
+				}
+
+				checkCtx, checkCancel := context.WithTimeout(ctx, DefaultHealthCheckTimeout)
+				err := checker.CheckAndUpdate(checkCtx)
+				checkCancel()
+
+				// Update health status
+				m.mu.Lock()
+				oldState := m.healthStatus.State
+				m.healthStatus = checker.Status()
+				newState := m.healthStatus.State
+				m.mu.Unlock()
+
+				logHealthChange(oldState, newState)
+
+				if err != nil {
+					log.Printf("[xray] health check failed: %v", err)
+				}
+
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+}
+
+// stopHealthMonitor stops the background health monitor goroutine.
+func (m *XrayConfigManager) stopHealthMonitor() {
+	m.mu.Lock()
+	cancel := m.healthCancel
+	m.healthCancel = nil
+	m.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+}
+
+// IsReady returns true if xray-core is running AND healthy (passed
+// the last gRPC self-check). This is the readiness gate: the node
+// should not report "ready" until this returns true.
+func (m *XrayConfigManager) IsReady() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.status.Running && m.healthStatus.State == HealthHealthy
+}
+
+// HealthStatus returns the current health status snapshot.
+func (m *XrayConfigManager) HealthStatus() HealthStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.healthStatus
+}
+
+// CheckHealthNow triggers an immediate health check (bypassing the
+// background monitor's interval). Returns the result.
+func (m *XrayConfigManager) CheckHealthNow() error {
+	m.mu.Lock()
+	checker := m.healthChecker
+	running := m.status.Running
+	m.mu.Unlock()
+
+	if checker == nil {
+		return fmt.Errorf("health checking is disabled")
+	}
+	if !running {
+		return fmt.Errorf("xray is not running")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultHealthCheckTimeout)
+	defer cancel()
+
+	err := checker.CheckAndUpdate(ctx)
+
+	m.mu.Lock()
+	m.healthStatus = checker.Status()
+	m.mu.Unlock()
+
+	return err
 }
 
 // Status returns the current process status.
