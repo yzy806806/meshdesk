@@ -12,7 +12,17 @@ import (
 
 	"github.com/hashicorp/memberlist"
 	"github.com/yzy806806/meshdesk/internal/mesh"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
+
+// meshNodeIface is the subset of mesh.MeshNode that MeshTransport uses.
+// Defined as an interface so the transport can be tested with a mock.
+type meshNodeIface interface {
+	Dial(ctx context.Context, network, address string) (net.Conn, error)
+	WaitForPeerHandshake(ctx context.Context, publicKey string, pollInterval, staleAfter time.Duration) error
+	RoutingTable() *mesh.RoutingTable
+	Net() *netstack.Net
+}
 
 // MeshTransport implements the memberlist.Transport interface using the
 // gVisor netstack from the existing WireGuard mesh. All gossip traffic
@@ -24,7 +34,7 @@ import (
 // peeking the first byte (msgType): stream-capable types go to StreamCh,
 // the rest are wrapped as memberlist.Packet and sent to PacketCh.
 type MeshTransport struct {
-	node       *mesh.MeshNode
+	node       meshNodeIface
 	meshIP     string
 	gossipPort int
 
@@ -41,20 +51,20 @@ type MeshTransport struct {
 
 // memberlist message type constants (from memberlist/net.go)
 const (
-	mtPingMsg       = 0
-	mtIndirectPing  = 1
-	mtAckRespMsg    = 2
-	mtSuspectMsg    = 3
-	mtAliveMsg      = 4
-	mtDeadMsg       = 5
-	mtPushPullMsg   = 6
-	mtCompoundMsg   = 7
-	mtUserMsg       = 8
-	mtCompressMsg   = 9
-	mtEncryptMsg    = 10
-	mtNackRespMsg   = 11
-	mtHasCrcMsg     = 12
-	mtErrMsg        = 13
+	mtPingMsg      = 0
+	mtIndirectPing = 1
+	mtAckRespMsg   = 2
+	mtSuspectMsg   = 3
+	mtAliveMsg     = 4
+	mtDeadMsg      = 5
+	mtPushPullMsg  = 6
+	mtCompoundMsg  = 7
+	mtUserMsg      = 8
+	mtCompressMsg  = 9
+	mtEncryptMsg   = 10
+	mtNackRespMsg  = 11
+	mtHasCrcMsg    = 12
+	mtErrMsg       = 13
 )
 
 // streamMsgTypes is the set of msgTypes that memberlist's stream handler
@@ -124,10 +134,74 @@ func (t *MeshTransport) PacketCh() <-chan *memberlist.Packet {
 }
 
 // DialTimeout dials a TCP connection through the gVisor netstack.
+//
+// This method addresses the WireGuard handshake race condition: if a TCP
+// dial is issued before the Noise_IKpsk2 handshake completes, the SYN
+// packet is staged in WireGuard's queue but never encrypted/sent, causing
+// the dial to hang until timeout.
+//
+// To fix this, DialTimeout:
+//  1. Extracts the target mesh IP from addr.
+//  2. Resolves the mesh IP to a peer via the routing table.
+//  3. Waits for the WireGuard handshake with that peer to complete
+//     (polling IpcGet), consuming at most ~40% of the timeout budget.
+//  4. Retries the actual TCP dial up to 3 times with backoff.
+//
+// If the mesh IP is not in the routing table (e.g. a non-mesh address),
+// or the peer is already handshaked, the wait is skipped and the dial
+// proceeds immediately.
 func (t *MeshTransport) DialTimeout(addr string, timeout time.Duration) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	return t.node.Dial(ctx, "tcp", addr)
+
+	// Extract the IP portion from "ip:port" to check handshake status.
+	host, _, err := net.SplitHostPort(addr)
+	if err == nil {
+		// Check if this is a known mesh peer. If so, wait for the
+		// WireGuard handshake to complete before dialing.
+		// The routing table may store IPs with CIDR suffixes (e.g.
+		// "10.10.5.5/32"), so try both the bare IP and the /32 form.
+		peerID, ok := t.node.RoutingTable().ResolveRoute(host)
+		if !ok {
+			peerID, ok = t.node.RoutingTable().ResolveRoute(host + "/32")
+		}
+		if ok {
+			// Budget ~40% of the timeout for handshake wait, min 500ms.
+			waitBudget := timeout * 2 / 5
+			if waitBudget < 500*time.Millisecond {
+				waitBudget = 500 * time.Millisecond
+			}
+			waitCtx, waitCancel := context.WithTimeout(ctx, waitBudget)
+			if err := t.node.WaitForPeerHandshake(waitCtx, peerID,
+				200*time.Millisecond, 2*time.Minute); err != nil {
+				waitCancel()
+				return nil, fmt.Errorf("wait for handshake with %s: %w", host, err)
+			}
+			waitCancel()
+		}
+	}
+
+	// Retry the TCP dial up to 3 times with exponential backoff.
+	// The first failure may be a transient race even after handshake
+	// completion (e.g. gVisor netstack needing one more keepalive).
+	var lastErr error
+	backoff := 100 * time.Millisecond
+	for attempt := 0; attempt < 3; attempt++ {
+		conn, err := t.node.Dial(ctx, "tcp", addr)
+		if err == nil {
+			return conn, nil
+		}
+		lastErr = err
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+		}
+	}
+	return nil, lastErr
 }
 
 // StreamCh returns a channel for incoming TCP/stream connections.
