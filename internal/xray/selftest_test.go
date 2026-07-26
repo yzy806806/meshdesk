@@ -154,12 +154,12 @@ func TestSelfTestInboundConfigsValid(t *testing.T) {
 
 	priv, _, _ := GenerateX25519Key()
 	m.AddInbound(&InboundConfig{
-		Tag:         "proxy-in",
-		Port:        443,
-		Security:    "reality",
-		Dest:        "www.cloudflare.com:443",
-		ServerNames: []string{"www.cloudflare.com"},
-		PrivateKey:  priv,
+		Tag:          "proxy-in",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
 		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
 	})
 
@@ -225,12 +225,12 @@ func TestSelfTestConfigValidity(t *testing.T) {
 
 	priv, _, _ := GenerateX25519Key()
 	m.AddInbound(&InboundConfig{
-		Tag:         "test",
-		Port:        443,
-		Security:    "reality",
-		Dest:        "www.cloudflare.com:443",
-		ServerNames: []string{"www.cloudflare.com"},
-		PrivateKey:  priv,
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
 		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
 	})
 

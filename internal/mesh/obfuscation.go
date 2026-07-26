@@ -740,8 +740,8 @@ type obfuscatingBind struct {
 	inner       conn.Bind
 	obfuscators map[string]Obfuscator // keyed by hex public key
 	configs     map[string]ObfuscationConfig
-	ws          *wsBind       // websocket transport (nil when no peer uses websocket mode)
-	reality     *realityBind  // reality TLS transport (nil when no peer uses reality mode)
+	ws          *wsBind      // websocket transport (nil when no peer uses websocket mode)
+	reality     *realityBind // reality TLS transport (nil when no peer uses reality mode)
 	mu          sync.RWMutex
 	rngMu       sync.Mutex
 	rng         *mrand.Rand

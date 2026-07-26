@@ -57,7 +57,7 @@ type UDPTransportFactory struct {
 	connCount atomic.Int64
 
 	mu         sync.Mutex
-	closed     bool                     // true after Shutdown returns
+	closed     bool                       // true after Shutdown returns
 	conns      map[*udpPeerConn]struct{}  // all active outbound connections
 	listeners  map[*udpListener]struct{}  // all active listeners
 	transports map[*UDPTransport]struct{} // all created transports
@@ -684,7 +684,7 @@ type udpSessionConn struct {
 
 	writeMu sync.Mutex
 	writer  func(b []byte, addr *net.UDPAddr) (int, error) // set by listener
-	onClose func()                                            // called once on Close
+	onClose func()                                         // called once on Close
 }
 
 // Read reads the next received UDP packet into p.

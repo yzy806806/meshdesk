@@ -39,7 +39,7 @@ type TrafficStats struct {
 type ClientTrafficStats struct {
 	Email    string `json:"email"`
 	Uplink   int64  `json:"uplink"`
-	Downlink int64 `json:"downlink"`
+	Downlink int64  `json:"downlink"`
 	Total    int64  `json:"total"`
 }
 

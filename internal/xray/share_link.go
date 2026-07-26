@@ -16,11 +16,11 @@ import (
 //	vless://<uuid>@<address>:<port>?encryption=none&security=<security>&type=<network>&flow=<flow>...
 //
 // For REALITY, additional parameters include:
-//	- pbk (public key, base64url of X25519)
-//	- sid (short ID)
-//	- fp (fingerprint, e.g., chrome)
-//	- sni (server name / SNI)
-//	- spx (spider X, optional)
+//   - pbk (public key, base64url of X25519)
+//   - sid (short ID)
+//   - fp (fingerprint, e.g., chrome)
+//   - sni (server name / SNI)
+//   - spx (spider X, optional)
 func VLESSShareLink(uuid, address string, port int, params VLESSShareParams) string {
 	q := url.Values{}
 
@@ -88,10 +88,10 @@ func VLESSShareLink(uuid, address string, port int, params VLESSShareParams) str
 
 // VLESSShareParams holds the parameters for generating a VLESS share link.
 type VLESSShareParams struct {
-	Security    string // "reality", "tls", "none"
-	Network     string // "tcp", "ws"
-	Flow        string // "xtls-rprx-vision" or ""
-	Remark      string // display name / remark
+	Security string // "reality", "tls", "none"
+	Network  string // "tcp", "ws"
+	Flow     string // "xtls-rprx-vision" or ""
+	Remark   string // display name / remark
 
 	// REALITY fields
 	PublicKey   string // server's X25519 public key (base64url)
@@ -225,17 +225,17 @@ func ParseVLESSLink(link string) (*VLESSLinkInfo, error) {
 	}
 
 	info := &VLESSLinkInfo{
-		UUID:     uuid,
-		Address:  address,
-		Port:     port,
-		Security: params.Get("security"),
-		Network:  params.Get("type"),
-		Flow:     params.Get("flow"),
-		Remark:   remark,
-		PublicKey: params.Get("pbk"),
-		ShortID:  params.Get("sid"),
+		UUID:        uuid,
+		Address:     address,
+		Port:        port,
+		Security:    params.Get("security"),
+		Network:     params.Get("type"),
+		Flow:        params.Get("flow"),
+		Remark:      remark,
+		PublicKey:   params.Get("pbk"),
+		ShortID:     params.Get("sid"),
 		Fingerprint: params.Get("fp"),
-		ServerName: params.Get("sni"),
+		ServerName:  params.Get("sni"),
 	}
 
 	return info, nil

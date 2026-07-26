@@ -217,8 +217,8 @@ func TestRealityTransportConnectMissingPublicKey(t *testing.T) {
 func TestRealityTransportListenMissingPrivateKey(t *testing.T) {
 	f := NewRealityTransportFactory()
 	tr, _ := f.NewTransport(TransportConfig{
-		Name:         "reality",
-		RealityDest:  "www.apple.com:443",
+		Name:        "reality",
+		RealityDest: "www.apple.com:443",
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -241,8 +241,8 @@ func TestRealityTransportListenMissingPrivateKey(t *testing.T) {
 func TestRealityTransportListenMissingDest(t *testing.T) {
 	f := NewRealityTransportFactory()
 	tr, _ := f.NewTransport(TransportConfig{
-		Name:               "reality",
-		RealityPrivateKey:  "abcd1234",
+		Name:              "reality",
+		RealityPrivateKey: "abcd1234",
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
