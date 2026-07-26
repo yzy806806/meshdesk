@@ -151,6 +151,7 @@ func New(deps Deps) (*Server, error) {
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "login_2fa.html",
 		"peers.html", "topology.html", "error.html", "proxy_nodes.html",
+		"xui.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -344,6 +345,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/xray/health", s.requireAuth(s.handleXrayHealth))
 	mux.HandleFunc("/api/xray/selftest", s.requireAuth(s.handleXraySelfTest))
 
+	// x-ui panel features: traffic stats, client management, share links
+	// POST/GET/DELETE /api/xray/inbound/client — manage VLESS clients on inbounds
+	// GET  /api/xray/stats    — traffic stats (per inbound + per client)
+	// POST /api/xray/share     — generate VLESS+REALITY share link
+	mux.HandleFunc("/api/xray/inbound/client", s.requireAuth(s.handleXrayClient))
+	mux.HandleFunc("/api/xray/stats", s.requireAuth(s.handleXrayStats))
+	mux.HandleFunc("/api/xray/share", s.requireAuth(s.handleXrayShare))
+
 	// WebSocket terminal — middleware chain enforces:
 	//   sessionAuthMiddleware  → valid web session (if web users configured)
 	//   stepUpMiddleware       → valid step-up token for "terminal" operation
@@ -399,6 +408,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/peers", s.requireAuth(s.handlePeersPage))
 	mux.HandleFunc("/topology", s.requireAuth(s.handleTopologyPage))
 	mux.HandleFunc("/proxy-nodes", s.requireAuth(s.handleProxyNodesPage))
+	mux.HandleFunc("/xui", s.requireAuth(s.handleXuiPage))
 }
 
 // --- Middleware ---

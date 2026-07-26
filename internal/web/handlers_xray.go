@@ -36,6 +36,14 @@ type XrayManager interface {
 
 	// Self-test
 	SelfTest() *xray.SelfTestResult
+
+	// Client management (x-ui panel features)
+	AddClient(inboundTag string, client xray.VLESSClient) error
+	RemoveClient(inboundTag, clientUUID string) error
+	GetClients(inboundTag string) ([]xray.VLESSClient, bool)
+
+	// API address for stats queries (gRPC API inbound)
+	APIAddr() string
 }
 
 // --- Request/Response types ---
