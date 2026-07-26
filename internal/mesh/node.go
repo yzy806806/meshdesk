@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -24,15 +25,17 @@ const defaultMTU = 1420
 //   - A gVisor netstack for userspace TCP/IP (no kernel TUN needed)
 //   - A routing table for peer-to-peer mesh routing
 //   - An obfuscating bind for per-peer GFW resistance
+//   - A TransportRegistry for pluggable transport selection (UDP, Reality, WS)
 type MeshNode struct {
-	identity *peer.Identity
-	dev      *device.Device
-	tnet     *netstack.Net
-	routes   *RoutingTable
-	bind     *obfuscatingBind
-	cfg      *config.Config
-	mu       sync.RWMutex
-	closed   bool
+	identity  *peer.Identity
+	dev       *device.Device
+	tnet      *netstack.Net
+	routes    *RoutingTable
+	bind      *obfuscatingBind
+	cfg       *config.Config
+	registry  *TransportRegistry
+	mu        sync.RWMutex
+	closed    bool
 }
 
 // New creates a new MeshNode from a config. If the config has no identity,
@@ -55,8 +58,6 @@ func New(cfg *config.Config) (*MeshNode, error) {
 	}
 
 	// Determine the mesh IP address for this node.
-	// We use the first AllowedIPs from any peer's config, or default to
-	// an auto-assigned IP in the 10.10.0.0/16 range.
 	meshIP := deriveMeshIP(identity.PublicKey)
 
 	tunDev, tnet, err := netstack.CreateNetTUN(
@@ -68,12 +69,18 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		return nil, fmt.Errorf("create netstack TUN: %w", err)
 	}
 
+	// Create the TransportRegistry and register built-in factories.
+	registry := NewTransportRegistry()
+	udpFactory := NewUDPTransportFactory()
+	realityFactory := NewRealityTransportFactory()
+	registry.Register(udpFactory)
+	registry.Register(realityFactory)
+
 	// Create the obfuscating bind wrapping the default UDP bind.
 	innerBind := conn.NewDefaultBind()
 	obBind := NewObfuscatingBind(innerBind)
 
 	// If any peer uses websocket mode, create a wsBind and install it.
-	// The wsBind listens on the mesh port for WebSocket+TLS connections.
 	for _, peerCfg := range cfg.Peers {
 		if ParseObfuscationMode(peerCfg.Obfuscation) == ObfuscationWebSocket {
 			wsAddr := fmt.Sprintf(":%d", cfg.Mesh.Port)
@@ -85,14 +92,45 @@ func New(cfg *config.Config) (*MeshNode, error) {
 				tlsSni = peerCfg.ObfConfig.TLSSni
 				tlsFingerprint = peerCfg.ObfConfig.TLSFingerprint
 			}
-			// When useTLS is true, cert/key files must be provided via a
-			// TLS config block (not wired here — deployment responsibility).
-			// For non-TLS (plain TCP) websocket, no cert files needed.
 			var wsCert, wsKey string
 			wb := NewWSBind(wsAddr, useTLS, wsCert, wsKey, tlsSni, tlsFingerprint)
 			obBind.SetWSBind(wb)
 			break // one wsBind handles all websocket-mode peers
 		}
+	}
+
+	// If any peer uses reality mode, create a RealityTransport for outbound
+	// connections and a realityBind to route packets through it.
+	// Each reality-mode peer gets its own Transport instance because the
+	// Reality config (server public key, short ID, SNI) is per-peer.
+	for _, peerCfg := range cfg.Peers {
+		if ParseObfuscationMode(peerCfg.Obfuscation) != ObfuscationReality {
+			continue
+		}
+		if peerCfg.Reality == nil {
+			return nil, fmt.Errorf("peer %s: obfuscation=reality but no reality config block",
+				peerCfg.PublicKey[:8])
+		}
+		rcfg := peerCfg.Reality
+		transportCfg := TransportConfig{
+			Name:              "reality",
+			DialTimeout:       30 * time.Second,
+			ServerName:        rcfg.ServerName,
+			RealityPublicKey:  rcfg.PublicKey,
+			RealityShortID:    rcfg.ShortID,
+			TLSFingerprint:    rcfg.TLSFingerprint,
+		}
+		if transportCfg.TLSFingerprint == "" {
+			transportCfg.TLSFingerprint = "chrome"
+		}
+		transport, err := realityFactory.NewTransport(transportCfg)
+		if err != nil {
+			return nil, fmt.Errorf("create reality transport for peer %s: %w",
+				peerCfg.PublicKey[:8], err)
+		}
+		rb := newRealityBind(transport)
+		obBind.SetRealityBind(rb)
+		break // one realityBind handles all reality-mode peers (shared transport)
 	}
 
 	logger := device.NewLogger(device.LogLevelError, "meshdesk: ")
@@ -108,6 +146,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		routes:   NewRoutingTable(),
 		bind:     obBind,
 		cfg:      cfg,
+		registry: registry,
 	}
 
 	// Configure the WireGuard device with the private key and port.
@@ -129,6 +168,15 @@ func (n *MeshNode) Start() error {
 		return fmt.Errorf("bring up WireGuard device: %w", err)
 	}
 
+	// Start the server-side Reality listener if configured.
+	// This makes the node accept REALITY TLS connections on the configured
+	// port (default 443) when acting as a relay/shared node.
+	if n.cfg.Reality.Enabled {
+		if err := n.startRealityListener(); err != nil {
+			return fmt.Errorf("start reality listener: %w", err)
+		}
+	}
+
 	// Add all configured peers AFTER the interface is up.
 	// WireGuard-go only triggers handshake timers for peers added
 	// while the interface is up.
@@ -136,6 +184,82 @@ func (n *MeshNode) Start() error {
 		if err := n.AddPeer(peerCfg); err != nil {
 			return fmt.Errorf("add peer %s: %w", peerCfg.PublicKey[:8], err)
 		}
+	}
+
+	return nil
+}
+
+// startRealityListener creates a server-side RealityTransport and starts
+// listening for inbound REALITY TLS connections. This is called when
+// cfg.Reality.Enabled is true — the node acts as a relay/shared node.
+func (n *MeshNode) startRealityListener() error {
+	rcfg := n.cfg.Reality
+	if rcfg.PrivateKey == "" {
+		return fmt.Errorf("reality.enabled=true but reality.private_key is empty")
+	}
+	if rcfg.Dest == "" {
+		return fmt.Errorf("reality.enabled=true but reality.dest is empty")
+	}
+
+	// Determine listen address.
+	listenAddr := rcfg.ListenAddr
+	if listenAddr == "" {
+		port := rcfg.ListenPort
+		if port == 0 {
+			port = 443
+		}
+		listenAddr = fmt.Sprintf(":%d", port)
+	}
+
+	// Create a server-side RealityTransport.
+	transportCfg := TransportConfig{
+		Name:                "reality",
+		DialTimeout:         30 * time.Second,
+		RealityDest:         rcfg.Dest,
+		RealityPrivateKey:   rcfg.PrivateKey,
+		RealityServerNames:  rcfg.ServerNames,
+	}
+	if len(rcfg.ShortIDs) > 0 {
+		// Use the first short ID for the server-side config.
+		// The reality.Config built by buildRealityConfig accepts all
+		// configured short IDs via RealityShortID (which is also used
+		// to populate the ShortIds map).
+		transportCfg.RealityShortID = rcfg.ShortIDs[0]
+	}
+
+	// Get the reality factory from the registry.
+	realityFactory, err := n.registry.Get("reality")
+	if err != nil {
+		return fmt.Errorf("reality factory not registered: %w", err)
+	}
+	transport, err := realityFactory.NewTransport(transportCfg)
+	if err != nil {
+		return fmt.Errorf("create server-side reality transport: %w", err)
+	}
+
+	// If a realityBind is already installed (for outbound), replace it
+	// with one that also has the server-side listener. Otherwise create
+	// a new one just for the listener.
+	n.bind.mu.RLock()
+	existing := n.bind.reality
+	n.bind.mu.RUnlock()
+
+	if existing != nil {
+		// The existing realityBind was created for outbound. We start
+		// the listener on it so it also accepts inbound connections.
+		ctx := context.Background()
+		if err := existing.open(ctx, listenAddr); err != nil {
+			return fmt.Errorf("open reality listener on existing bind: %w", err)
+		}
+	} else {
+		// No existing realityBind — create one with the server transport
+		// and start the listener.
+		rb := newRealityBind(transport)
+		ctx := context.Background()
+		if err := rb.open(ctx, listenAddr); err != nil {
+			return fmt.Errorf("open reality listener: %w", err)
+		}
+		n.bind.SetRealityBind(rb)
 	}
 
 	return nil
@@ -150,6 +274,12 @@ func (n *MeshNode) Close() error {
 	}
 	n.closed = true
 	n.dev.Close()
+	// Shut down all transport factories.
+	if n.registry != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = n.registry.ShutdownAll(ctx)
+	}
 	return nil
 }
 
@@ -161,6 +291,12 @@ func (n *MeshNode) Identity() *peer.Identity {
 // RoutingTable returns the routing table for mesh IP lookups.
 func (n *MeshNode) RoutingTable() *RoutingTable {
 	return n.routes
+}
+
+// Registry returns the TransportRegistry used by this node.
+// Exposed for PeerManager integration and testing.
+func (n *MeshNode) Registry() *TransportRegistry {
+	return n.registry
 }
 
 // Net returns the gVisor netstack, which provides DialContext/ListenTCP
