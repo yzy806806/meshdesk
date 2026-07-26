@@ -116,13 +116,9 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		return nil, err
 	}
 
-	// Add all configured peers.
-	for _, peerCfg := range cfg.Peers {
-		if err := node.AddPeer(peerCfg); err != nil {
-			dev.Close()
-			return nil, fmt.Errorf("add peer %s: %w", peerCfg.PublicKey[:8], err)
-		}
-	}
+	// NOTE: Peers are added in Start() after dev.Up() — WireGuard-go
+	// does not reliably trigger handshake timers for peers added before
+	// the interface is brought up.
 
 	return node, nil
 }
@@ -132,6 +128,16 @@ func (n *MeshNode) Start() error {
 	if err := n.dev.Up(); err != nil {
 		return fmt.Errorf("bring up WireGuard device: %w", err)
 	}
+
+	// Add all configured peers AFTER the interface is up.
+	// WireGuard-go only triggers handshake timers for peers added
+	// while the interface is up.
+	for _, peerCfg := range n.cfg.Peers {
+		if err := n.AddPeer(peerCfg); err != nil {
+			return fmt.Errorf("add peer %s: %w", peerCfg.PublicKey[:8], err)
+		}
+	}
+
 	return nil
 }
 
@@ -230,6 +236,10 @@ func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 	for _, ip := range cfg.AllowedIPs {
 		ipc.WriteString(fmt.Sprintf("allowed_ip=%s\n", ip))
 	}
+	// Persistent keepalive: trigger handshake even without outbound traffic.
+	// wireguard-go does NOT auto-initiate handshake on its own; it needs
+	// either outbound traffic or a persistent_keepalive to start.
+	ipc.WriteString("persistent_keepalive_interval=10\n")
 
 	if err := n.dev.IpcSet(ipc.String()); err != nil {
 		return fmt.Errorf("ipc set peer: %w", err)
