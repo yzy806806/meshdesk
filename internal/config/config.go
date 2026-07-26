@@ -96,6 +96,12 @@ type ProxyConfig struct {
 	// two disjoint paths based on RTT measurements.
 	PathSelection PathSelectionConfig `yaml:"path_selection,omitempty"`
 
+	// ExitAddr is the mesh address (mesh_ip:port) of the exit node.
+	// Required on entry nodes — the entry node connects to this
+	// address to set up circuits and dispatch chunks.
+	// Example: "10.10.0.5:8388".
+	ExitAddr string `yaml:"exit_addr,omitempty"`
+
 	// CFTunnel holds Cloudflare Tunnel configuration for exposing
 	// the SS listener via CF's edge network (PROXY_DESIGN.md §2).
 	// Only needed on entry nodes.

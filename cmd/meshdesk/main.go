@@ -21,6 +21,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/p2p"
+	"github.com/yzy806806/meshdesk/internal/proxy"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
@@ -251,6 +252,150 @@ func main() {
 	}
 	defer transferServer.Stop()
 
+	// ───────────────────────────────────────────────────────────────────
+	// Proxy data plane (multi-path anonymous proxy).
+	//
+	// The proxy subsystem has three roles that can run independently:
+	//   - Entry node: accepts Shadowsocks user traffic, chunks it,
+	//     and dispatches across two disjoint relay paths to the exit.
+	//   - Exit node: receives encrypted chunks, reassembles the stream,
+	//     and forwards to the target TCP destination.
+	//   - Relay node: forwards chunks between entry and exit (already
+	//     wired via gossipLayer.EnableRelayMode above).
+	//
+	// Entry and exit nodes are created based on config flags:
+	//   - Entry: requires cfg.Proxy.SS.Port != 0 AND cfg.Proxy.ExitAddr != ""
+	//   - Exit:  requires cfg.Proxy.Exit has AllowedPorts or AllowAllPorts
+	//
+	// Both follow the graceful-degradation pattern: a failure logs a
+	// warning and continues, rather than fatally exiting.
+	// ───────────────────────────────────────────────────────────────────
+	meshDialFunc := func(ctx context.Context, network, address string) (net.Conn, error) {
+		return node.Dial(ctx, network, address)
+	}
+
+	var proxyEntryNode *proxy.EntryNode
+	var proxyExitNode *proxy.ExitNode
+	var proxySecSink *proxy.SecurityEventSink
+
+	// Create a shared security event sink for all proxy subsystems.
+	// When a web server is running, its AlertStore callback is wired
+	// after the web server is created (see alert wiring below).
+	proxySecSink = proxy.NewSecurityEventSink()
+
+	// ── Entry Node ──
+	// The entry node accepts Shadowsocks connections and dispatches
+	// them through multi-path circuits to the exit node.
+	if cfg.Proxy.SS.Port != 0 && cfg.Proxy.ExitAddr != "" {
+		ssListenAddr := cfg.Proxy.SS.ListenAddr
+		if ssListenAddr == "" {
+			ssListenAddr = fmt.Sprintf(":%d", cfg.Proxy.SS.Port)
+		}
+
+		// Build circuit config from the YAML config.
+		circuitCfg := proxy.CircuitConfig{
+			IdleTimeout:         time.Duration(cfg.Proxy.Circuit.IdleTimeout) * time.Second,
+			KeepaliveInterval:   time.Duration(cfg.Proxy.Circuit.KeepaliveInterval) * time.Second,
+			NACKTimeout:         time.Duration(cfg.Proxy.Circuit.NACKTimeout) * time.Second,
+			OrphanTimeout:       time.Duration(cfg.Proxy.Circuit.OrphanTimeout) * time.Second,
+			MaxReassemblyWindow: cfg.Proxy.Circuit.MaxReassemblyWindow,
+		}
+		if circuitCfg.IdleTimeout == 0 {
+			circuitCfg = proxy.DefaultCircuitConfig()
+		}
+
+		entryCfg := proxy.EntryNodeConfig{
+			SSConfig: proxy.SSConfig{
+				Password:   cfg.Proxy.SS.Password,
+				Cipher:     cfg.Proxy.SS.Cipher,
+				ListenAddr: ssListenAddr,
+			},
+			CircuitCfg:       circuitCfg,
+			ChunkerStrategy:  cfg.Proxy.ChunkerStrategy,
+			ChunkerCfg:       proxy.DefaultChunkerConfig(),
+			DebugFixedChunks: cfg.Proxy.DebugFixedChunks,
+			ExitAddr:         cfg.Proxy.ExitAddr,
+			DialFunc:         meshDialFunc,
+			SecSink:          proxySecSink,
+		}
+
+		// Configure path selection.
+		if cfg.Proxy.PathSelection.Mode == "auto" {
+			entryCfg.PathSelectionMode = "auto"
+			entryCfg.PathSelector = proxy.NewPathSelector(proxy.PathSelectorConfig{
+				MaxRelaysPerPath: cfg.Proxy.PathSelection.MaxRelaysPerPath,
+				ProbeTimeout:     time.Duration(cfg.Proxy.PathSelection.ProbeTimeoutSec) * time.Second,
+				ProbeConcurrency: cfg.Proxy.PathSelection.ProbeConcurrency,
+				MaxCandidates:    cfg.Proxy.PathSelection.MaxCandidates,
+				PathCount:        2,
+			})
+			// CandidateRelays would be populated from gossip-discovered
+			// relay-capable peers. For now, leave empty — auto selection
+			// will fail with a clear error if no candidates are provided.
+		} else {
+			// Manual mode: build Path structs from config.Paths.
+			entryCfg.PathSelectionMode = "manual"
+			if len(cfg.Proxy.Paths) >= 2 {
+				entryCfg.Path1 = &proxy.Path{Relays: cfg.Proxy.Paths[0]}
+				entryCfg.Path2 = &proxy.Path{Relays: cfg.Proxy.Paths[1]}
+			}
+		}
+
+		proxyEntryNode = proxy.NewEntryNode(entryCfg)
+		if err := proxyEntryNode.Start(); err != nil {
+			log.Printf("Warning: failed to start proxy entry node: %v", err)
+			proxyEntryNode = nil
+		} else {
+			log.Printf("  Proxy:      entry node active (SS listener on %s, exit=%s)",
+				ssListenAddr, cfg.Proxy.ExitAddr)
+		}
+	}
+
+	// ── Exit Node ──
+	// The exit node receives encrypted chunks from relay paths,
+	// reassembles them, and dials the target TCP destination.
+	if len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts {
+		exitCircuitCfg := proxy.DefaultCircuitConfig()
+		if cfg.Proxy.Circuit.OrphanTimeout > 0 {
+			exitCircuitCfg.OrphanTimeout = time.Duration(cfg.Proxy.Circuit.OrphanTimeout) * time.Second
+		}
+		if cfg.Proxy.Circuit.NACKTimeout > 0 {
+			exitCircuitCfg.NACKTimeout = time.Duration(cfg.Proxy.Circuit.NACKTimeout) * time.Second
+		}
+		if cfg.Proxy.Circuit.MaxReassemblyWindow > 0 {
+			exitCircuitCfg.MaxReassemblyWindow = cfg.Proxy.Circuit.MaxReassemblyWindow
+		}
+
+		exitCfg := proxy.ExitConfig{
+			CircuitCfg:       exitCircuitCfg,
+			AllowedPorts:     cfg.Proxy.Exit.AllowedPorts,
+			AllowAllPorts:    cfg.Proxy.Exit.AllowAllPorts,
+			ChunkerStrategy:  cfg.Proxy.ChunkerStrategy,
+			ChunkerCfg:       proxy.DefaultChunkerConfig(),
+			DebugFixedChunks: cfg.Proxy.DebugFixedChunks,
+			Dialer:           net.Dial,
+		}
+
+		proxyExitNode = proxy.NewExitNode(exitCfg)
+		proxyExitNode.SetSecurityEventSink(proxySecSink)
+
+		// Start orphan cleanup background goroutine.
+		exitCtx, exitCancel := context.WithCancel(context.Background())
+		go proxyExitNode.StartOrphanCleanup(exitCtx)
+
+		log.Printf("  Proxy:      exit node active (allowed_ports=%v, allow_all=%v)",
+			cfg.Proxy.Exit.AllowedPorts, cfg.Proxy.Exit.AllowAllPorts)
+
+		defer func() {
+			exitCancel()
+			proxyExitNode.Close()
+		}()
+	}
+
+	if proxyEntryNode != nil {
+		defer proxyEntryNode.Close()
+	}
+
 	// Start monitoring reporter (runs on every node — agent or web mode).
 	var monitorStore *monitor.Store
 	var reporter *monitor.Reporter
@@ -389,14 +534,15 @@ func main() {
 
 		// Create and start the web server.
 		webServer, err = web.New(web.Deps{
-			Config:       cfg,
-			Node:         node,
-			MonitorStore: monitorStore,
-			SSHHub:       sshHub,
-			AuthEngine:   authEngine,
-			ServiceMgr:   svcMgr,
-			MeshDialer:   web.NewPeerMeshDialer(node),
-			XrayManager:  xrayMgr,
+			Config:              cfg,
+			Node:                node,
+			MonitorStore:        monitorStore,
+			SSHHub:              sshHub,
+			AuthEngine:          authEngine,
+			ServiceMgr:          svcMgr,
+			MeshDialer:          web.NewPeerMeshDialer(node),
+			XrayManager:         xrayMgr,
+			ProxyStatusProvider: &entryNodeStatusAdapter{entryNode: proxyEntryNode},
 		})
 		if err != nil {
 			log.Fatalf("Failed to create web server: %v", err)
@@ -428,6 +574,12 @@ func main() {
 				rt := node.RoutingTable()
 				rt.SetJoinCallback(alertStore.HandlePeerJoin)
 				rt.SetLeaveCallback(alertStore.HandlePeerLeave)
+			}
+			// Wire proxy security events into the alert store.
+			if proxySecSink != nil {
+				proxySecSink.SetCallback(func(event proxy.SecurityEvent) {
+					alertStore.HandleProxySecurityEvent(event)
+				})
 			}
 		}
 
@@ -505,6 +657,29 @@ type meshListenerAdapter struct {
 
 func (a *meshListenerAdapter) ListenMesh(port int) (net.Listener, error) {
 	return a.node.Net().ListenTCP(&net.TCPAddr{Port: port})
+}
+
+// entryNodeStatusAdapter adapts *proxy.EntryNode to the
+// web.ProxyStatusProvider interface. It converts the proxy package's
+// EntryNodeStatus to the web package's ProxyStatusData struct, which
+// the /api/proxy/status endpoint serializes as JSON.
+type entryNodeStatusAdapter struct {
+	entryNode *proxy.EntryNode
+}
+
+func (a *entryNodeStatusAdapter) ProxyStatus() any {
+	if a.entryNode == nil {
+		return web.ProxyStatusData{Running: false}
+	}
+	s := a.entryNode.Status()
+	return web.ProxyStatusData{
+		Running:       s.Running,
+		SessionCount:  s.SessionCount,
+		CFTunnelReady: s.CFTunnelReady,
+		Path1Relays:   s.Path1Relays,
+		Path2Relays:   s.Path2Relays,
+		ExitAddr:      s.ExitAddr,
+	}
 }
 
 // runJoinSubcommand implements `meshdesk join <bootstrap-addr>`.
