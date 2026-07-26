@@ -356,6 +356,12 @@ func main() {
 			if cfg.Xray.ReadinessTimeout > 0 {
 				xrayOpts.ReadinessTimeout = time.Duration(cfg.Xray.ReadinessTimeout) * time.Second
 			}
+			// DrainTimeout: -1 means disable drain entirely, 0 means use default.
+			if cfg.Xray.DrainTimeout < 0 {
+				xrayOpts.DrainTimeout = -1 // disable
+			} else if cfg.Xray.DrainTimeout > 0 {
+				xrayOpts.DrainTimeout = time.Duration(cfg.Xray.DrainTimeout) * time.Second
+			}
 			// Use a file-based config store for persistence across restarts.
 			if xrayOpts.ConfigDir == "" {
 				xrayOpts.ConfigDir = xray.DefaultConfigDir

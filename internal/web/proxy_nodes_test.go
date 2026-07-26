@@ -49,6 +49,7 @@ func (m *mockXrayManager) WriteConfig() error             { return nil }
 func (m *mockXrayManager) Reload() error                  { return nil }
 func (m *mockXrayManager) Start() error                   { return nil }
 func (m *mockXrayManager) Stop() error                    { return nil }
+func (m *mockXrayManager) ForceStop() error               { return nil }
 func (m *mockXrayManager) Status() xray.ProcessStatus     { return xray.ProcessStatus{} }
 func (m *mockXrayManager) Logs() []xray.LogEntry          { return nil }
 func (m *mockXrayManager) TailLogs(n int) []xray.LogEntry { return nil }

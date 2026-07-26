@@ -22,6 +22,7 @@ type XrayManager interface {
 	Reload() error
 	Start() error
 	Stop() error
+	ForceStop() error
 	Status() xray.ProcessStatus
 	Logs() []xray.LogEntry
 	TailLogs(n int) []xray.LogEntry
@@ -398,13 +399,22 @@ func (s *Server) handleXrayStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleXrayStop handles POST /api/xray/stop.
+// With ?force=true it calls ForceStop (skip drain, immediate SIGTERM).
 func (s *Server) handleXrayStop(w http.ResponseWriter, r *http.Request) {
 	if s.xrayManager == nil {
 		http.Error(w, `{"error":"xray manager not configured"}`, http.StatusServiceUnavailable)
 		return
 	}
 
-	if err := s.xrayManager.Stop(); err != nil {
+	force := r.URL.Query().Has("force") || r.URL.Query().Get("force") == "true"
+
+	var err error
+	if force {
+		err = s.xrayManager.ForceStop()
+	} else {
+		err = s.xrayManager.Stop()
+	}
+	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -412,6 +422,7 @@ func (s *Server) handleXrayStop(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"stopped": true,
+		"force":   force,
 	})
 }
 
