@@ -48,7 +48,7 @@ func (s *Server) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 		// If the provider returns something we can extract fields from,
 		// try to populate our response struct. Otherwise, just pass
 		// through the raw value.
-		if data, ok := raw.(proxyStatusData); ok {
+		if data, ok := raw.(ProxyStatusData); ok {
 			resp = proxyStatusResponse(data)
 		} else {
 			// Fallback: serialize whatever the provider gives us.
@@ -62,12 +62,12 @@ func (s *Server) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// proxyStatusData is an intermediate struct used to convert between
+// ProxyStatusData is an intermediate struct used to convert between
 // the proxy package's status type and our JSON response. The web
 // package cannot import internal/proxy (would create import cycles
 // since proxy already imports web for alerting adapters), so the
 // provider adapter converts to this struct.
-type proxyStatusData struct {
+type ProxyStatusData struct {
 	Running       bool
 	SessionCount  int
 	CFTunnelReady bool

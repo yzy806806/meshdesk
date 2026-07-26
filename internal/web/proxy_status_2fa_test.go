@@ -43,7 +43,7 @@ func new2FAEnforcementTestServer(t *testing.T, require2FA bool) *Server {
 		Config:       cfg,
 		MonitorStore: monitor.NewStore(),
 		ProxyStatusProvider: &mockProxyStatusProvider{
-			status: proxyStatusData{
+			status: ProxyStatusData{
 				Running:       true,
 				SessionCount:  3,
 				CFTunnelReady: true,
