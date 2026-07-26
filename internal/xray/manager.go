@@ -115,9 +115,9 @@ type ProcessStatus struct {
 	BinaryPath   string    `json:"binary_path"`
 
 	// Circuit breaker state
-	CircuitState    CircuitState `json:"circuit_state"`
-	CircuitTrippedAt time.Time   `json:"circuit_tripped_at,omitempty"`
-	CrashCount      int          `json:"crash_count"` // crashes in current window
+	CircuitState     CircuitState `json:"circuit_state"`
+	CircuitTrippedAt time.Time    `json:"circuit_tripped_at,omitempty"`
+	CrashCount       int          `json:"crash_count"` // crashes in current window
 }
 
 // logRingBuffer is a fixed-size ring buffer for log entries.
@@ -193,10 +193,10 @@ type XrayConfigManager struct {
 	currentBackoff time.Duration
 
 	// Circuit breaker state
-	crashTimestamps []time.Time // timestamps of recent crashes (sliding window)
-	circuitState    CircuitState
+	crashTimestamps  []time.Time // timestamps of recent crashes (sliding window)
+	circuitState     CircuitState
 	circuitTrippedAt time.Time
-	backoffIndex    int // index into ExponentialBackoffSchedule
+	backoffIndex     int // index into ExponentialBackoffSchedule
 
 	// KeyValueStore is an optional interface for persisting inbound configs.
 	// When nil, configs are in-memory only (lost on restart).

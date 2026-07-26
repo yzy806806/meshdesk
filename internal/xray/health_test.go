@@ -37,8 +37,8 @@ func mockHTTP2Server(t *testing.T) (string, func()) {
 				// type=0x04 (SETTINGS), flags=0x00, streamID=0
 				settingsFrame := []byte{
 					0x00, 0x00, 0x00, // length: 0
-					0x04,       // type: SETTINGS
-					0x00,       // flags: none
+					0x04,                   // type: SETTINGS
+					0x00,                   // flags: none
 					0x00, 0x00, 0x00, 0x00, // stream ID: 0
 				}
 				c.SetWriteDeadline(time.Now().Add(2 * time.Second))
@@ -47,8 +47,8 @@ func mockHTTP2Server(t *testing.T) (string, func()) {
 				// Also send a SETTINGS ACK frame
 				settingsAck := []byte{
 					0x00, 0x00, 0x00, // length: 0
-					0x04,       // type: SETTINGS
-					0x01,       // flags: ACK
+					0x04,                   // type: SETTINGS
+					0x01,                   // flags: ACK
 					0x00, 0x00, 0x00, 0x00, // stream ID: 0
 				}
 				c.Write(settingsAck)
@@ -413,9 +413,9 @@ func TestManagerCheckHealthNowSuccess(t *testing.T) {
 	defer cleanup()
 
 	m, _ := NewManager(ManagerOptions{
-		ConfigDir:  t.TempDir(),
-		ApiPort:    8421,
-		ApiListen:  "127.0.0.1",
+		ConfigDir: t.TempDir(),
+		ApiPort:   8421,
+		ApiListen: "127.0.0.1",
 	})
 	// Override the health checker to point to our mock server
 	m.healthChecker = NewHealthChecker(addr, 3*time.Second)
@@ -449,12 +449,12 @@ func TestGenerateConfigIncludesAPIInbound(t *testing.T) {
 	// Add a valid inbound so config generation doesn't fail on VLESS validation
 	priv, _, _ := GenerateX25519Key()
 	m.AddInbound(&InboundConfig{
-		Tag:         "proxy",
-		Port:        443,
-		Security:    "reality",
-		Dest:        "www.cloudflare.com:443",
-		ServerNames: []string{"www.cloudflare.com"},
-		PrivateKey:  priv,
+		Tag:          "proxy",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
 		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
 	})
 
@@ -571,12 +571,12 @@ func TestManagerStopResetsHealth(t *testing.T) {
 
 	priv, _, _ := GenerateX25519Key()
 	m.AddInbound(&InboundConfig{
-		Tag:         "test",
-		Port:        443,
-		Security:    "reality",
-		Dest:        "www.cloudflare.com:443",
-		ServerNames: []string{"www.cloudflare.com"},
-		PrivateKey:  priv,
+		Tag:          "test",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
 		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
 	})
 
@@ -612,9 +612,9 @@ func TestWaitForHealthySuccess(t *testing.T) {
 	defer cleanup()
 
 	m, _ := NewManager(ManagerOptions{
-		ConfigDir:  t.TempDir(),
-		ApiPort:    8421,
-		ApiListen:  "127.0.0.1",
+		ConfigDir: t.TempDir(),
+		ApiPort:   8421,
+		ApiListen: "127.0.0.1",
 	})
 	m.healthChecker = NewHealthChecker(addr, 3*time.Second)
 
@@ -638,9 +638,9 @@ func TestWaitForHealthySuccess(t *testing.T) {
 func TestWaitForHealthyTimeout(t *testing.T) {
 	// Point to a non-listening port
 	m, _ := NewManager(ManagerOptions{
-		ConfigDir:  t.TempDir(),
-		ApiPort:    8421,
-		ApiListen:  "127.0.0.1",
+		ConfigDir: t.TempDir(),
+		ApiPort:   8421,
+		ApiListen: "127.0.0.1",
 	})
 	m.healthChecker = NewHealthChecker("127.0.0.1:1", 500*time.Millisecond)
 
@@ -659,9 +659,9 @@ func TestWaitForHealthyTimeout(t *testing.T) {
 
 func TestWaitForHealthyProcessExits(t *testing.T) {
 	m, _ := NewManager(ManagerOptions{
-		ConfigDir:  t.TempDir(),
-		ApiPort:    8421,
-		ApiListen:  "127.0.0.1",
+		ConfigDir: t.TempDir(),
+		ApiPort:   8421,
+		ApiListen: "127.0.0.1",
 	})
 	m.healthChecker = NewHealthChecker("127.0.0.1:1", 500*time.Millisecond)
 
@@ -682,9 +682,9 @@ func TestStartHealthMonitorAndCheck(t *testing.T) {
 	defer cleanup()
 
 	m, _ := NewManager(ManagerOptions{
-		ConfigDir:         t.TempDir(),
-		ApiPort:           8421,
-		ApiListen:         "127.0.0.1",
+		ConfigDir:           t.TempDir(),
+		ApiPort:             8421,
+		ApiListen:           "127.0.0.1",
 		HealthCheckInterval: 100 * time.Millisecond, // fast for testing
 	})
 	m.healthChecker = NewHealthChecker(addr, 3*time.Second)
@@ -719,9 +719,9 @@ func TestStopHealthMonitor(t *testing.T) {
 	defer cleanup()
 
 	m, _ := NewManager(ManagerOptions{
-		ConfigDir:         t.TempDir(),
-		ApiPort:           8421,
-		ApiListen:         "127.0.0.1",
+		ConfigDir:           t.TempDir(),
+		ApiPort:             8421,
+		ApiListen:           "127.0.0.1",
 		HealthCheckInterval: 50 * time.Millisecond,
 	})
 	m.healthChecker = NewHealthChecker(addr, 3*time.Second)

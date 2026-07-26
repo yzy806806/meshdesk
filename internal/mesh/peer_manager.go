@@ -244,11 +244,11 @@ const (
 // This gives fast detection of degradation (alpha_rise=0.7) while preventing
 // flapping on recovery (alpha_fall=0.3). The first sample initializes the EWMA.
 type latencyEWMA struct {
-	value   float64       // current EWMA value in nanoseconds
-	hasValue bool         // whether we have received at least one sample
-	count   int           // total samples received
-	alphaRise float64     // smoothing factor for increasing latency
-	alphaFall float64     // smoothing factor for decreasing latency
+	value     float64 // current EWMA value in nanoseconds
+	hasValue  bool    // whether we have received at least one sample
+	count     int     // total samples received
+	alphaRise float64 // smoothing factor for increasing latency
+	alphaFall float64 // smoothing factor for decreasing latency
 }
 
 // newLatencyEWMA creates a latencyEWMA with the given alpha values.

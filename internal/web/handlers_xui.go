@@ -259,8 +259,8 @@ type shareLinkRequest struct {
 
 // shareLinkResponse is the JSON response for share link generation.
 type shareLinkResponse struct {
-	Link   string            `json:"link"`
-	Client xray.VLESSClient  `json:"client"`
+	Link   string              `json:"link"`
+	Client xray.VLESSClient    `json:"client"`
 	Info   *xray.VLESSLinkInfo `json:"info"`
 }
 

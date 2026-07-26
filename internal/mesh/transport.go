@@ -79,9 +79,9 @@ func NewPeerConn(c net.Conn, transport string) PeerConn {
 	return &peerConn{Conn: c, transport: transport}
 }
 
-func (p *peerConn) Transport() string        { return p.transport }
-func (p *peerConn) Latency() time.Duration   { return p.latency }
-func (p *peerConn) ForceClose() error        { return p.Conn.Close() }
+func (p *peerConn) Transport() string      { return p.transport }
+func (p *peerConn) Latency() time.Duration { return p.latency }
+func (p *peerConn) ForceClose() error      { return p.Conn.Close() }
 
 // setLatency is an internal hook for Transport implementations to update
 // latency measurements. Not exported — only used within the mesh package.
@@ -150,9 +150,9 @@ type Transport interface {
 // type (e.g. a single RealityTransportFactory, a single WSTransportFactory).
 //
 // Lifecycle:
-//   1. NewTransport(cfg) — create a new Transport instance
-//   2. Transport.Connect / Transport.Listen — use the transport
-//   3. Shutdown(ctx) — drain all connections, release resources
+//  1. NewTransport(cfg) — create a new Transport instance
+//  2. Transport.Connect / Transport.Listen — use the transport
+//  3. Shutdown(ctx) — drain all connections, release resources
 //
 // After Shutdown returns, all Transport instances created by this factory
 // are permanently closed. No new transports can be created after Shutdown.
@@ -442,11 +442,11 @@ func (c TransportConfig) Validate() error {
 //
 // See RG-5 (reviewer gap: error classification).
 type TransportError struct {
-	Op      string // operation that failed (e.g. "connect", "listen")
-	Name    string // transport name (e.g. "reality")
-	Addr    string // target address, if applicable
-	Err     error  // underlying error
-	Retry   bool   // true if the error is transient and may succeed on retry
+	Op    string // operation that failed (e.g. "connect", "listen")
+	Name  string // transport name (e.g. "reality")
+	Addr  string // target address, if applicable
+	Err   error  // underlying error
+	Retry bool   // true if the error is transient and may succeed on retry
 }
 
 func (e *TransportError) Error() string {

@@ -10,16 +10,16 @@ import (
 
 // Config is the top-level configuration for a MeshDesk node.
 type Config struct {
-	Node       NodeConfig       `yaml:"node"`
-	Mesh       MeshConfig       `yaml:"mesh"`
-	Peers      []PeerConfig     `yaml:"peers"`
-	P2P        P2pConfig        `yaml:"p2p,omitempty"`
-	Monitoring MonitoringConfig `yaml:"monitoring"`
-	WebSSH     WebSSHConfig     `yaml:"webssh"`
-	Auth       AuthConfig       `yaml:"auth"`
-	Transfer   TransferConfig   `yaml:"transfer"`
-	Proxy      ProxyConfig      `yaml:"proxy,omitempty"`
-	Xray       XrayYAMLConfig   `yaml:"xray,omitempty"`
+	Node       NodeConfig          `yaml:"node"`
+	Mesh       MeshConfig          `yaml:"mesh"`
+	Peers      []PeerConfig        `yaml:"peers"`
+	P2P        P2pConfig           `yaml:"p2p,omitempty"`
+	Monitoring MonitoringConfig    `yaml:"monitoring"`
+	WebSSH     WebSSHConfig        `yaml:"webssh"`
+	Auth       AuthConfig          `yaml:"auth"`
+	Transfer   TransferConfig      `yaml:"transfer"`
+	Proxy      ProxyConfig         `yaml:"proxy,omitempty"`
+	Xray       XrayYAMLConfig      `yaml:"xray,omitempty"`
 	Reality    RealityServerConfig `yaml:"reality,omitempty"`
 }
 

@@ -865,7 +865,7 @@ func TestPruneCrashTimestamps(t *testing.T) {
 	// Add 5 crashes: 3 old (outside window), 2 recent
 	m.mu.Lock()
 	m.crashTimestamps = []time.Time{
-		now.Add(-2 * time.Minute), // old
+		now.Add(-2 * time.Minute),  // old
 		now.Add(-90 * time.Second), // old
 		now.Add(-70 * time.Second), // old
 		now.Add(-30 * time.Second), // recent
@@ -960,8 +960,8 @@ func TestComputeBackoffScheduleProgression(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name           string
-		crashCount     int
+		name            string
+		crashCount      int
 		expectedBackoff time.Duration
 	}{
 		{"4th crash → 5s", 4, ExponentialBackoffSchedule[0]},
@@ -1126,7 +1126,7 @@ func TestStartResetsCircuitBreaker(t *testing.T) {
 		BinaryPath: mockPath,
 		ApiPort:    -1,
 		ConfigDir:  dir,
-		ConfigPath:  filepath.Join(dir, "config.json"),
+		ConfigPath: filepath.Join(dir, "config.json"),
 	})
 	m.AddInbound(ic)
 
@@ -1522,12 +1522,12 @@ func TestForceStop(t *testing.T) {
 	dir := t.TempDir()
 
 	m, _ := NewManager(ManagerOptions{
-		BinaryPath:        mockPath,
-		ApiPort:           -1,
-		ConfigDir:         dir,
-		ConfigPath:        filepath.Join(dir, "config.json"),
-		DrainTimeout:      10 * time.Second, // would be slow if ForceStop drained
-		TerminateTimeout:  2 * time.Second,
+		BinaryPath:       mockPath,
+		ApiPort:          -1,
+		ConfigDir:        dir,
+		ConfigPath:       filepath.Join(dir, "config.json"),
+		DrainTimeout:     10 * time.Second, // would be slow if ForceStop drained
+		TerminateTimeout: 2 * time.Second,
 	})
 
 	priv, _, _ := GenerateX25519Key()
@@ -1574,12 +1574,12 @@ func TestStopDrainDisabled(t *testing.T) {
 	dir := t.TempDir()
 
 	m, _ := NewManager(ManagerOptions{
-		BinaryPath:        mockPath,
-		ApiPort:           -1,
-		ConfigDir:         dir,
-		ConfigPath:        filepath.Join(dir, "config.json"),
-		DrainTimeout:      -1, // disable drain
-		TerminateTimeout:  2 * time.Second,
+		BinaryPath:       mockPath,
+		ApiPort:          -1,
+		ConfigDir:        dir,
+		ConfigPath:       filepath.Join(dir, "config.json"),
+		DrainTimeout:     -1, // disable drain
+		TerminateTimeout: 2 * time.Second,
 	})
 
 	priv, _, _ := GenerateX25519Key()
@@ -1628,12 +1628,12 @@ func TestStopResetsCircuitBreakerWithDrain(t *testing.T) {
 	dir := t.TempDir()
 
 	m, _ := NewManager(ManagerOptions{
-		BinaryPath:        mockPath,
-		ApiPort:           -1,
-		ConfigDir:         dir,
-		ConfigPath:        filepath.Join(dir, "config.json"),
-		DrainTimeout:      2 * time.Second,
-		TerminateTimeout:  2 * time.Second,
+		BinaryPath:       mockPath,
+		ApiPort:          -1,
+		ConfigDir:        dir,
+		ConfigPath:       filepath.Join(dir, "config.json"),
+		DrainTimeout:     2 * time.Second,
+		TerminateTimeout: 2 * time.Second,
 	})
 
 	priv, _, _ := GenerateX25519Key()
@@ -2020,4 +2020,3 @@ func TestFileConfigStoreAtomicWrite(t *testing.T) {
 		t.Fatalf("expected port 443, got %d", loaded["test"].Port)
 	}
 }
-

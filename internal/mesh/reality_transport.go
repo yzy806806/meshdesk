@@ -92,7 +92,7 @@ type RealityTransportFactory struct {
 
 	mu         sync.Mutex
 	closed     bool
-	conns      map[*realityPeerConn]struct{}  // all active outbound connections
+	conns      map[*realityPeerConn]struct{} // all active outbound connections
 	listeners  map[*realityListener]struct{} // all active listeners
 	transports map[*RealityTransport]struct{}
 }
@@ -495,7 +495,7 @@ func (t *RealityTransport) Listen(ctx context.Context, addr string) (net.Listene
 	}
 
 	l := &realityListener{
-		listener: innerListener,
+		listener:  innerListener,
 		transport: t,
 		acceptCh:  make(chan net.Conn, 64),
 		closeCh:   make(chan struct{}),
@@ -518,9 +518,9 @@ func (t *RealityTransport) buildRealityConfig() (*realitypkg.Config, error) {
 	}
 
 	cfg := &realitypkg.Config{
-		Show: false,
-		Dest: t.cfg.RealityDest,
-		Xver: 0,
+		Show:        false,
+		Dest:        t.cfg.RealityDest,
+		Xver:        0,
 		ServerNames: make(map[string]bool),
 		PrivateKey:  privKeyBytes,
 		ShortIds:    make(map[[8]byte]bool),
