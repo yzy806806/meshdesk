@@ -183,12 +183,12 @@ type PeerManagerConfig struct {
 	// a transport is eligible for path selection scoring.
 	MinSamplesForScoring int
 
-	// HysteresisBonus is subtracted from the active transport's score
-	// during path comparison to prevent flapping between two near-identical
+	// HysteresisBonus is the fraction of the active transport's raw EWMA
+	// latency (e_lat) that is subtracted from its composite score during
+	// path comparison, preventing flapping between two near-identical
 	// transports (e.g. UDP 8ms vs Reality 9ms). The spec (§6.1) calls for
-	// 10% hysteresis; a 0 value means use 10% of the active score at
-	// evaluation time. A positive fixed-ms value (e.g. 5ms) is also valid.
-	// Set to a negative value to disable hysteresis entirely.
+	// 10% hysteresis: h_bonus = HysteresisBonus × e_lat.
+	// Default: 0.10. Set to 0 to disable hysteresis entirely.
 	HysteresisBonus float64
 }
 
@@ -217,7 +217,7 @@ func DefaultPeerManagerConfig() PeerManagerConfig {
 		ScoreSwitchThreshold:            0.25,
 		ScoreStableProbes:               3,
 		MinSamplesForScoring:            3,
-		HysteresisBonus:                 0, // 0 = use 10% of active score dynamically
+		HysteresisBonus:                 0.10, // 10% of e_lat (spec §6.1)
 	}
 }
 
@@ -988,10 +988,12 @@ func (pm *PeerManager) evaluatePathSwitching(ctx context.Context, activeName str
 	}
 
 	// Apply hysteresis bonus to the active transport's score.
+	// h_bonus = HysteresisBonus × e_lat (raw EWMA latency, not composite score).
 	// This makes the active transport "stickier" — an alternative must
 	// beat it by more than the bonus to trigger a switch, preventing
 	// flapping between near-identical-latency transports.
-	hBonus := pm.hysteresisBonus(activeScore)
+	eLat := float64(activeTS.latency.current().Milliseconds())
+	hBonus := pm.hysteresisBonus(eLat)
 	effectiveActive := activeScore - hBonus
 
 	// Find best alternative.
@@ -1047,29 +1049,44 @@ func (pm *PeerManager) evaluatePathSwitching(ctx context.Context, activeName str
 }
 
 // hysteresisBonus returns the amount to subtract from the active
-// transport's score to prevent flapping. If HysteresisBonus is 0,
-// it defaults to 10% of the active score (spec §6.1). A positive
-// value is used as a fixed latency in ms. A negative value disables
-// hysteresis (returns 0).
-func (pm *PeerManager) hysteresisBonus(activeScore float64) float64 {
-	if pm.cfg.HysteresisBonus < 0 {
+// transport's score to prevent flapping (spec §6.1).
+//
+//	h_bonus = HysteresisBonus × e_lat
+//
+// where e_lat is the raw EWMA latency in ms (NOT the composite score).
+// This ensures the hysteresis bonus scales with latency, not with the
+// penalty-inflated score.
+//
+// HysteresisBonus is a fraction (default 0.10 = 10%). A value of 0
+// disables hysteresis (returns 0).
+func (pm *PeerManager) hysteresisBonus(eLat float64) float64 {
+	if pm.cfg.HysteresisBonus <= 0 {
 		return 0
 	}
-	if pm.cfg.HysteresisBonus == 0 {
-		return activeScore * 0.1 // 10% default
-	}
-	return pm.cfg.HysteresisBonus
+	return pm.cfg.HysteresisBonus * eLat
 }
 
-// computeScore calculates the path selection score for a transport.
-// score = ewma_latency_ms × (1 + failure_penalty)
-// where failure_penalty = recent_failures / max(attempts, 10)
+// computeScore calculates the path selection score for a transport using
+// the additive formula (spec §6.1):
+//
+//	score = e_lat + s_pen
+//
+// where:
+//   - e_lat = EWMA-smoothed RTT in milliseconds
+//   - s_pen = e_lat × (recent_failures / max(attempts, 10))
+//
+// The hysteresis bonus (h_bonus) is NOT included here; it is applied
+// separately to the active transport's score in evaluatePathSwitching,
+// because h_bonus = HysteresisBonus × e_lat only for the active transport.
+//
 // Recent failures are those within the FailureLookback window.
 func (pm *PeerManager) computeScore(ts *transportState) float64 {
 	ewma := ts.latency.current()
 	if ewma == 0 {
 		return 0
 	}
+	eLat := float64(ewma.Milliseconds())
+
 	// Count recent failures within lookback window.
 	now := time.Now()
 	recentFailures := 0
@@ -1086,8 +1103,8 @@ func (pm *PeerManager) computeScore(ts *transportState) float64 {
 	if ts.latency.count+recentFailures > attempts {
 		attempts = ts.latency.count + recentFailures
 	}
-	failurePenalty := float64(recentFailures) / float64(attempts)
-	return float64(ewma.Milliseconds()) * (1 + failurePenalty)
+	sPen := eLat * (float64(recentFailures) / float64(attempts))
+	return eLat + sPen
 }
 
 // triggerSwitch closes the current active connection and starts a new
