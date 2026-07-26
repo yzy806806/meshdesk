@@ -27,15 +27,15 @@ const defaultMTU = 1420
 //   - An obfuscating bind for per-peer GFW resistance
 //   - A TransportRegistry for pluggable transport selection (UDP, Reality, WS)
 type MeshNode struct {
-	identity  *peer.Identity
-	dev       *device.Device
-	tnet      *netstack.Net
-	routes    *RoutingTable
-	bind      *obfuscatingBind
-	cfg       *config.Config
-	registry  *TransportRegistry
-	mu        sync.RWMutex
-	closed    bool
+	identity *peer.Identity
+	dev      *device.Device
+	tnet     *netstack.Net
+	routes   *RoutingTable
+	bind     *obfuscatingBind
+	cfg      *config.Config
+	registry *TransportRegistry
+	mu       sync.RWMutex
+	closed   bool
 }
 
 // New creates a new MeshNode from a config. If the config has no identity,
@@ -113,12 +113,12 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		}
 		rcfg := peerCfg.Reality
 		transportCfg := TransportConfig{
-			Name:              "reality",
-			DialTimeout:       30 * time.Second,
-			ServerName:        rcfg.ServerName,
-			RealityPublicKey:  rcfg.PublicKey,
-			RealityShortID:    rcfg.ShortID,
-			TLSFingerprint:    rcfg.TLSFingerprint,
+			Name:             "reality",
+			DialTimeout:      30 * time.Second,
+			ServerName:       rcfg.ServerName,
+			RealityPublicKey: rcfg.PublicKey,
+			RealityShortID:   rcfg.ShortID,
+			TLSFingerprint:   rcfg.TLSFingerprint,
 		}
 		if transportCfg.TLSFingerprint == "" {
 			transportCfg.TLSFingerprint = "chrome"
@@ -213,11 +213,11 @@ func (n *MeshNode) startRealityListener() error {
 
 	// Create a server-side RealityTransport.
 	transportCfg := TransportConfig{
-		Name:                "reality",
-		DialTimeout:         30 * time.Second,
-		RealityDest:         rcfg.Dest,
-		RealityPrivateKey:   rcfg.PrivateKey,
-		RealityServerNames:  rcfg.ServerNames,
+		Name:               "reality",
+		DialTimeout:        30 * time.Second,
+		RealityDest:        rcfg.Dest,
+		RealityPrivateKey:  rcfg.PrivateKey,
+		RealityServerNames: rcfg.ServerNames,
 	}
 	if len(rcfg.ShortIDs) > 0 {
 		// Use the first short ID for the server-side config.

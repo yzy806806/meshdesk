@@ -14,9 +14,9 @@ type ApiConfig struct {
 // forwards them to a configured destination. When used for the API,
 // it routes to the API handler via routing rules.
 type DokodemoDoorSettings struct {
-	Address        string `json:"address"`            // destination address
-	Port           int    `json:"port,omitempty"`     // destination port
-	Network        string `json:"network,omitempty"`  // "tcp" (default) or "udp"
+	Address        string `json:"address"`           // destination address
+	Port           int    `json:"port,omitempty"`    // destination port
+	Network        string `json:"network,omitempty"` // "tcp" (default) or "udp"
 	FollowRedirect bool   `json:"followRedirect,omitempty"`
 	UserLevel      int    `json:"userLevel,omitempty"`
 }

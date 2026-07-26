@@ -107,15 +107,15 @@ func (h *lifecycleHarness) newManager(drainTimeout, terminateTimeout time.Durati
 	configPath := filepath.Join(configDir, "config.json")
 
 	opts := ManagerOptions{
-		BinaryPath:         h.mockPath,
-		ConfigDir:          configDir,
-		ConfigPath:         configPath,
-		ApiPort:            8421,
-		ApiListen:          "127.0.0.1",
+		BinaryPath:          h.mockPath,
+		ConfigDir:           configDir,
+		ConfigPath:          configPath,
+		ApiPort:             8421,
+		ApiListen:           "127.0.0.1",
 		HealthCheckInterval: 500 * time.Millisecond,
-		ReadinessTimeout:   5 * time.Second,
-		DrainTimeout:       drainTimeout,
-		TerminateTimeout:   terminateTimeout,
+		ReadinessTimeout:    5 * time.Second,
+		DrainTimeout:        drainTimeout,
+		TerminateTimeout:    terminateTimeout,
 	}
 	if !enableHealth {
 		opts.ApiPort = -1 // disable health checking
@@ -133,12 +133,12 @@ func (h *lifecycleHarness) addInbound(m *XrayConfigManager) {
 	h.t.Helper()
 	priv, _, _ := GenerateX25519Key()
 	if err := m.AddInbound(&InboundConfig{
-		Tag:         "test-inbound",
-		Port:        443,
-		Security:    "reality",
-		Dest:        "www.cloudflare.com:443",
-		ServerNames: []string{"www.cloudflare.com"},
-		PrivateKey:  priv,
+		Tag:          "test-inbound",
+		Port:         443,
+		Security:     "reality",
+		Dest:         "www.cloudflare.com:443",
+		ServerNames:  []string{"www.cloudflare.com"},
+		PrivateKey:   priv,
 		VLESSClients: []VLESSClient{{ID: GenerateVLESSUUID()}},
 	}); err != nil {
 		h.t.Fatalf("AddInbound: %v", err)
@@ -422,11 +422,11 @@ func TestLifecycleHarness_BackoffScheduleUnit(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name           string
-		crashCount     int
+		name            string
+		crashCount      int
 		expectedBackoff time.Duration
-		shouldRestart  bool
-		expectedState  CircuitState
+		shouldRestart   bool
+		expectedState   CircuitState
 	}{
 		{"1 crash → 1s", 1, InitialRestartBackoff, true, CircuitClosed},
 		{"2 crashes → 1s", 2, InitialRestartBackoff, true, CircuitClosed},
@@ -733,7 +733,10 @@ func TestLifecycleHarness_InterRestartIntervals(t *testing.T) {
 	h.addInbound(m)
 
 	// Track PIDs over time
-	type event struct{ pid int; at time.Time }
+	type event struct {
+		pid int
+		at  time.Time
+	}
 	var events []event
 	var mu sync.Mutex
 

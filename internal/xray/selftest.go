@@ -34,8 +34,8 @@ type SelfTestCheck struct {
 type OverallStatus string
 
 const (
-	OverallHealthy  OverallStatus = "healthy"
-	OverallDegraded OverallStatus = "degraded"
+	OverallHealthy   OverallStatus = "healthy"
+	OverallDegraded  OverallStatus = "degraded"
 	OverallUnhealthy OverallStatus = "unhealthy"
 )
 
@@ -78,8 +78,8 @@ type SelfTestSummary struct {
 func (m *XrayConfigManager) SelfTest() *SelfTestResult {
 	start := time.Now()
 	result := &SelfTestResult{
-		Time:    start,
-		Checks:  make([]SelfTestCheck, 0, 7),
+		Time:   start,
+		Checks: make([]SelfTestCheck, 0, 7),
 	}
 
 	// 1. Binary presence

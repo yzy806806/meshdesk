@@ -56,16 +56,16 @@
 //
 // ## Failover Scenarios (at Factory level)
 //
-//  Scenario                   | Chain             | Registered? | Expected
-//  ---------------------------|-------------------|-------------|----------
-//  All registered             | udp, ws, reality  | all         | returns udp
-//  Middle not registered      | udp, ws, reality  | udp,reality | returns udp
-//  Only fallback registered   | udp, ws, reality  | reality     | returns reality
-//  None registered            | udp, ws           | (none)      | ErrTransportNotFound
-//  Nil fallback order         | (none set)        | udp, ws     | exact match only
-//  Empty fallback order       | []                | udp         | exact match only
-//  Concurrent read/write      | udp, ws           | udp, ws     | safe, no panic
-//  Fallback order copy safety | udp, ws           | udp, ws     | original not affected
+//	Scenario                   | Chain             | Registered? | Expected
+//	---------------------------|-------------------|-------------|----------
+//	All registered             | udp, ws, reality  | all         | returns udp
+//	Middle not registered      | udp, ws, reality  | udp,reality | returns udp
+//	Only fallback registered   | udp, ws, reality  | reality     | returns reality
+//	None registered            | udp, ws           | (none)      | ErrTransportNotFound
+//	Nil fallback order         | (none set)        | udp, ws     | exact match only
+//	Empty fallback order       | []                | udp         | exact match only
+//	Concurrent read/write      | udp, ws           | udp, ws     | safe, no panic
+//	Fallback order copy safety | udp, ws           | udp, ws     | original not affected
 //
 // ## Finding: Health check gap (documented)
 //

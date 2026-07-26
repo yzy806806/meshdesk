@@ -43,8 +43,8 @@ var h2Preface = []byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
 // After the preface, the client must send a SETTINGS frame.
 var h2SettingsFrame = []byte{
 	0x00, 0x00, 0x00, // length: 0
-	0x04,       // type: SETTINGS
-	0x00,       // flags: none
+	0x04,                   // type: SETTINGS
+	0x00,                   // flags: none
 	0x00, 0x00, 0x00, 0x00, // stream ID: 0
 }
 
@@ -106,9 +106,9 @@ type HealthStatus struct {
 type HealthChecker struct {
 	mu sync.Mutex
 
-	addr        string        // host:port of the gRPC API
-	timeout     time.Duration // per-probe timeout
-	lastStatus  HealthStatus
+	addr       string        // host:port of the gRPC API
+	timeout    time.Duration // per-probe timeout
+	lastStatus HealthStatus
 }
 
 // NewHealthChecker creates a HealthChecker for the given address.
