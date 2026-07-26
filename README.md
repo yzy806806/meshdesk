@@ -45,6 +45,29 @@ Nezha has monitoring and WebSSH but no mesh networking — if the dashboard is d
 - **Relay fallback** — when direct connection fails, traffic is relayed through mesh peers
 - Transport obfuscation: padded mode (AmneziaWG-style) or WebSocket+TLS mode (with uTLS fingerprint mimicry)
 - Fine-grained peer capabilities — restrict what each peer can access (monitor, SSH, file transfer, service management)
+- Pluggable transport layer with Reality TLS handshake hijack (embedded, no subprocess) — see [Transport Layer](#transport-layer)
+
+### Transport Layer
+
+The transport layer abstracts how MeshDesk nodes communicate. Every peer can use a different transport, and [PeerManager](#peermanager) handles automatic fallback between them. The transport layer implements a three-layer interface contract: `PeerConn` (per-connection wrapper), `Transport` (per-transport instance), and `TransportRegistry` (named registry). See [docs/TRANSPORT_CONTRACT.md](./docs/TRANSPORT_CONTRACT.md) for the full spec.
+
+- **Transport Interface** — a common `Transport` interface (`Connect`, `Listen`, `LatencyProbe`, `IsHealthy`) decouples WireGuard from the underlying network. Any transport implementing this interface can carry mesh traffic — add new transports without touching WireGuard code.
+- **UDP Transport** — raw WireGuard UDP. Used for LAN peers and direct connections. Lowest latency, zero overhead.
+- **Reality Transport** — xray-core Reality TLS handshake hijack, **embedded directly in MeshDesk** (no subprocess, no external binary). uTLS ClientHello fingerprint mimicry (Chrome, Firefox, Safari) makes the connection indistinguishable from a real browser visiting a major website (e.g., apple.com). Passive DPI sees legitimate TLS 1.3. Active probing hits the real website's response. The strongest GFW-resistant transport available.
+- **WebSocket Transport** — WebSocket + TLS with uTLS fingerprint mimicry, retained as a fallback for environments where Reality is unnecessary or unavailable.
+- **Automatic Fallback** — PeerManager tries transports in priority order (UDP → Reality → WS → Relay). If the primary transport is unresponsive after 5s, the next transport is raced in parallel (Happy Eyeballs hedging). See [docs/ARCHITECTURE_REFACTOR.md](./docs/ARCHITECTURE_REFACTOR.md) for the full refactor design.
+
+### PeerManager
+
+PeerManager is the connection lifecycle manager for every mesh peer. Each peer gets a dedicated goroutine that monitors connectivity across all transports, handles failure recovery, and selects the best available path.
+
+- **Auto-reconnect with exponential backoff** — dropped connections are retried automatically with exponential backoff (30s → 60s → 120s → 240s → 300s cap). Successful connection resets the timer.
+- **Multi-transport fallback** — when the primary transport fails, PeerManager falls through the fallback chain (UDP → Reality → WS → Relay) automatically. Quarantined transports are cooled off with exponential cooldown before retry. A **blackout escape hatch** (try the least-recently-quarantined transport) prevents permanent disconnect when all transports are unavailable.
+- **EWMA-based latency probing** — split-alpha EWMA (α_rise=0.7, α_fall=0.3) tracks per-transport latency. Fast rise detects degradation within 2 samples (~60s); slow fall prevents path flapping. Samples come from both passive sources (WireGuard handshake timing, TCP RTT via `getsockopt`) and active probes (scheduled `LatencyProbe` calls).
+- **Optimal path selection with hysteresis** — a composite additive score (EWMA latency + stability penalty − hysteresis bonus) selects the best transport. A 10% hysteresis discount on the currently-active transport prevents path flapping when two transports have similar latency.
+- **Per-transport quarantine** — repeated failures quarantine a transport with exponential cooldown (up to 300s cap). Failure thresholds vary by transport type (UDP: 3, WebSocket: 2, Reality: 2, Relay: 3) reflecting real-world reliability characteristics.
+
+See [docs/PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md) for the full state machine, quarantine logic, Happy Eyeballs hedging, and path selection scoring spec.
 
 ### Monitoring
 
@@ -119,6 +142,8 @@ Features carry an explicit maturity label so you know what to expect:
 | Feature | Maturity | Notes |
 |---|---|---|
 | Mesh VPN & P2P Dynamic Networking | **Stable** | WireGuard mesh, gossip discovery, NAT traversal, dynamic join — all unit-tested |
+| Transport Layer | **Beta** | Pluggable transports: UDP, Reality (xray-core embedded), WebSocket; automatic fallback |
+| PeerManager | **Beta** | Auto-reconnect, multi-transport fallback, EWMA latency probing, optimal path selection |
 | Monitoring | **Stable** | Real-time metrics, push collectors, SSE dashboard updates |
 | Web Terminal | **Stable** | xterm.js + WebSocket, multi-tab, SIGWINCH support |
 | File Transfer | **Stable** | Upload/download via web UI, capability-scoped paths |
@@ -126,6 +151,7 @@ Features carry an explicit maturity label so you know what to expect:
 | Dashboard Security (TOTP 2FA) | **Stable** | TOTP enrollment, step-up auth, encrypted key storage, webhook alerts |
 | Multi-path Anonymous Proxy | **Beta** | Circuit routing functional; chunker/reassembly needs real-machine validation |
 | 3D Topology Visualization | **Beta** | Node graph + latency edges complete; circuit particles use mock data |
+| x-ui Panel Integration | **Beta** | Inbound/outbound configuration, user management, Reality config generation via Dashboard |
 
 **Maturity definitions:**
 - **Stable** — Feature is implemented, unit-tested, and has been verified by the team. Suitable for production use with standard safeguards.
@@ -349,20 +375,30 @@ All fields are optional. Omitted fields get sensible defaults. If the config fil
 │  │ + gossip │  │          │  │ proxy)│  │ Exit   │ │
 │  └────┬─────┘  └────┬─────┘  └───┬───┘  └───┬────┘ │
 │       │             │            │           │       │
-│       └──────┬──────┴────────────┴───────────┘       │
-│              │                                      │
-│  ┌───────────┴──────────────────────────┐           │
-│  │           HTTP Server                 │           │
-│  │  (--web only)                        │           │
-│  │                                       │           │
-│  │  • Dashboard (htmx + SSE)            │           │
-│  │  • WebSSH Terminal                    │           │
-│  │  • File Transfer UI                   │           │
-│  │  • Service Management UI              │           │
-│  │  • 3D Topology (Three.js + SSE)      │           │
-│  │  • TOTP 2FA + Step-up Auth           │           │
-│  │  • Security Alerts + Webhook         │           │
-│  └───────────────────────────────────────┘           │
+│  ┌────┴─────────────┴────────────┴───────────┴────┐ │
+│  │              PeerManager                       │ │
+│  │   auto-reconnect • multi-transport fallback    │ │
+│  │   EWMA latency probing • optimal path select   │ │
+│  └────┬───────────────────────────────────────────┘ │
+│       │                                             │
+│  ┌────┴──────────────────────────────────────────┐  │
+│  │              Transport Layer                   │  │
+│  │   UDP • Reality (embedded) • WebSocket        │  │
+│  └────┬──────────────────────────────────────────┘  │
+│       │                                             │
+│  ┌────┴──────────────────────────────────────────┐  │
+│  │           HTTP Server                          │  │
+│  │  (--web only)                                 │  │
+│  │                                               │  │
+│  │  • Dashboard (htmx + SSE)                    │  │
+│  │  • WebSSH Terminal                            │  │
+│  │  • File Transfer UI                           │  │
+│  │  • Service Management UI                      │  │
+│  │  • 3D Topology (Three.js + SSE)              │  │
+│  │  • TOTP 2FA + Step-up Auth                   │  │
+│  │  • Security Alerts + Webhook                 │  │
+│  │  • x-ui Panel Integration                    │  │
+│  └──────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -371,6 +407,10 @@ All fields are optional. Omitted fields get sensible defaults. If the config fil
 Detailed design documents are in [`docs/`](./docs/):
 
 - [ARCHITECTURE.md](./docs/ARCHITECTURE.md) — System architecture overview
+- [ARCHITECTURE_REFACTOR.md](./docs/ARCHITECTURE_REFACTOR.md) — Transport layer abstraction, Reality, and PeerManager refactor
+- [PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md) — PeerManager state machine, quarantine, latency probing, path selection
+- [OBFUSCATION_RESEARCH.md](./docs/OBFUSCATION_RESEARCH.md) — GFW obfuscation research and Reality integration design
+- [TRANSPORT_CONTRACT.md](./docs/TRANSPORT_CONTRACT.md) — Transport layer interface contract (PeerConn, Transport, TransportRegistry)
 - [PROXY_DESIGN.md](./docs/PROXY_DESIGN.md) — Multi-path anonymous proxy design
 - [CIRCUIT_MANAGER_SPEC.md](./docs/CIRCUIT_MANAGER_SPEC.md) — Circuit lifecycle management
 - [CHUNKER_CONTRACT.md](./docs/CHUNKER_CONTRACT.md) — Chunker/Reassembler interface
