@@ -171,6 +171,14 @@ type PeerManagerConfig struct {
 	// MinSamplesForScoring is the minimum latency samples needed before
 	// a transport is eligible for path selection scoring.
 	MinSamplesForScoring int
+
+	// HysteresisBonus is subtracted from the active transport's score
+	// during path comparison to prevent flapping between two near-identical
+	// transports (e.g. UDP 8ms vs Reality 9ms). The spec (§6.1) calls for
+	// 10% hysteresis; a 0 value means use 10% of the active score at
+	// evaluation time. A positive fixed-ms value (e.g. 5ms) is also valid.
+	// Set to a negative value to disable hysteresis entirely.
+	HysteresisBonus float64
 }
 
 // DefaultPeerManagerConfig returns a PeerManagerConfig with sensible defaults.
@@ -196,6 +204,7 @@ func DefaultPeerManagerConfig() PeerManagerConfig {
 		ScoreSwitchThreshold:            0.25,
 		ScoreStableProbes:               3,
 		MinSamplesForScoring:            3,
+		HysteresisBonus:                 0, // 0 = use 10% of active score dynamically
 	}
 }
 
@@ -909,6 +918,13 @@ func (pm *PeerManager) evaluatePathSwitching(ctx context.Context, activeName str
 		return
 	}
 
+	// Apply hysteresis bonus to the active transport's score.
+	// This makes the active transport "stickier" — an alternative must
+	// beat it by more than the bonus to trigger a switch, preventing
+	// flapping between near-identical-latency transports.
+	hBonus := pm.hysteresisBonus(activeScore)
+	effectiveActive := activeScore - hBonus
+
 	// Find best alternative.
 	var bestName string
 	var bestScore float64
@@ -942,9 +958,9 @@ func (pm *PeerManager) evaluatePathSwitching(ctx context.Context, activeName str
 	}
 
 	// Check if alternative is significantly better.
-	// Switch when bestScore < activeScore × (1 - threshold)
+	// Switch when bestScore < effectiveActive × (1 - threshold)
 	threshold := pm.cfg.ScoreSwitchThreshold
-	if bestScore < activeScore*(1-threshold) {
+	if bestScore < effectiveActive*(1-threshold) {
 		pm.mu.Lock()
 		activeTS.stableBetter++
 		stable := activeTS.stableBetter
@@ -959,6 +975,21 @@ func (pm *PeerManager) evaluatePathSwitching(ctx context.Context, activeName str
 		activeTS.stableBetter = 0
 		pm.mu.Unlock()
 	}
+}
+
+// hysteresisBonus returns the amount to subtract from the active
+// transport's score to prevent flapping. If HysteresisBonus is 0,
+// it defaults to 10% of the active score (spec §6.1). A positive
+// value is used as a fixed latency in ms. A negative value disables
+// hysteresis (returns 0).
+func (pm *PeerManager) hysteresisBonus(activeScore float64) float64 {
+	if pm.cfg.HysteresisBonus < 0 {
+		return 0
+	}
+	if pm.cfg.HysteresisBonus == 0 {
+		return activeScore * 0.1 // 10% default
+	}
+	return pm.cfg.HysteresisBonus
 }
 
 // computeScore calculates the path selection score for a transport.
@@ -1153,10 +1184,11 @@ func (pm *PeerManager) failureThreshold(name string) int {
 }
 
 // cooldownDuration computes the exponential backoff for quarantine cycle n.
-// cooldown = min(BaseCooldown × 2^(n-1), MaxCooldown)
+// cooldown = min(BaseCooldown × 2^n, MaxCooldown)
+// n=0 → BaseCooldown (30s), n=1 → 60s, n=2 → 120s, n=3 → 240s, ...
 func (pm *PeerManager) cooldownDuration(n int) time.Duration {
 	d := pm.cfg.QuarantineBaseCooldown
-	for i := 1; i < n; i++ {
+	for i := 0; i < n; i++ {
 		d *= 2
 		if d > pm.cfg.QuarantineMaxCooldown {
 			return pm.cfg.QuarantineMaxCooldown
