@@ -43,6 +43,11 @@ type Server struct {
 
 	proxyStatusProvider ProxyStatusProvider
 
+	// xrayManager manages the xray-core subprocess (config generation,
+	// start/stop/reload, crash auto-restart, log capture). May be nil
+	// when xray integration is not configured on this node.
+	xrayManager XrayManager
+
 	// Topology providers — injected or auto-derived from mesh/monitor.
 	// When nil, the handler builds adapters from s.node and s.monitorStore.
 	topologyPeersProvider   topology.TopologyPeers
@@ -96,6 +101,10 @@ type Deps struct {
 	// /api/proxy/status dashboard endpoint. May be nil when the node
 	// is not running as a proxy entry point.
 	ProxyStatusProvider ProxyStatusProvider
+
+	// XrayManager manages the xray-core subprocess layer. May be nil
+	// when xray integration is not configured on this node.
+	XrayManager XrayManager
 
 	// AlertWebhookURL is an optional webhook endpoint for external
 	// security alert delivery. When set, a WebhookDispatcher is created
@@ -174,6 +183,7 @@ func New(deps Deps) (*Server, error) {
 		stepUpStore:         deps.StepUpStore,
 		alertStore:          deps.AlertStore,
 		proxyStatusProvider: deps.ProxyStatusProvider,
+		xrayManager:         deps.XrayManager,
 
 		topologyPeersProvider:   deps.TopologyPeers,
 		topologyMetricsProvider: deps.TopologyMetrics,
@@ -315,6 +325,20 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// routes, but must remain accessible to monitoring tools and the
 	// dashboard itself even when the admin has not completed TOTP.
 	mux.HandleFunc("/api/proxy/status", s.requireAuth(s.handleProxyStatus))
+
+	// Xray-core managed subprocess API (auth required).
+	// POST/GET/DELETE /api/xray/inbound — manage xray inbounds
+	// GET  /api/xray/status — process status
+	// GET  /api/xray/logs   — captured stdout/stderr
+	// POST /api/xray/start  — start xray subprocess
+	// POST /api/xray/stop   — stop xray subprocess
+	// POST /api/xray/reload — SIGHUP hot-reload
+	mux.HandleFunc("/api/xray/inbound", s.requireAuth(s.handleXrayInbound))
+	mux.HandleFunc("/api/xray/status", s.requireAuth(s.handleXrayStatus))
+	mux.HandleFunc("/api/xray/logs", s.requireAuth(s.handleXrayLogs))
+	mux.HandleFunc("/api/xray/start", s.requireAuth(s.handleXrayStart))
+	mux.HandleFunc("/api/xray/stop", s.requireAuth(s.handleXrayStop))
+	mux.HandleFunc("/api/xray/reload", s.requireAuth(s.handleXrayReload))
 
 	// WebSocket terminal — middleware chain enforces:
 	//   sessionAuthMiddleware  → valid web session (if web users configured)
