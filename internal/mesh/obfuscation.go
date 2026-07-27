@@ -733,6 +733,28 @@ func init() {
 
 // --- Obfuscating Bind (conn.Bind wrapper) ---
 
+// EndpointNotifier is called when the ObfuscatingBind receives a WireGuard
+// packet and can identify the source endpoint. Implementations bridge this
+// information to the gossip layer for propagation.
+type EndpointNotifier interface {
+	// OnEndpointDiscovered is called when a WireGuard packet arrives from
+	// a peer whose public key can be identified via the endpoint→peer key
+	// reverse index. The peerKey is the hex-encoded WireGuard public key,
+	// and endpoint is the source address in "host:port" format.
+	//
+	// Implementation contract (NON-NEGOTIABLE):
+	//   - MUST return immediately. This is called from the WireGuard
+	//     receive hot path, which runs inside wireguard-go goroutines.
+	//     Blocking here delays ALL packet processing.
+	//   - MUST be idempotent. WireGuard sends keepalive and transport
+	//     packets frequently; duplicate calls for the same (peerKey,
+	//     endpoint) pair are the common case, not an edge case.
+	//   - MAY be called concurrently from multiple receive goroutines.
+	//   - peerKey is guaranteed non-empty. Callers filter empty keys
+	//     before invoking (unknown-endpoint packets are silently ignored).
+	OnEndpointDiscovered(peerKey string, endpoint string)
+}
+
 // obfuscatingBind wraps a conn.Bind to apply per-peer obfuscation transforms
 // on all outbound and inbound packets. This is the integration point between
 // the obfuscation shim and wireguard-go's networking layer.
@@ -745,6 +767,17 @@ type obfuscatingBind struct {
 	mu          sync.RWMutex
 	rngMu       sync.Mutex
 	rng         *mrand.Rand
+
+	// notifier is called when a source endpoint is successfully mapped to
+	// a known peer. nil when not registered (endpoint learning disabled).
+	notifier EndpointNotifier
+
+	// endpointToPeer maps "host:port" → hex public key.
+	// Populated at AddEndpointMapping time when the peer config includes a
+	// known endpoint. Used by wrapReceiveFunc to reverse-lookup the public
+	// key from the source endpoint of an inbound packet.
+	endpointToPeer map[string]string
+	epMu           sync.RWMutex // guards endpointToPeer
 }
 
 // NewObfuscatingBind wraps an inner conn.Bind with per-peer obfuscation.
@@ -771,6 +804,26 @@ func (b *obfuscatingBind) SetObfuscatorWithConfig(peerKey string, mode Obfuscati
 	defer b.mu.Unlock()
 	b.obfuscators[peerKey] = NewObfuscatorWithConfig(mode, cfg, isClient)
 	b.configs[peerKey] = cfg
+}
+
+// SetEndpointNotifier installs the endpoint learning notifier.
+// Pass nil to disable (default — endpoint learning is off).
+func (b *obfuscatingBind) SetEndpointNotifier(n EndpointNotifier) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.notifier = n
+}
+
+// AddEndpointMapping records a known endpoint→peerKey mapping.
+// Called from MeshNode.AddPeer when the peer config includes an
+// endpoint. Safe for concurrent access.
+func (b *obfuscatingBind) AddEndpointMapping(endpoint, peerKey string) {
+	b.epMu.Lock()
+	defer b.epMu.Unlock()
+	if b.endpointToPeer == nil {
+		b.endpointToPeer = make(map[string]string)
+	}
+	b.endpointToPeer[endpoint] = peerKey
 }
 
 // GetObfuscator returns the obfuscator for a peer, defaulting to padded mode.
@@ -981,6 +1034,19 @@ func (b *obfuscatingBind) wrapReceiveFunc(fn conn.ReceiveFunc) conn.ReceiveFunc 
 			}
 			copy(packets[i], data)
 			sizes[i] = len(data)
+
+			// Endpoint learning: notify the registered notifier if the
+			// source endpoint maps to a known peer via the reverse index.
+			// Called AFTER deobfuscation so we only notify on valid packets.
+			if b.notifier != nil && eps[i] != nil {
+				srcEndpoint := eps[i].DstToString()
+				b.epMu.RLock()
+				realPeerKey, found := b.endpointToPeer[srcEndpoint]
+				b.epMu.RUnlock()
+				if found && realPeerKey != "" {
+					b.notifier.OnEndpointDiscovered(realPeerKey, srcEndpoint)
+				}
+			}
 		}
 		return n, nil
 	}

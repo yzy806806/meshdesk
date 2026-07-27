@@ -912,3 +912,14 @@ func generateCircuitID() string {
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("%x", b)
 }
+
+// inferNAT returns a conservative NAT type based on how the endpoint
+// was discovered. Called from OnEndpointDiscovered when a direct packet
+// is received from a peer — meaning the peer can receive UDP at this
+// address, suggesting at least a restricted cone NAT.
+func inferNAT(receivedFromEndpoint string) string {
+	// A peer that can send us packets directly has at least
+	// a restricted cone NAT. We can't distinguish full_cone from
+	// restricted_cone without a STUN test, so be conservative.
+	return "restricted_cone"
+}

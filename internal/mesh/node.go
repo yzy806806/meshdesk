@@ -322,6 +322,12 @@ func (n *MeshNode) Device() *device.Device {
 	return n.dev
 }
 
+// ObfuscatingBind returns the obfuscating bind for registering endpoint
+// notifiers. Returns nil if the node has not been started.
+func (n *MeshNode) ObfuscatingBind() *obfuscatingBind {
+	return n.bind
+}
+
 // AddPeer adds a new peer to the mesh and configures it in WireGuard.
 func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 	if cfg.PublicKey == "" {
@@ -361,6 +367,13 @@ func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 		n.bind.SetObfuscatorWithConfig(cfg.PublicKey, mode, obfCfg, true)
 	} else {
 		n.bind.SetObfuscator(cfg.PublicKey, mode)
+	}
+
+	// Register endpoint→peerKey mapping for endpoint learning.
+	// This populates the reverse index used by wrapReceiveFunc to identify
+	// which peer sent an inbound packet based on its source address.
+	if cfg.Endpoint != "" {
+		n.bind.AddEndpointMapping(cfg.Endpoint, cfg.PublicKey)
 	}
 
 	// Add to routing table.
