@@ -32,10 +32,9 @@ func TestLoadAndSave(t *testing.T) {
 		},
 		Peers: []PeerConfig{
 			{
-				PublicKey:   "peerkey123",
-				Endpoint:    "1.2.3.4:51820",
-				AllowedIPs:  []string{"10.10.1.1/32"},
-				Obfuscation: "padded",
+				PublicKey:  "peerkey123",
+				Endpoint:   "1.2.3.4:51820",
+				AllowedIPs: []string{"10.10.1.1/32"},
 			},
 		},
 		Monitoring: MonitoringConfig{
@@ -68,9 +67,6 @@ func TestLoadAndSave(t *testing.T) {
 	}
 	if loaded.Peers[0].PublicKey != "peerkey123" {
 		t.Errorf("Peer[0] PublicKey = %q, want %q", loaded.Peers[0].PublicKey, "peerkey123")
-	}
-	if loaded.Peers[0].Obfuscation != "padded" {
-		t.Errorf("Peer[0] Obfuscation = %q, want %q", loaded.Peers[0].Obfuscation, "padded")
 	}
 	if loaded.Monitoring.Interval != 15 {
 		t.Errorf("Monitoring interval = %d, want 15", loaded.Monitoring.Interval)

@@ -133,12 +133,10 @@ func main() {
 			log.Printf("Warning: failed to start P2P gossip layer: %v", err)
 		} else {
 			gossipLayer = gl
-			// Register GossipLayer as the endpoint notifier.
-			// GossipLayer implements mesh.EndpointNotifier.
-			node.ObfuscatingBind().SetEndpointNotifier(gossipLayer)
+			// TODO(v2): endpoint notifier will be wired via the new protocol layer.
+			// v1 used node.ObfuscatingBind().SetEndpointNotifier(gossipLayer).
 			log.Printf("  P2P:       gossip active (port %d, %d seeds)",
 				cfg.Mesh.GossipPort, len(cfg.P2P.Seeds))
-			log.Printf("  P2P:       endpoint learning enabled (notifier wired to gossip layer)")
 		}
 
 		// Enable relay mode if --relay flag or config proxy.relay.enabled is set.
@@ -699,7 +697,8 @@ type meshListenerAdapter struct {
 }
 
 func (a *meshListenerAdapter) ListenMesh(port int) (net.Listener, error) {
-	return a.node.Net().ListenTCP(&net.TCPAddr{Port: port})
+	// TODO(v2): implement listener via smux/Reality TLS transport.
+	return nil, fmt.Errorf("v2: ListenMesh not implemented")
 }
 
 // entryNodeStatusAdapter adapts *proxy.EntryNode to the
@@ -790,18 +789,14 @@ func runJoinSubcommand(args []string) {
 		}
 		endpoint := net.JoinHostPort(host, port)
 
-		// Compute the bootstrap's mesh IP from its public key.
-		bootstrapMeshIP := p2p.DeriveMeshIPFromHex(*bootstrapKey)
-
+		// v2: no mesh IP derivation — peer ID is the routing key.
 		peerCfg := config.PeerConfig{
-			PublicKey:   *bootstrapKey,
-			Endpoint:    endpoint,
-			AllowedIPs:  []string{bootstrapMeshIP + "/32"},
-			Obfuscation: "padded",
+			PublicKey: *bootstrapKey,
+			Endpoint:  endpoint,
 		}
 		cfg.Peers = append(cfg.Peers, peerCfg)
-		log.Printf("Added bootstrap as static peer: %s@%s (mesh IP %s)",
-			(*bootstrapKey)[:8], endpoint, bootstrapMeshIP)
+		log.Printf("Added bootstrap as static peer: %s@%s",
+			(*bootstrapKey)[:8], endpoint)
 	}
 
 	// Create the mesh node.

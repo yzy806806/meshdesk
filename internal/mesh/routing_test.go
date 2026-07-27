@@ -98,10 +98,9 @@ func TestRoutingTableUpdatePeer(t *testing.T) {
 func TestRoutingTableResolvePeerByIP(t *testing.T) {
 	rt := NewRoutingTable()
 	peer1 := &PeerEntry{
-		ID:          "aaaa1111",
-		Endpoint:    "1.2.3.4:51820",
-		AllowedIPs:  []string{"10.10.1.1/32"},
-		Obfuscation: ObfuscationPadded,
+		ID:         "aaaa1111",
+		Endpoint:   "1.2.3.4:51820",
+		AllowedIPs: []string{"10.10.1.1/32"},
 	}
 	rt.AddPeer(peer1)
 
@@ -109,8 +108,8 @@ func TestRoutingTableResolvePeerByIP(t *testing.T) {
 	if !ok {
 		t.Fatal("ResolvePeerByIP failed")
 	}
-	if p.Obfuscation != ObfuscationPadded {
-		t.Errorf("Obfuscation = %v, want %v", p.Obfuscation, ObfuscationPadded)
+	if p.ID != "aaaa1111" {
+		t.Errorf("ID = %v, want aaaa1111", p.ID)
 	}
 }
 

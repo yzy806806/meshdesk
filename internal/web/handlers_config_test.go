@@ -40,10 +40,6 @@ func newConfigTestServer(t *testing.T) (*Server, string) {
 			Endpoint:     "1.2.3.4:51820",
 			AllowedIPs:   []string{"10.10.0.2/32"},
 			Capabilities: []string{"ssh_proxy"},
-			PresharedKey: "peer-psk-secret",
-			ObfConfig: &config.ObfuscationOpts{
-				PSK: "obf-psk-secret",
-			},
 			Reality: &config.RealityPeerConfig{
 				ServerName: "www.apple.com",
 				PublicKey:  "reality-server-pubkey",
@@ -717,15 +713,6 @@ func TestGetConfig_PeerMaskedFields(t *testing.T) {
 		t.Fatal("peer[0] is not a map")
 	}
 
-	// preshared_key should be masked.
-	if psk, ok := peer["preshared_key"].(string); ok {
-		if psk != maskSentinel {
-			t.Errorf("peers[0].preshared_key = %q, want %q", psk, maskSentinel)
-		}
-	} else {
-		t.Error("peers[0].preshared_key missing or not a string")
-	}
-
 	// public_key should NOT be masked (it's read-only, not masked on read).
 	// Actually, public_key is T0 read-only, so it should show the actual value.
 	if pk, ok := peer["public_key"].(string); ok {
@@ -841,10 +828,6 @@ func TestMatchFieldPath(t *testing.T) {
 	}{
 		{"mesh.port", "mesh.port", true},
 		{"mesh.port", "mesh.gossip_port", false},
-		{"peers[N].preshared_key", "peers[0].preshared_key", true},
-		{"peers[N].preshared_key", "peers[5].preshared_key", true},
-		{"peers[N].preshared_key", "peers[0].endpoint", false},
-		{"peers[N].preshared_key", "peers.public_key", false},
 		{"auth.web_users[N].password_hash", "auth.web_users[0].password_hash", true},
 		{"auth.web_users", "auth.web_users", true},
 		{"node.identity", "node.identity", true},
@@ -867,8 +850,6 @@ func TestFieldPathToTemplate(t *testing.T) {
 		want  string
 	}{
 		{"mesh.port", "mesh.port"},
-		{"peers[0].preshared_key", "peers[N].preshared_key"},
-		{"peers[12].obf_config.psk", "peers[N].obf_config.psk"},
 		{"auth.web_users[0].password_hash", "auth.web_users[N].password_hash"},
 		{"node.identity", "node.identity"},
 	}
@@ -913,8 +894,8 @@ func TestIsMasked(t *testing.T) {
 		want bool
 	}{
 		{"node.identity", true},
-		{"peers[0].preshared_key", true},
-		{"peers[0].obf_config.psk", true},
+		{"peers[0].reality.public_key", true},
+		{"peers[0].reality.short_id", true},
 		{"webssh.host_key", true},
 		{"proxy.ss.password", true},
 		{"reality.private_key", true},

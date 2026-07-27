@@ -62,6 +62,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -889,4 +890,52 @@ func GenerateRealityKeyPair() (string, string, error) {
 	}
 	pubKey := privKey.PublicKey()
 	return hex.EncodeToString(privKey.Bytes()), hex.EncodeToString(pubKey.Bytes()), nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Shared utility functions (moved from deleted obfuscation.go / udp_transport.go)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// isTransientError classifies an error as transient (retry-able) or permanent.
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return true
+		}
+		if netErr.Temporary() {
+			return true
+		}
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return dnsErr.IsTemporary || dnsErr.IsNotFound == false
+	}
+	return true
+}
+
+// fingerprintToHelloID converts a fingerprint name string to a utls.ClientHelloID.
+func fingerprintToHelloID(fp string) utls.ClientHelloID {
+	switch strings.ToLower(fp) {
+	case "", "chrome":
+		return utls.HelloChrome_Auto
+	case "firefox":
+		return utls.HelloFirefox_Auto
+	case "safari":
+		return utls.HelloSafari_Auto
+	case "edge":
+		return utls.HelloEdge_Auto
+	case "ios":
+		return utls.HelloIOS_Auto
+	case "android":
+		return utls.HelloAndroid_11_OkHttp
+	default:
+		return utls.HelloChrome_Auto
+	}
 }

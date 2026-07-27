@@ -9,17 +9,17 @@ import (
 )
 
 // TestAllowedIPsForPeer verifies that relay-capable peers get the full
-// mesh subnet while non-relay peers get only their own /32.
+// mesh subnet while non-relay peers get only their own address.
 func TestAllowedIPsForPeer(t *testing.T) {
-	// Non-relay peer: should get /32
+	// Non-relay peer: should get its own mesh IP
 	nonRelay := &NodeMeta{
 		PublicKey: "abc123",
 		MeshIP:    "10.10.1.5",
 		CapRelay:  false,
 	}
 	ips := AllowedIPsForPeer(nonRelay)
-	if len(ips) != 1 || ips[0] != "10.10.1.5/32" {
-		t.Errorf("non-relay AllowedIPs = %v, want [10.10.1.5/32]", ips)
+	if len(ips) != 1 || ips[0] != "10.10.1.5" {
+		t.Errorf("non-relay AllowedIPs = %v, want [10.10.1.5]", ips)
 	}
 
 	// Relay-capable peer: should get full mesh subnet

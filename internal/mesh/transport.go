@@ -385,15 +385,7 @@ type TransportConfig struct {
 	// the reality authentication check.
 	RealityServerNames []string
 
-	// ── Obfuscation fields (shared with existing obfuscation layer) ───────
-
-	// ObfuscationMode selects the obfuscation strategy for this transport:
-	// "none", "padded", "websocket". Reality is a separate transport type,
-	// not an obfuscation mode (it uses its own "reality" Name).
-	ObfuscationMode string
-
-	// ObfuscationPSK is the hex-encoded pre-shared key for anti-probe.
-	ObfuscationPSK string
+	// ── v2: obfuscation modes removed. Only Reality TLS transport remains. ──
 }
 
 // DefaultTransportConfig returns a TransportConfig with production-safe defaults.
