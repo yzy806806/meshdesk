@@ -138,6 +138,30 @@ func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 	})
 }
 
+// OnEndpointDiscovered implements mesh.EndpointNotifier.
+// Non-blocking: delegates to updateLocalMeta which holds the delegate
+// mutex briefly. Called from WireGuard receive goroutines.
+func (g *GossipLayer) OnEndpointDiscovered(peerKey, endpoint string) {
+	// peerKey is unused in this implementation because endpoint learning
+	// updates LOCAL node metadata (what endpoints *we* can be reached at).
+	// The peerKey identifies which peer sent us the packet, which could be
+	// used for per-peer endpoint tracking in a future enhancement.
+	_ = peerKey
+
+	g.delegate.updateLocalMeta(func(m *NodeMeta) {
+		// Dedup: check if this endpoint is already in the list.
+		// O(n) where n is len(Endpoints), typically 1-3.
+		for _, ep := range m.Endpoints {
+			if ep == endpoint {
+				return // already known, seq not incremented
+			}
+		}
+		m.Endpoints = append(m.Endpoints, endpoint)
+		m.NatType = inferNAT(endpoint)
+		m.Seq++
+	})
+}
+
 // Start initializes memberlist and begins gossip.
 func (g *GossipLayer) Start() error {
 	g.mu.Lock()

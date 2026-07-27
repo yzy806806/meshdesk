@@ -262,10 +262,16 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 
 	e.mu.Lock()
 
-	// Check for stale metadata (older sequence number).
-	if existing, ok := e.metaCache[meta.PublicKey]; ok && existing.Seq > meta.Seq {
-		e.mu.Unlock()
-		return // stale update, ignore
+	// Capture OLD endpoint BEFORE updating the cache.
+	// This fixes a critical bug where the cache was updated first (line 272)
+	// and then read back, making oldEndpoint always equal newEndpoint.
+	oldEndpoint := ""
+	if existing, ok := e.metaCache[meta.PublicKey]; ok {
+		if existing.Seq > meta.Seq {
+			e.mu.Unlock()
+			return // stale update, ignore
+		}
+		oldEndpoint = firstNonEmpty(existing.Endpoints)
 	}
 
 	// Update cached metadata.
@@ -288,18 +294,13 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 		delete(e.entryPool, meta.PublicKey)
 	}
 
-	// Update WireGuard endpoint if changed.
-	if existing, ok := e.metaCache[meta.PublicKey]; ok {
-		newEndpoint := firstNonEmpty(meta.Endpoints)
-		oldEndpoint := firstNonEmpty(existing.Endpoints)
-		if newEndpoint != "" && newEndpoint != oldEndpoint {
-			e.mu.Unlock()
-			if err := e.wg.UpdateEndpoint(meta.PublicKey, newEndpoint); err != nil {
-				log.Printf("[p2p] NotifyUpdate: failed to update endpoint for %s: %v",
-					meta.PublicKey[:8], err)
-			}
-		} else {
-			e.mu.Unlock()
+	// Endpoint change detection — uses captured oldEndpoint (not re-read from cache).
+	newEndpoint := firstNonEmpty(meta.Endpoints)
+	if newEndpoint != "" && newEndpoint != oldEndpoint {
+		e.mu.Unlock()
+		if err := e.wg.UpdateEndpoint(meta.PublicKey, newEndpoint); err != nil {
+			log.Printf("[p2p] NotifyUpdate: failed to update endpoint for %s: %v",
+				meta.PublicKey[:8], err)
 		}
 	} else {
 		e.mu.Unlock()
