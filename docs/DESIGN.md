@@ -179,11 +179,17 @@ All visual properties are defined as CSS custom properties in `web/static/css/ap
 
 ## Animation Principles
 
+**Animation engine:** All JavaScript animations are powered by **anime.js v4** via a thin wrapper module, `MeshAnim` (`web/static/js/anim.js`). The wrapper centralizes defaults (400ms duration, easeOutCubic), returns Promises for chaining, and tracks in-flight animations in a requestAnimationFrame (RAF) lifecycle Set.
+
+**RAF-boundary convention:** Every animation must go through a `MeshAnim` helper — never call `anime.animate()` directly. This ensures every RAF callback is registered and can be cancelled via `MeshAnim.cancelAll()`. Pages that create animations on mount MUST call `cancelAll()` on teardown to prevent leaked RAF callbacks writing to removed DOM nodes.
+
 1. **Fast, not flashy.** 120ms for micro-interactions (hover, focus).
 2. **Spring for metrics.** Bar width changes use a cubic-bezier overshoot for a "live" feel.
-3. **Flash on update.** SSE-driven metric updates trigger a 0.6s blue flash.
-4. **Fade on mount.** New cards fade up 4px on first render.
-5. **Button press.** Subtle 0.98 scale on active.
+3. **Flash on update.** SSE-driven metric updates trigger a 0.6s blue flash via `MeshAnim.fadeIn`/`fadeOut`.
+4. **Fade on mount.** New cards fade up 4px on first render via `MeshAnim.staggeredAppear`.
+5. **Button press.** Subtle 0.98 scale on active via `MeshAnim.scaleIn`/`scaleOut`.
+6. **Toast notifications.** Slide in from the right, auto-dismiss after 4s, slide out right — all via `MeshAnim.slideInRight`/`slideOutRight`.
+7. **Modal dialogs.** Scale in from 0.95 on open, scale out on close via `MeshAnim.scaleIn`/`scaleOut`.
 
 ## Responsive Strategy
 
@@ -203,8 +209,16 @@ web/
 │   │   └── app.css           # MeshDesk design system + components
 │   ├── js/
 │   │   ├── htmx.min.js       # HTMX for partial updates
+│   │   ├── anime.min.js      # anime.js v4 animation engine
+│   │   ├── anim.js           # MeshAnim wrapper (Promise helpers, RAF lifecycle)
 │   │   ├── dashboard.js      # SSE live metrics
+│   │   ├── topology.js       # Three.js 3D topology visualization
 │   │   ├── terminal.js       # xterm.js + WebSocket bridge
+│   │   ├── config.js         # Dashboard config pages
+│   │   ├── proxy-nodes.js    # Proxy node management
+│   │   ├── xui.js            # x-ui panel configuration
+│   │   ├── three.min.js      # Three.js 3D library
+│   │   ├── OrbitControls.js  # Three.js camera orbit controls
 │   │   └── xterm*.js         # xterm.js + addons
 │   └── img/                  # Static images (reserved)
 └── templates/
@@ -228,4 +242,5 @@ web/
 
 ## Changelog
 
+- **2026-07-27** — Adopted anime.js v4 as the animation engine with `MeshAnim` wrapper; added toast, modal, and entrance animation patterns; documented RAF-boundary convention.
 - **2026-07-25** — Initial design system: 60+ CSS custom properties, component polish, responsive refinements.
