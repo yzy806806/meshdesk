@@ -64,6 +64,10 @@ type Server struct {
 	sessions *SessionStore
 	sseHub   *SSEHub
 
+	// configAPI manages the tiered config access API: GET/PUT/PATCH
+	// endpoints, hot-reload tracking, and atomic config file writes.
+	configAPI *ConfigAPIManager
+
 	// webhookDispatcher forwards security alerts to an external endpoint
 	// (Slack, Discord, custom webhook). nil when AlertWebhookURL is empty.
 	webhookDispatcher *WebhookDispatcher
@@ -117,6 +121,12 @@ type Deps struct {
 	TopologyPeers   topology.TopologyPeers
 	TopologyMetrics topology.TopologyMetrics
 	TopologyPaths   topology.TopologyPathInfo
+
+	// ConfigPath is the on-disk YAML config file path. When set,
+	// the config API (GET/PUT/PATCH /api/config) reads from and
+	// writes to this file. When empty, the config API operates
+	// in-memory only (useful for tests).
+	ConfigPath string
 }
 
 // New creates a new web server from the given dependencies.
@@ -189,6 +199,7 @@ func New(deps Deps) (*Server, error) {
 		topologyPeersProvider:   deps.TopologyPeers,
 		topologyMetricsProvider: deps.TopologyMetrics,
 		topologyPathsProvider:   deps.TopologyPaths,
+		configAPI:               NewConfigAPIManager(deps.ConfigPath),
 	}
 
 	if s.monitorStore == nil {
@@ -352,6 +363,18 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/xray/inbound/client", s.requireAuth(s.handleXrayClient))
 	mux.HandleFunc("/api/xray/stats", s.requireAuth(s.handleXrayStats))
 	mux.HandleFunc("/api/xray/share", s.requireAuth(s.handleXrayShare))
+
+	// Config API (session auth required for all endpoints):
+	// GET    /api/config         — full or per-section config with tier masking
+	// PUT    /api/config         — full config replacement (step-up if T2 fields)
+	// PATCH  /api/config         — partial update via JSON merge-patch (step-up if T2 fields)
+	// POST   /api/config/reload  — hot-reload dirty fields, rate-limited 1 per 5s
+	// POST   /api/config/restart — restart daemon (step-up: settings), rate-limited 1 per 30s
+	// GET    /api/config/diff    — diff between running vs saved config
+	mux.HandleFunc("/api/config", s.requireAuth(s.handleConfigAPI))
+	mux.HandleFunc("/api/config/reload", s.requireAuth(s.handleConfigReload))
+	mux.HandleFunc("/api/config/restart", s.requireAuth(s.requireStepUp(OpSettings, s.handleConfigRestart)))
+	mux.HandleFunc("/api/config/diff", s.requireAuth(s.handleConfigDiff))
 
 	// WebSocket terminal — middleware chain enforces:
 	//   sessionAuthMiddleware  → valid web session (if web users configured)
