@@ -50,6 +50,8 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -578,8 +580,8 @@ func (t *RealityTransport) buildRealityConfig() (*realitypkg.Config, error) {
 // Reality proxies the real dest site's certificate during handshake,
 // so this cert is never presented to clients.
 func generateRealityPlaceholderCert() (realitypkg.Certificate, error) {
-	// Generate X25519 key pair.
-	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	// Generate ECDSA P-256 key pair (implements crypto.Signer).
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return realitypkg.Certificate{}, fmt.Errorf("generate key: %w", err)
 	}
@@ -595,11 +597,10 @@ func generateRealityPlaceholderCert() (realitypkg.Certificate, error) {
 		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
 	}
 
-	// Use raw public key bytes for the cert.
-	pubBytes := priv.PublicKey().Bytes()
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, pubBytes, priv)
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
 	if err != nil {
 		return realitypkg.Certificate{}, fmt.Errorf("create cert: %w", err)
 	}
