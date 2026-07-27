@@ -169,12 +169,12 @@ func (r *ReloaderRegistry) ClearRestartDirty() {
 
 // ReloadResult holds the outcome of a POST /api/config/reload call.
 type ReloadResult struct {
-	OK             bool     `json:"ok"`
-	Applied        []string `json:"applied"`
+	OK              bool     `json:"ok"`
+	Applied         []string `json:"applied"`
 	RequiresRestart []string `json:"requires_restart"`
-	Rejected       []string `json:"rejected_readonly,omitempty"`
-	Errors         []error  `json:"-"`
-	ErrorMsgs      []string `json:"errors,omitempty"`
-	PendingRestart bool     `json:"pending_restart"`
-	Message        string   `json:"message,omitempty"`
+	Rejected        []string `json:"rejected_readonly,omitempty"`
+	Errors          []error  `json:"-"`
+	ErrorMsgs       []string `json:"errors,omitempty"`
+	PendingRestart  bool     `json:"pending_restart"`
+	Message         string   `json:"message,omitempty"`
 }

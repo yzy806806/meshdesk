@@ -1085,7 +1085,7 @@ func TestReload_NoChangesPending(t *testing.T) {
 
 type mockReloader struct {
 	appliedFields []string
-	called       bool
+	called        bool
 }
 
 func (m *mockReloader) ReloadConfig(cfg *config.Config) ([]string, []string, []error) {
