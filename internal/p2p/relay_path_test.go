@@ -171,7 +171,7 @@ func TestRelayPathBuilderHandleAccept(t *testing.T) {
 
 	// Simulate circuit_accept from the relay.
 	acceptMsg := RelayAcceptResponse(
-		circuit.relayKey, // from (relay)
+		circuit.relayKey,           // from (relay)
 		"localkey1234567890abcdef", // to (entry)
 		circuit.circuitID,
 	)
