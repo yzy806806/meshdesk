@@ -73,6 +73,17 @@ hardware — not when a commit lands.
 - **Fine-grained peer capabilities** — per-peer capability scoping for monitor,
   SSH, file transfer, and service management
 
+**Mesh routing model:** The `RoutingTable` is a local, gossip-populated
+mesh-IP-to-peer mapping — a simple in-memory hash-map lookup, not an OSPF
+link-state protocol. It is populated by static peer config at startup and by
+gossip events (memberlist join/leave) at runtime. `ResolveRoute(meshIP)` does
+a direct lookup to find the owning peer; there is no next-hop computation, no
+SPF calculation, and no latency-aware route selection. The original design
+docs referenced EasyTier's OSPF-based `PeerRoute` as inspiration for a future
+"Phase 4" feature, but the full link-state algorithm was explicitly deferred
+in favor of a simpler gossip-populated table. Multi-transport path selection
+is handled separately by PeerManager at the connection level.
+
 ### Transport Layer
 
 The transport layer abstracts how MeshDesk nodes communicate, with PeerManager
