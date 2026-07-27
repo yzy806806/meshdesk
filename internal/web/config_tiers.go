@@ -36,7 +36,7 @@ type ReloadClass int
 
 const (
 	ReloadHot     ReloadClass = iota // applied via reloader, no restart
-	ReloadRestart                     // requires process restart
+	ReloadRestart                    // requires process restart
 )
 
 // String returns the human-readable reload classification.
@@ -68,61 +68,61 @@ type fieldMeta struct {
 // and a separate masked set.
 var tierMap = map[string]fieldMeta{
 	// --- Node (§3.1) ---
-	"node.identity":              {Tier: TierMasked, Reload: ReloadRestart},  // T0+T1 composite: masked on read, read-only on write
-	"node.hostname":              {Tier: TierReadOnly, Reload: ReloadRestart},
-	"node.web":                   {Tier: TierNormal, Reload: ReloadRestart},
-	"node.position.x":           {Tier: TierNormal, Reload: ReloadHot},
-	"node.position.y":            {Tier: TierNormal, Reload: ReloadHot},
-	"node.position.z":            {Tier: TierNormal, Reload: ReloadHot},
+	"node.identity":   {Tier: TierMasked, Reload: ReloadRestart}, // T0+T1 composite: masked on read, read-only on write
+	"node.hostname":   {Tier: TierReadOnly, Reload: ReloadRestart},
+	"node.web":        {Tier: TierNormal, Reload: ReloadRestart},
+	"node.position.x": {Tier: TierNormal, Reload: ReloadHot},
+	"node.position.y": {Tier: TierNormal, Reload: ReloadHot},
+	"node.position.z": {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Mesh (§3.2) ---
 	"mesh.port":        {Tier: TierNormal, Reload: ReloadRestart},
 	"mesh.gossip_port": {Tier: TierNormal, Reload: ReloadRestart},
 
 	// --- Peers (§3.3) — array fields use [N] placeholder ---
-	"peers[N].public_key":              {Tier: TierReadOnly, Reload: ReloadHot},
-	"peers[N].endpoint":                {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].allowed_ips":             {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].capabilities":            {Tier: TierStepUp, Reload: ReloadHot},
-	"peers[N].obfuscation":             {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].preshared_key":           {Tier: TierMasked, Reload: ReloadHot},
-	"peers[N].obf_config.h1":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.h2":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.h3":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.h4":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.s1":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.s2":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.s3":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.s4":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.jc":           {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.jmin":         {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.jmax":         {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.psk":          {Tier: TierMasked, Reload: ReloadHot},
-	"peers[N].obf_config.jitter_max_ms": {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.ws_use_tls":   {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].obf_config.tls_sni":      {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].public_key":                 {Tier: TierReadOnly, Reload: ReloadHot},
+	"peers[N].endpoint":                   {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].allowed_ips":                {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].capabilities":               {Tier: TierStepUp, Reload: ReloadHot},
+	"peers[N].obfuscation":                {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].preshared_key":              {Tier: TierMasked, Reload: ReloadHot},
+	"peers[N].obf_config.h1":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.h2":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.h3":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.h4":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.s1":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.s2":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.s3":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.s4":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.jc":              {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.jmin":            {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.jmax":            {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.psk":             {Tier: TierMasked, Reload: ReloadHot},
+	"peers[N].obf_config.jitter_max_ms":   {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.ws_use_tls":      {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].obf_config.tls_sni":         {Tier: TierNormal, Reload: ReloadHot},
 	"peers[N].obf_config.tls_fingerprint": {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].reality.server_name":     {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].reality.public_key":      {Tier: TierMasked, Reload: ReloadHot},
-	"peers[N].reality.short_id":        {Tier: TierMasked, Reload: ReloadHot},
-	"peers[N].reality.tls_fingerprint": {Tier: TierNormal, Reload: ReloadHot},
-	"peers[N].service_manage":          {Tier: TierStepUp, Reload: ReloadHot},
-	"peers[N].file_transfer_paths":     {Tier: TierStepUp, Reload: ReloadHot},
-	"peers[N].monitor_scopes":          {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].reality.server_name":        {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].reality.public_key":         {Tier: TierMasked, Reload: ReloadHot},
+	"peers[N].reality.short_id":           {Tier: TierMasked, Reload: ReloadHot},
+	"peers[N].reality.tls_fingerprint":    {Tier: TierNormal, Reload: ReloadHot},
+	"peers[N].service_manage":             {Tier: TierStepUp, Reload: ReloadHot},
+	"peers[N].file_transfer_paths":        {Tier: TierStepUp, Reload: ReloadHot},
+	"peers[N].monitor_scopes":             {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- P2P (§3.4) ---
-	"p2p.enabled":                {Tier: TierNormal, Reload: ReloadRestart},
-	"p2p.seeds":                  {Tier: TierNormal, Reload: ReloadRestart},
-	"p2p.nat_traversal":          {Tier: TierNormal, Reload: ReloadRestart},
-	"p2p.stun_servers":           {Tier: TierNormal, Reload: ReloadRestart},
-	"p2p.relay_mode":             {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.max_relay_hops":         {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.join_approval":          {Tier: TierStepUp, Reload: ReloadHot},
-	"p2p.authorized_keys":        {Tier: TierStepUp, Reload: ReloadHot},
-	"p2p.gossip_interval":       {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.gossip_probe_interval":  {Tier: TierNormal, Reload: ReloadHot},
+	"p2p.enabled":                 {Tier: TierNormal, Reload: ReloadRestart},
+	"p2p.seeds":                   {Tier: TierNormal, Reload: ReloadRestart},
+	"p2p.nat_traversal":           {Tier: TierNormal, Reload: ReloadRestart},
+	"p2p.stun_servers":            {Tier: TierNormal, Reload: ReloadRestart},
+	"p2p.relay_mode":              {Tier: TierNormal, Reload: ReloadHot},
+	"p2p.max_relay_hops":          {Tier: TierNormal, Reload: ReloadHot},
+	"p2p.join_approval":           {Tier: TierStepUp, Reload: ReloadHot},
+	"p2p.authorized_keys":         {Tier: TierStepUp, Reload: ReloadHot},
+	"p2p.gossip_interval":         {Tier: TierNormal, Reload: ReloadHot},
+	"p2p.gossip_probe_interval":   {Tier: TierNormal, Reload: ReloadHot},
 	"p2p.direct_reprobe_interval": {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.max_peers":              {Tier: TierNormal, Reload: ReloadHot},
+	"p2p.max_peers":               {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Monitoring (§3.5) ---
 	"monitoring.collectors": {Tier: TierNormal, Reload: ReloadHot},
@@ -130,39 +130,39 @@ var tierMap = map[string]fieldMeta{
 	"monitoring.port":       {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- WebSSH (§3.6) ---
-	"webssh.port":            {Tier: TierNormal, Reload: ReloadHot},
-	"webssh.host_key":         {Tier: TierMasked, Reload: ReloadHot},
-	"webssh.shell":            {Tier: TierNormal, Reload: ReloadHot},
-	"webssh.dial_timeout":     {Tier: TierNormal, Reload: ReloadHot},
-	"webssh.read_deadline":    {Tier: TierNormal, Reload: ReloadHot},
-	"webssh.write_deadline":   {Tier: TierNormal, Reload: ReloadHot},
-	"webssh.max_sessions":     {Tier: TierNormal, Reload: ReloadHot},
+	"webssh.port":           {Tier: TierNormal, Reload: ReloadHot},
+	"webssh.host_key":       {Tier: TierMasked, Reload: ReloadHot},
+	"webssh.shell":          {Tier: TierNormal, Reload: ReloadHot},
+	"webssh.dial_timeout":   {Tier: TierNormal, Reload: ReloadHot},
+	"webssh.read_deadline":  {Tier: TierNormal, Reload: ReloadHot},
+	"webssh.write_deadline": {Tier: TierNormal, Reload: ReloadHot},
+	"webssh.max_sessions":   {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Auth (§3.7) ---
-	"auth.web_users":               {Tier: TierStepUp, Reload: ReloadHot},
-	"auth.web_users[N].username":   {Tier: TierNormal, Reload: ReloadHot},
+	"auth.web_users":                  {Tier: TierStepUp, Reload: ReloadHot},
+	"auth.web_users[N].username":      {Tier: TierNormal, Reload: ReloadHot},
 	"auth.web_users[N].password_hash": {Tier: TierMasked, Reload: ReloadHot},
-	"auth.totp_issuer":             {Tier: TierNormal, Reload: ReloadHot},
-	"auth.require_2fa":             {Tier: TierStepUp, Reload: ReloadHot},
-	"auth.totp_window":             {Tier: TierNormal, Reload: ReloadHot},
-	"auth.totp_store_dir":          {Tier: TierReadOnly, Reload: ReloadRestart},
-	"auth.step_up_timeout":         {Tier: TierStepUp, Reload: ReloadHot},
-	"auth.alert_webhook_url":      {Tier: TierStepUp, Reload: ReloadHot},
+	"auth.totp_issuer":                {Tier: TierNormal, Reload: ReloadHot},
+	"auth.require_2fa":                {Tier: TierStepUp, Reload: ReloadHot},
+	"auth.totp_window":                {Tier: TierNormal, Reload: ReloadHot},
+	"auth.totp_store_dir":             {Tier: TierReadOnly, Reload: ReloadRestart},
+	"auth.step_up_timeout":            {Tier: TierStepUp, Reload: ReloadHot},
+	"auth.alert_webhook_url":          {Tier: TierStepUp, Reload: ReloadHot},
 
 	// --- Transfer (§3.8) ---
 	"transfer.max_file_size": {Tier: TierNormal, Reload: ReloadHot},
 	"transfer.upload_dir":    {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Proxy: SS (§3.9) ---
-	"proxy.ss.password":     {Tier: TierMasked, Reload: ReloadHot},
-	"proxy.ss.cipher":       {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.ss.listen_addr":   {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.ss.port":          {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.ss.password":    {Tier: TierMasked, Reload: ReloadHot},
+	"proxy.ss.cipher":      {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.ss.listen_addr": {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.ss.port":        {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Proxy: Circuit ---
-	"proxy.circuit.idle_timeout":         {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.circuit.keepalive_interval":   {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.circuit.nack_timeout":         {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.circuit.idle_timeout":          {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.circuit.keepalive_interval":    {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.circuit.nack_timeout":          {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.circuit.orphan_timeout":        {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.circuit.max_reassembly_window": {Tier: TierNormal, Reload: ReloadHot},
 
@@ -173,25 +173,25 @@ var tierMap = map[string]fieldMeta{
 	"proxy.exit_addr":          {Tier: TierStepUp, Reload: ReloadHot},
 
 	// --- Proxy: Path Selection ---
-	"proxy.path_selection.mode":                 {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.path_selection.strategy":              {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.path_selection.max_relays_per_path":   {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.path_selection.probe_timeout_sec":     {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.path_selection.probe_concurrency":     {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.path_selection.max_candidates":       {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.path_selection.probe_cache_ttl_sec":   {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.path_selection.exit_latency_matrix":   {Tier: TierReadOnly, Reload: ReloadRestart},
+	"proxy.path_selection.mode":                {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.path_selection.strategy":            {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.path_selection.max_relays_per_path": {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.path_selection.probe_timeout_sec":   {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.path_selection.probe_concurrency":   {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.path_selection.max_candidates":      {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.path_selection.probe_cache_ttl_sec": {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.path_selection.exit_latency_matrix": {Tier: TierReadOnly, Reload: ReloadRestart},
 
 	// --- Proxy: CF Tunnel ---
-	"proxy.cf_tunnel.enabled":          {Tier: TierNormal, Reload: ReloadRestart},
+	"proxy.cf_tunnel.enabled":           {Tier: TierNormal, Reload: ReloadRestart},
 	"proxy.cf_tunnel.tunnel_id":         {Tier: TierMasked, Reload: ReloadHot},
 	"proxy.cf_tunnel.credentials_file":  {Tier: TierMasked, Reload: ReloadHot},
 	"proxy.cf_tunnel.hostname":          {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.origin_server":    {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.region":           {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.log_level":        {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.metrics_addr":     {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.binary_path":      {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.cf_tunnel.origin_server":     {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.cf_tunnel.region":            {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.cf_tunnel.log_level":         {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.cf_tunnel.metrics_addr":      {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.cf_tunnel.binary_path":       {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.cf_tunnel.reconnect_retries": {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.cf_tunnel.grace_period_sec":  {Tier: TierNormal, Reload: ReloadHot},
 
@@ -204,10 +204,10 @@ var tierMap = map[string]fieldMeta{
 	"proxy.relay.max_queue_depth": {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Proxy: Exit ---
-	"proxy.exit.allowed_ports":       {Tier: TierStepUp, Reload: ReloadHot},
-	"proxy.exit.allow_all_ports":     {Tier: TierStepUp, Reload: ReloadHot},
-	"proxy.exit.destination_filter":  {Tier: TierStepUp, Reload: ReloadHot},
-	"proxy.exit.audit_log_dir":       {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.exit.allowed_ports":        {Tier: TierStepUp, Reload: ReloadHot},
+	"proxy.exit.allow_all_ports":      {Tier: TierStepUp, Reload: ReloadHot},
+	"proxy.exit.destination_filter":   {Tier: TierStepUp, Reload: ReloadHot},
+	"proxy.exit.audit_log_dir":        {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.exit.audit_retention_days": {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Xray (§3.10) ---
