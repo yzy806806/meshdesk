@@ -355,6 +355,35 @@ func (g *GossipLayer) SelectTopKRelays(k int, rttEstimator func(peerKey string) 
 	return g.relay.SelectRelays(k, 3, rttEstimator) // shuffleTopN=3 for load spreading
 }
 
+// EstimateRTT estimates the round-trip time to a peer using WireGuard
+// handshake timing. It uses the delta between peer addition time and
+// last handshake time as a one-way latency estimate. For peers without
+// a known handshake, it returns a default of 100ms.
+//
+// This is the production RTT estimator wired into the RelayPathBuilder
+// and RelaySelector.
+func (g *GossipLayer) EstimateRTT(peerKey string) time.Duration {
+	if g.wgDelegate == nil {
+		return 100 * time.Millisecond
+	}
+
+	h := g.wgDelegate.GetPeerHealth(peerKey)
+	if h == nil {
+		return 100 * time.Millisecond
+	}
+
+	if !h.LastHandshake.IsZero() && !h.AddedAt.IsZero() {
+		initialRTT := h.LastHandshake.Sub(h.AddedAt)
+		// Clamp to reasonable range: 1ms - 5s
+		if initialRTT > 0 && initialRTT < 5*time.Second {
+			return initialRTT
+		}
+	}
+
+	// Default: 100ms estimate for unknown peers
+	return 100 * time.Millisecond
+}
+
 // --- Join Protocol (§4) ---
 
 // wireJoinProtocol connects the JoinProtocol to the gossip transport,
@@ -581,7 +610,7 @@ func (g *GossipLayer) EnableRelayMode(maxCircuits int) error {
 		cfg.MaxCircuits = 1024
 	}
 
-	rsm := NewRelaySessionManager(localKey, g.events, g.delegate, cfg)
+	rsm := NewRelaySessionManager(localKey, g.events, g.delegate, cfg, g.wgDelegate)
 
 	// Wire the message handler: delegate.NotifyMsg → rsm.HandleMessage.
 	g.delegate.SetRelayMessageHandler(func(msg *RelayMessage) error {

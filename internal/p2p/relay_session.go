@@ -112,6 +112,17 @@ type RelaySessionManager struct {
 	// delegate provides access to update local NodeMeta (load metrics).
 	delegate *meshDelegate
 
+	// wg is the WireGuard peer manager for adding relay targets.
+	// When a circuit_setup is accepted, the relay calls wg.AddRelayTarget
+	// to add the target peer (B) to its WireGuard config so that
+	// traffic can be forwarded to B. May be nil in test mode.
+	wg PeerManager
+
+	// pathBuilder is the entry-side relay path builder. When set,
+	// circuit_accept/reject/pong messages are dispatched to it so it
+	// can wire the entry-side relay routes. May be nil (relay-only node).
+	pathBuilder RelayPathBuilder
+
 	// stopCh closes on Stop().
 	stopCh chan struct{}
 
@@ -149,7 +160,9 @@ func DefaultRelaySessionManagerConfig() RelaySessionManagerConfig {
 //   - events: the mesh event delegate (for peer metadata lookups)
 //   - delegate: the mesh delegate (for updating local load metrics)
 //   - cfg: configuration
-func NewRelaySessionManager(localKey string, events *meshEventDelegate, delegate *meshDelegate, cfg RelaySessionManagerConfig) *RelaySessionManager {
+//   - wg: the WireGuard peer manager (for AddRelayTarget). May be nil
+//     in test mode — if nil, circuit setup will skip WG wiring.
+func NewRelaySessionManager(localKey string, events *meshEventDelegate, delegate *meshDelegate, cfg RelaySessionManagerConfig, wg PeerManager) *RelaySessionManager {
 	if cfg.MaxCircuits <= 0 {
 		cfg.MaxCircuits = 1024
 	}
@@ -168,6 +181,7 @@ func NewRelaySessionManager(localKey string, events *meshEventDelegate, delegate
 		sessions:            make(map[string]*relaySession),
 		events:              events,
 		delegate:            delegate,
+		wg:                  wg,
 		stopCh:              make(chan struct{}),
 	}
 }
@@ -179,6 +193,15 @@ func (rsm *RelaySessionManager) SetMessageSender(sender func(peerKey string, msg
 	rsm.mu.Lock()
 	defer rsm.mu.Unlock()
 	rsm.msgSender = sender
+}
+
+// SetRelayPathBuilder installs the entry-side relay path builder.
+// When set, circuit_accept/reject/pong messages are dispatched to it
+// so it can wire the entry-side relay routes (AddRelayRoute on node A).
+func (rsm *RelaySessionManager) SetRelayPathBuilder(rpb RelayPathBuilder) {
+	rsm.mu.Lock()
+	defer rsm.mu.Unlock()
+	rsm.pathBuilder = rpb
 }
 
 // sendMessage sends a relay message to the specified peer.
@@ -278,12 +301,25 @@ func (rsm *RelaySessionManager) handleSetup(msg *RelayMessage) error {
 	rsm.pendingCount++
 	rsm.mu.Unlock()
 
-	// In a real relay, we would configure the WireGuard forwarding
-	// rules here (add AllowedIPs for the target peer, set up the
-	// packet forwarder). For the P2P layer, the relay simply tracks
-	// the session — actual data forwarding happens via WireGuard's
-	// native packet routing (the relay's WG peer has the target's
-	// AllowedIPs, so packets are forwarded automatically).
+	// Wire the target peer (B) into this relay's WireGuard config so
+	// that decrypted packets from A can be re-encrypted and forwarded to B.
+	// The peer is added without an endpoint — the relay learns B's
+	// endpoint from B's persistent_keepalive packets.
+	if rsm.wg != nil {
+		if err := rsm.wg.AddRelayTarget(msg.TargetKey, msg.TargetMeshIP); err != nil {
+			log.Printf("[p2p/relay] failed to add relay target %s: %v",
+				shortKey(msg.TargetKey), err)
+			// Remove the pending session and reject.
+			rsm.mu.Lock()
+			delete(rsm.sessions, msg.CircuitID)
+			rsm.pendingCount--
+			rsm.mu.Unlock()
+			rsm.sendMessage(msg.FromKey, RelayRejectResponse(
+				rsm.localKey, msg.FromKey, msg.CircuitID, RejectInvalidKey,
+			))
+			return nil
+		}
+	}
 
 	// Accept the circuit.
 	rsm.mu.Lock()
@@ -310,10 +346,19 @@ func (rsm *RelaySessionManager) handleSetup(msg *RelayMessage) error {
 // handleAccept processes a circuit_accept response from a relay.
 // This is called on the entry node when the relay confirms the circuit.
 func (rsm *RelaySessionManager) handleAccept(msg *RelayMessage) error {
-	// On the entry side, we don't track sessions in the manager —
-	// the NAT traversal layer handles the entry-side circuit state.
-	// This callback exists for future extension (e.g., entry-side
-	// circuit tracking). For now, just log.
+	// Dispatch to the relay path builder (entry-side circuit management).
+	rsm.mu.RLock()
+	pb := rsm.pathBuilder
+	rsm.mu.RUnlock()
+
+	if pb != nil {
+		// The RelayPathBuilder interface doesn't have HandleAccept, but
+		// the concrete *RelayPathBuilderImpl does. We use a type assertion.
+		if impl, ok := pb.(*RelayPathBuilderImpl); ok {
+			impl.HandleAccept(msg)
+		}
+	}
+
 	log.Printf("[p2p/relay] circuit %s accepted by relay %s",
 		msg.CircuitID, shortKey(msg.FromKey))
 	return nil
@@ -322,6 +367,17 @@ func (rsm *RelaySessionManager) handleAccept(msg *RelayMessage) error {
 // handleReject processes a circuit_reject response from a relay.
 // This is called on the entry node when the relay refuses the circuit.
 func (rsm *RelaySessionManager) handleReject(msg *RelayMessage) error {
+	// Dispatch to the relay path builder for fallback handling.
+	rsm.mu.RLock()
+	pb := rsm.pathBuilder
+	rsm.mu.RUnlock()
+
+	if pb != nil {
+		if impl, ok := pb.(*RelayPathBuilderImpl); ok {
+			impl.HandleReject(msg)
+		}
+	}
+
 	log.Printf("[p2p/relay] circuit %s rejected by relay %s: %s",
 		msg.CircuitID, shortKey(msg.FromKey), msg.RejectReason)
 	return nil
@@ -383,6 +439,17 @@ func (rsm *RelaySessionManager) handlePing(msg *RelayMessage) error {
 // handlePong processes a relay_pong from the relay node.
 // This is called on the entry node to confirm circuit health.
 func (rsm *RelaySessionManager) handlePong(msg *RelayMessage) error {
+	// Dispatch to the relay path builder for health tracking.
+	rsm.mu.RLock()
+	pb := rsm.pathBuilder
+	rsm.mu.RUnlock()
+
+	if pb != nil {
+		if impl, ok := pb.(*RelayPathBuilderImpl); ok {
+			impl.HandlePong(msg)
+		}
+	}
+
 	log.Printf("[p2p/relay] pong received for circuit %s from relay %s",
 		msg.CircuitID, shortKey(msg.FromKey))
 	return nil

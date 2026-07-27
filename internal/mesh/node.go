@@ -3,15 +3,21 @@ package mesh
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
+	gvisoripv4 "gvisor.dev/gvisor/pkg/tcpip/network/ipv4"
+	gvisoripv6 "gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
+	"gvisor.dev/gvisor/pkg/tcpip/stack"
 
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/mesh/peer"
@@ -68,6 +74,12 @@ func New(cfg *config.Config) (*MeshNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create netstack TUN: %w", err)
 	}
+
+	// Enable IP forwarding on the gVisor netstack so this node can act
+	// as a relay (forward packets between peers). Without forwarding,
+	// packets with a non-local destination IP are silently dropped.
+	// This is the critical one-line relay enablement from the design spec.
+	enableNetstackForwarding(tnet)
 
 	// Create the TransportRegistry and register built-in factories.
 	registry := NewTransportRegistry()
@@ -433,4 +445,46 @@ func deriveMeshIP(pubKeyHex string) string {
 // GenerateIdentity creates a new WireGuard keypair for the mesh.
 func GenerateIdentity() (*peer.Identity, error) {
 	return peer.GenerateIdentity()
+}
+
+// enableNetstackForwarding enables IP forwarding on the gVisor netstack
+// so that packets with non-local destinations are forwarded between peers
+// instead of being silently dropped. This is required for relay nodes to
+// re-encrypt and forward traffic from A to B through R.
+//
+// The netstack.Net type wraps the unexported netTun struct, which holds
+// a *stack.Stack. We use reflection to access the unexported 'stack'
+// field and call SetForwardingDefaultAndAllNICs on it. This is the same
+// technique used by tsnet and other wireguard-go userspace VPNs.
+func enableNetstackForwarding(tnet *netstack.Net) {
+	// netstack.Net is defined as `type Net netTun` where netTun has a
+	// `stack *stack.Stack` field. We use reflection to access the
+	// unexported field, then dereference the double pointer to get
+	// the actual *stack.Stack value.
+	v := reflect.ValueOf(tnet).Elem()
+	stackField := v.FieldByName("stack")
+	if !stackField.IsValid() {
+		log.Printf("[mesh] warning: could not access netstack 'stack' field for forwarding; relay mode will not work")
+		return
+	}
+
+	// stackField is a pointer (*stack.Stack). UnsafeAddr() returns the
+	// address of the field within the struct, which holds the pointer value.
+	// We dereference to get the actual *stack.Stack.
+	gStackPtr := (**stack.Stack)(unsafe.Pointer(stackField.UnsafeAddr()))
+	gStack := *gStackPtr
+	if gStack == nil {
+		log.Printf("[mesh] warning: netstack stack is nil; relay mode will not work")
+		return
+	}
+
+	// Enable forwarding for both IPv4 and IPv6 on all NICs.
+	if err := gStack.SetForwardingDefaultAndAllNICs(gvisoripv4.ProtocolNumber, true); err != nil {
+		log.Printf("[mesh] warning: failed to enable IPv4 forwarding: %v", err)
+	}
+	if err := gStack.SetForwardingDefaultAndAllNICs(gvisoripv6.ProtocolNumber, true); err != nil {
+		log.Printf("[mesh] warning: failed to enable IPv6 forwarding: %v", err)
+	}
+
+	log.Printf("[mesh] netstack IP forwarding enabled (relay-capable)")
 }
