@@ -1035,6 +1035,22 @@ func (s *Server) handleProxyNodesPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, "proxy_nodes.html", data)
 }
 
+// --- Configuration Management Page ---
+
+// handleConfigPage renders the full configuration management page.
+// This page uses client-side JS (config.js) to fetch config data from
+// /api/config and render all 11 config sections with tiered field display:
+// read-only fields shown greyed, masked fields shown as dots, step-up fields
+// behind re-auth, and normal fields editable. Live validation and hot-reload
+// feedback indicators are handled via PATCH /api/config and POST /api/config/reload.
+func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
+	data := PageData{
+		Title:      "Configuration",
+		ActivePage: "config",
+	}
+	s.renderPage(w, "config.html", data)
+}
+
 // --- Misc helpers ---
 
 func getHostname() (string, error) {

@@ -1,0 +1,78 @@
+{{define "content"}}
+<div class="config-view">
+  <header>
+    <h2>Configuration</h2>
+    <div class="config-actions">
+      <button type="button" class="small" id="cfg-btn-reload" onclick="configReload()">↻ Hot Reload</button>
+      <button type="button" class="small secondary" id="cfg-btn-diff" onclick="configDiff()">View Diff</button>
+      <button type="button" class="small contrast" id="cfg-btn-restart" onclick="configRestart()">Restart Daemon</button>
+    </div>
+  </header>
+
+  <!-- Reload/restart feedback banner -->
+  <div id="cfg-feedback" class="cfg-feedback" style="display:none;"></div>
+
+  <!-- Pending restart indicator -->
+  <div id="cfg-pending-restart" class="cfg-pending-restart" style="display:none;">
+    <span class="badge warning">⚠ Restart Required</span>
+    <span class="badge muted" id="cfg-pending-fields"></span>
+  </div>
+
+  <!-- Section tabs -->
+  <nav class="config-tabs" role="tablist" aria-label="Config sections">
+    <button class="config-tab active" role="tab" aria-selected="true" data-section="node" onclick="configSelectTab('node')">Node</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="mesh" onclick="configSelectTab('mesh')">Mesh</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="peers" onclick="configSelectTab('peers')">Peers</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="p2p" onclick="configSelectTab('p2p')">P2P</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="monitoring" onclick="configSelectTab('monitoring')">Monitoring</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="webssh" onclick="configSelectTab('webssh')">WebSSH</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="auth" onclick="configSelectTab('auth')">Auth</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="transfer" onclick="configSelectTab('transfer')">Transfer</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="proxy" onclick="configSelectTab('proxy')">Proxy</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="xray" onclick="configSelectTab('xray')">Xray</button>
+    <button class="config-tab" role="tab" aria-selected="false" data-section="reality" onclick="configSelectTab('reality')">Reality</button>
+  </nav>
+
+  <!-- Config content area — dynamically populated by config.js -->
+  <div id="cfg-content" class="config-section" role="tabpanel" aria-live="polite">
+    <p class="placeholder">Loading configuration…</p>
+  </div>
+
+  <!-- Step-up modal -->
+  <div id="cfg-stepup-modal" class="cfg-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="cfg-stepup-title">
+    <div class="cfg-modal-backdrop" onclick="configCloseStepUp()"></div>
+    <div class="cfg-modal-content">
+      <h3 id="cfg-stepup-title">Step-Up Authentication Required</h3>
+      <p>You are about to modify sensitive configuration fields. Please re-enter your password to continue.</p>
+      <form id="cfg-stepup-form" onsubmit="configSubmitStepUp(event)">
+        <label>
+          Password
+          <input type="password" id="cfg-stepup-password" required autofocus>
+        </label>
+        <div class="cfg-modal-actions">
+          <button type="button" class="secondary" onclick="configCloseStepUp()">Cancel</button>
+          <button type="submit" class="primary">Verify</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Diff modal -->
+  <div id="cfg-diff-modal" class="cfg-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="cfg-diff-title">
+    <div class="cfg-modal-backdrop" onclick="configCloseDiff()"></div>
+    <div class="cfg-modal-content cfg-modal-wide">
+      <h3 id="cfg-diff-title">Configuration Diff (Running vs Saved)</h3>
+      <div id="cfg-diff-body" class="cfg-diff-body">
+        <p class="placeholder">Loading diff…</p>
+      </div>
+      <div class="cfg-modal-actions">
+        <button type="button" class="secondary" onclick="configCloseDiff()">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/config.js"></script>
+{{end}}
