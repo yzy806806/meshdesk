@@ -404,6 +404,13 @@ type P2pConfig struct {
 
 	// MaxPeers is the hard limit on total peers. Default: 256.
 	MaxPeers int `yaml:"max_peers,omitempty"`
+
+	// AdvertiseEndpoint is an explicit WireGuard endpoint (host:port) that
+	// this node advertises to peers via gossip. When set, it overrides the
+	// auto-detected local IP. Use this when the node is behind NAT and you
+	// know the public IP:port mapping, or when auto-detection would pick
+	// the wrong interface (e.g., Docker, multi-homed hosts).
+	AdvertiseEndpoint string `yaml:"advertise_endpoint,omitempty"`
 }
 
 // PeerConfig describes a single mesh peer.

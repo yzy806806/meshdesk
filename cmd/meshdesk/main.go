@@ -106,6 +106,7 @@ func main() {
 		// Convert config.P2pConfig to p2p.P2pConfig.
 		p2pCfg := p2p.FromConfig(cfg.P2P)
 		p2pCfg.GossipPort = cfg.Mesh.GossipPort
+		p2pCfg.WgPort = cfg.Mesh.Port
 
 		gl, err := p2p.NewGossipLayer(p2pCfg, node, wgDelegate)
 		if err != nil {
@@ -829,6 +830,7 @@ func runJoinSubcommand(args []string) {
 	// Create the gossip layer.
 	p2pCfg := p2p.FromConfig(cfg.P2P)
 	p2pCfg.GossipPort = cfg.Mesh.GossipPort
+	p2pCfg.WgPort = cfg.Mesh.Port
 
 	gl, err := p2p.NewGossipLayer(p2pCfg, node, wgDelegate)
 	if err != nil {
