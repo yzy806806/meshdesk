@@ -42,7 +42,8 @@ Nezha has monitoring and WebSSH but no mesh networking — if the dashboard is d
 - **Gossip discovery** — automatic peer discovery via hashicorp/memberlist; no manual peer config needed
 - **NAT traversal** — STUN-based public endpoint discovery + UDP hole-punching with relay fallback
 - **Dynamic join protocol** — new nodes join via `meshdesk join <bootstrap-addr>`, authenticated by authorized_keys
-- **Relay fallback** — when direct connection fails, traffic is relayed through mesh peers
+- **Endpoint learning** — when a NAT node connects to a seed, the seed reflects its public endpoint and gossips it cluster-wide. Other nodes can then reach the NAT node directly by its learned endpoint, modeled on EasyTier's endpoint learning mechanism (see [P2P Relay](#endpoint-learning-and-shared-node-relay))
+- **Shared node relay** — when direct connection fails (e.g., symmetric NAT), traffic is routed through mesh peers via relay circuits with automatic failover: top-2 relay candidates, 30s health checks (PING/PONG), and 3-missed-pong failover to secondary relay (see [P2P Relay](#endpoint-learning-and-shared-node-relay))
 - Transport obfuscation: padded mode (AmneziaWG-style) or WebSocket+TLS mode (with uTLS fingerprint mimicry)
 - Fine-grained peer capabilities — restrict what each peer can access (monitor, SSH, file transfer, service management)
 - Pluggable transport layer with Reality TLS handshake hijack (embedded, no subprocess) — see [Transport Layer](#transport-layer)
@@ -68,6 +69,34 @@ PeerManager is the connection lifecycle manager for every mesh peer. Each peer g
 - **Per-transport quarantine** — repeated failures quarantine a transport with exponential cooldown (up to 300s cap). Failure thresholds vary by transport type (UDP: 3, WebSocket: 2, Reality: 2, Relay: 3) reflecting real-world reliability characteristics.
 
 See [docs/PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md) for the full state machine, quarantine logic, Happy Eyeballs hedging, and path selection scoring spec.
+
+### Endpoint Learning and Shared Node Relay
+
+When nodes sit behind NAT, direct connectivity depends on discovering each other's public endpoints. MeshDesk implements two complementary mechanisms:
+
+**Endpoint Learning (EasyTier-style)**
+
+- When a NAT node (B) connects to a seed node, the seed's `ObfuscatingBind` detects the source endpoint of incoming WireGuard packets and fires `OnEndpointDiscovered` on the registered `EndpointNotifier`
+- The gossip layer receives the notification, updates the local node's metadata (`Endpoints` list + inferred NAT type), and increments the sequence number — triggering automatic re-broadcast to all cluster members
+- Other nodes receive the updated metadata via gossip and can now attempt direct connections to B's public endpoint
+- Deduplication is built-in: duplicate endpoint discoveries don't increment the sequence number, preventing gossip storms
+- Off by default — the `EndpointNotifier` must be explicitly registered. When no notifier is set, endpoint discovery has zero overhead
+
+**Shared Node Relay (multi-hop)**
+
+- When direct connection is impossible (e.g., symmetric NAT on both sides), `RelayPathBuilder` on the entry node (A) selects the top-K=2 relay candidates via `RelaySelector` (RTT-weighted scoring) and sends `circuit_setup` messages
+- The relay node (R) runs `RelaySessionManager` — it accepts the circuit (capacity check), adds B's mesh IP to its WireGuard `AllowedIPs`, and begins forwarding traffic between A and B
+- Health monitoring: A sends PING every 30s; 3 consecutive missed PONGs trigger automatic failover to the secondary relay
+- Circuit lifecycle: `circuit_setup` → `circuit_accept` → traffic flows → `circuit_teardown` (on peer leave) or failover
+- Reconciliation loop: runs every 30s to detect NAT peers without circuits (handles relay joins after NAT peer discovery)
+
+**Per-relay quarantine and retry**
+
+- Failed relays are quarantined for 60s with exponential cooldown
+- Reconciliation re-probes quarantined relays after expiry
+- The entry node extends the relay peer's `AllowedIPs` to include the target's mesh IP — this tells WireGuard to route target-bound traffic through the relay
+
+See internal/p2p/relay_path.go and internal/p2p/relay_session.go for implementation details.
 
 ### Monitoring
 
@@ -123,6 +152,22 @@ A built-in multi-path dispersed transport proxy for censorship-resistant interne
 - **Recovery codes** — 10 single-use recovery codes generated during enrollment
 - **Lockout protection** — 5 failed TOTP attempts triggers 30-second lockout
 
+### Dashboard Config Management
+
+The `/config` page provides full configuration management via a tiered access API, eliminating the need to SSH in and edit YAML by hand.
+
+- **All 11 config sections** — renders every field from `node`, `mesh`, `peers`, `p2p`, `monitoring`, `webssh`, `auth`, `transfer`, `proxy`, `xray`, and `reality` in a single dashboard page
+- **Tiered field display** — fields are classified into four access tiers controlling visibility and writability:
+  - **T0 (read-only)**: displayed but rejected on write (e.g., `node.hostname`, `peers[N].public_key`, `auth.totp_store_dir`)
+  - **T1 (masked)**: displayed as `***` in GET responses, accepted on write (no-op if `***` sent) — for secrets (e.g., `node.identity`, `peers[N].preshared_key`, `reality.private_key`)
+  - **T2 (step-up)**: displayed normally, requires step-up 2FA token to write — for security-sensitive fields (e.g., `peers[N].capabilities`, `auth.web_users`, `proxy.exit.allowed_ports`)
+  - **T3 (normal)**: displayed and writable with standard session auth — all other fields
+- **Dirty field tracking** — modified fields are tracked as either hot-reloadable or restart-required. The `_meta.tier_map` in the API response tells the client exactly which fields need a restart
+- **PATCH /api/config** — partial save via JSON merge-patch (RFC 7396). Only changed fields are sent; the server merges them into the current config, writes atomically to disk, and marks dirty fields
+- **Hot reload button** — `POST /api/config/reload` applies all hot-reloadable changes without restarting the daemon. Rate-limited to once per 5 seconds. Returns lists of `applied`, `rejected_readonly`, and `requires_restart` fields
+- **Restart button** — `POST /api/config/restart` triggers a daemon restart for restart-required fields. Step-up auth required (OpSettings scope). Rate-limited to once per 30 seconds
+- **Diff viewer** — `GET /api/config/diff` compares the running in-memory config against the on-disk saved config, showing `running_vs_saved` differences and `pending_restart` status
+
 ### 3D Topology Visualization
 
 - Interactive **Three.js** 3D scene with force-directed node layout
@@ -150,6 +195,8 @@ Features carry an explicit maturity label so you know what to expect:
 | Service Management | **Stable** | Start/stop/restart systemd services, per-peer authorization |
 | Dashboard Security (TOTP 2FA) | **Stable** | TOTP enrollment, step-up auth, encrypted key storage, webhook alerts |
 | Multi-path Anonymous Proxy | **Beta** | Circuit routing functional; chunker/reassembly needs real-machine validation |
+| Endpoint Learning & Shared Relay | **Beta** | Endpoint learning + NAT-type inference + relay circuits with failover; gossip integration tested |
+| Dashboard Config Management | **Beta** | Tiered config API, PATCH merge-patch, hot reload, diff viewer — integration tested |
 | 3D Topology Visualization | **Beta** | Node graph + latency edges complete; circuit particles use mock data |
 | x-ui Panel Integration | **Beta** | Inbound/outbound configuration, user management, Reality config generation via Dashboard |
 
@@ -398,6 +445,7 @@ All fields are optional. Omitted fields get sensible defaults. If the config fil
 │  │  • TOTP 2FA + Step-up Auth                   │  │
 │  │  • Security Alerts + Webhook                 │  │
 │  │  • x-ui Panel Integration                    │  │
+│  │  • Config Management (tiered API)            │  │
 │  └──────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
 ```

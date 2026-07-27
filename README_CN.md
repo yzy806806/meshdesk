@@ -42,7 +42,8 @@ Nezha 有监控和 WebSSH 但没有 mesh 组网——dashboard 挂了就全没�
 - **Gossip 发现** — 基于 hashicorp/memberlist 的自动节点发现，无需手动配置 peer
 - **NAT 穿透** — 基于 STUN 的公网端点发现 + UDP 打洞，支持中继回退
 - **动态加入协议** — 新节点通过 `meshdesk join <bootstrap-addr>` 加入，使用 authorized_keys 认证
-- **中继回退** — 直连失败时通过 mesh 节点中继流量
+- **端点学习** — NAT 节点连接到种子节点后，种子反射其公网端点并通过 gossip 广播到全网，其他节点可通过学习到的端点直连 NAT 节点（参考 EasyTier 的端点学习机制）——参见 [端点学习与共享节点中继](#端点学习与共享节点中继)
+- **共享节点中继** — 直连失败（如对称 NAT）时，通过 mesh 节点中继流量，支持自动故障切换：选取前 2 个中继候选、每 30 秒健康检查（PING/PONG）、连续 3 次丢 PONG 则切换至备用中继 ——参见 [端点学习与共享节点中继](#端点学习与共享节点中继)
 - 传输混淆：填充模式（AmneziaWG 风格）或 WebSocket+TLS 模式（uTLS 指纹模拟）
 - 细粒度节点权限——限制每个节点能访问哪些功能（监控、SSH、文件传输、服务管理）
 - 可插拔传输层，内嵌 Reality TLS 握手劫持（无子进程依赖）——参见[传输层](#传输层)
@@ -68,6 +69,34 @@ PeerManager 是每个 mesh 节点的连接生命周期管理器。每个节点�
 - **按传输隔离** — 重复故障按传输类型隔离，指数冷却（最高300秒上限）。故障阈值因传输类型而异（UDP: 3、WebSocket: 2、Reality: 2、中继: 3），反映实际网络可靠性特征。
 
 详见 [docs/PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md)（英文）。
+
+### 端点学习与共享节点中继
+
+当节点处于 NAT 后时，直连取决于发现彼此的公网端点。MeshDesk 实现了两种互补机制：
+
+**端点学习（EasyTier 风格）**
+
+- NAT 节点（B）连接到种子节点后，种子的 `ObfuscatingBind` 检测入站 WireGuard 包的源端点，触发已注册 `EndpointNotifier` 的 `OnEndpointDiscovered`
+- Gossip 层收到通知，更新本节点元数据（`Endpoints` 列表 + 推断出的 NAT 类型），递增序列号 — 触发自动全网广播
+- 其他节点通过 gossip 收到更新后的元数据，可尝试以 B 的公网端点直连
+- 内置去重：重复的端点发现不递增序列号，防止 gossip 风暴
+- 默认关闭 — 须显式注册 `EndpointNotifier`。未注册时端点发现零开销
+
+**共享节点中继（多跳）**
+
+- 直连不可行（如双方均为对称 NAT）时，入口节点（A）上的 `RelayPathBuilder` 通过 `RelaySelector`（RTT 加权评分）选取前 K=2 个中继候选，发送 `circuit_setup` 消息
+- 中继节点（R）运行 `RelaySessionManager` — 接受电路（容量检查），将 B 的 mesh IP 加入 WireGuard `AllowedIPs`，开始转发 A 与 B 间的流量
+- 健康监控：A 每 30 秒发送 PING；连续 3 次未收到 PONG 则自动切换至备用中继
+- 电路生命周期：`circuit_setup` → `circuit_accept` → 流量传输 → `circuit_teardown`（节点离开）或故障切换
+- 调和循环：每 30 秒运行一次，检测无电路覆盖的 NAT 节点（处理中继节点晚于 NAT 节点加入的情况）
+
+**按中继隔离与重试**
+
+- 故障中继隔离 60 秒，指数冷却
+- 调和循环在隔离到期后重新探测
+- 入口节点将中继 peer 的 `AllowedIPs` 扩展至目标 mesh IP — 告知 WireGuard 将目标流量路由经过该中继
+
+详见 internal/p2p/relay_path.go 和 internal/p2p/relay_session.go。
 
 ### 监控
 
@@ -123,6 +152,22 @@ PeerManager 是每个 mesh 节点的连接生命周期管理器。每个节点�
 - **恢复码** — 注册时生成 10 个一次性恢复码
 - **锁定保护** — 5 次 TOTP 验证失败触发 30 秒锁定
 
+### 仪表盘配置管理
+
+`/config` 页面通过分层访问 API 实现全量配置管理，无需 SSH 手动编辑 YAML。
+
+- **全部 11 个配置分区** — 渲染 `node`、`mesh`、`peers`、`p2p`、`monitoring`、`webssh`、`auth`、`transfer`、`proxy`、`xray`、`reality` 的所有字段于单一仪表盘页面
+- **分层字段显示** — 字段按四个访问层级分类，控制可见性和可编辑性：
+  - **T0（只读）**：显示但拒绝写入（如 `node.hostname`、`peers[N].public_key`、`auth.totp_store_dir`）
+  - **T1（掩码）**：GET 响应中显示为 `***`，写入时接受（若发送 `***` 则无操作）— 用于密钥类字段（如 `node.identity`、`peers[N].preshared_key`、`reality.private_key`）
+  - **T2（二次验证）**：正常显示，写入需 step-up 2FA 令牌 — 用于安全敏感字段（如 `peers[N].capabilities`、`auth.web_users`、`proxy.exit.allowed_ports`）
+  - **T3（普通）**：正常显示，标准会话认证即可写入 — 其余所有字段
+- **脏字段追踪** — 修改后的字段标记为可热重载或需重启。API 响应中的 `_meta.tier_map` 告知客户端哪些字段需要重启
+- **PATCH /api/config** — 通过 JSON merge-patch（RFC 7396）部分保存。仅发送变更字段；服务器合并至当前配置、原子写入磁盘并标记脏字段
+- **热重载按钮** — `POST /api/config/reload` 无需重启即可应用所有热重载变更。频率限制为每 5 秒一次。返回 `applied`（已应用）、`rejected_readonly`（只读拒绝）和 `requires_restart`（需重启）字段列表
+- **重启按钮** — `POST /api/config/restart` 触发守护进程重启以应用需重启的字段。需 step-up 认证（OpSettings 范围）。频率限制为每 30 秒一次
+- **差异查看器** — `GET /api/config/diff` 比较内存中运行配置与磁盘上保存配置，显示 `running_vs_saved` 差异和 `pending_restart` 状态
+
 ### 3D 拓扑可视化
 
 - 基于 **Three.js** 的交互式 3D 场景，力导向节点布局
@@ -150,6 +195,8 @@ PeerManager 是每个 mesh 节点的连接生命周期管理器。每个节点�
 | 服务管理 | **稳定** | systemd 服务启停重启、按节点授权 |
 | 仪表盘安全（TOTP 2FA） | **稳定** | TOTP 注册、逐步认证、加密密钥存储、Webhook 告警 |
 | 多路径匿名代理 | **测试版** | 电路路由功能完整；分块/重组需要实机验证 |
+| 端点学习与共享中继 | **测试版** | 端点学习 + NAT 类型推断 + 中继电路及故障切换；gossip 集成测试通过 |
+| 仪表盘配置管理 | **测试版** | 分层配置 API、PATCH merge-patch、热重载、差异查看器 — 集成测试通过 |
 | 3D 拓扑可视化 | **测试版** | 节点图 + 延迟边完成；电路粒子动画使用模拟数据 |
 | x-ui 面板集成 | **测试版** | 入站/出站配置、用户管理、Reality 配置生成，通过仪表盘操作 |
 
@@ -398,6 +445,7 @@ proxy:
 │  │  • TOTP 2FA + 逐步认证                       │  │
 │  │  • 安全告警 + Webhook                         │  │
 │  │  • x-ui 面板集成                              │  │
+│  │  • 配置管理（分层 API）                       │  │
 │  └──────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────┘
 ```
