@@ -3,6 +3,45 @@
  * Centralizes animation defaults and RAF lifecycle so call sites stay short.
  * Load AFTER anime.min.js, BEFORE app scripts.
  *
+ * ## RAF-boundary rule
+ *
+ * Every animation created by MeshAnim is registered in an internal Set (_active)
+ * and automatically removed on completion. This is the **RAF boundary** — the
+ * single point where requestAnimationFrame callbacks are tracked and can be
+ * cancelled. Call sites MUST NOT create anime.animate() directly; always go
+ * through a MeshAnim helper so the animation is tracked.
+ *
+ * When a page is torn down or a view switches, call MeshAnim.cancelAll() to
+ * release all pending RAF callbacks. Failing to do this leaks RAF callbacks
+ * that attempt to write to removed DOM nodes.
+ *
+ * ## Usage examples
+ *
+ *   // Fade a modal in, then set up its close handler:
+ *   MeshAnim.fadeIn(modal, { duration: 300 }).then(function () {
+ *       closeBtn.onclick = function () {
+ *           MeshAnim.fadeOut(modal).then(function () {
+ *               modal.style.display = 'none';
+ *           });
+ *       };
+ *   });
+ *
+ *   // Toast from the right edge:
+ *   toast.style.display = 'block';
+ *   MeshAnim.slideInRight(toast).then(function () {
+ *       setTimeout(function () {
+ *           MeshAnim.slideOutRight(toast).then(function () {
+ *               toast.remove();
+ *           });
+ *       }, 4000);
+ *   });
+ *
+ *   // Page entrance stagger:
+ *   MeshAnim.staggeredAppear('.card', 80);
+ *
+ *   // Cancel everything (e.g. on page unload):
+ *   MeshAnim.cancelAll();
+ *
  * @module MeshAnim
  * @requires anime (global, from anime.min.js v4)
  * @see https://animejs.com

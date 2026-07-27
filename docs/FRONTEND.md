@@ -1,6 +1,6 @@
 # MeshDesk Frontend Documentation
 
-**Last updated:** 2026-07-25
+**Last updated:** 2026-07-27
 **Applies to:** MeshDesk web UI served by `--web` flag
 
 ## Overview
@@ -16,7 +16,7 @@ The MeshDesk frontend combines **server-rendered Go templates**, **htmx** for pa
 | Design tokens | 65 CSS custom properties in app.css |
 | app.css size | 1,244 lines |
 | terminal.css size | 113 lines |
-| JS files | 7 (htmx.min.js, xterm.js + 3 addons, terminal.js, dashboard.js) |
+| JS files | 15 (htmx.min.js, anime.min.js, xterm.js + 3 addons, terminal.js, dashboard.js, topology.js, config.js, proxy-nodes.js, xui.js, anim.js, three.min.js, OrbitControls.js) |
 | HTTP routes | 19 |
 
 ## Architecture
@@ -56,12 +56,20 @@ web/
 │   │   └── terminal.css              # Terminal-specific styles (113 lines)
 │   ├── js/
 │   │   ├── htmx.min.js               # htmx for partial updates (~14KB)
+│   │   ├── anime.min.js              # anime.js v4 animation engine (~18KB)
+│   │   ├── anim.js                   # MeshAnim wrapper — Promise helpers + RAF lifecycle
 │   │   ├── xterm.js                  # xterm.js terminal emulator (~500KB)
 │   │   ├── xterm-addon-fit.js        # Auto-fit to container
 │   │   ├── xterm-addon-search.js     # In-terminal search
 │   │   ├── xterm-addon-web-links.js  # Clickable URLs
 │   │   ├── terminal.js               # WebSocket bridge + UX logic (364 lines)
-│   │   └── dashboard.js              # SSE live metrics handler (120 lines)
+│   │   ├── dashboard.js              # SSE live metrics + 3D topology init
+│   │   ├── topology.js               # Three.js 3D force-directed topology renderer
+│   │   ├── three.min.js              # Three.js 3D library (~600KB)
+│   │   ├── OrbitControls.js          # Three.js camera orbit controls
+│   │   ├── config.js                 # Dashboard config pages + toast animations
+│   │   ├── proxy-nodes.js            # Proxy node management UI
+│   │   └── xui.js                    # x-ui panel configuration UI
 │   └── img/                          # Static images (reserved)
 └── templates/
     ├── layout.html                   # Base template: nav, head, skip-link

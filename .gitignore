@@ -42,3 +42,7 @@ config.local.yaml
 # Logs
 *.log
 test/results/
+
+# Animation test artifacts
+test/animation/pages/
+test/animation/screenshots/
