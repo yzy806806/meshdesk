@@ -130,12 +130,30 @@ func (g *GossipLayer) SetLocalLoadMetrics(cpu, mem float64, circuits int, bw uin
 }
 
 // SetLocalEndpoints updates the local node's discovered endpoints and NAT type.
+// After updating the delegate's localMeta, it calls memberlist.UpdateNode to
+// force a re-broadcast of the alive message with the new per-node Meta bytes.
+// Without UpdateNode, the metadata is only set at memberlist.Create() time and
+// never propagated to peers via gossip — the root cause of DEFECT-02 in the
+// v3 real-machine test (endpoints set locally but empty in NotifyJoin).
 func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 	g.delegate.updateLocalMeta(func(m *NodeMeta) {
 		m.Endpoints = endpoints
 		m.NatType = natType
 		m.Seq++
 	})
+
+	// Propagate the updated metadata through the gossip protocol.
+	// memberlist.UpdateNode re-reads Delegate.NodeMeta() (which marshals
+	// our localMeta) and broadcasts a fresh alive message to all peers.
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+
+	if ml != nil {
+		if err := ml.UpdateNode(time.Second); err != nil {
+			log.Printf("[p2p] endpoint learning: UpdateNode failed: %v", err)
+		}
+	}
 }
 
 // announceLocalEndpoint proactively sets the local node's WireGuard endpoint
@@ -285,14 +303,17 @@ func (g *GossipLayer) Start() error {
 	g.started = true
 	g.mu.Unlock()
 
+	// Announce our local endpoint before any join so peers receive it
+	// in the initial PushPull state sync. This runs unconditionally —
+	// seed nodes (with empty seeds) must also announce their endpoint,
+	// otherwise peers joining the seed can never learn its address.
+	// (Fix for DEFECT-01 from v3 real-machine test: announceLocalEndpoint
+	// was previously gated behind HasSeed(), so seeds with seeds=[]
+	// never announced.)
+	g.announceLocalEndpoint()
+
 	// Join seed peers if configured.
 	if g.cfg.HasSeed() {
-		// Announce our local endpoint before joining so peers receive it
-		// in the initial PushPull state sync. This breaks the chicken-and-egg
-		// problem where peers need our endpoint to send us WireGuard packets
-		// but can only learn it reactively from those same packets.
-		g.announceLocalEndpoint()
-
 		// Run join in a goroutine — it may block if seeds are unreachable.
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
