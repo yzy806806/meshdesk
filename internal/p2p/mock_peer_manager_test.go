@@ -102,9 +102,9 @@ func (m *mockPeerManager) AddRelayTarget(targetKey, targetMeshIP string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.addedPeers = append(m.addedPeers, DynamicPeer{
-		PublicKey:   targetKey,
-		AllowedIPs:  []string{MeshIPToCIDR(targetMeshIP)},
-		IsRelay:     true,
+		PublicKey:  targetKey,
+		AllowedIPs: []string{MeshIPToCIDR(targetMeshIP)},
+		IsRelay:    true,
 	})
 	return nil
 }

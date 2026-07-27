@@ -110,7 +110,7 @@ func TestNotifyUpdateEndpointUnchangedNoUpdate(t *testing.T) {
 		PublicKey: peerKey,
 		MeshIP:    "10.10.1.5",
 		Endpoints: []string{"203.0.113.5:51820"}, // same endpoint
-		LoadCPU:   0.9,                            // different load
+		LoadCPU:   0.9,                           // different load
 		Seq:       2,
 	}
 	metaData2, _ := meta2.MarshalMeta()
