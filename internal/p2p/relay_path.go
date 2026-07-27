@@ -222,10 +222,10 @@ func (rpb *RelayPathBuilderImpl) sendCircuitSetup(circuit *relayCircuit) {
 	circuit.mu.Unlock()
 
 	msg := RelaySetupRequest(
-		rpb.localKey,        // from (A)
-		circuit.relayKey,    // to (R)
-		circuit.circuitID,   // circuit ID
-		circuit.targetKey,   // target (B)
+		rpb.localKey,         // from (A)
+		circuit.relayKey,     // to (R)
+		circuit.circuitID,    // circuit ID
+		circuit.targetKey,    // target (B)
 		circuit.targetMeshIP, // target mesh IP
 	)
 

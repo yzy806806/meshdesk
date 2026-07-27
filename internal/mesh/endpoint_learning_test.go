@@ -9,8 +9,8 @@ import (
 
 // mockEndpointNotifier records all OnEndpointDiscovered calls for testing.
 type mockEndpointNotifier struct {
-	mu       sync.Mutex
-	calls    []endpointCall
+	mu    sync.Mutex
+	calls []endpointCall
 }
 
 type endpointCall struct {
