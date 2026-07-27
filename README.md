@@ -48,6 +48,21 @@ Nezha has monitoring and WebSSH but no mesh networking — if the dashboard is d
 - Fine-grained peer capabilities — restrict what each peer can access (monitor, SSH, file transfer, service management)
 - Pluggable transport layer with Reality TLS handshake hijack (embedded, no subprocess) — see [Transport Layer](#transport-layer)
 
+### Mesh Routing Model
+
+MeshDesk's `RoutingTable` (see `internal/mesh/routing.go`) is a **local, gossip-populated mesh-IP-to-peer mapping** — not an OSPF, BGP, or any other dynamic route-exchange protocol.
+
+**How it works:**
+
+- Each node maintains an in-memory map: mesh IP → peer ID (hex public key), plus a reverse map: peer ID → `PeerEntry` (endpoint, AllowedIPs, obfuscation mode).
+- The table is populated by two sources:
+  1. **Static peer config** — peers listed in `config.yaml` are added at startup.
+  2. **Gossip discovery** — when hashicorp/memberlist propagates a peer join or leave event, the routing table is updated automatically. No manual route configuration is needed for gossip-discovered peers.
+- `ResolveRoute(meshIP)` performs a direct hash-map lookup to find which peer owns a given mesh IP. There is **no next-hop computation, no link-state database, no SPF (shortest path first) calculation, and no latency-aware path selection** at the routing layer.
+- Multi-transport path selection and fallback are handled separately by [PeerManager](#peermanager), which operates at the connection level — choosing the best transport (UDP, Reality, WebSocket, Relay) for each peer, not computing multi-hop routes.
+
+**Design context:** The original design docs ([ARCHITECTURE_REFACTOR.md](./docs/ARCHITECTURE_REFACTOR.md), [EASYTIER_PEER_RESEARCH.md](./docs/EASYTIER_PEER_RESEARCH.md)) referenced EasyTier's OSPF-based `PeerRoute` as inspiration for a future "Phase 4: 动态路由" feature with latency-aware next-hop selection. However, the shipped `RoutingTable` is a simplified gossip-populated lookup table — the full OSPF link-state algorithm was explicitly deferred (see "不做 OSPF 完整实现" in the refactor doc). The `OSPF路由` label in the original project goal description referred to this aspirational design, not the implemented behavior.
+
 ### Transport Layer
 
 The transport layer abstracts how MeshDesk nodes communicate. Every peer can use a different transport, and [PeerManager](#peermanager) handles automatic fallback between them. The transport layer implements a three-layer interface contract: `PeerConn` (per-connection wrapper), `Transport` (per-transport instance), and `TransportRegistry` (named registry). See [docs/TRANSPORT_CONTRACT.md](./docs/TRANSPORT_CONTRACT.md) for the full spec.
