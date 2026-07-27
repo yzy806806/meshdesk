@@ -161,7 +161,7 @@ func New(deps Deps) (*Server, error) {
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "login_2fa.html",
 		"peers.html", "topology.html", "error.html", "proxy_nodes.html",
-		"xui.html",
+		"xui.html", "config.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -432,6 +432,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/topology", s.requireAuth(s.handleTopologyPage))
 	mux.HandleFunc("/proxy-nodes", s.requireAuth(s.handleProxyNodesPage))
 	mux.HandleFunc("/xui", s.requireAuth(s.handleXuiPage))
+	mux.HandleFunc("/config", s.requireAuth(s.handleConfigPage))
 }
 
 // --- Middleware ---
