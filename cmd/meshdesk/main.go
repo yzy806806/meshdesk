@@ -132,8 +132,12 @@ func main() {
 			log.Printf("Warning: failed to start P2P gossip layer: %v", err)
 		} else {
 			gossipLayer = gl
+			// Register GossipLayer as the endpoint notifier.
+			// GossipLayer implements mesh.EndpointNotifier.
+			node.ObfuscatingBind().SetEndpointNotifier(gossipLayer)
 			log.Printf("  P2P:       gossip active (port %d, %d seeds)",
 				cfg.Mesh.GossipPort, len(cfg.P2P.Seeds))
+			log.Printf("  P2P:       endpoint learning enabled (notifier wired to gossip layer)")
 		}
 
 		// Enable relay mode if --relay flag or config proxy.relay.enabled is set.
