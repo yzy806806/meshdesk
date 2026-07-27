@@ -286,7 +286,7 @@ func (s *Server) handleConfigPut(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]any{
 				"error":                    "step_up_required",
-				"step_up_scopes":          []string{OpSettings},
+				"step_up_scopes":           []string{OpSettings},
 				"fields_requiring_step_up": stepUpNeeded,
 			})
 			return
@@ -366,7 +366,7 @@ func (s *Server) handleConfigPatch(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]any{
 				"error":                    "step_up_required",
-				"step_up_scopes":          []string{OpSettings},
+				"step_up_scopes":           []string{OpSettings},
 				"fields_requiring_step_up": stepUpNeeded,
 			})
 			return
@@ -687,10 +687,10 @@ func buildConfigMeta() map[string]any {
 	}
 
 	return map[string]any{
-		"tier_map":          tierMapMeta,
-		"masked_fields":     maskedFields,
-		"readonly_fields":   readOnlyFields,
-		"pending_restart":   false, // updated dynamically in handlers
+		"tier_map":           tierMapMeta,
+		"masked_fields":      maskedFields,
+		"readonly_fields":    readOnlyFields,
+		"pending_restart":    false, // updated dynamically in handlers
 		"dirty_since_reload": []string{},
 	}
 }
