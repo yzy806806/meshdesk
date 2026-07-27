@@ -52,10 +52,13 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -557,7 +560,54 @@ func (t *RealityTransport) buildRealityConfig() (*realitypkg.Config, error) {
 		return d.DialContext(ctx, network, address)
 	}
 
+	// Reality's Listen() checks Certificates/GetCertificate like tls.Listen.
+	// Reality doesn't actually use the certificate content — it proxies the
+	// real site's cert during handshake — but the field must be non-empty.
+	// Generate a throwaway self-signed cert to satisfy the check.
+	cert, err := generateRealityPlaceholderCert()
+	if err != nil {
+		return nil, fmt.Errorf("generate reality placeholder cert: %w", err)
+	}
+	cfg.Certificates = []realitypkg.Certificate{cert}
+
 	return cfg, nil
+}
+
+// generateRealityPlaceholderCert creates a throwaway self-signed TLS certificate.
+// Used only to satisfy reality.Listen's non-empty Certificates check.
+// Reality proxies the real dest site's certificate during handshake,
+// so this cert is never presented to clients.
+func generateRealityPlaceholderCert() (realitypkg.Certificate, error) {
+	// Generate X25519 key pair.
+	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return realitypkg.Certificate{}, fmt.Errorf("generate key: %w", err)
+	}
+
+	// Build a minimal x509 template.
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			Organization: []string{"MeshDesk Reality"},
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+
+	// Use raw public key bytes for the cert.
+	pubBytes := priv.PublicKey().Bytes()
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, pubBytes, priv)
+	if err != nil {
+		return realitypkg.Certificate{}, fmt.Errorf("create cert: %w", err)
+	}
+
+	return realitypkg.Certificate{
+		Certificate: [][]byte{derBytes},
+		PrivateKey:  priv,
+	}, nil
 }
 
 // LatencyProbe measures the round-trip time to addr without establishing
