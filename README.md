@@ -324,7 +324,7 @@ peers:
       - docker
     file_transfer_paths:             # restrict file_transfer to specific directories
       - /var/www/
-    obfuscation: "padded"            # none | padded | websocket
+    obfuscation: "padded"            # none | padded | websocket | reality
     obf_config:                        # per-peer obfuscation parameters (AmneziaWG-style)
       jc: 5                            # junk train: 5 junk packets before handshake initiation
       jmin: 64                         # min junk packet size (bytes)
@@ -335,6 +335,12 @@ peers:
       # ws_use_tls: true               # use wss:// (TLS) for the WebSocket transport
       # tls_sni: "example.com"         # SNI to send in TLS ClientHello
       # tls_fingerprint: "chrome"      # chrome | firefox | safari | edge | ios | android
+    # For reality mode (per-peer Reality TLS client config):
+    # reality:
+    #   server_name: "www.apple.com"   # SNI in ClientHello, must match server's server_names
+    #   public_key: ""                 # server's X25519 public key (hex) for ECDH auth
+    #   short_id: ""                   # per-client short ID (hex, up to 8 bytes)
+    #   tls_fingerprint: "chrome"      # browser ClientHello to mimic
 
 monitoring:
   collectors: []         # peer IDs of collector nodes that receive metric pushes
@@ -405,6 +411,29 @@ proxy:
     destination_filter: []    # CIDR or FQDN patterns
     audit_log_dir: ""
     audit_retention_days: 7
+
+# xray-core managed subprocess (see docs/ARCHITECTURE_REFACTOR.md)
+xray:
+  enabled: false              # start xray-core subprocess for inbound/outbound
+  binary_path: ""             # path to xray binary (auto-detected if empty)
+  config_dir: "/var/lib/meshdesk/xray"  # generated config + state storage
+  log_lines: 1000             # max log lines kept in ring buffer for dashboard
+  api_port: 8421              # gRPC API port for health checking (-1 = disable)
+  api_listen: "127.0.0.1"    # API inbound listen address
+  health_check_interval: 10   # seconds between health polls
+  readiness_timeout: 15       # seconds to wait for first healthy status
+  drain_timeout: 10           # seconds to drain active connections on stop (0 = disable)
+
+# Reality TLS server (see docs/OBFUSCATION_RESEARCH.md)
+reality:
+  enabled: false              # start the Reality TLS listener
+  listen_addr: ":443"         # listen address for incoming Reality connections
+  listen_port: 443            # overrides port in listen_addr
+  dest: "www.apple.com:443"   # camouflage target — real website to proxy non-auth traffic
+  server_names:               # accepted SNI values
+    - "www.apple.com"
+  private_key: ""             # X25519 private key (hex) for REALITY ECDH auth
+  short_ids: []               # accepted short IDs (hex, up to 8 bytes each)
 ```
 
 All fields are optional. Omitted fields get sensible defaults. If the config file doesn't exist at startup, the node runs with defaults and auto-generates a WireGuard identity.
@@ -457,13 +486,22 @@ Detailed design documents are in [`docs/`](./docs/):
 - [ARCHITECTURE.md](./docs/ARCHITECTURE.md) — System architecture overview
 - [ARCHITECTURE_REFACTOR.md](./docs/ARCHITECTURE_REFACTOR.md) — Transport layer abstraction, Reality, and PeerManager refactor
 - [PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md) — PeerManager state machine, quarantine, latency probing, path selection
-- [OBFUSCATION_RESEARCH.md](./docs/OBFUSCATION_RESEARCH.md) — GFW obfuscation research and Reality integration design
 - [TRANSPORT_CONTRACT.md](./docs/TRANSPORT_CONTRACT.md) — Transport layer interface contract (PeerConn, Transport, TransportRegistry)
+- [TRANSPORT_CAPABILITY_MATRIX.md](./docs/TRANSPORT_CAPABILITY_MATRIX.md) — Transport feature comparison matrix
+- [OBFUSCATION_RESEARCH.md](./docs/OBFUSCATION_RESEARCH.md) — GFW obfuscation research and Reality integration design
+- [ENDPOINT_LEARNING_DESIGN.md](./docs/ENDPOINT_LEARNING_DESIGN.md) — Endpoint learning mechanism (EasyTier-style)
+- [ENDPOINT_LEARNING_DESIGN_v2.md](./docs/ENDPOINT_LEARNING_DESIGN_v2.md) — Endpoint learning v2 (gossip integration + NAT-type inference)
+- [CONFIG_INVENTORY.md](./docs/CONFIG_INVENTORY.md) — Full inventory of all config fields across 11 sections
+- [CONFIG_SECURITY_MODEL.md](./docs/CONFIG_SECURITY_MODEL.md) — Tiered config access model (T0–T3) and security rationale
 - [PROXY_DESIGN.md](./docs/PROXY_DESIGN.md) — Multi-path anonymous proxy design
 - [CIRCUIT_MANAGER_SPEC.md](./docs/CIRCUIT_MANAGER_SPEC.md) — Circuit lifecycle management
 - [CHUNKER_CONTRACT.md](./docs/CHUNKER_CONTRACT.md) — Chunker/Reassembler interface
 - [TOTP_KEY_ENCRYPTION_SPEC.md](./docs/TOTP_KEY_ENCRYPTION_SPEC.md) — TOTP secret encryption
 - [3D_TOPOLOGY_DESIGN.md](./docs/3D_TOPOLOGY_DESIGN.md) — 3D topology visualization
+- [DESIGN.md](./docs/DESIGN.md) — Frontend design system (color, typography, spacing tokens)
+- [FRONTEND.md](./docs/FRONTEND.md) — Frontend architecture, JS/CSS inventory, and conventions
+- [RELEASE_NOTES.md](./docs/RELEASE_NOTES.md) — Release notes and validation status
+- [RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md) — Release SOP checklist
 - [THREAT_MODEL.md](./THREAT_MODEL.md) — Security threat model
 
 ## License
