@@ -18,12 +18,12 @@ type PeerJoinCallback func(peer *PeerEntry)
 // table (i.e. a node leaves or is removed from the mesh).
 type PeerLeaveCallback func(peerID string)
 
-// RoutingTable maintains the mapping of mesh IPs to peer IDs.
-// It's the core data structure that the mesh routing layer uses to
-// decide which peer to send a packet to.
+// RoutingTable maintains the mapping of peer addresses to peer IDs.
+// In v2, this maps peer IDs to connections (smux streams), replacing
+// the v1 mesh-IP-to-peer routing.
 type RoutingTable struct {
 	mu     sync.RWMutex
-	routes map[string]string     // mesh IP (string) → peer ID (hex public key)
+	routes map[string]string     // address (string) → peer ID
 	peers  map[string]*PeerEntry // peer ID → peer entry
 
 	// joinCB is invoked when a new peer is added. Set via SetJoinCallback.
@@ -37,10 +37,9 @@ type RoutingTable struct {
 
 // PeerEntry holds the state for a single mesh peer.
 type PeerEntry struct {
-	ID          string   // hex public key
-	Endpoint    string   // host:port
-	AllowedIPs  []string // mesh IPs
-	Obfuscation ObfuscationMode
+	ID         string   // peer ID (hex public key)
+	Endpoint   string   // host:port
+	AllowedIPs []string // address prefixes (kept for v2 routing compatibility)
 }
 
 // NewRoutingTable creates an empty routing table.
@@ -112,7 +111,7 @@ func (rt *RoutingTable) RemovePeer(peerID string) {
 	}
 }
 
-// ResolveRoute looks up the peer ID for a given mesh IP.
+// ResolveRoute looks up the peer ID for a given address.
 func (rt *RoutingTable) ResolveRoute(meshIP string) (string, bool) {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
@@ -146,7 +145,7 @@ func (rt *RoutingTable) PeerCount() int {
 	return len(rt.peers)
 }
 
-// ResolvePeerByIP resolves a mesh IP to its PeerEntry.
+// ResolvePeerByIP resolves an address to its PeerEntry.
 func (rt *RoutingTable) ResolvePeerByIP(meshIP string) (*PeerEntry, bool) {
 	pid, ok := rt.ResolveRoute(meshIP)
 	if !ok {

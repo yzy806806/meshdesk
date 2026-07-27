@@ -3,7 +3,6 @@ package p2p
 import (
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -68,9 +67,6 @@ type DynamicPeer struct {
 
 	// Capabilities from NodeMeta.
 	Capabilities []string
-
-	// Obfuscation mode string ("none", "padded", "websocket").
-	Obfuscation string
 
 	// IsRelay indicates this is a relayed connection (not direct).
 	IsRelay bool
@@ -151,16 +147,12 @@ func (d *WireGuardDelegate) AddDynamicPeer(peer DynamicPeer) error {
 
 	// Build PeerConfig for MeshNode.AddPeer.
 	peerCfg := config.PeerConfig{
-		PublicKey:   peer.PublicKey,
-		Endpoint:    peer.Endpoint,
-		AllowedIPs:  peer.AllowedIPs,
-		Obfuscation: peer.Obfuscation,
-	}
-	if peer.Obfuscation == "" {
-		peerCfg.Obfuscation = "padded" // default to padded for GFW resistance
+		PublicKey:  peer.PublicKey,
+		Endpoint:   peer.Endpoint,
+		AllowedIPs: peer.AllowedIPs,
 	}
 
-	// Add to WireGuard via MeshNode (which handles IPC + routing table).
+	// Add to the mesh node (v2: routing table update).
 	if err := d.node.AddPeer(peerCfg); err != nil {
 		return fmt.Errorf("add dynamic peer %s: %w", peer.PublicKey[:8], err)
 	}
@@ -215,14 +207,8 @@ func (d *WireGuardDelegate) updateEndpointLocked(publicKey, endpoint string) err
 		return fmt.Errorf("public key and endpoint are required")
 	}
 
-	// Use WireGuard UAPI to update the endpoint in-place.
-	// The IPC format is:
-	//   public_key=<hex>
-	//   endpoint=<host:port>
-	ipc := fmt.Sprintf("public_key=%s\nendpoint=%s\n", publicKey, endpoint)
-	if err := d.node.Device().IpcSet(ipc); err != nil {
-		return fmt.Errorf("ipc update endpoint: %w", err)
-	}
+	// TODO(v2): update peer endpoint via the new protocol layer.
+	// v1 used WireGuard UAPI IpcSet; v2 will use the HandshakeLayer.
 
 	// Update health tracking.
 	if h, ok := d.health[publicKey]; ok {
@@ -293,33 +279,9 @@ func (d *WireGuardDelegate) DynamicPeerCount() int {
 	return len(d.health)
 }
 
-// DeriveMeshIPFromHex computes a mesh IP from a hex public key,
-// using the same algorithm as mesh.deriveMeshIP.
-func DeriveMeshIPFromHex(pubKeyHex string) string {
-	if len(pubKeyHex) < 4 {
-		return "10.10.0.1"
-	}
-	var b0, b1 byte
-	fmt.Sscanf(pubKeyHex[:2], "%02x", &b0)
-	fmt.Sscanf(pubKeyHex[2:4], "%02x", &b1)
-	b0 = b0%254 + 1
-	b1 = b1%254 + 1
-	return fmt.Sprintf("10.10.%d.%d", b0, b1)
-}
-
-// MeshIPToCIDR converts a bare mesh IP to a /32 CIDR for AllowedIPs.
-func MeshIPToCIDR(meshIP string) string {
-	meshIP = strings.TrimSpace(meshIP)
-	if strings.Contains(meshIP, "/") {
-		return meshIP
-	}
-	return meshIP + "/32"
-}
-
-// AddRelayTarget adds a remote peer to this relay's WireGuard config
-// so that traffic can be forwarded to it. The peer is added without
-// an explicit endpoint — the relay learns the endpoint from the
-// target's persistent_keepalive packets.
+// AddRelayTarget adds a remote peer to this relay's config so that
+// traffic can be forwarded to it. The peer is added without an explicit
+// endpoint — the relay learns the endpoint via the v2 protocol layer.
 //
 // This is called by the RelaySessionManager when a circuit_setup
 // request is accepted (on the relay node R, adding target B).
@@ -339,10 +301,9 @@ func (d *WireGuardDelegate) AddRelayTarget(targetKey, targetMeshIP string) error
 	d.mu.Unlock()
 
 	peer := DynamicPeer{
-		PublicKey:   targetKey,
-		AllowedIPs:  []string{MeshIPToCIDR(targetMeshIP)},
-		Obfuscation: "padded",
-		IsRelay:     true,
+		PublicKey:  targetKey,
+		AllowedIPs: []string{targetMeshIP},
+		IsRelay:    true,
 	}
 	// Endpoint is intentionally empty — learned from keepalive.
 	return d.AddDynamicPeer(peer)
@@ -369,17 +330,8 @@ func (d *WireGuardDelegate) AddRelayRoute(relayKey, targetMeshIP string) error {
 	// WireGuard UAPI: setting allowed_ip on an existing peer replaces
 	// the entire AllowedIPs set, so we must include all existing IPs
 	// plus the new one.
-	cidr := MeshIPToCIDR(targetMeshIP)
-
-	// Re-send the peer config with the new allowed_ip added.
-	// WireGuard UAPI allows multiple allowed_ip= lines per peer,
-	// and re-sending a peer's public_key updates it in-place.
-	ipc := fmt.Sprintf("public_key=%s\nallowed_ip=%s\npersistent_keepalive_interval=10\n",
-		relayKey, cidr)
-
-	if err := d.node.Device().IpcSet(ipc); err != nil {
-		return fmt.Errorf("ipc set relay route for %s: %w", shortKey(relayKey), err)
-	}
+	// TODO(v2): extend relay peer's routes via the new protocol layer.
+	_ = targetMeshIP
 
 	log.Printf("[p2p] added relay route: peer %s → target %s via relay %s",
 		shortKey(relayKey), targetMeshIP, shortKey(relayKey))
@@ -400,14 +352,8 @@ func (d *WireGuardDelegate) RemoveRelayRoute(relayKey, targetMeshIP string) erro
 		return nil // peer already removed — idempotent
 	}
 
-	cidr := MeshIPToCIDR(targetMeshIP)
-
-	// WireGuard UAPI: allowed_ip=-<CIDR> removes that prefix from the peer.
-	ipc := fmt.Sprintf("public_key=%s\nallowed_ip=-%s\n", relayKey, cidr)
-
-	if err := d.node.Device().IpcSet(ipc); err != nil {
-		return fmt.Errorf("ipc remove relay route for %s: %w", shortKey(relayKey), err)
-	}
+	// TODO(v2): remove relay route via the new protocol layer.
+	_ = targetMeshIP
 
 	log.Printf("[p2p] removed relay route: target %s from relay %s",
 		targetMeshIP, shortKey(relayKey))

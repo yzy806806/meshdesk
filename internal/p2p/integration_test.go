@@ -112,7 +112,7 @@ func (mb *messageBus) deliverToNode(node *virtualNode, data []byte) {
 
 // createVirtualNode creates a new virtual node wired to the shared message bus.
 func createVirtualNode(id int, pubKey, hostname, role string) *virtualNode {
-	meshIP := DeriveMeshIPFromHex(pubKey)
+	meshIP := testMeshIP(pubKey)
 
 	meta := &NodeMeta{
 		PublicKey:   pubKey,
@@ -1075,7 +1075,7 @@ func TestIntegration_WireGuardPeerSyncOnJoin(t *testing.T) {
 		Role:        "agent",
 		Endpoints:   []string{"203.0.113.50:51820"},
 		NatType:     "full_cone",
-		MeshIP:      DeriveMeshIPFromHex(peerKey),
+		MeshIP:      testMeshIP(peerKey),
 		Version:     "1.0.0",
 		Seq:         1,
 		CapRelay:    true,
@@ -1138,7 +1138,7 @@ func TestIntegration_WireGuardPeerSyncOnLeave(t *testing.T) {
 		PublicKey: peerKey,
 		Hostname:  "peer-1",
 		Role:      "agent",
-		MeshIP:    DeriveMeshIPFromHex(peerKey),
+		MeshIP:    testMeshIP(peerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1176,7 +1176,7 @@ func TestIntegration_WireGuardPeerSyncUpdateEndpoint(t *testing.T) {
 		Hostname:  "peer-1",
 		Role:      "agent",
 		Endpoints: []string{"203.0.113.50:51820"},
-		MeshIP:    DeriveMeshIPFromHex(peerKey),
+		MeshIP:    testMeshIP(peerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1188,7 +1188,7 @@ func TestIntegration_WireGuardPeerSyncUpdateEndpoint(t *testing.T) {
 		Hostname:  "peer-1",
 		Role:      "agent",
 		Endpoints: []string{"198.51.100.1:51820"},
-		MeshIP:    DeriveMeshIPFromHex(peerKey),
+		MeshIP:    testMeshIP(peerKey),
 		Version:   "1.0.0",
 		Seq:       2,
 	}
@@ -1239,7 +1239,7 @@ func TestIntegration_WireGuardStaticPeerPreserved(t *testing.T) {
 		PublicKey: staticKey,
 		Hostname:  "static-peer",
 		Role:      "agent",
-		MeshIP:    DeriveMeshIPFromHex(staticKey),
+		MeshIP:    testMeshIP(staticKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1281,7 +1281,7 @@ func TestIntegration_WireGuardFlappingPrevention(t *testing.T) {
 		PublicKey: flapKey,
 		Hostname:  "flapping-peer",
 		Role:      "agent",
-		MeshIP:    DeriveMeshIPFromHex(flapKey),
+		MeshIP:    testMeshIP(flapKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1299,7 +1299,7 @@ func TestIntegration_WireGuardFlappingPrevention(t *testing.T) {
 		Hostname:  "flapping-peer",
 		Role:      "agent",
 		Endpoints: []string{"203.0.113.50:51820"},
-		MeshIP:    DeriveMeshIPFromHex(flapKey),
+		MeshIP:    testMeshIP(flapKey),
 		Version:   "1.0.0",
 		Seq:       2,
 	}
@@ -1349,7 +1349,7 @@ func TestIntegration_WireGuardMultiPeerSync(t *testing.T) {
 			Hostname:  fmt.Sprintf("peer-%d", i),
 			Role:      "agent",
 			Endpoints: []string{fmt.Sprintf("203.0.113.%d:51820", 60+i)},
-			MeshIP:    DeriveMeshIPFromHex(peerKeys[i]),
+			MeshIP:    testMeshIP(peerKeys[i]),
 			Version:   "1.0.0",
 			Seq:       1,
 			CapRelay:  i%2 == 0,
@@ -1403,7 +1403,7 @@ func TestIntegration_WireGuardPeerAllCapabilities(t *testing.T) {
 		Hostname:      "super-peer",
 		Role:          "agent",
 		Endpoints:     []string{"203.0.113.100:51820"},
-		MeshIP:        DeriveMeshIPFromHex(peerKey),
+		MeshIP:        testMeshIP(peerKey),
 		Version:       "1.0.0",
 		Seq:           1,
 		CapRelay:      true,

@@ -1120,7 +1120,7 @@ type PeerInfo struct {
 	ID           string
 	Endpoint     string
 	AllowedIPs   []string
-	Obfuscation  string
+	Transport    string // v2: always "reality" (only transport)
 	Capabilities []string
 }
 

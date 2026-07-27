@@ -170,7 +170,6 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 			PublicKey:    meta.PublicKey,
 			Endpoint:     endpoint,
 			AllowedIPs:   allowedIPs,
-			Obfuscation:  "padded",
 			Capabilities: capabilitiesFromMeta(meta),
 		}
 
@@ -457,18 +456,15 @@ func capabilitiesFromMeta(m *NodeMeta) []string {
 const meshSubnetCIDR = "10.10.0.0/16"
 
 // AllowedIPsForPeer determines the AllowedIPs for a dynamically discovered peer.
-//
-// Relay-capable peers (CapRelay=true) get the full mesh subnet (10.10.0.0/16)
-// so they can accept relayed traffic from any mesh peer through this node.
-// Non-relay peers get only their own mesh IP (/32).
-//
-// This is critical for the relay data plane: when relay R forwards a packet
-// from A to B, the packet arrives at B with source=A_mesh_IP. B's WireGuard
-// peer for R must have an AllowedIPs that covers A's mesh IP, otherwise
-// WireGuard's ingress filter drops the packet.
+// In v2, AllowedIPs are kept for routing table compatibility but will be
+// replaced by peer ID + smux stream routing.
 func AllowedIPsForPeer(meta *NodeMeta) []string {
 	if meta.CapRelay {
 		return []string{meshSubnetCIDR}
 	}
-	return []string{MeshIPToCIDR(meta.MeshIP)}
+	// v2: return peer ID as the route identifier.
+	if meta.MeshIP != "" {
+		return []string{meta.MeshIP}
+	}
+	return []string{meta.PublicKey}
 }

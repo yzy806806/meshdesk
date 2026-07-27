@@ -49,7 +49,6 @@ func NewGossipLayer(cfg P2pConfig, node *mesh.MeshNode, wgDelegate *WireGuardDel
 
 	// Build local NodeMeta from the mesh node's identity.
 	identity := node.Identity()
-	meshIP := DeriveMeshIPFromHex(identity.PublicKey)
 
 	localMeta := &NodeMeta{
 		PublicKey:   identity.PublicKey,
@@ -57,7 +56,7 @@ func NewGossipLayer(cfg P2pConfig, node *mesh.MeshNode, wgDelegate *WireGuardDel
 		Role:        "agent",
 		Endpoints:   []string{},
 		NatType:     "unknown",
-		MeshIP:      meshIP,
+		MeshIP:      "", // v2: deprecated, kept for gossip wire compat
 		Version:     "1.0.0",
 		Seq:         1,
 		MaxCircuits: 1024,
@@ -79,8 +78,8 @@ func NewGossipLayer(cfg P2pConfig, node *mesh.MeshNode, wgDelegate *WireGuardDel
 	}
 	joinProtocol := NewJoinProtocol(joinCfg, delegate, events)
 
-	// Create the custom transport that dials via the gVisor netstack.
-	transport := NewMeshTransport(node, meshIP, cfg.GossipPort)
+	// Create the custom transport. v2: mesh IP removed; transport uses peer ID.
+	transport := NewMeshTransport(node, "", cfg.GossipPort)
 
 	gl := &GossipLayer{
 		cfg:          cfg,
