@@ -6,8 +6,8 @@
 
 MeshDesk v1.0.0-beta.1 is the first public release. It combines mesh VPN, server
 monitoring, web terminal, file transfer, service management, multi-path anonymous
-proxy, dashboard security (TOTP 2FA), and 3D topology visualization into a single
-binary.
+proxy, dashboard security (TOTP 2FA), dashboard config management, x-ui panel
+integration, and 3D topology visualization into a single binary.
 
 **Important:** This release is functionally complete and all unit tests pass, but
 it has NOT been validated on physical multi-node hardware. See [Validation
@@ -22,12 +22,17 @@ Features carry an explicit maturity label so you know what to expect:
 | Feature | Maturity | Notes |
 |---|---|---|
 | Mesh VPN & P2P Dynamic Networking | **Stable** | WireGuard mesh, gossip discovery, NAT traversal, dynamic join — all unit-tested |
+| Transport Layer | **Beta** | Pluggable transports: UDP, Reality (xray-core embedded), WebSocket; automatic fallback |
+| PeerManager | **Beta** | Auto-reconnect, multi-transport fallback, EWMA latency probing, optimal path selection |
 | Monitoring | **Stable** | Real-time metrics, push collectors, SSE dashboard updates |
 | Web Terminal | **Stable** | xterm.js + WebSocket, multi-tab, SIGWINCH support |
 | File Transfer | **Stable** | Upload/download via web UI, capability-scoped paths |
 | Service Management | **Stable** | Start/stop/restart systemd services, per-peer authorization |
 | Dashboard Security (TOTP 2FA) | **Stable** | TOTP enrollment, step-up auth, encrypted key storage, webhook alerts |
 | Multi-path Anonymous Proxy | **Beta** | Circuit routing functional; chunker/reassembly needs real-hardware validation |
+| Endpoint Learning & Shared Relay | **Beta** | Endpoint learning + NAT-type inference + relay circuits with failover; gossip integration tested |
+| Dashboard Config Management | **Beta** | Tiered config API, PATCH merge-patch, hot reload, diff viewer — integration tested |
+| x-ui Panel Integration | **Beta** | Inbound/outbound configuration, user management, Reality config generation via Dashboard |
 | 3D Topology Visualization | **Beta** | Node graph + latency edges complete; circuit particles use mock data |
 
 **Maturity definitions:**
@@ -56,10 +61,47 @@ hardware — not when a commit lands.
   bootstrap authenticates via authorized_keys, then gossips the new member to
   the cluster
 - **Transport obfuscation** — AmneziaWG-style padded mode (H1-H4 headers, S1-S4
-  padding, junk train, anti-probe PSK) or WebSocket+TLS mode with uTLS
-  fingerprint mimicry (Chrome, Firefox, Safari, Edge, iOS, Android)
+  padding, junk train, anti-probe PSK), WebSocket+TLS mode with uTLS
+  fingerprint mimicry (Chrome, Firefox, Safari, Edge, iOS, Android), or
+  Reality TLS mode with xray-core handshake hijack (embedded, no subprocess)
+- **Endpoint learning** — when a NAT node connects to a seed, the seed reflects
+  its public endpoint and gossips it cluster-wide, enabling direct connections
+  to NAT nodes without manual endpoint configuration (EasyTier-style)
+- **Shared node relay** — when direct connection fails (e.g. symmetric NAT),
+  traffic routes through mesh peers via relay circuits with automatic failover:
+  top-2 relay candidates, 30s health checks, 3-missed-pong failover
 - **Fine-grained peer capabilities** — per-peer capability scoping for monitor,
   SSH, file transfer, and service management
+
+### Transport Layer
+
+The transport layer abstracts how MeshDesk nodes communicate, with PeerManager
+handling automatic fallback between transports:
+
+- **UDP Transport** — raw WireGuard UDP for LAN peers and direct connections
+- **Reality Transport** — xray-core Reality TLS handshake hijack, embedded
+  directly in MeshDesk (no subprocess). uTLS ClientHello fingerprint mimicry
+  makes connections indistinguishable from a real browser visiting a major
+  website (e.g. apple.com). The strongest GFW-resistant transport available.
+- **WebSocket Transport** — WebSocket + TLS with uTLS fingerprint mimicry,
+  retained as a fallback
+- **Automatic Fallback** — transports tried in priority order (UDP → Reality →
+  WS → Relay). If the primary transport is unresponsive after 5s, the next is
+  raced in parallel (Happy Eyeballs hedging)
+
+### PeerManager
+
+PeerManager is the connection lifecycle manager for every mesh peer:
+
+- **Auto-reconnect with exponential backoff** (30s → 60s → 120s → 240s → 300s cap)
+- **Multi-transport fallback** with per-transport quarantine and exponential
+  cooldown. A blackout escape hatch prevents permanent disconnect when all
+  transports are unavailable.
+- **EWMA-based latency probing** — split-alpha EWMA (α_rise=0.7, α_fall=0.3)
+  tracks per-transport latency with fast rise / slow fall to detect degradation
+  without path flapping
+- **Optimal path selection with hysteresis** — composite additive score with
+  10% hysteresis discount on the active transport to prevent flapping
 
 ### Monitoring
 
@@ -120,6 +162,36 @@ hardware — not when a commit lands.
 - **TOTP key rotation** — zero-downtime rotation with old-key grace period
 - **Recovery codes** — 10 single-use codes
 - **Lockout protection** — 5 failed attempts → 30-second lockout
+
+### Dashboard Config Management
+
+Full configuration management via the `/config` page, eliminating the need to
+SSH in and edit YAML by hand:
+
+- **All 11 config sections** rendered on a single dashboard page (node, mesh,
+  peers, p2p, monitoring, webssh, auth, transfer, proxy, xray, reality)
+- **Tiered field display** — four access tiers control visibility and writability:
+  T0 (read-only), T1 (masked secrets), T2 (step-up 2FA required), T3 (normal)
+- **PATCH /api/config** — partial save via JSON merge-patch (RFC 7396). Only
+  changed fields are sent; server merges into current config and writes atomically
+- **Hot reload** — `POST /api/config/reload` applies hot-reloadable changes
+  without restarting the daemon. Rate-limited to once per 5 seconds.
+- **Restart button** — `POST /api/config/restart` triggers a daemon restart for
+  restart-required fields. Step-up auth required. Rate-limited to once per 30s.
+- **Diff viewer** — `GET /api/config/diff` compares running in-memory config
+  against on-disk saved config, showing pending changes
+
+### x-ui Panel Integration
+
+A MeshDesk-native equivalent of the x-ui panel, accessible at `/xui`:
+
+- **Inbound/outbound configuration** — manage xray-core inbounds (VLESS, VMess,
+  Trojan, Shadowsocks) and outbounds via the Dashboard
+- **Traffic statistics** — per-inbound traffic counters and uptime
+- **Client management** — add/remove clients with per-client traffic limits
+- **Share links** — generate shareable `vless://` / `vmess://` URIs
+- **Reality config generation** — generate Reality server/client keys and
+  short IDs from the Dashboard UI
 
 ### 3D Topology Visualization
 
@@ -193,6 +265,8 @@ already-delivered positions.
 | TOTP 2FA integration | Enrollment + verify + lockout | **PASS** |
 | Security alerting + webhook | End-to-end dispatch | **PASS** |
 | Topology backend + frontend | API + SSE + Three.js render | **PASS** |
+| Endpoint learning chain | Unit + gossip integration test | **PASS** |
+| Config hot-reload | Integration test (PATCH, reload, diff) | **PASS** |
 | 3-node cluster integration harness | Automated test | **PASS** |
 
 ### What remains
@@ -272,13 +346,24 @@ go build -o meshdesk ./cmd/meshdesk/
 - [README.md](./README.md) — Project overview and getting started
 - [README_CN.md](./README_CN.md) — 中文项目概述
 - [ARCHITECTURE.md](./docs/ARCHITECTURE.md) — System architecture overview
+- [ARCHITECTURE_REFACTOR.md](./docs/ARCHITECTURE_REFACTOR.md) — Transport layer abstraction, Reality, PeerManager refactor
+- [PEERMANAGER_DESIGN.md](./docs/PEERMANAGER_DESIGN.md) — PeerManager state machine, quarantine, latency probing, path selection
+- [TRANSPORT_CONTRACT.md](./docs/TRANSPORT_CONTRACT.md) — Transport layer interface contract (PeerConn, Transport, TransportRegistry)
+- [TRANSPORT_CAPABILITY_MATRIX.md](./docs/TRANSPORT_CAPABILITY_MATRIX.md) — Transport feature comparison matrix
+- [OBFUSCATION_RESEARCH.md](./docs/OBFUSCATION_RESEARCH.md) — GFW obfuscation research and Reality integration design
+- [ENDPOINT_LEARNING_DESIGN.md](./docs/ENDPOINT_LEARNING_DESIGN.md) — Endpoint learning mechanism (EasyTier-style)
+- [ENDPOINT_LEARNING_DESIGN_v2.md](./docs/ENDPOINT_LEARNING_DESIGN_v2.md) — Endpoint learning v2 (gossip integration + NAT-type inference)
+- [CONFIG_INVENTORY.md](./docs/CONFIG_INVENTORY.md) — Full inventory of all config fields across 11 sections
+- [CONFIG_SECURITY_MODEL.md](./docs/CONFIG_SECURITY_MODEL.md) — Tiered config access model (T0–T3) and security rationale
 - [PROXY_DESIGN.md](./docs/PROXY_DESIGN.md) — Multi-path anonymous proxy design
 - [CIRCUIT_MANAGER_SPEC.md](./docs/CIRCUIT_MANAGER_SPEC.md) — Circuit lifecycle
 - [CHUNKER_CONTRACT.md](./docs/CHUNKER_CONTRACT.md) — Chunker/Reassembler interface
 - [TOTP_KEY_ENCRYPTION_SPEC.md](./docs/TOTP_KEY_ENCRYPTION_SPEC.md) — TOTP secret encryption
 - [3D_TOPOLOGY_DESIGN.md](./docs/3D_TOPOLOGY_DESIGN.md) — 3D topology visualization
-- [THREAT_MODEL.md](./THREAT_MODEL.md) — Security threat model
+- [DESIGN.md](./docs/DESIGN.md) — Frontend design system (color, typography, spacing tokens)
+- [FRONTEND.md](./docs/FRONTEND.md) — Frontend architecture, JS/CSS inventory, and conventions
 - [RELEASE_CHECKLIST.md](./docs/RELEASE_CHECKLIST.md) — Release SOP
+- [THREAT_MODEL.md](./THREAT_MODEL.md) — Security threat model
 
 ---
 
