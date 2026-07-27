@@ -1218,7 +1218,7 @@ a:focus:not(:focus-visible) {
   font-size: var(--md-text-sm);
   color: var(--md-text-primary);
   pointer-events: auto;
-  animation: toast-in 0.3s ease;
+  /* Entry/exit animations handled by MeshAnim (anime.js) */
   max-width: 360px;
 }
 
@@ -1236,20 +1236,6 @@ a:focus:not(:focus-visible) {
 
 .toast.info {
   border-left: 3px solid var(--md-primary);
-}
-
-.toast.removing {
-  animation: toast-out 0.3s ease forwards;
-}
-
-@keyframes toast-in {
-  from { opacity: 0; transform: translateX(20px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-
-@keyframes toast-out {
-  from { opacity: 1; transform: translateX(0); }
-  to   { opacity: 0; transform: translateX(20px); }
 }
 
 /* ── 20. Loading Skeletons ────────────────────────────────── */
@@ -1544,7 +1530,7 @@ a:focus:not(:focus-visible) {
   margin-bottom: var(--md-space-4);
   font-size: var(--md-text-sm);
   border: 1px solid var(--md-border);
-  transition: opacity 0.3s;
+  /* Show/hide transitions handled by MeshAnim (anime.js) */
 }
 
 .cfg-feedback-info {
@@ -1602,7 +1588,7 @@ a:focus:not(:focus-visible) {
   cursor: pointer;
   font-size: var(--md-text-sm);
   font-weight: var(--md-weight-medium);
-  transition: color 0.2s, border-color 0.2s;
+  /* Hover/active transitions handled by MeshAnim; keep base instant for accessibility */
   border-radius: 0;
   margin-bottom: -2px;
 }

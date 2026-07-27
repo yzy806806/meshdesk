@@ -100,12 +100,60 @@
     _active.clear();
   }
 
+  /**
+   * Slide elements in from the right (translateX 20→0) + fade in.
+   * Used by toast notifications appearing from the right edge.
+   * @param {string|Element|NodeList|Array} target - Elements to animate.
+   * @param {Object} [opts] - Override defaults.
+   * @returns {Promise<void>} Resolves when the animation completes.
+   */
+  function slideInRight(target, opts) {
+    return _run(target, { opacity: [0, 1], translateX: [20, 0] }, opts);
+  }
+
+  /**
+   * Slide elements out to the right (translateX 0→20) + fade out.
+   * Used by toast notifications disappearing toward the right edge.
+   * @param {string|Element|NodeList|Array} target - Elements to animate.
+   * @param {Object} [opts] - Override defaults.
+   * @returns {Promise<void>} Resolves when the animation completes.
+   */
+  function slideOutRight(target, opts) {
+    return _run(target, { opacity: [1, 0], translateX: [0, 20] }, opts);
+  }
+
+  /**
+   * Scale elements up from 0.95→1 + fade in.
+   * Used by modals appearing with a subtle zoom.
+   * @param {string|Element|NodeList|Array} target - Elements to animate.
+   * @param {Object} [opts] - Override defaults.
+   * @returns {Promise<void>} Resolves when the animation completes.
+   */
+  function scaleIn(target, opts) {
+    return _run(target, { opacity: [0, 1], scale: [0.95, 1] }, opts);
+  }
+
+  /**
+   * Scale elements down from 1→0.95 + fade out.
+   * Used by modals disappearing with a subtle zoom.
+   * @param {string|Element|NodeList|Array} target - Elements to animate.
+   * @param {Object} [opts] - Override defaults.
+   * @returns {Promise<void>} Resolves when the animation completes.
+   */
+  function scaleOut(target, opts) {
+    return _run(target, { opacity: [1, 0], scale: [1, 0.95] }, opts);
+  }
+
   // Expose on window for non-module pages
   window.MeshAnim = {
     DEFAULTS: DEFAULTS,
     fadeIn: fadeIn,
     fadeOut: fadeOut,
     slideIn: slideIn,
+    slideInRight: slideInRight,
+    slideOutRight: slideOutRight,
+    scaleIn: scaleIn,
+    scaleOut: scaleOut,
     staggeredAppear: staggeredAppear,
     cancelAll: cancelAll
   };
