@@ -8,7 +8,7 @@
 (function() {
   'use strict';
 
-  // --- Toast helper (shared pattern) ---
+  // --- Toast helper (shared pattern, uses MeshAnim anime.js wrapper) ---
   function showToast(message, type) {
     var container = document.querySelector('.toast-container');
     if (!container) {
@@ -19,12 +19,16 @@
     var toast = document.createElement('div');
     toast.className = 'toast ' + (type || 'info');
     toast.textContent = message;
+    // Start invisible for animation
+    toast.style.opacity = '0';
     container.appendChild(toast);
+    // Slide in from the right
+    MeshAnim.slideInRight(toast);
+    // Auto-dismiss after 4s: slide out then remove
     setTimeout(function() {
-      toast.classList.add('removing');
-      setTimeout(function() {
+      MeshAnim.slideOutRight(toast).then(function() {
         if (toast.parentNode) toast.parentNode.removeChild(toast);
-      }, 300);
+      });
     }, 4000);
   }
 
@@ -337,6 +341,12 @@
     html += '</div>';
     content.innerHTML = html;
 
+    // Animate the new section content in
+    var sectionEl = content.querySelector('.cfg-section-content');
+    if (sectionEl) {
+      MeshAnim.slideIn(sectionEl);
+    }
+
     // Reset dirty state for this section
     dirtyFields = {};
     updateSaveButton(section);
@@ -351,13 +361,18 @@
 
       if (data.pending_restart) {
         el.style.display = 'flex';
+        MeshAnim.fadeIn(el);
         var fields = data.running_vs_saved || {};
         var names = Object.keys(fields).slice(0, 5);
         if (fieldsEl) {
           fieldsEl.textContent = names.length > 0 ? names.join(', ') : '';
         }
       } else {
-        el.style.display = 'none';
+        if (el.style.display !== 'none') {
+          MeshAnim.fadeOut(el).then(function() {
+            el.style.display = 'none';
+          });
+        }
       }
     }).catch(function() {
       // Silently ignore — diff is non-critical
@@ -606,7 +621,10 @@
       pendingStepUpResolve = resolve;
       pendingStepUpReject = reject;
       var modal = document.getElementById('cfg-stepup-modal');
-      if (modal) modal.style.display = 'flex';
+      if (modal) {
+        modal.style.display = 'flex';
+        MeshAnim.fadeIn(modal);
+      }
       var passwordInput = document.getElementById('cfg-stepup-password');
       if (passwordInput) {
         passwordInput.value = '';
@@ -617,7 +635,11 @@
 
   window.configCloseStepUp = function() {
     var modal = document.getElementById('cfg-stepup-modal');
-    if (modal) modal.style.display = 'none';
+    if (modal) {
+      MeshAnim.fadeOut(modal).then(function() {
+        modal.style.display = 'none';
+      });
+    }
     if (pendingStepUpReject) {
       pendingStepUpReject(new Error('cancelled'));
       pendingStepUpReject = null;
@@ -636,7 +658,11 @@
     }).then(function(r) {
       if (r.ok) {
         var modal = document.getElementById('cfg-stepup-modal');
-        if (modal) modal.style.display = 'none';
+        if (modal) {
+          MeshAnim.fadeOut(modal).then(function() {
+            modal.style.display = 'none';
+          });
+        }
         if (pendingStepUpResolve) {
           pendingStepUpResolve();
           pendingStepUpResolve = null;
@@ -704,6 +730,7 @@
     if (!modal || !body) return;
 
     modal.style.display = 'flex';
+    MeshAnim.fadeIn(modal);
     body.innerHTML = '<p class="placeholder">Loading diff…</p>';
 
     fetchJSON('/api/config/diff').then(function(data) {
@@ -741,20 +768,27 @@
 
   window.configCloseDiff = function() {
     var modal = document.getElementById('cfg-diff-modal');
-    if (modal) modal.style.display = 'none';
+    if (modal) {
+      MeshAnim.fadeOut(modal).then(function() {
+        modal.style.display = 'none';
+      });
+    }
   };
 
-  // --- Feedback banner ---
+  // --- Feedback banner (uses MeshAnim for show/hide) ---
   function showFeedback(message, type) {
     var el = document.getElementById('cfg-feedback');
     if (!el) return;
     el.className = 'cfg-feedback cfg-feedback-' + (type || 'info');
     el.textContent = message;
     el.style.display = 'block';
+    MeshAnim.fadeIn(el);
 
     if (type === 'success' || type === 'info') {
       setTimeout(function() {
-        el.style.display = 'none';
+        MeshAnim.fadeOut(el).then(function() {
+          el.style.display = 'none';
+        });
       }, 5000);
     }
   }
