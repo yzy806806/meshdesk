@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -558,32 +559,17 @@ func TestRegistryRegisterReality(t *testing.T) {
 	}
 }
 
-// TestRegistryFallbackUDPtoReality verifies that the fallback order
-// works with both UDP and Reality transports.
-func TestRegistryFallbackUDPtoReality(t *testing.T) {
+// TestRegistryFallbackWithReality verifies that the fallback order
+// works with the Reality transport.
+func TestRegistryFallbackWithReality(t *testing.T) {
 	reg := NewTransportRegistry()
-	udpFactory := NewUDPTransportFactory()
 	realityFactory := NewRealityTransportFactory()
-	reg.Register(udpFactory)
 	reg.Register(realityFactory)
 
-	// Set fallback order: UDP first, Reality as fallback.
-	reg.SetFallbackOrder([]string{"udp", "reality"})
-
-	// Get("anything") should return UDP (first in fallback order).
-	got, err := reg.Get("anything")
+	// With only Reality registered, Get("reality") should work.
+	got, err := reg.Get("reality")
 	if err != nil {
-		t.Fatalf("Get(\"anything\") error: %v", err)
-	}
-	if got.Name() != "udp" {
-		t.Errorf("Get with fallback = %q, want %q (first in order)", got.Name(), "udp")
-	}
-
-	// Disable fallback.
-	reg.SetFallbackOrder(nil)
-	got, err = reg.Get("reality")
-	if err != nil {
-		t.Fatalf("Get(\"reality\") without fallback error: %v", err)
+		t.Fatalf("Get(\"reality\") error: %v", err)
 	}
 	if got.Name() != "reality" {
 		t.Errorf("Get(\"reality\") = %q, want %q", got.Name(), "reality")
@@ -591,12 +577,10 @@ func TestRegistryFallbackUDPtoReality(t *testing.T) {
 }
 
 // TestRegistryShutdownAllWithReality verifies that ShutdownAll works
-// with both UDP and Reality factories.
+// with the Reality factory.
 func TestRegistryShutdownAllWithReality(t *testing.T) {
 	reg := NewTransportRegistry()
-	udpFactory := NewUDPTransportFactory()
 	realityFactory := NewRealityTransportFactory()
-	reg.Register(udpFactory)
 	reg.Register(realityFactory)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -605,11 +589,7 @@ func TestRegistryShutdownAllWithReality(t *testing.T) {
 		t.Errorf("ShutdownAll() error: %v", err)
 	}
 
-	// Both factories should reject new transports.
-	_, udpErr := udpFactory.NewTransport(TransportConfig{Name: "udp"})
-	if !errors.Is(udpErr, ErrTransportShutdown) {
-		t.Errorf("UDP factory after shutdown = %v, want ErrTransportShutdown", udpErr)
-	}
+	// Factory should reject new transports.
 	_, realityErr := realityFactory.NewTransport(TransportConfig{Name: "reality"})
 	if !errors.Is(realityErr, ErrTransportShutdown) {
 		t.Errorf("Reality factory after shutdown = %v, want ErrTransportShutdown", realityErr)
@@ -650,7 +630,7 @@ func TestRealityErrorClassification(t *testing.T) {
 		t.Error("Error() string is empty")
 	}
 	// Should contain "connect" and "reality".
-	if !contains(s, "connect") || !contains(s, "reality") {
+	if !strings.Contains(s, "connect") || !strings.Contains(s, "reality") {
 		t.Errorf("Error() = %q, expected to contain 'connect' and 'reality'", s)
 	}
 }

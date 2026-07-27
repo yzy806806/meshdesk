@@ -12,7 +12,6 @@ import (
 
 	"github.com/hashicorp/memberlist"
 	"github.com/yzy806806/meshdesk/internal/mesh"
-	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 // meshNodeIface is the subset of mesh.MeshNode that MeshTransport uses.
@@ -21,22 +20,21 @@ type meshNodeIface interface {
 	Dial(ctx context.Context, network, address string) (net.Conn, error)
 	WaitForPeerHandshake(ctx context.Context, publicKey string, pollInterval, staleAfter time.Duration) error
 	RoutingTable() *mesh.RoutingTable
-	Net() *netstack.Net
 }
 
-// MeshTransport implements the memberlist.Transport interface using the
-// gVisor netstack from the existing WireGuard mesh. All gossip traffic
-// flows through WireGuard encryption — no separate transport needed.
+// MeshTransport implements the memberlist.Transport interface using TCP
+// connections through the mesh node's Dial API. In v2, all transport goes
+// through Reality TLS + smux (currently stubbed — Dial returns error).
 //
-// Since we use TCP for everything (gVisor netstack has no UDP), both
-// memberlist packet operations (WriteTo) and stream operations
-// (DialTimeout) arrive on the same TCP listener. We demultiplex by
-// peeking the first byte (msgType): stream-capable types go to StreamCh,
-// the rest are wrapped as memberlist.Packet and sent to PacketCh.
+// Since we use TCP for everything, both memberlist packet operations
+// (WriteTo) and stream operations (DialTimeout) arrive on the same TCP
+// listener. We demultiplex by peeking the first byte (msgType): stream-capable
+// types go to StreamCh, the rest are wrapped as memberlist.Packet and sent
+// to PacketCh.
 type MeshTransport struct {
-	node       meshNodeIface
-	meshIP     string
-	gossipPort int
+	node        meshNodeIface
+	advertiseIP string // v2: empty = use wildcard; will be set from transport layer
+	gossipPort  int
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -75,25 +73,29 @@ var streamMsgTypes = map[byte]bool{
 	mtUserMsg:     true,
 }
 
-// NewMeshTransport creates a new transport that uses the mesh node's gVisor
-// netstack for TCP connections.
-func NewMeshTransport(node *mesh.MeshNode, meshIP string, gossipPort int) *MeshTransport {
+// NewMeshTransport creates a new transport using the mesh node's Dial API.
+func NewMeshTransport(node *mesh.MeshNode, advertiseIP string, gossipPort int) *MeshTransport {
 	return &MeshTransport{
-		node:       node,
-		meshIP:     meshIP,
-		gossipPort: gossipPort,
-		packetCh:   make(chan *memberlist.Packet, 64),
-		streamCh:   make(chan net.Conn, 16),
+		node:        node,
+		advertiseIP: advertiseIP,
+		gossipPort:  gossipPort,
+		packetCh:    make(chan *memberlist.Packet, 64),
+		streamCh:    make(chan net.Conn, 16),
 	}
 }
 
 // FinalAdvertiseAddr returns the address to advertise for this transport.
 func (t *MeshTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, error) {
-	advertiseIP := net.ParseIP(t.meshIP)
-	if advertiseIP == nil {
-		return nil, 0, fmt.Errorf("invalid mesh IP: %s", t.meshIP)
+	if t.advertiseIP != "" {
+		advertiseIP := net.ParseIP(t.advertiseIP)
+		if advertiseIP == nil {
+			return nil, 0, fmt.Errorf("invalid advertise IP: %s", t.advertiseIP)
+		}
+		return advertiseIP, t.gossipPort, nil
 	}
-	return advertiseIP, t.gossipPort, nil
+	// v2: return wildcard — the actual advertise address will be determined
+	// by the Reality TLS transport layer once it's implemented.
+	return net.IPv4zero, t.gossipPort, nil
 }
 
 // WriteTo sends a packet to the given address. Memberlist uses this for
@@ -313,25 +315,15 @@ func (t *MeshTransport) Shutdown() error {
 	return nil
 }
 
-// Listen starts listening on the mesh IP + gossip port via the gVisor netstack.
+// Listen starts listening on the mesh IP + gossip port.
+// TODO(v2): implement using smux listener on the Reality TLS transport.
 func (t *MeshTransport) Listen() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	ln, err := t.node.Net().ListenTCP(&net.TCPAddr{
-		IP:   net.ParseIP(t.meshIP),
-		Port: t.gossipPort,
-	})
-	if err != nil {
-		return fmt.Errorf("listen on %s:%d: %w", t.meshIP, t.gossipPort, err)
-	}
-
-	t.listener = ln
-
-	// Start the accept loop
-	go t.acceptLoop()
-
-	return nil
+	// v2: the listener will be created via the smux/Reality layer.
+	// For now, return an error so callers know it's not available.
+	return fmt.Errorf("v2: MeshTransport.Listen not implemented")
 }
 
 // GetAutoBindPort returns the configured gossip port.

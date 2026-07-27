@@ -347,8 +347,8 @@ func TestVerification_DataPlaneRouteWiring(t *testing.T) {
 			if p.PublicKey == keyB && p.IsRelay {
 				found = true
 				// Verify the relay target is added with /32 AllowedIPs.
-				if len(p.AllowedIPs) != 1 || p.AllowedIPs[0] != MeshIPToCIDR(nodeB.meta.MeshIP) {
-					t.Errorf("relay target AllowedIPs = %v, want [%s]", p.AllowedIPs, MeshIPToCIDR(nodeB.meta.MeshIP))
+				if len(p.AllowedIPs) != 1 || p.AllowedIPs[0] != testMeshCIDR(nodeB.meta.MeshIP) {
+					t.Errorf("relay target AllowedIPs = %v, want [%s]", p.AllowedIPs, testMeshCIDR(nodeB.meta.MeshIP))
 				}
 				break
 			}
@@ -450,7 +450,7 @@ func TestVerification_PersistentKeepalive(t *testing.T) {
 		}
 
 		// Verify: AllowedIPs should be /32 for the target.
-		expectedCIDR := MeshIPToCIDR(targetMeshIP)
+		expectedCIDR := testMeshCIDR(targetMeshIP)
 		if len(relayPeer.AllowedIPs) != 1 || relayPeer.AllowedIPs[0] != expectedCIDR {
 			t.Errorf("relay target AllowedIPs = %v, want [%s]", relayPeer.AllowedIPs, expectedCIDR)
 		}
@@ -505,15 +505,15 @@ func TestVerification_PersistentKeepalive(t *testing.T) {
 			t.Errorf("relay AllowedIPs = %v, want [10.10.0.0/16]", allowedIPs)
 		}
 
-		// Non-relay peers should get /32.
+		// Non-relay peers should get their own address.
 		nonRelayMeta := &NodeMeta{
 			PublicKey: "non_relay_keepalive",
 			MeshIP:    "10.10.5.5",
 			CapRelay:  false,
 		}
 		nonRelayIPs := AllowedIPsForPeer(nonRelayMeta)
-		if len(nonRelayIPs) != 1 || nonRelayIPs[0] != "10.10.5.5/32" {
-			t.Errorf("non-relay AllowedIPs = %v, want [10.10.5.5/32]", nonRelayIPs)
+		if len(nonRelayIPs) != 1 || nonRelayIPs[0] != "10.10.5.5" {
+			t.Errorf("non-relay AllowedIPs = %v, want [10.10.5.5]", nonRelayIPs)
 		}
 	})
 }

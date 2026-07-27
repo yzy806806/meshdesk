@@ -75,10 +75,9 @@ func TestHandlePeerJoin(t *testing.T) {
 	store := NewAlertStore()
 
 	store.HandlePeerJoin(&mesh.PeerEntry{
-		ID:          "peer-def456",
-		Endpoint:    "1.2.3.4:51820",
-		AllowedIPs:  []string{"10.10.1.2/32"},
-		Obfuscation: 0,
+		ID:         "peer-def456",
+		Endpoint:   "1.2.3.4:51820",
+		AllowedIPs: []string{"10.10.1.2/32"},
 	})
 
 	if store.Count() != 1 {

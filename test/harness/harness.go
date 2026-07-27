@@ -72,9 +72,6 @@ type Config struct {
 	// BinaryPath is the path to the meshdesk binary (default "./meshdesk").
 	BinaryPath string
 
-	// Obfuscation mode for all peers: "", "padded", or "websocket".
-	Obfuscation string
-
 	// Verbose enables verbose logging from meshdesk subprocesses.
 	Verbose bool
 }
@@ -355,11 +352,6 @@ func (h *Harness) generateConfig(node *Node) string {
     capabilities:
       - ssh_proxy
 `, other.PublicKey, other.MeshPort, other.Index+1))
-
-		if h.cfg.Obfuscation != "" {
-			peerYAML.WriteString(fmt.Sprintf(`    obfuscation: "%s"
-`, h.cfg.Obfuscation))
-		}
 	}
 
 	cfg := fmt.Sprintf(`node:

@@ -577,7 +577,7 @@ func (s *Server) handlePeersPage(w http.ResponseWriter, r *http.Request) {
 				ID:           p.ID,
 				Endpoint:     p.Endpoint,
 				AllowedIPs:   p.AllowedIPs,
-				Obfuscation:  p.Obfuscation.String(),
+				Transport:    "reality", // v2: only Reality TLS transport
 				Capabilities: s.getPeerCapabilities(p.ID),
 			})
 		}
