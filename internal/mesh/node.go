@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/config"
-	"github.com/yzy806806/meshdesk/internal/mesh/peer"
+	"github.com/yzy806806/meshdesk/internal/identity"
 )
 
 // MeshNode is the core mesh node. In v2, it will manage:
@@ -33,7 +33,7 @@ import (
 // Currently a stub — the WireGuard/gVisor/obfuscation v1 code has been
 // removed and methods panic until the new layers are implemented.
 type MeshNode struct {
-	identity *peer.Identity
+	identity *identity.Identity
 	routes   *RoutingTable
 	cfg      *config.Config
 	registry *TransportRegistry
@@ -44,26 +44,15 @@ type MeshNode struct {
 // New creates a new MeshNode from a config.
 // TODO(v2): implement identity loading, transport setup, handshake layer.
 func New(cfg *config.Config) (*MeshNode, error) {
-	var identity *peer.Identity
-	var err error
-
-	if cfg.Node.Identity != "" {
-		identity, err = peer.IdentityFromHex(cfg.Node.Identity)
-		if err != nil {
-			return nil, fmt.Errorf("load identity: %w", err)
-		}
-	} else {
-		identity, err = peer.GenerateIdentity()
-		if err != nil {
-			return nil, fmt.Errorf("generate identity: %w", err)
-		}
-		cfg.Node.Identity = identity.PrivateKey
+	nodeIdentity, err := loadOrCreateIdentity(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	registry := NewTransportRegistry()
 
 	node := &MeshNode{
-		identity: identity,
+		identity: nodeIdentity,
 		routes:   NewRoutingTable(),
 		cfg:      cfg,
 		registry: registry,
@@ -96,7 +85,7 @@ func (n *MeshNode) Close() error {
 }
 
 // Identity returns this node's Ed25519 identity.
-func (n *MeshNode) Identity() *peer.Identity {
+func (n *MeshNode) Identity() *identity.Identity {
 	return n.identity
 }
 
@@ -137,6 +126,24 @@ func (n *MeshNode) RemovePeer(peerKey string) error {
 }
 
 // GenerateIdentity creates a new Ed25519 keypair for the mesh.
-func GenerateIdentity() (*peer.Identity, error) {
-	return peer.GenerateIdentity()
+func GenerateIdentity() (*identity.Identity, error) {
+	return identity.GenerateIdentity()
+}
+
+// loadOrCreateIdentity loads an Ed25519 identity from the config, or generates
+// a new one if not configured. Updates cfg.Node.Identity with the generated key.
+func loadOrCreateIdentity(cfg *config.Config) (*identity.Identity, error) {
+	if cfg.Node.Identity != "" {
+		id, err := identity.IdentityFromHex(cfg.Node.Identity)
+		if err != nil {
+			return nil, fmt.Errorf("load identity: %w", err)
+		}
+		return id, nil
+	}
+	id, err := identity.GenerateIdentity()
+	if err != nil {
+		return nil, fmt.Errorf("generate identity: %w", err)
+	}
+	cfg.Node.Identity = id.PrivateKey
+	return id, nil
 }
