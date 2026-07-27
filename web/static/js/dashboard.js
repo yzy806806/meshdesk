@@ -42,9 +42,14 @@
       const card = grid.querySelector('[data-node="' + node.node_id + '"]');
       if (!card) return;
 
-      // Flash update
+      // Flash update — remove class on animationend instead of setTimeout
       card.classList.add('updated');
-      setTimeout(function() { card.classList.remove('updated'); }, 500);
+      card.addEventListener('animationend', function handler(e) {
+        if (e.animationName === 'metric-flash') {
+          card.classList.remove('updated');
+          card.removeEventListener('animationend', handler);
+        }
+      });
 
       // Update metrics
       const cpuBar = card.querySelector('.metric:nth-child(1) .bar-fill');
@@ -109,6 +114,14 @@
   // Connect on page load if we're on the dashboard
   if (document.getElementById('node-grid')) {
     connectSSE();
+
+    // Staggered appear for initial node cards
+    var cards = document.querySelectorAll('#node-grid article');
+    if (cards.length > 0) {
+      // Override CSS animation with MeshAnim for consistent easing
+      cards.forEach(function(c) { c.style.animation = 'none'; });
+      MeshAnim.staggeredAppear(cards, 40);
+    }
   }
 
   // Expose for other pages

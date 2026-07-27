@@ -3,7 +3,7 @@
 (function() {
   'use strict';
 
-  // Toast helper (shared pattern with services.html showToast)
+  // Toast helper (uses MeshAnim anime.js wrapper)
   function showToast(message, type) {
     var container = document.querySelector('.toast-container');
     if (!container) {
@@ -14,12 +14,16 @@
     var toast = document.createElement('div');
     toast.className = 'toast ' + (type || 'info');
     toast.textContent = message;
+    // Start invisible for animation
+    toast.style.opacity = '0';
     container.appendChild(toast);
+    // Slide in from the right
+    MeshAnim.slideInRight(toast);
+    // Auto-dismiss after 4s: slide out then remove
     setTimeout(function() {
-      toast.classList.add('removing');
-      setTimeout(function() {
+      MeshAnim.slideOutRight(toast).then(function() {
         if (toast.parentNode) toast.parentNode.removeChild(toast);
-      }, 300);
+      });
     }, 4000);
   }
 
@@ -229,6 +233,8 @@
 
     if (panel.style.display === 'none') {
       panel.style.display = '';
+      panel.style.opacity = '0';
+      MeshAnim.fadeIn(panel);
       output.textContent = 'Loading logs…';
     }
 
