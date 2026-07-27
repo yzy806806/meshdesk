@@ -95,6 +95,8 @@
   var container;
   var nodeGroup, edgeGroup, particleGroup, labelGroup;
   var hoveredObject = null;
+  var tooltipVisible = false;      // Tracks tooltip visibility for fade transitions
+  var statusHideTimer = null;      // Timer for delayed status hide
 
   // Data state
   var nodes = [];        // [{id, role, x, y, z, cpu, mem, hostname, status, mesh, velocity, ...}]
@@ -771,7 +773,6 @@
       var hit = intersects[0].object;
       var node = nodes.find(function(n) { return n.mesh === hit; });
       if (node) {
-        tooltip.style.display = 'block';
         tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
         tooltip.style.top = (event.clientY - rect.top + 15) + 'px';
         tooltip.innerHTML =
@@ -782,6 +783,12 @@
           '<div class="tt-row"><span>Mem</span><strong>' + node.mem.toFixed(1) + '%</strong></div>' +
           '<div class="tt-row tt-id"><span>ID</span><code>' + node.id.substring(0, 12) + '…</code></div>';
 
+        if (!tooltipVisible) {
+          tooltipVisible = true;
+          tooltip.style.display = 'block';
+          MeshAnim.fadeIn(tooltip);
+        }
+
         if (hoveredObject !== node.mesh) {
           if (hoveredObject) hoveredObject.material.emissiveIntensity = 0.3;
           hoveredObject = node.mesh;
@@ -790,7 +797,12 @@
         renderer.domElement.style.cursor = 'pointer';
       }
     } else {
-      tooltip.style.display = 'none';
+      if (tooltipVisible) {
+        tooltipVisible = false;
+        MeshAnim.fadeOut(tooltip).then(function() {
+          tooltip.style.display = 'none';
+        });
+      }
       if (hoveredObject) {
         hoveredObject.material.emissiveIntensity = 0.3;
         hoveredObject = null;
@@ -849,9 +861,23 @@
     if (!el) return;
     el.textContent = msg;
     el.className = 'topology-status status-' + level;
+    el.style.opacity = '';
     el.style.display = 'block';
+    // Fade in the status banner
+    MeshAnim.fadeIn(el);
+    // Cancel any pending hide from a previous call
+    if (statusHideTimer) {
+      clearTimeout(statusHideTimer);
+      statusHideTimer = null;
+    }
+    // Schedule fade-out for non-warn messages
     if (level !== 'warn') {
-      setTimeout(function() { el.style.display = 'none'; }, 5000);
+      statusHideTimer = setTimeout(function() {
+        MeshAnim.fadeOut(el).then(function() {
+          el.style.display = 'none';
+          statusHideTimer = null;
+        });
+      }, 5000);
     }
   }
 
@@ -909,6 +935,11 @@
 
   window.MeshDeskTopology = {
     init: function() {
+      // Staggered entrance for page sections
+      MeshAnim.staggeredAppear(
+        '.topology-header, .topology-toolbar, .topology-canvas-wrapper, .topology-legend',
+        80
+      );
       initScene();
       if (scene) loadData();
     },
