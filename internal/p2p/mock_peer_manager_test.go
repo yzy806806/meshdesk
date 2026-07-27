@@ -96,3 +96,25 @@ func (m *mockPeerManager) SetHealthy(publicKey string, healthy bool) {
 	defer m.mu.Unlock()
 	m.healthyPeers[publicKey] = healthy
 }
+
+// AddRelayTarget records a relay target addition (mock).
+func (m *mockPeerManager) AddRelayTarget(targetKey, targetMeshIP string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.addedPeers = append(m.addedPeers, DynamicPeer{
+		PublicKey:   targetKey,
+		AllowedIPs:  []string{MeshIPToCIDR(targetMeshIP)},
+		IsRelay:     true,
+	})
+	return nil
+}
+
+// AddRelayRoute records a relay route addition (mock).
+func (m *mockPeerManager) AddRelayRoute(relayKey, targetMeshIP string) error {
+	return nil
+}
+
+// RemoveRelayRoute records a relay route removal (mock).
+func (m *mockPeerManager) RemoveRelayRoute(relayKey, targetMeshIP string) error {
+	return nil
+}

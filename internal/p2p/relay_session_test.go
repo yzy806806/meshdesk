@@ -44,7 +44,7 @@ func newTestRelayEnv(t *testing.T, maxCircuits int) *testRelayEnv {
 		IdleTimeout:         100 * time.Millisecond, // short for testing
 		HealthCheckInterval: 20 * time.Millisecond,  // short for testing
 	}
-	rsm := NewRelaySessionManager(localKey, events, delegate, cfg)
+	rsm := NewRelaySessionManager(localKey, events, delegate, cfg, nil) // nil PeerManager is OK for these tests
 
 	env := &testRelayEnv{
 		rsm:      rsm,

@@ -17,6 +17,20 @@ type PeerLeaveHandler func(peerKey string)
 // PeerUpdateHandler is called when a peer's metadata is updated (load metrics, etc).
 type PeerUpdateHandler func(meta *NodeMeta)
 
+// RelayPathBuilder is the interface for managing relay circuits for NAT peers.
+// When a NAT peer (no public endpoint) is discovered via gossip, the event
+// delegate calls OnNATPeerDiscovered instead of AddDynamicPeer. The
+// implementation selects a relay, sets up the circuit, and wires the
+// WireGuard routing through the relay.
+type RelayPathBuilder interface {
+	// OnNATPeerDiscovered is called by NotifyJoin when a NAT peer with
+	// no endpoints is discovered. It selects relays and sets up the circuit.
+	OnNATPeerDiscovered(meta *NodeMeta)
+
+	// OnPeerLeft cleans up relay circuits when a peer leaves.
+	OnPeerLeft(peerKey string)
+}
+
 // meshEventDelegate implements memberlist.EventDelegate to bridge gossip
 // events to the WireGuard delegate and routing table.
 type meshEventDelegate struct {
@@ -31,6 +45,10 @@ type meshEventDelegate struct {
 	joinHandler   PeerJoinHandler
 	leaveHandler  PeerLeaveHandler
 	updateHandler PeerUpdateHandler
+
+	// relayPathBuilder manages relay circuits for NAT peers.
+	// nil if relay path building is not enabled (no gossip layer wiring).
+	relayPathBuilder RelayPathBuilder
 
 	// Flapping prevention (§1.7)
 	leaveTimes map[string]time.Time // publicKey → last leave time
@@ -69,6 +87,16 @@ func (e *meshEventDelegate) SetUpdateHandler(h PeerUpdateHandler) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.updateHandler = h
+}
+
+// SetRelayPathBuilder installs the relay path builder for NAT peer relay selection.
+// When set, NotifyJoin will detect NAT peers (empty endpoints) and delegate
+// their WireGuard setup to the relay path builder instead of calling
+// AddDynamicPeer with an empty endpoint.
+func (e *meshEventDelegate) SetRelayPathBuilder(rpb RelayPathBuilder) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.relayPathBuilder = rpb
 }
 
 // NotifyJoin is called when a new node joins the memberlist cluster.
@@ -115,10 +143,33 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 
 	// Add to WireGuard via delegate.
 	if isNew {
+		// Determine AllowedIPs for this peer.
+		// Relay-capable peers get the full mesh subnet (10.10.0.0/16)
+		// so they can accept relayed traffic from any mesh peer.
+		// Non-relay peers get only their own mesh IP /32.
+		allowedIPs := AllowedIPsForPeer(meta)
+
+		// Check if this is a NAT peer with no direct endpoint.
+		// If so, and a relay path builder is installed, delegate to
+		// the relay path builder instead of calling AddDynamicPeer
+		// with an empty endpoint (which would fail or create a useless peer).
+		endpoint := firstNonEmpty(meta.Endpoints)
+		if endpoint == "" && e.relayPathBuilder != nil {
+			log.Printf("[p2p] NotifyJoin: NAT peer %s discovered (no endpoints), selecting relay...",
+				meta.PublicKey[:8])
+			e.relayPathBuilder.OnNATPeerDiscovered(meta)
+
+			// Still invoke the external join handler.
+			if joinHdl != nil {
+				joinHdl(meta)
+			}
+			return // Skip direct peer addition — relay handles it
+		}
+
 		peer := DynamicPeer{
 			PublicKey:    meta.PublicKey,
-			Endpoint:     firstNonEmpty(meta.Endpoints),
-			AllowedIPs:   []string{MeshIPToCIDR(meta.MeshIP)},
+			Endpoint:     endpoint,
+			AllowedIPs:   allowedIPs,
 			Obfuscation:  "padded",
 			Capabilities: capabilitiesFromMeta(meta),
 		}
@@ -181,6 +232,14 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 	} else {
 		log.Printf("[p2p] NotifyLeave: removed peer %s (mesh IP %s)",
 			meta.PublicKey[:8], meta.MeshIP)
+	}
+
+	// Clean up relay circuits for this peer.
+	e.mu.RLock()
+	rpb := e.relayPathBuilder
+	e.mu.RUnlock()
+	if rpb != nil {
+		rpb.OnPeerLeft(meta.PublicKey)
 	}
 
 	if leaveHdl != nil {
@@ -391,4 +450,24 @@ func capabilitiesFromMeta(m *NodeMeta) []string {
 		caps = append(caps, "proxy_entry")
 	}
 	return caps
+}
+
+// meshSubnetCIDR is the full mesh subnet used for relay peer AllowedIPs.
+const meshSubnetCIDR = "10.10.0.0/16"
+
+// AllowedIPsForPeer determines the AllowedIPs for a dynamically discovered peer.
+//
+// Relay-capable peers (CapRelay=true) get the full mesh subnet (10.10.0.0/16)
+// so they can accept relayed traffic from any mesh peer through this node.
+// Non-relay peers get only their own mesh IP (/32).
+//
+// This is critical for the relay data plane: when relay R forwards a packet
+// from A to B, the packet arrives at B with source=A_mesh_IP. B's WireGuard
+// peer for R must have an AllowedIPs that covers A's mesh IP, otherwise
+// WireGuard's ingress filter drops the packet.
+func AllowedIPsForPeer(meta *NodeMeta) []string {
+	if meta.CapRelay {
+		return []string{meshSubnetCIDR}
+	}
+	return []string{MeshIPToCIDR(meta.MeshIP)}
 }

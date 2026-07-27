@@ -229,7 +229,7 @@ func createRelayNode(id int, pubKey, hostname string) *virtualNode {
 		IdleTimeout:         5 * time.Minute,
 		HealthCheckInterval: 30 * time.Second,
 	}
-	rsm := NewRelaySessionManager(pubKey, vn.events, vn.delegate, relayCfg)
+	rsm := NewRelaySessionManager(pubKey, vn.events, vn.delegate, relayCfg, vn.wgMgr)
 	vn.relayMgr = rsm
 
 	// Wire relay message handler into delegate.
