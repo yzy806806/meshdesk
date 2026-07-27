@@ -73,6 +73,17 @@ type P2pConfig struct {
 	// GossipPort is the TCP port for memberlist gossip on the mesh IP.
 	// Default: 7946.
 	GossipPort int `yaml:"gossip_port,omitempty"`
+
+	// WgPort is the WireGuard UDP listen port. Used to proactively announce
+	// a local endpoint (localIP:WgPort) so peers have a candidate address to
+	// try before reactive endpoint learning kicks in. Default: 51820.
+	WgPort int `yaml:"-"`
+
+	// AdvertiseEndpoint is an explicit endpoint (host:port) that this node
+	// advertises to peers via gossip. When set, it overrides auto-detection.
+	// Use this when the node is behind NAT and you know the public IP:port
+	// mapping, or when auto-detection would pick the wrong interface.
+	AdvertiseEndpoint string `yaml:"advertise_endpoint,omitempty"`
 }
 
 // DefaultP2pConfig returns a P2pConfig with sensible defaults.
@@ -112,6 +123,7 @@ func FromConfig(c config.P2pConfig) P2pConfig {
 		DirectReprobeInterval: c.DirectReprobeInterval,
 		MaxPeers:              c.MaxPeers,
 		GossipPort:            7946, // Default; overridden by MeshConfig.GossipPort in practice
+		AdvertiseEndpoint:     c.AdvertiseEndpoint,
 	}
 }
 

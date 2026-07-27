@@ -138,6 +138,82 @@ func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 	})
 }
 
+// announceLocalEndpoint proactively sets the local node's WireGuard endpoint
+// so gossip propagates it to all peers. This breaks the chicken-and-egg
+// problem where reactive OnEndpointDiscovered only fires when a peer already
+// knows our address and sends us a packet.
+//
+// Priority:
+//  1. cfg.AdvertiseEndpoint (explicit, user-configured — for NAT)
+//  2. auto-detected outbound IP + WgPort
+//
+// If neither is available, the reactive learning path remains the sole source.
+func (g *GossipLayer) announceLocalEndpoint() {
+	var endpoint string
+
+	if g.cfg.AdvertiseEndpoint != "" {
+		// User provided an explicit endpoint — trust it.
+		endpoint = g.cfg.AdvertiseEndpoint
+	} else if g.cfg.WgPort > 0 {
+		// Auto-detect the outbound IP.
+		ip := detectOutboundIP()
+		if ip != "" {
+			endpoint = net.JoinHostPort(ip, fmt.Sprintf("%d", g.cfg.WgPort))
+		}
+	}
+
+	if endpoint == "" {
+		log.Printf("[p2p] endpoint learning: no local endpoint to announce (reactive learning only)")
+		return
+	}
+
+	g.SetLocalEndpoints([]string{endpoint}, "unknown")
+	log.Printf("[p2p] endpoint learning: announced local endpoint %s", endpoint)
+}
+
+// detectOutboundIP returns the preferred non-loopback IPv4 address of this
+// machine by opening a UDP socket to a public address (no actual data is
+// sent — the kernel picks the source IP it would use for routing). Returns
+// "" if no suitable address is found.
+func detectOutboundIP() string {
+	// Use 8.8.8.8 as a well-known public address. The kernel selects the
+	// interface it would route through, giving us the correct source IP.
+	// No packets are actually sent for UDP connect.
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		// Fallback: scan interfaces.
+		return detectOutboundIPFromInterfaces()
+	}
+	defer conn.Close()
+
+	addr := conn.LocalAddr().(*net.UDPAddr)
+	ip := addr.IP.String()
+	if ip == "" || ip == "0.0.0.0" {
+		return ""
+	}
+	return ip
+}
+
+// detectOutboundIPFromInterfaces scans network interfaces for a non-loopback,
+// non-link-local IPv4 address. This is a fallback used when the UDP dial
+// trick fails (e.g., no default route).
+func detectOutboundIPFromInterfaces() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ""
+	}
+	for _, addr := range addrs {
+		// addr is either *net.IPNet or *net.IPAddr
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			ip := ipnet.IP
+			if ip.To4() != nil && !ip.IsLinkLocalUnicast() {
+				return ip.String()
+			}
+		}
+	}
+	return ""
+}
+
 // OnEndpointDiscovered implements mesh.EndpointNotifier.
 // Non-blocking: delegates to updateLocalMeta which holds the delegate
 // mutex briefly. Called from WireGuard receive goroutines.
@@ -211,6 +287,12 @@ func (g *GossipLayer) Start() error {
 
 	// Join seed peers if configured.
 	if g.cfg.HasSeed() {
+		// Announce our local endpoint before joining so peers receive it
+		// in the initial PushPull state sync. This breaks the chicken-and-egg
+		// problem where peers need our endpoint to send us WireGuard packets
+		// but can only learn it reactively from those same packets.
+		g.announceLocalEndpoint()
+
 		// Run join in a goroutine — it may block if seeds are unreachable.
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
