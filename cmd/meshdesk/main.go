@@ -152,6 +152,44 @@ func main() {
 			}
 		}
 
+		// Initialize the relay path builder for NAT peer relay selection.
+		// This enables automatic relay circuit setup when NAT peers (no
+		// public endpoint) are discovered via gossip. The path builder:
+		//   1. Selects top-K=2 relay candidates via RelaySelector
+		//   2. Sends circuit_setup to the primary relay
+		//   3. On accept, extends the relay peer's AllowedIPs to include
+		//      the NAT peer's mesh IP (so WireGuard routes through the relay)
+		//   4. Health-monitors with PING/PONG every 30s, failover to secondary
+		localKey := node.Identity().PublicKey
+		rpb := p2p.NewRelayPathBuilder(
+			gossipLayer,
+			wgDelegate,
+			gl.Relay(),
+			gl.Events(),
+			localKey,
+		)
+
+		// Wire the RTT estimator from the gossip layer.
+		if impl, ok := rpb.(*p2p.RelayPathBuilderImpl); ok {
+			impl.SetRTTEstimator(gossipLayer.EstimateRTT)
+		}
+
+		// Install the path builder into the event delegate so NotifyJoin
+		// delegates NAT peers to it.
+		gl.Events().SetRelayPathBuilder(rpb)
+
+		// Start the NAT peer reconciliation loop (handles relays joining
+		// after NAT peers are discovered).
+		if impl, ok := rpb.(*p2p.RelayPathBuilderImpl); ok {
+			impl.StartReconciliationLoop()
+		}
+
+		// Wire the path builder into the relay session manager so that
+		// circuit_accept/reject/pong messages are dispatched to it.
+		if rsm := gl.RelaySessionManager(); rsm != nil {
+			rsm.SetRelayPathBuilder(rpb)
+		}
+
 		// Initialize and start NAT traversal (if enabled).
 		if cfg.P2P.NatTraversal {
 			natCfg := p2p.NatTraversalFromP2pConfig(p2pCfg)
