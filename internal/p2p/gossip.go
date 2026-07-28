@@ -2,6 +2,8 @@ package p2p
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -9,7 +11,6 @@ import (
 	"time"
 
 	"github.com/hashicorp/memberlist"
-	"github.com/yzy806806/meshdesk/internal/mesh"
 )
 
 // GossipLayer is the top-level coordinator for the P2P gossip discovery layer.
@@ -17,12 +18,12 @@ import (
 // provides the API for starting/stopping gossip and querying the peer set.
 type GossipLayer struct {
 	cfg          P2pConfig
-	node         *mesh.MeshNode
+	identity     []byte
+	peerManager  PeerManager
 	delegate     *meshDelegate
 	events       *meshEventDelegate
 	wgDelegate   *WireGuardDelegate
 	relay        *RelaySelector
-	transport    *MeshTransport
 	memberlist   *memberlist.Memberlist
 	localMeta    *NodeMeta
 	mu           sync.RWMutex
@@ -39,36 +40,41 @@ type GossipLayer struct {
 	joinProtocol *JoinProtocol
 }
 
-// NewGossipLayer creates a new gossip layer from the given config and mesh node.
-// The WireGuardDelegate must be pre-created (it wraps the MeshNode).
+// NewGossipLayer creates a new gossip layer from the given config, identity,
+// and peer manager. The identity is the Ed25519 private key bytes used for
+// memberlist config. The peerManager handles dynamic peer management.
 // Call Start() to begin gossip.
-func NewGossipLayer(cfg P2pConfig, node *mesh.MeshNode, wgDelegate *WireGuardDelegate) (*GossipLayer, error) {
+func NewGossipLayer(cfg P2pConfig, identity []byte, peerManager PeerManager) (*GossipLayer, error) {
 	if !cfg.Enabled {
 		return nil, fmt.Errorf("p2p is disabled in config")
 	}
 
-	// Build local NodeMeta from the mesh node's identity.
-	identity := node.Identity()
+	// Derive the Ed25519 public key from the identity private key.
+	var pubKeyHex string
+	if len(identity) == ed25519.PrivateKeySize {
+		privKey := ed25519.PrivateKey(identity)
+		pub := privKey.Public().(ed25519.PublicKey)
+		pubKeyHex = hex.EncodeToString(pub)
+	}
 
 	localMeta := &NodeMeta{
-		PublicKey:   identity.PublicKey,
+		PublicKey:   pubKeyHex,
 		Hostname:    "", // set by caller via SetLocalIdentity
 		Role:        "agent",
 		Endpoints:   []string{},
 		NatType:     "unknown",
-		MeshIP:      "", // v2: deprecated, kept for gossip wire compat
 		Version:     "1.0.0",
 		Seq:         1,
 		MaxCircuits: 1024,
 	}
 
 	delegate := newMeshDelegate(localMeta)
-	events := newMeshEventDelegate(delegate, wgDelegate)
+	events := newMeshEventDelegate(delegate, peerManager)
 	relay := NewRelaySelector(events)
 
 	// Initialize the join protocol (§4).
 	joinCfg := JoinConfig{
-		LocalPublicKey: identity.PublicKey,
+		LocalPublicKey: pubKeyHex,
 		JoinApproval:   cfg.JoinApproval,
 		AuthorizedKeys: cfg.AuthorizedKeys,
 		MaxPeers:       cfg.MaxPeers,
@@ -78,23 +84,28 @@ func NewGossipLayer(cfg P2pConfig, node *mesh.MeshNode, wgDelegate *WireGuardDel
 	}
 	joinProtocol := NewJoinProtocol(joinCfg, delegate, events)
 
-	// Create the custom transport. v2: mesh IP removed; transport uses peer ID.
-	transport := NewMeshTransport(node, "", cfg.GossipPort)
-
 	gl := &GossipLayer{
 		cfg:          cfg,
-		node:         node,
+		identity:     identity,
+		peerManager:  peerManager,
 		delegate:     delegate,
 		events:       events,
-		wgDelegate:   wgDelegate,
+		wgDelegate:   nil, // set via SetWireGuardDelegate if needed
 		relay:        relay,
-		transport:    transport,
 		localMeta:    localMeta,
 		joinProtocol: joinProtocol,
 		stopCh:       make(chan struct{}),
 	}
 
 	return gl, nil
+}
+
+// SetWireGuardDelegate wires the WireGuard delegate after construction.
+// This is used for health polling and relay session management.
+func (g *GossipLayer) SetWireGuardDelegate(wgd *WireGuardDelegate) {
+	g.mu.Lock()
+	g.wgDelegate = wgd
+	g.mu.Unlock()
 }
 
 // SetLocalIdentity sets the local node's hostname and role in metadata.
@@ -255,6 +266,29 @@ func (g *GossipLayer) OnEndpointDiscovered(peerKey, endpoint string) {
 	})
 }
 
+// resolveAdvertiseAddr determines the address to advertise to gossip peers.
+// Priority:
+//  1. cfg.AdvertiseEndpoint (explicit, user-configured — for NAT)
+//  2. first entry in localMeta.Endpoints
+//  3. auto-detected outbound IP
+func (g *GossipLayer) resolveAdvertiseAddr() string {
+	if g.cfg.AdvertiseEndpoint != "" {
+		host, _, _ := net.SplitHostPort(g.cfg.AdvertiseEndpoint)
+		return host
+	}
+	eps := g.localMeta.Endpoints
+	if len(eps) > 0 && eps[0] != "" {
+		host, _, err := net.SplitHostPort(eps[0])
+		if err == nil && host != "" {
+			return host
+		}
+	}
+	if ip := detectOutboundIP(); ip != "" {
+		return ip
+	}
+	return ""
+}
+
 // Start initializes memberlist and begins gossip.
 func (g *GossipLayer) Start() error {
 	g.mu.Lock()
@@ -264,12 +298,18 @@ func (g *GossipLayer) Start() error {
 	}
 	g.mu.Unlock()
 
+	// Resolve the bind address for memberlist NetTransport.
+	bindAddr := g.cfg.GossipBindAddr
+	if bindAddr == "" {
+		bindAddr = "0.0.0.0"
+	}
+
 	// Create memberlist configuration.
 	mlConfig := memberlist.DefaultLocalConfig()
 	mlConfig.Name = g.localMeta.PublicKey[:16] // first 16 chars of hex key
-	mlConfig.BindAddr = g.localMeta.MeshIP
+	mlConfig.BindAddr = bindAddr
 	mlConfig.BindPort = g.cfg.GossipPort
-	mlConfig.AdvertiseAddr = g.localMeta.MeshIP
+	mlConfig.AdvertiseAddr = g.resolveAdvertiseAddr()
 	mlConfig.AdvertisePort = g.cfg.GossipPort
 	mlConfig.TCPTimeout = 10 * time.Second
 	mlConfig.IndirectChecks = 3
@@ -286,11 +326,17 @@ func (g *GossipLayer) Start() error {
 	// Use a custom logger that prefixes with [p2p].
 	mlConfig.Logger = log.New(log.Writer(), "[p2p/memberlist] ", log.LstdFlags)
 
-	// Use our custom transport (gVisor TCP). Start listening first.
-	if err := g.transport.Listen(); err != nil {
-		return fmt.Errorf("transport listen: %w", err)
+	// Use memberlist's built-in NetTransport (standard TCP).
+	nc := &memberlist.NetTransportConfig{
+		BindAddrs: []string{bindAddr},
+		BindPort:  g.cfg.GossipPort,
+		Logger:    log.New(log.Writer(), "[p2p/transport] ", log.LstdFlags),
 	}
-	mlConfig.Transport = g.transport
+	nt, err := memberlist.NewNetTransport(nc)
+	if err != nil {
+		return fmt.Errorf("create net transport: %w", err)
+	}
+	mlConfig.Transport = nt
 
 	// Create the memberlist.
 	ml, err := memberlist.Create(mlConfig)
@@ -334,8 +380,8 @@ func (g *GossipLayer) Start() error {
 	// Wire the join protocol (§4).
 	g.wireJoinProtocol()
 
-	log.Printf("[p2p] gossip layer started (mesh IP %s, gossip port %d)",
-		g.localMeta.MeshIP, g.cfg.GossipPort)
+	log.Printf("[p2p] gossip layer started (bind %s:%d, advertise %s)",
+		bindAddr, g.cfg.GossipPort, mlConfig.AdvertiseAddr)
 
 	return nil
 }
@@ -460,9 +506,7 @@ func (g *GossipLayer) healthPollLoop() {
 
 		peers := g.wgDelegate.AllDynamicPeers()
 		for _, pk := range peers {
-			if g.wgDelegate.IsHealthy(pk) {
-				g.wgDelegate.UpdateHandshakeTime(pk)
-			}
+			_ = g.wgDelegate.IsConnected(pk)
 		}
 	}
 }

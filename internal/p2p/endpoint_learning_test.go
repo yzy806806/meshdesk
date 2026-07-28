@@ -16,7 +16,6 @@ import (
 func TestNotifyUpdateEndpointChangeTriggersUpdateEndpoint(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -28,7 +27,6 @@ func TestNotifyUpdateEndpointChangeTriggersUpdateEndpoint(t *testing.T) {
 	initialMeta := &NodeMeta{
 		PublicKey: peerKey,
 		Hostname:  "test-peer",
-		MeshIP:    "10.10.1.5",
 		Endpoints: []string{}, // empty
 		Seq:       1,
 	}
@@ -51,7 +49,6 @@ func TestNotifyUpdateEndpointChangeTriggersUpdateEndpoint(t *testing.T) {
 	updatedMeta := &NodeMeta{
 		PublicKey: peerKey,
 		Hostname:  "test-peer",
-		MeshIP:    "10.10.1.5",
 		Endpoints: []string{"203.0.113.5:51820"}, // NEW endpoint
 		Seq:       2,
 	}
@@ -69,7 +66,7 @@ func TestNotifyUpdateEndpointChangeTriggersUpdateEndpoint(t *testing.T) {
 	if !ok {
 		t.Fatal("UpdateEndpoint was NOT called after endpoint changed from empty to non-empty — bug not fixed!")
 	}
-	if got != "203.0.113.5:51820" {
+	if len(got) == 0 || got[0] != "203.0.113.5:51820" {
 		t.Errorf("UpdateEndpoint called with wrong endpoint: got %s, want 203.0.113.5:51820", got)
 	}
 }
@@ -79,7 +76,6 @@ func TestNotifyUpdateEndpointChangeTriggersUpdateEndpoint(t *testing.T) {
 func TestNotifyUpdateEndpointUnchangedNoUpdate(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -90,7 +86,6 @@ func TestNotifyUpdateEndpointUnchangedNoUpdate(t *testing.T) {
 	// First update with endpoint.
 	meta1 := &NodeMeta{
 		PublicKey: peerKey,
-		MeshIP:    "10.10.1.5",
 		Endpoints: []string{"203.0.113.5:51820"},
 		Seq:       1,
 	}
@@ -108,7 +103,6 @@ func TestNotifyUpdateEndpointUnchangedNoUpdate(t *testing.T) {
 	// Second update with SAME endpoint but different load metrics.
 	meta2 := &NodeMeta{
 		PublicKey: peerKey,
-		MeshIP:    "10.10.1.5",
 		Endpoints: []string{"203.0.113.5:51820"}, // same endpoint
 		LoadCPU:   0.9,                           // different load
 		Seq:       2,
@@ -122,7 +116,7 @@ func TestNotifyUpdateEndpointUnchangedNoUpdate(t *testing.T) {
 	mockPM.mu.Lock()
 	got := mockPM.updatedEPs[peerKey]
 	mockPM.mu.Unlock()
-	if got != "203.0.113.5:51820" {
+	if len(got) == 0 || got[0] != "203.0.113.5:51820" {
 		t.Errorf("endpoint should be unchanged: got %s", got)
 	}
 }
@@ -132,7 +126,6 @@ func TestNotifyUpdateEndpointUnchangedNoUpdate(t *testing.T) {
 func TestNotifyUpdateEndpointChangesTriggersUpdate(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -143,7 +136,6 @@ func TestNotifyUpdateEndpointChangesTriggersUpdate(t *testing.T) {
 	// First update with endpoint A.
 	meta1 := &NodeMeta{
 		PublicKey: peerKey,
-		MeshIP:    "10.10.1.5",
 		Endpoints: []string{"203.0.113.5:51820"},
 		Seq:       1,
 	}
@@ -153,7 +145,6 @@ func TestNotifyUpdateEndpointChangesTriggersUpdate(t *testing.T) {
 	// Second update with endpoint B (NAT rebinding).
 	meta2 := &NodeMeta{
 		PublicKey: peerKey,
-		MeshIP:    "10.10.1.5",
 		Endpoints: []string{"198.51.100.1:51820"}, // different endpoint
 		Seq:       2,
 	}
@@ -164,7 +155,7 @@ func TestNotifyUpdateEndpointChangesTriggersUpdate(t *testing.T) {
 	mockPM.mu.Lock()
 	got := mockPM.updatedEPs[peerKey]
 	mockPM.mu.Unlock()
-	if got != "198.51.100.1:51820" {
+	if len(got) == 0 || got[0] != "198.51.100.1:51820" {
 		t.Errorf("UpdateEndpoint should be called with new endpoint: got %s, want 198.51.100.1:51820", got)
 	}
 }
@@ -174,7 +165,6 @@ func TestNotifyUpdateEndpointChangesTriggersUpdate(t *testing.T) {
 func TestOnEndpointDiscoveredDedup(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		Seq:       1,
 	}
@@ -251,7 +241,6 @@ func TestOnEndpointDiscoveredDedup(t *testing.T) {
 func TestOnEndpointDiscoveredSetsNATType(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       0,
@@ -281,7 +270,6 @@ func TestOnEndpointDiscoveredSetsNATType(t *testing.T) {
 func TestOnEndpointDiscoveredConcurrent(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		Seq:       0,
 	}

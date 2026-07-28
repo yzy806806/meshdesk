@@ -112,15 +112,12 @@ func (mb *messageBus) deliverToNode(node *virtualNode, data []byte) {
 
 // createVirtualNode creates a new virtual node wired to the shared message bus.
 func createVirtualNode(id int, pubKey, hostname, role string) *virtualNode {
-	meshIP := testMeshIP(pubKey)
-
 	meta := &NodeMeta{
 		PublicKey:   pubKey,
 		Hostname:    hostname,
 		Role:        role,
 		Endpoints:   []string{fmt.Sprintf("203.0.113.%d:51820", id+10)},
 		NatType:     "full_cone",
-		MeshIP:      meshIP,
 		Version:     "1.0.0",
 		Seq:         1,
 		MaxCircuits: 1024,
@@ -413,7 +410,7 @@ func TestIntegration_NatTraversalSuccessPath(t *testing.T) {
 	nodeB.nat.SetLocalDiscovery("203.0.113.11:51820", NatTypeFullCone)
 
 	// Mark B as healthy for wireguard handshake check.
-	nodeA.wgMgr.SetHealthy(nodeBKey, true)
+	nodeA.wgMgr.SetConnected(nodeBKey, true)
 
 	// Initiate connection from A → B.
 	nodeA.nat.InitiateConnection(nodeBKey,
@@ -542,12 +539,12 @@ func TestIntegration_RelaySessionLifecycle(t *testing.T) {
 	relayNode.events.cacheMeta(targetNode.meta)
 	entryNode.events.cacheMeta(relayNode.meta)
 
-	targetMeshIP := targetNode.meta.MeshIP
+	targetEndpoints := targetNode.meta.Endpoints
 
 	// --- Phase 1: SETUP → ACCEPT ---
 	t.Run("SETUP_ACCEPT", func(t *testing.T) {
 		circuitID := "test-circuit-001"
-		setupMsg := RelaySetupRequest(entryKey, relayKey, circuitID, targetKey, targetMeshIP)
+		setupMsg := RelaySetupRequest(entryKey, relayKey, circuitID, targetKey, targetEndpoints)
 
 		data, err := setupMsg.Marshal()
 		if err != nil {
@@ -631,8 +628,7 @@ func TestIntegration_RelayRejectAtCapacity(t *testing.T) {
 	}
 	relayNode.relayMgr.mu.Unlock()
 
-	setupMsg := RelaySetupRequest(entryKey, relayKey, "circuit-002",
-		genTestKey(), "10.10.1.1")
+	setupMsg := RelaySetupRequest(entryKey, relayKey, "circuit-002", genTestKey(), []string{"10.10.1.1"})
 	data, _ := setupMsg.Marshal()
 	relayNode.delegate.NotifyMsg(data)
 
@@ -668,8 +664,7 @@ func TestIntegration_RelayRejectDuplicateCircuit(t *testing.T) {
 	circuitID := "dup-circuit-001"
 
 	// First setup — should be accepted.
-	setup1 := RelaySetupRequest(entryKey, relayKey, circuitID,
-		genTestKey(), "10.10.1.2")
+	setup1 := RelaySetupRequest(entryKey, relayKey, circuitID, genTestKey(), []string{"10.10.1.2"})
 	data1, _ := setup1.Marshal()
 	relayNode.delegate.NotifyMsg(data1)
 	time.Sleep(50 * time.Millisecond)
@@ -679,8 +674,7 @@ func TestIntegration_RelayRejectDuplicateCircuit(t *testing.T) {
 	}
 
 	// Second setup with same circuit ID — should be rejected.
-	setup2 := RelaySetupRequest(entryKey, relayKey, circuitID,
-		genTestKey(), "10.10.1.3")
+	setup2 := RelaySetupRequest(entryKey, relayKey, circuitID, genTestKey(), []string{"10.10.1.3"})
 	data2, _ := setup2.Marshal()
 	relayNode.delegate.NotifyMsg(data2)
 	time.Sleep(50 * time.Millisecond)
@@ -710,8 +704,7 @@ func TestIntegration_RelayUnauthorizedTeardown(t *testing.T) {
 
 	// Set up a legitimate session.
 	circuitID := "auth-circuit-001"
-	setupMsg := RelaySetupRequest(entryKey, relayKey, circuitID,
-		genTestKey(), "10.10.1.1")
+	setupMsg := RelaySetupRequest(entryKey, relayKey, circuitID, genTestKey(), []string{"10.10.1.1"})
 	data, _ := setupMsg.Marshal()
 	relayNode.delegate.NotifyMsg(data)
 	time.Sleep(50 * time.Millisecond)
@@ -768,7 +761,7 @@ func TestIntegration_DynamicJoinAuthorized(t *testing.T) {
 	}
 
 	t.Logf("join accepted: bootstrap meshIP=%s, %d known peers",
-		result.Bootstrap.MeshIP, len(result.KnownPeers))
+		result.Bootstrap.PublicKey, len(result.KnownPeers))
 
 	if result.Bootstrap == nil {
 		t.Error("expected bootstrap metadata in JoinAccept")
@@ -1023,7 +1016,6 @@ func TestIntegration_JoinRejectAtCapacity(t *testing.T) {
 		PublicKey: genTestKey(),
 		Hostname:  "existing-peer",
 		Role:      "agent",
-		MeshIP:    "10.10.1.1",
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1075,7 +1067,6 @@ func TestIntegration_WireGuardPeerSyncOnJoin(t *testing.T) {
 		Role:        "agent",
 		Endpoints:   []string{"203.0.113.50:51820"},
 		NatType:     "full_cone",
-		MeshIP:      testMeshIP(peerKey),
 		Version:     "1.0.0",
 		Seq:         1,
 		CapRelay:    true,
@@ -1096,17 +1087,12 @@ func TestIntegration_WireGuardPeerSyncOnJoin(t *testing.T) {
 
 	vn.events.NotifyJoin(mlNode)
 
-	added := vn.wgMgr.addedPeers
-	if len(added) != 1 {
-		t.Fatalf("expected 1 added peer, got %d", len(added))
+	if !vn.wgMgr.WasConnected(peerKey) {
+		t.Fatalf("expected peer %s to be connected", shortKey(peerKey))
 	}
-
-	peer := added[0]
-	if peer.PublicKey != peerKey {
-		t.Errorf("expected peer key %s, got %s", shortKey(peerKey), shortKey(peer.PublicKey))
-	}
-	if peer.Endpoint != "203.0.113.50:51820" {
-		t.Errorf("expected endpoint '203.0.113.50:51820', got '%s'", peer.Endpoint)
+	endpoints, _ := vn.wgMgr.GetConnectedEndpoints(peerKey)
+	if len(endpoints) == 0 || endpoints[0] != "203.0.113.50:51820" {
+		t.Errorf("expected endpoint '203.0.113.50:51820', got '%v'", endpoints)
 	}
 
 	cachedMeta := vn.events.GetPeerMeta(peerKey)
@@ -1138,7 +1124,6 @@ func TestIntegration_WireGuardPeerSyncOnLeave(t *testing.T) {
 		PublicKey: peerKey,
 		Hostname:  "peer-1",
 		Role:      "agent",
-		MeshIP:    testMeshIP(peerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1149,7 +1134,7 @@ func TestIntegration_WireGuardPeerSyncOnLeave(t *testing.T) {
 	}
 	vn.events.NotifyLeave(mlNode)
 
-	removed := vn.wgMgr.removedPeers
+	removed := vn.wgMgr.GetDisconnectedPeers()
 	if len(removed) != 1 {
 		t.Fatalf("expected 1 removed peer, got %d", len(removed))
 	}
@@ -1176,7 +1161,6 @@ func TestIntegration_WireGuardPeerSyncUpdateEndpoint(t *testing.T) {
 		Hostname:  "peer-1",
 		Role:      "agent",
 		Endpoints: []string{"203.0.113.50:51820"},
-		MeshIP:    testMeshIP(peerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1188,7 +1172,6 @@ func TestIntegration_WireGuardPeerSyncUpdateEndpoint(t *testing.T) {
 		Hostname:  "peer-1",
 		Role:      "agent",
 		Endpoints: []string{"198.51.100.1:51820"},
-		MeshIP:    testMeshIP(peerKey),
 		Version:   "1.0.0",
 		Seq:       2,
 	}
@@ -1239,7 +1222,6 @@ func TestIntegration_WireGuardStaticPeerPreserved(t *testing.T) {
 		PublicKey: staticKey,
 		Hostname:  "static-peer",
 		Role:      "agent",
-		MeshIP:    testMeshIP(staticKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1251,17 +1233,17 @@ func TestIntegration_WireGuardStaticPeerPreserved(t *testing.T) {
 	}
 	vn.events.NotifyLeave(mlNode)
 
-	// The event delegate calls RemoveDynamicPeer on the PeerManager.
+	// The event delegate calls Disconnect on the PeerManager.
 	// The real WireGuardDelegate checks IsStaticPeer and returns nil
 	// (no-op) for static peers. The mock doesn't implement this logic
-	// and records all RemoveDynamicPeer calls.
+	// and records all Disconnect calls.
 	//
 	// For integration test correctness, we verify that the event delegate
-	// passes the right peer key to RemoveDynamicPeer. The static-keep
+	// passes the right peer key to Disconnect. The static-keep
 	// logic is tested in wg_delegate_test.go.
-	removed := vn.wgMgr.removedPeers
+	removed := vn.wgMgr.GetDisconnectedPeers()
 	if len(removed) == 0 {
-		t.Error("expected RemoveDynamicPeer to be called for the static peer (real impl handles keep logic)")
+		t.Error("expected Disconnect to be called for the static peer (real impl handles keep logic)")
 	}
 
 	// Verify the static flag is set.
@@ -1281,7 +1263,6 @@ func TestIntegration_WireGuardFlappingPrevention(t *testing.T) {
 		PublicKey: flapKey,
 		Hostname:  "flapping-peer",
 		Role:      "agent",
-		MeshIP:    testMeshIP(flapKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -1299,7 +1280,6 @@ func TestIntegration_WireGuardFlappingPrevention(t *testing.T) {
 		Hostname:  "flapping-peer",
 		Role:      "agent",
 		Endpoints: []string{"203.0.113.50:51820"},
-		MeshIP:    testMeshIP(flapKey),
 		Version:   "1.0.0",
 		Seq:       2,
 	}
@@ -1323,10 +1303,10 @@ func TestIntegration_WireGuardFlappingPrevention(t *testing.T) {
 		"See events.go:145 vs events.go:352.")
 
 	// Current behavior: peer is added (cooldown key mismatch prevents detection).
-	added := vn.wgMgr.addedPeers
+	added := vn.wgMgr.GetConnectedPeers()
 	found := false
 	for _, ap := range added {
-		if ap.PublicKey == flapKey {
+		if ap == flapKey {
 			found = true
 			break
 		}
@@ -1349,7 +1329,6 @@ func TestIntegration_WireGuardMultiPeerSync(t *testing.T) {
 			Hostname:  fmt.Sprintf("peer-%d", i),
 			Role:      "agent",
 			Endpoints: []string{fmt.Sprintf("203.0.113.%d:51820", 60+i)},
-			MeshIP:    testMeshIP(peerKeys[i]),
 			Version:   "1.0.0",
 			Seq:       1,
 			CapRelay:  i%2 == 0,
@@ -1362,7 +1341,7 @@ func TestIntegration_WireGuardMultiPeerSync(t *testing.T) {
 		vn.events.NotifyJoin(mlNode)
 	}
 
-	added := vn.wgMgr.addedPeers
+	added := vn.wgMgr.GetConnectedPeers()
 	if len(added) != 5 {
 		t.Errorf("expected 5 added peers, got %d", len(added))
 	}
@@ -1382,7 +1361,7 @@ func TestIntegration_WireGuardMultiPeerSync(t *testing.T) {
 	}
 	vn.events.NotifyLeave(mlLeaveNode)
 
-	removed := vn.wgMgr.removedPeers
+	removed := vn.wgMgr.GetDisconnectedPeers()
 	if len(removed) != 1 {
 		t.Errorf("expected 1 removed peer, got %d", len(removed))
 	}
@@ -1403,7 +1382,6 @@ func TestIntegration_WireGuardPeerAllCapabilities(t *testing.T) {
 		Hostname:      "super-peer",
 		Role:          "agent",
 		Endpoints:     []string{"203.0.113.100:51820"},
-		MeshIP:        testMeshIP(peerKey),
 		Version:       "1.0.0",
 		Seq:           1,
 		CapRelay:      true,

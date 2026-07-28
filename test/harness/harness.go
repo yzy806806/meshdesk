@@ -28,6 +28,7 @@ package harness
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -45,7 +46,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"golang.org/x/crypto/curve25519"
 )
 
 // Constants for default ports and timeouts.
@@ -298,18 +298,10 @@ func (h *Harness) createNode(index int) *Node {
 		webPort = DefaultWebBasePort + index
 	}
 
-	// Generate WireGuard keypair (same method as internal/mesh/peer).
-	priv := make([]byte, 32)
-	if _, err := rand.Read(priv); err != nil {
-		h.t.Fatalf("harness: generate key for node %d: %v", index, err)
-	}
-	priv[0] &= 248
-	priv[31] &= 127
-	priv[31] |= 64
-
-	pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+	// Generate Ed25519 keypair.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		h.t.Fatalf("harness: derive public key for node %d: %v", index, err)
+		h.t.Fatalf("harness: generate key for node %d: %v", index, err)
 	}
 
 	meshPort := DefaultMeshBasePort + index

@@ -36,7 +36,6 @@ func newTestJoinSetup(localKey string, authorizedKeys []string, approvalMode str
 		PublicKey: localKey,
 		Hostname:  "test-node",
 		Role:      "agent",
-		MeshIP:    testMeshIP(localKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -119,7 +118,6 @@ func TestJoinMessageMarshalUnmarshal(t *testing.T) {
 		PublicKey: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 		Hostname:  "test-node",
 		Role:      "agent",
-		MeshIP:    "10.10.172.206",
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -243,7 +241,6 @@ func TestHandleJoinRequest_AutoApproved(t *testing.T) {
 		PublicKey: joinerKey,
 		Hostname:  "joiner-node",
 		Role:      "agent",
-		MeshIP:    testMeshIP(joinerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -266,11 +263,7 @@ func TestHandleJoinRequest_AutoApproved(t *testing.T) {
 	if sent[0].peerKey != joinerKey {
 		t.Errorf("sent to %s, want %s", sent[0].peerKey, joinerKey)
 	}
-	// JoinAccept should include bootstrap's mesh IP.
-	if sent[0].msg.BootstrapMeshIP == "" {
-		t.Error("JoinAccept missing BootstrapMeshIP")
-	}
-	// JoinAccept should include bootstrap's public key.
+	// JoinAccept should include the bootstrap's public key.
 	if sent[0].msg.BootstrapPubKey != bootstrapKey {
 		t.Errorf("BootstrapPubKey = %s, want %s", sent[0].msg.BootstrapPubKey, bootstrapKey)
 	}
@@ -292,7 +285,6 @@ func TestHandleJoinRequest_Unauthorized(t *testing.T) {
 		PublicKey: joinerKey,
 		Hostname:  "evil-node",
 		Role:      "agent",
-		MeshIP:    testMeshIP(joinerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -342,7 +334,6 @@ func TestHandleJoinRequest_AtCapacity(t *testing.T) {
 	joinerMeta := &NodeMeta{
 		PublicKey: joinerKey,
 		Hostname:  "joiner-node",
-		MeshIP:    testMeshIP(joinerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -385,7 +376,6 @@ func TestHandleJoinRequest_ManualMode(t *testing.T) {
 	joinerMeta := &NodeMeta{
 		PublicKey: joinerKey,
 		Hostname:  "joiner-node",
-		MeshIP:    testMeshIP(joinerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -436,7 +426,6 @@ func TestManualApproveJoin(t *testing.T) {
 	joinerMeta := &NodeMeta{
 		PublicKey: joinerKey,
 		Hostname:  "joiner-node",
-		MeshIP:    testMeshIP(joinerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -478,7 +467,6 @@ func TestManualDenyJoin(t *testing.T) {
 	joinerMeta := &NodeMeta{
 		PublicKey: joinerKey,
 		Hostname:  "joiner-node",
-		MeshIP:    testMeshIP(joinerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -532,17 +520,15 @@ func TestHandleJoinAccept(t *testing.T) {
 		PublicKey: bootstrapKey,
 		Hostname:  "bootstrap-node",
 		Role:      "web",
-		MeshIP:    "10.10.172.206",
 		Version:   "1.0.0",
 		Seq:       5,
 	}
 	knownPeers := []*NodeMeta{
-		{PublicKey: "peer1key1234567890", Hostname: "peer1", MeshIP: "10.10.1.1"},
-		{PublicKey: "peer2key1234567890", Hostname: "peer2", MeshIP: "10.10.2.2"},
+		{PublicKey: "peer1key1234567890", Hostname: "peer1"},
+		{PublicKey: "peer2key1234567890", Hostname: "peer2"},
 	}
 	accept := NewJoinMessage(MsgJoinAccept, bootstrapKey, joinerKey)
 	accept.NodeMeta = bootstrapMeta
-	accept.BootstrapMeshIP = "10.10.172.206"
 	accept.BootstrapPubKey = bootstrapKey
 	accept.KnownPeers = knownPeers
 
@@ -576,8 +562,8 @@ func TestHandleJoinAccept(t *testing.T) {
 		if result.Bootstrap == nil {
 			t.Error("expected Bootstrap metadata")
 		}
-		if result.Bootstrap.MeshIP != "10.10.172.206" {
-			t.Errorf("Bootstrap MeshIP = %s, want 10.10.172.206", result.Bootstrap.MeshIP)
+		if result.Bootstrap.PublicKey != bootstrapKey {
+			t.Errorf("Bootstrap PublicKey = %s, want %s", result.Bootstrap.PublicKey, bootstrapKey)
 		}
 		if len(result.KnownPeers) != 2 {
 			t.Errorf("KnownPeers count = %d, want 2", len(result.KnownPeers))
@@ -650,7 +636,6 @@ func TestRequestJoin_NoSender(t *testing.T) {
 	// Create a JoinProtocol without a message sender.
 	localMeta := &NodeMeta{
 		PublicKey: joinerKey,
-		MeshIP:    testMeshIP(joinerKey),
 	}
 	delegate := newMeshDelegate(localMeta)
 	wgMgr := newMockPeerManager()
@@ -705,7 +690,6 @@ func TestHandleLeaveNotice(t *testing.T) {
 	notice := NewJoinMessage(MsgLeaveNotice, leavingKey, "")
 	notice.NodeMeta = &NodeMeta{
 		PublicKey: leavingKey,
-		MeshIP:    testMeshIP(leavingKey),
 	}
 
 	err := setup.jp.HandleMessage(notice)
@@ -734,7 +718,6 @@ func TestSendLeaveNotice_NoBroadcastSender(t *testing.T) {
 
 	localMeta := &NodeMeta{
 		PublicKey: localKey,
-		MeshIP:    testMeshIP(localKey),
 	}
 	delegate := newMeshDelegate(localMeta)
 	wgMgr := newMockPeerManager()
@@ -805,7 +788,6 @@ func TestDelegateNotifyMsg_JoinMessage(t *testing.T) {
 	joinerMeta := &NodeMeta{
 		PublicKey: "bbbb2222cccc3333",
 		Hostname:  "test-joiner",
-		MeshIP:    "10.10.1.2",
 	}
 	req := NewJoinMessage(MsgJoinRequest, "bbbb2222cccc3333", localKey)
 	req.NodeMeta = joinerMeta
@@ -945,7 +927,6 @@ func TestPendingJoinsExpiry(t *testing.T) {
 	joinerMeta := &NodeMeta{
 		PublicKey: joinerKey,
 		Hostname:  "joiner-node",
-		MeshIP:    testMeshIP(joinerKey),
 		Version:   "1.0.0",
 		Seq:       1,
 	}
@@ -980,7 +961,6 @@ func TestJoinProtocolConcurrent(t *testing.T) {
 			joinerMeta := &NodeMeta{
 				PublicKey: joinerKey,
 				Hostname:  "joiner",
-				MeshIP:    testMeshIP(joinerKey),
 				Version:   "1.0.0",
 				Seq:       1,
 			}

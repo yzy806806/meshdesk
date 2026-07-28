@@ -19,9 +19,9 @@ type PeerUpdateHandler func(meta *NodeMeta)
 
 // RelayPathBuilder is the interface for managing relay circuits for NAT peers.
 // When a NAT peer (no public endpoint) is discovered via gossip, the event
-// delegate calls OnNATPeerDiscovered instead of AddDynamicPeer. The
+// delegate calls OnNATPeerDiscovered instead of Connect. The
 // implementation selects a relay, sets up the circuit, and wires the
-// WireGuard routing through the relay.
+// routing through the relay.
 type RelayPathBuilder interface {
 	// OnNATPeerDiscovered is called by NotifyJoin when a NAT peer with
 	// no endpoints is discovered. It selects relays and sets up the circuit.
@@ -32,7 +32,7 @@ type RelayPathBuilder interface {
 }
 
 // meshEventDelegate implements memberlist.EventDelegate to bridge gossip
-// events to the WireGuard delegate and routing table.
+// events to the PeerManager and routing table.
 type meshEventDelegate struct {
 	delegate  *meshDelegate
 	wg        PeerManager
@@ -91,8 +91,8 @@ func (e *meshEventDelegate) SetUpdateHandler(h PeerUpdateHandler) {
 
 // SetRelayPathBuilder installs the relay path builder for NAT peer relay selection.
 // When set, NotifyJoin will detect NAT peers (empty endpoints) and delegate
-// their WireGuard setup to the relay path builder instead of calling
-// AddDynamicPeer with an empty endpoint.
+// their setup to the relay path builder instead of calling
+// Connect with an empty endpoint.
 func (e *meshEventDelegate) SetRelayPathBuilder(rpb RelayPathBuilder) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -100,8 +100,8 @@ func (e *meshEventDelegate) SetRelayPathBuilder(rpb RelayPathBuilder) {
 }
 
 // NotifyJoin is called when a new node joins the memberlist cluster.
-// It parses the node's metadata and, if the peer is new, adds it to
-// WireGuard, the routing table, and the appropriate candidate pools.
+// It parses the node's metadata and, if the peer is new, connects to it
+// via the PeerManager and adds it to the appropriate candidate pools.
 func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 	meta, err := ParseNodeMeta(node)
 	if err != nil {
@@ -116,9 +116,9 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 
 	// Flapping prevention: check if this peer recently left.
 	if e.inCooldown(meta.PublicKey) {
-		log.Printf("[p2p] NotifyJoin: peer %s in cooldown (recently left), delaying WireGuard add",
+		log.Printf("[p2p] NotifyJoin: peer %s in cooldown (recently left), delaying connection",
 			meta.PublicKey[:8])
-		// Still cache the metadata, but delay WG addition.
+		// Still cache the metadata, but delay connection.
 		e.cacheMeta(meta)
 		return
 	}
@@ -141,20 +141,10 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 	joinHdl := e.joinHandler
 	e.mu.Unlock()
 
-	// Add to WireGuard via delegate.
+	// Connect via PeerManager.
 	if isNew {
-		// Determine AllowedIPs for this peer.
-		// Relay-capable peers get the full mesh subnet (10.10.0.0/16)
-		// so they can accept relayed traffic from any mesh peer.
-		// Non-relay peers get only their own mesh IP /32.
-		allowedIPs := AllowedIPsForPeer(meta)
-
-		// Check if this is a NAT peer with no direct endpoint.
-		// If so, and a relay path builder is installed, delegate to
-		// the relay path builder instead of calling AddDynamicPeer
-		// with an empty endpoint (which would fail or create a useless peer).
-		endpoint := firstNonEmpty(meta.Endpoints)
-		if endpoint == "" && e.relayPathBuilder != nil {
+		endpoints := meta.Endpoints
+		if len(endpoints) == 0 && e.relayPathBuilder != nil {
 			log.Printf("[p2p] NotifyJoin: NAT peer %s discovered (no endpoints), selecting relay...",
 				meta.PublicKey[:8])
 			e.relayPathBuilder.OnNATPeerDiscovered(meta)
@@ -166,19 +156,12 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 			return // Skip direct peer addition — relay handles it
 		}
 
-		peer := DynamicPeer{
-			PublicKey:    meta.PublicKey,
-			Endpoint:     endpoint,
-			AllowedIPs:   allowedIPs,
-			Capabilities: capabilitiesFromMeta(meta),
-		}
-
-		if err := e.wg.AddDynamicPeer(peer); err != nil {
-			log.Printf("[p2p] NotifyJoin: failed to add WireGuard peer %s: %v",
+		if err := e.wg.Connect(meta.PublicKey, endpoints); err != nil {
+			log.Printf("[p2p] NotifyJoin: failed to connect peer %s: %v",
 				meta.PublicKey[:8], err)
 		} else {
-			log.Printf("[p2p] NotifyJoin: added peer %s (mesh IP %s, role %s)",
-				meta.PublicKey[:8], meta.MeshIP, meta.Role)
+			log.Printf("[p2p] NotifyJoin: connected peer %s (role %s, %d endpoints)",
+				meta.PublicKey[:8], meta.Role, len(endpoints))
 		}
 	}
 
@@ -189,7 +172,7 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 }
 
 // NotifyLeave is called when a node leaves the memberlist cluster.
-// It removes the peer from WireGuard, the routing table, and all pools.
+// It removes the peer from the PeerManager and all pools.
 func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 	e.cooldownMu.Lock()
 	e.leaveTimes[node.Name] = time.Now()
@@ -224,13 +207,13 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 		return
 	}
 
-	// Remove from WireGuard.
-	if err := e.wg.RemoveDynamicPeer(meta.PublicKey); err != nil {
-		log.Printf("[p2p] NotifyLeave: failed to remove WireGuard peer %s: %v",
+	// Disconnect from the peer.
+	if err := e.wg.Disconnect(meta.PublicKey); err != nil {
+		log.Printf("[p2p] NotifyLeave: failed to disconnect peer %s: %v",
 			meta.PublicKey[:8], err)
 	} else {
-		log.Printf("[p2p] NotifyLeave: removed peer %s (mesh IP %s)",
-			meta.PublicKey[:8], meta.MeshIP)
+		log.Printf("[p2p] NotifyLeave: disconnected peer %s",
+			meta.PublicKey[:8])
 	}
 
 	// Clean up relay circuits for this peer.
@@ -261,16 +244,14 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 
 	e.mu.Lock()
 
-	// Capture OLD endpoint BEFORE updating the cache.
-	// This fixes a critical bug where the cache was updated first (line 272)
-	// and then read back, making oldEndpoint always equal newEndpoint.
-	oldEndpoint := ""
+	// Capture OLD endpoints BEFORE updating the cache.
+	oldEndpoints := []string{}
 	if existing, ok := e.metaCache[meta.PublicKey]; ok {
 		if existing.Seq > meta.Seq {
 			e.mu.Unlock()
 			return // stale update, ignore
 		}
-		oldEndpoint = firstNonEmpty(existing.Endpoints)
+		oldEndpoints = existing.Endpoints
 	}
 
 	// Update cached metadata.
@@ -293,12 +274,12 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 		delete(e.entryPool, meta.PublicKey)
 	}
 
-	// Endpoint change detection — uses captured oldEndpoint (not re-read from cache).
-	newEndpoint := firstNonEmpty(meta.Endpoints)
-	if newEndpoint != "" && newEndpoint != oldEndpoint {
+	// Endpoint change detection — compares captured old endpoints.
+	newEndpoints := meta.Endpoints
+	if !endpointsEqual(newEndpoints, oldEndpoints) {
 		e.mu.Unlock()
-		if err := e.wg.UpdateEndpoint(meta.PublicKey, newEndpoint); err != nil {
-			log.Printf("[p2p] NotifyUpdate: failed to update endpoint for %s: %v",
+		if err := e.wg.UpdateEndpoints(meta.PublicKey, newEndpoints); err != nil {
+			log.Printf("[p2p] NotifyUpdate: failed to update endpoints for %s: %v",
 				meta.PublicKey[:8], err)
 		}
 	} else {
@@ -313,6 +294,20 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 	if updateHdl != nil {
 		updateHdl(meta)
 	}
+}
+
+// endpointsEqual returns true if two endpoint slices contain the same elements.
+func endpointsEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	// For small slices, a simple comparison is sufficient.
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // --- Pool accessors ---
@@ -406,7 +401,7 @@ func (e *meshEventDelegate) cacheMeta(meta *NodeMeta) {
 }
 
 // inCooldown checks flapping prevention: if the peer left within the last
-// 60 seconds, it enters a 30-second cooldown before WireGuard re-addition.
+// 60 seconds, it enters a 30-second cooldown before reconnection.
 func (e *meshEventDelegate) inCooldown(peerKey string) bool {
 	e.cooldownMu.Lock()
 	defer e.cooldownMu.Unlock()
@@ -450,21 +445,4 @@ func capabilitiesFromMeta(m *NodeMeta) []string {
 		caps = append(caps, "proxy_entry")
 	}
 	return caps
-}
-
-// meshSubnetCIDR is the full mesh subnet used for relay peer AllowedIPs.
-const meshSubnetCIDR = "10.10.0.0/16"
-
-// AllowedIPsForPeer determines the AllowedIPs for a dynamically discovered peer.
-// In v2, AllowedIPs are kept for routing table compatibility but will be
-// replaced by peer ID + smux stream routing.
-func AllowedIPsForPeer(meta *NodeMeta) []string {
-	if meta.CapRelay {
-		return []string{meshSubnetCIDR}
-	}
-	// v2: return peer ID as the route identifier.
-	if meta.MeshIP != "" {
-		return []string{meta.MeshIP}
-	}
-	return []string{meta.PublicKey}
 }

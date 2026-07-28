@@ -78,9 +78,9 @@ const (
 	msg2Size = 128 // [identityPub:32][ephPub:32][signature:64]
 
 	// Field sizes within wire messages.
-	keyFieldSize    = 32 // Ed25519 public key / X25519 public key / nonce
-	signatureSize   = 64 // Ed25519 signature
-	nonceFieldSize  = 32 // random nonce
+	keyFieldSize   = 32 // Ed25519 public key / X25519 public key / nonce
+	signatureSize  = 64 // Ed25519 signature
+	nonceFieldSize = 32 // random nonce
 
 	// DefaultTimeout is the default deadline for the full 1-RTT exchange.
 	DefaultTimeout = 10 * time.Second
@@ -105,14 +105,14 @@ var globalNonceCache = newNonceCache(MaxNonceCache)
 // over the given net.Conn (typically from handshake.Connect).
 //
 // Protocol:
-//   1. Generate X25519 ephemeral keypair + 32-byte random nonce.
-//   2. Sign: Sign(id, domain_i || ephPub || nonce)
-//   3. Send msg1: [identityPub:32][ephPub:32][nonce:32][signature:64] = 160 bytes.
-//   4. Read msg2: [peerIdentityPub:32][peerEphPub:32][peerSignature:64] = 128 bytes.
-//   5. Verify peer signature over domain_r || ourEphPub || peerEphPub || nonce.
-//   6. Compute sharedSecret = X25519(ourEphPriv, peerEphPub).
-//   7. identityBinding = sha256(sig_i || sig_r)[:32] (symmetric — same for both peers).
-//   8. Return DeriveSessionKeys(sharedSecret, role=true, identityBinding).
+//  1. Generate X25519 ephemeral keypair + 32-byte random nonce.
+//  2. Sign: Sign(id, domain_i || ephPub || nonce)
+//  3. Send msg1: [identityPub:32][ephPub:32][nonce:32][signature:64] = 160 bytes.
+//  4. Read msg2: [peerIdentityPub:32][peerEphPub:32][peerSignature:64] = 128 bytes.
+//  5. Verify peer signature over domain_r || ourEphPub || peerEphPub || nonce.
+//  6. Compute sharedSecret = X25519(ourEphPriv, peerEphPub).
+//  7. identityBinding = sha256(sig_i || sig_r)[:32] (symmetric — same for both peers).
+//  8. Return DeriveSessionKeys(sharedSecret, role=true, identityBinding).
 //
 // Returns:
 //   - *crypto.SessionKeys: sendKey, recvKey ready for NewSecureConn.
@@ -154,10 +154,10 @@ func ClientKeyExchange(conn net.Conn, id *identity.Identity) (*crypto.SessionKey
 
 	// 5. Build and send msg1: [identityPub:32][ephPub:32][nonce:32][signature:64] = 160 bytes.
 	msg1 := make([]byte, msg1Size)
-	copy(msg1[0:keyFieldSize], idPubBytes)                           // identityPub
-	copy(msg1[keyFieldSize:2*keyFieldSize], ephPub[:])               // ephPub
-	copy(msg1[2*keyFieldSize:3*keyFieldSize], nonce[:])              // nonce
-	copy(msg1[3*keyFieldSize:msg1Size], sigBytes)                    // signature
+	copy(msg1[0:keyFieldSize], idPubBytes)              // identityPub
+	copy(msg1[keyFieldSize:2*keyFieldSize], ephPub[:])  // ephPub
+	copy(msg1[2*keyFieldSize:3*keyFieldSize], nonce[:]) // nonce
+	copy(msg1[3*keyFieldSize:msg1Size], sigBytes)       // signature
 
 	if _, err := conn.Write(msg1); err != nil {
 		return nil, "", wrapTimeout(err, "write msg1")
@@ -170,9 +170,9 @@ func ClientKeyExchange(conn net.Conn, id *identity.Identity) (*crypto.SessionKey
 	}
 
 	// Parse msg2 fields.
-	peerIdentityPub := msg2[0:keyFieldSize]                          // 32 bytes
-	peerEphPub := msg2[keyFieldSize : 2*keyFieldSize]                // 32 bytes
-	peerSig := msg2[2*keyFieldSize : msg2Size]                       // 64 bytes
+	peerIdentityPub := msg2[0:keyFieldSize]           // 32 bytes
+	peerEphPub := msg2[keyFieldSize : 2*keyFieldSize] // 32 bytes
+	peerSig := msg2[2*keyFieldSize : msg2Size]        // 64 bytes
 
 	// 7. Verify peer signature over domain_r || ourEphPub || peerEphPub || nonce.
 	verifyPayload := buildResponderSignPayload(ephPub[:], peerEphPub, nonce[:])
@@ -206,15 +206,15 @@ func ClientKeyExchange(conn net.Conn, id *identity.Identity) (*crypto.SessionKey
 // over the given net.Conn (typically from handshake.Listen + Accept).
 //
 // Protocol:
-//   1. Read msg1: [peerIdentityPub:32][peerEphPub:32][nonce:32][peerSignature:64] = 160 bytes.
-//   2. Verify peer signature over domain_i || peerEphPub || nonce.
-//   3. Check nonce cache for replay.
-//   4. Generate X25519 ephemeral keypair.
-//   5. Sign: Sign(id, domain_r || peerEphPub || ourEphPub || nonce)
-//   6. Send msg2: [identityPub:32][ephPub:32][signature:64] = 128 bytes.
-//   7. Compute sharedSecret = X25519(ourEphPriv, peerEphPub).
-//   8. identityBinding = sha256(sig_i || sig_r)[:32] (symmetric — same for both peers).
-//   9. Return DeriveSessionKeys(sharedSecret, role=false, identityBinding).
+//  1. Read msg1: [peerIdentityPub:32][peerEphPub:32][nonce:32][peerSignature:64] = 160 bytes.
+//  2. Verify peer signature over domain_i || peerEphPub || nonce.
+//  3. Check nonce cache for replay.
+//  4. Generate X25519 ephemeral keypair.
+//  5. Sign: Sign(id, domain_r || peerEphPub || ourEphPub || nonce)
+//  6. Send msg2: [identityPub:32][ephPub:32][signature:64] = 128 bytes.
+//  7. Compute sharedSecret = X25519(ourEphPriv, peerEphPub).
+//  8. identityBinding = sha256(sig_i || sig_r)[:32] (symmetric — same for both peers).
+//  9. Return DeriveSessionKeys(sharedSecret, role=false, identityBinding).
 //
 // Returns:
 //   - *crypto.SessionKeys: sendKey, recvKey ready for NewSecureConn.
@@ -231,10 +231,10 @@ func ServerKeyExchange(conn net.Conn, id *identity.Identity) (*crypto.SessionKey
 	}
 
 	// Parse msg1 fields.
-	peerIdentityPub := msg1[0:keyFieldSize]                              // 32 bytes
-	peerEphPub := msg1[keyFieldSize : 2*keyFieldSize]                    // 32 bytes
-	nonce := msg1[2*keyFieldSize : 3*keyFieldSize]                       // 32 bytes
-	peerSig := msg1[3*keyFieldSize : msg1Size]                           // 64 bytes
+	peerIdentityPub := msg1[0:keyFieldSize]           // 32 bytes
+	peerEphPub := msg1[keyFieldSize : 2*keyFieldSize] // 32 bytes
+	nonce := msg1[2*keyFieldSize : 3*keyFieldSize]    // 32 bytes
+	peerSig := msg1[3*keyFieldSize : msg1Size]        // 64 bytes
 
 	peerIdentityHex := hex.EncodeToString(peerIdentityPub)
 
@@ -276,9 +276,9 @@ func ServerKeyExchange(conn net.Conn, id *identity.Identity) (*crypto.SessionKey
 
 	// 7. Build and send msg2: [identityPub:32][ephPub:32][signature:64] = 128 bytes.
 	msg2 := make([]byte, msg2Size)
-	copy(msg2[0:keyFieldSize], idPubBytes)                               // identityPub
-	copy(msg2[keyFieldSize:2*keyFieldSize], ephPub[:])                   // ephPub
-	copy(msg2[2*keyFieldSize:msg2Size], sigBytes)                        // signature
+	copy(msg2[0:keyFieldSize], idPubBytes)             // identityPub
+	copy(msg2[keyFieldSize:2*keyFieldSize], ephPub[:]) // ephPub
+	copy(msg2[2*keyFieldSize:msg2Size], sigBytes)      // signature
 
 	if _, err := conn.Write(msg2); err != nil {
 		return nil, peerIdentityHex, wrapTimeout(err, "write msg2")
@@ -321,7 +321,8 @@ func generateX25519Keypair() (priv [keyFieldSize]byte, pub [keyFieldSize]byte, e
 }
 
 // buildInitiatorSignPayload constructs the signing payload for the initiator:
-//   domainInitiator || ephemeralPub || nonce
+//
+//	domainInitiator || ephemeralPub || nonce
 func buildInitiatorSignPayload(ephPub, nonce []byte) []byte {
 	payload := make([]byte, 0, len(domainInitiator)+len(ephPub)+len(nonce))
 	payload = append(payload, []byte(domainInitiator)...)
@@ -331,7 +332,8 @@ func buildInitiatorSignPayload(ephPub, nonce []byte) []byte {
 }
 
 // buildResponderSignPayload constructs the signing payload for the responder:
-//   domainResponder || peerEphPub || ourEphPub || nonce
+//
+//	domainResponder || peerEphPub || ourEphPub || nonce
 func buildResponderSignPayload(peerEphPub, ourEphPub, nonce []byte) []byte {
 	payload := make([]byte, 0, len(domainResponder)+len(peerEphPub)+len(ourEphPub)+len(nonce))
 	payload = append(payload, []byte(domainResponder)...)
@@ -345,6 +347,7 @@ func buildResponderSignPayload(peerEphPub, ourEphPub, nonce []byte) []byte {
 // This value MUST be identical for both peers:
 //   - Initiator: sha256(ourSig || peerSig)
 //   - Responder: sha256(peerSig || ourSig)
+//
 // Both pass (sig_i, sig_r) in the same order — initiator's signature first,
 // responder's signature second — ensuring complementarity.
 func computeIdentityBinding(sigInitiator, sigResponder []byte) []byte {

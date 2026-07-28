@@ -77,17 +77,13 @@ type JoinMessage struct {
 
 	// NodeMeta is the joining node's full metadata (only in JoinRequest).
 	// This is how the bootstrap learns the joiner's identity, capabilities,
-	// endpoints, and mesh IP.
+	// and endpoints.
 	NodeMeta *NodeMeta `msgpack:"nm,omitempty"`
 
 	// RejectReason is a human-readable reason code (only in JoinReject).
 	RejectReason string `msgpack:"rr,omitempty"`
 
-	// BootstrapMeshIP is the bootstrap's mesh IP (only in JoinAccept).
-	// The joiner uses this to configure its first WireGuard peer.
-	BootstrapMeshIP string `msgpack:"bmi,omitempty"`
-
-	// BootstrapPort is the bootstrap's WireGuard listen port.
+	// BootstrapPort is the bootstrap's listen port.
 	BootstrapPort int `msgpack:"bp,omitempty"`
 
 	// BootstrapPubKey is the bootstrap node's public key (hex).
@@ -333,8 +329,8 @@ func (jp *JoinProtocol) handleJoinRequest(msg *JoinMessage) error {
 	joinerKey := msg.NodeMeta.PublicKey
 	joinerName := msg.NodeMeta.Hostname
 
-	log.Printf("[p2p/join] received join request from %s (hostname=%s, meshIP=%s)",
-		shortKey(joinerKey), joinerName, msg.NodeMeta.MeshIP)
+	log.Printf("[p2p/join] received join request from %s (hostname=%s)",
+		shortKey(joinerKey), joinerName)
 
 	// --- Capacity check ---
 	if jp.maxPeersExceeded != nil && jp.maxPeersExceeded() {
@@ -397,8 +393,6 @@ func (jp *JoinProtocol) sendJoinAccept(req *JoinMessage) {
 
 	accept := NewJoinMessage(MsgJoinAccept, localMeta.PublicKey, req.FromKey)
 	accept.NodeMeta = localMeta
-	accept.BootstrapMeshIP = localMeta.MeshIP
-	accept.BootstrapPort = 0 // The joiner already knows the bootstrap endpoint
 	accept.BootstrapPubKey = localMeta.PublicKey
 	accept.GossipPort = 0 // Filled from config if needed
 
@@ -476,7 +470,6 @@ func (jp *JoinProtocol) ApproveJoin(publicKey string) error {
 	localMeta := jp.delegate.getLocalMeta()
 	accept := NewJoinMessage(MsgJoinAccept, localMeta.PublicKey, publicKey)
 	accept.NodeMeta = localMeta
-	accept.BootstrapMeshIP = localMeta.MeshIP
 	accept.BootstrapPubKey = localMeta.PublicKey
 
 	if jp.peerListProvider != nil {
@@ -516,8 +509,8 @@ func (jp *JoinProtocol) DenyJoin(publicKey, reason string) error {
 // handleJoinAccept processes a JoinAccept from the bootstrap.
 // It delivers the result to the waiting joiner via the result channel.
 func (jp *JoinProtocol) handleJoinAccept(msg *JoinMessage) error {
-	log.Printf("[p2p/join] received JoinAccept from %s (meshIP=%s, %d known peers)",
-		shortKey(msg.FromKey), msg.BootstrapMeshIP, len(msg.KnownPeers))
+	log.Printf("[p2p/join] received JoinAccept from %s (%d known peers)",
+		shortKey(msg.FromKey), len(msg.KnownPeers))
 
 	jp.mu.RLock()
 	ch, ok := jp.joinResultCh[msg.ToKey]

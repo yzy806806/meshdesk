@@ -70,7 +70,11 @@ type P2pConfig struct {
 	// MaxPeers is the hard limit on total peers. Default: 256.
 	MaxPeers int `yaml:"max_peers,omitempty"`
 
-	// GossipPort is the TCP port for memberlist gossip on the mesh IP.
+	// GossipBindAddr is the bind address for the memberlist NetTransport.
+	// Default: "0.0.0.0" (all interfaces).
+	GossipBindAddr string `yaml:"gossip_bind_addr,omitempty"`
+
+	// GossipPort is the TCP port for memberlist gossip.
 	// Default: 7946.
 	GossipPort int `yaml:"gossip_port,omitempty"`
 
@@ -101,6 +105,7 @@ func DefaultP2pConfig() P2pConfig {
 		GossipProbeInterval:   1,
 		DirectReprobeInterval: 120,
 		MaxPeers:              256,
+		GossipBindAddr:        "0.0.0.0",
 		GossipPort:            7946,
 	}
 }

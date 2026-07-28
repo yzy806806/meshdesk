@@ -294,8 +294,8 @@ func TestContextCancellationAbortsConnect(t *testing.T) {
 
 	// Server that listens but never accepts (we won't call Accept).
 	serverCfg := HandshakeConfig{
-		RealityPrivateKey: privKey,
-		RealityDest:       "www.apple.com:443",
+		RealityPrivateKey:  privKey,
+		RealityDest:        "www.apple.com:443",
 		RealityServerNames: []string{"www.apple.com"},
 		DialTimeout:        30 * time.Second,
 	}
@@ -336,8 +336,8 @@ func TestContextCancellationClosesListener(t *testing.T) {
 	privKey, _, _ := GenerateRealityKeyPair()
 
 	serverCfg := HandshakeConfig{
-		RealityPrivateKey: privKey,
-		RealityDest:       "www.apple.com:443",
+		RealityPrivateKey:  privKey,
+		RealityDest:        "www.apple.com:443",
 		RealityServerNames: []string{"www.apple.com"},
 		DialTimeout:        10 * time.Second,
 	}
@@ -368,8 +368,8 @@ func TestInvalidClientRejected(t *testing.T) {
 
 	// Server with keypair 1.
 	serverCfg := HandshakeConfig{
-		RealityPrivateKey: privKey1,
-		RealityDest:       "www.apple.com:443",
+		RealityPrivateKey:  privKey1,
+		RealityDest:        "www.apple.com:443",
 		RealityServerNames: []string{"www.apple.com"},
 		DialTimeout:        10 * time.Second,
 	}
