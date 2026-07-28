@@ -19,6 +19,7 @@ func createTestNode(t *testing.T) *MeshNode {
 		sessions:             make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		peerManagers:         make(map[string]*PeerManager),
+		portMux:              newVirtualPortMux(),
 	}
 	return node
 }

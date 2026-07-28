@@ -373,9 +373,9 @@ func TestPeerConnectivity(t *testing.T) {
 		}
 	}
 
-	// Verify each node's mesh port is accepting connections.
+	// Verify each node's Reality TLS port is accepting connections.
 	for _, node := range h.Nodes() {
-		conn, err := netDialTimeout("udp", fmt.Sprintf("127.0.0.1:%d", node.MeshPort), 1*time.Second)
+		conn, err := netDialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", node.MeshPort), 1*time.Second)
 		if err != nil {
 			t.Errorf("Node %d mesh port %d not reachable: %v", node.Index, node.MeshPort, err)
 		} else {
