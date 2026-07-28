@@ -412,6 +412,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/topology", s.requireAuth(s.handleTopology))
 	mux.HandleFunc("/api/topology/events", s.requireAuth(s.handleTopologySSE))
 
+	// Peers and monitor JSON API aliases (auth required).
+	// GET /api/peers   — peers list with endpoints, capabilities, and roles as JSON.
+	// GET /api/monitor — local + remote node monitor metrics (CPU/Mem/Load) as JSON.
+	mux.HandleFunc("/api/peers", s.requireAuth(s.handlePeersAPI))
+	mux.HandleFunc("/api/monitor", s.requireAuth(s.handleMonitorAPI))
+
 	// API endpoints (auth required, return JSON or HTML fragments)
 	mux.HandleFunc("/api/dashboard/partial", s.requireAuth(s.handleDashboardPartial))
 	mux.HandleFunc("/api/files/upload", s.requireAuth(s.requireStepUp(OpFileUpload, s.handleFileUpload)))
