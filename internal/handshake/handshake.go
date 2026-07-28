@@ -40,6 +40,10 @@ type HandshakeLayer interface {
 	// The returned net.Listener produces net.Conn values from Accept().
 	// Context cancellation closes the listener.
 	Listen(ctx context.Context, addr string) (net.Listener, error)
+
+	// Close shuts down the handshake layer and releases all resources
+	// (listeners, etc.). It is idempotent.
+	Close() error
 }
 
 // HandshakeConfig configures a HandshakeLayer implementation.
