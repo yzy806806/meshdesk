@@ -45,8 +45,8 @@ type relaySession struct {
 	// being relayed.
 	TargetKey string
 
-	// TargetMeshIP is the mesh IP of the target peer.
-	TargetMeshIP string
+	// TargetEndpoints are the endpoints of the target peer.
+	TargetEndpoints []string
 
 	// State is the current session state.
 	State RelaySessionState
@@ -197,7 +197,7 @@ func (rsm *RelaySessionManager) SetMessageSender(sender func(peerKey string, msg
 
 // SetRelayPathBuilder installs the entry-side relay path builder.
 // When set, circuit_accept/reject/pong messages are dispatched to it
-// so it can wire the entry-side relay routes (AddRelayRoute on node A).
+// so it can wire the entry-side relay targets (AddRelayTarget on node A).
 func (rsm *RelaySessionManager) SetRelayPathBuilder(rpb RelayPathBuilder) {
 	rsm.mu.Lock()
 	defer rsm.mu.Unlock()
@@ -259,7 +259,7 @@ func (rsm *RelaySessionManager) handleSetup(msg *RelayMessage) error {
 	if msg.FromKey == "" {
 		return fmt.Errorf("setup message missing entry key")
 	}
-	if msg.TargetKey == "" || msg.TargetMeshIP == "" {
+	if msg.TargetKey == "" || len(msg.TargetEndpoints) == 0 {
 		return fmt.Errorf("setup message missing target info")
 	}
 
@@ -290,23 +290,22 @@ func (rsm *RelaySessionManager) handleSetup(msg *RelayMessage) error {
 
 	// Create the session in PENDING state.
 	rsm.sessions[msg.CircuitID] = &relaySession{
-		CircuitID:    msg.CircuitID,
-		EntryKey:     msg.FromKey,
-		TargetKey:    msg.TargetKey,
-		TargetMeshIP: msg.TargetMeshIP,
-		State:        RelaySessionPending,
-		CreatedAt:    time.Now(),
-		LastActivity: time.Now(),
+		CircuitID:       msg.CircuitID,
+		EntryKey:        msg.FromKey,
+		TargetKey:       msg.TargetKey,
+		TargetEndpoints: msg.TargetEndpoints,
+		State:           RelaySessionPending,
+		CreatedAt:       time.Now(),
+		LastActivity:    time.Now(),
 	}
 	rsm.pendingCount++
 	rsm.mu.Unlock()
 
-	// Wire the target peer (B) into this relay's WireGuard config so
-	// that decrypted packets from A can be re-encrypted and forwarded to B.
-	// The peer is added without an endpoint — the relay learns B's
-	// endpoint from B's persistent_keepalive packets.
+	// Wire the target peer (B) into this relay's peer manager so that
+	// traffic from A can be forwarded to B.
+	// The peer is registered with its endpoints for relay data forwarding.
 	if rsm.wg != nil {
-		if err := rsm.wg.AddRelayTarget(msg.TargetKey, msg.TargetMeshIP); err != nil {
+		if err := rsm.wg.AddRelayTarget(msg.TargetKey, msg.TargetEndpoints); err != nil {
 			log.Printf("[p2p/relay] failed to add relay target %s: %v",
 				shortKey(msg.TargetKey), err)
 			// Remove the pending session and reject.
@@ -501,14 +500,14 @@ func (rsm *RelaySessionManager) CircuitIDs() []string {
 
 // GetSessionInfo returns a snapshot of a circuit's state.
 type RelaySessionInfo struct {
-	CircuitID    string
-	EntryKey     string
-	TargetKey    string
-	TargetMeshIP string
-	State        RelaySessionState
-	CreatedAt    time.Time
-	ActivatedAt  time.Time
-	LastActivity time.Time
+	CircuitID       string
+	EntryKey        string
+	TargetKey       string
+	TargetEndpoints []string
+	State           RelaySessionState
+	CreatedAt       time.Time
+	ActivatedAt     time.Time
+	LastActivity    time.Time
 }
 
 // GetSessionInfo returns a snapshot of a circuit's state, or nil if not found.
@@ -521,14 +520,14 @@ func (rsm *RelaySessionManager) GetSessionInfo(circuitID string) *RelaySessionIn
 	}
 	s.mu.Lock()
 	info := &RelaySessionInfo{
-		CircuitID:    s.CircuitID,
-		EntryKey:     s.EntryKey,
-		TargetKey:    s.TargetKey,
-		TargetMeshIP: s.TargetMeshIP,
-		State:        s.State,
-		CreatedAt:    s.CreatedAt,
-		ActivatedAt:  s.ActivatedAt,
-		LastActivity: s.LastActivity,
+		CircuitID:       s.CircuitID,
+		EntryKey:        s.EntryKey,
+		TargetKey:       s.TargetKey,
+		TargetEndpoints: s.TargetEndpoints,
+		State:           s.State,
+		CreatedAt:       s.CreatedAt,
+		ActivatedAt:     s.ActivatedAt,
+		LastActivity:    s.LastActivity,
 	}
 	s.mu.Unlock()
 	return info
@@ -542,14 +541,14 @@ func (rsm *RelaySessionManager) AllSessions() []*RelaySessionInfo {
 	for _, s := range rsm.sessions {
 		s.mu.Lock()
 		result = append(result, &RelaySessionInfo{
-			CircuitID:    s.CircuitID,
-			EntryKey:     s.EntryKey,
-			TargetKey:    s.TargetKey,
-			TargetMeshIP: s.TargetMeshIP,
-			State:        s.State,
-			CreatedAt:    s.CreatedAt,
-			ActivatedAt:  s.ActivatedAt,
-			LastActivity: s.LastActivity,
+			CircuitID:       s.CircuitID,
+			EntryKey:        s.EntryKey,
+			TargetKey:       s.TargetKey,
+			TargetEndpoints: s.TargetEndpoints,
+			State:           s.State,
+			CreatedAt:       s.CreatedAt,
+			ActivatedAt:     s.ActivatedAt,
+			LastActivity:    s.LastActivity,
 		})
 		s.mu.Unlock()
 	}

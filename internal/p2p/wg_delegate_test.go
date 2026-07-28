@@ -35,14 +35,14 @@ func TestPeerHealthTracking(t *testing.T) {
 	wg.mu.Lock()
 	wg.health[key] = &PeerHealth{
 		PublicKey: key,
-		Endpoint:  "203.0.113.5:51820",
+		Endpoints: []string{"203.0.113.5:51820"},
 		AddedAt:   time.Now(),
 	}
 	wg.mu.Unlock()
 
-	// IsHealthy should return true for recently added peer.
-	if !wg.IsHealthy(key) {
-		t.Error("IsHealthy should return true for recently added peer")
+	// IsConnected should return true for recently added peer.
+	if !wg.IsConnected(key) {
+		t.Error("IsConnected should return true for recently added peer")
 	}
 
 	// Simulate old addition time.
@@ -50,9 +50,9 @@ func TestPeerHealthTracking(t *testing.T) {
 	wg.health[key].AddedAt = time.Now().Add(-5 * time.Minute)
 	wg.mu.Unlock()
 
-	// IsHealthy should return false for peer added 5 minutes ago with no handshake.
-	if wg.IsHealthy(key) {
-		t.Error("IsHealthy should return false for peer added 5 minutes ago with no handshake")
+	// IsConnected should return false for peer added 5 minutes ago with no handshake.
+	if wg.IsConnected(key) {
+		t.Error("IsConnected should return false for peer added 5 minutes ago with no handshake")
 	}
 }
 
@@ -71,17 +71,19 @@ func TestPeerHealthHandshakeTracking(t *testing.T) {
 	}
 	wg.mu.Unlock()
 
-	// Not healthy (old addition, no handshake).
-	if wg.IsHealthy(key) {
-		t.Error("IsHealthy should return false for old peer with no handshake")
+	// Not connected (old addition, no handshake).
+	if wg.IsConnected(key) {
+		t.Error("IsConnected should return false for old peer with no handshake")
 	}
 
 	// Update handshake time.
-	wg.UpdateHandshakeTime(key)
+	wg.mu.Lock()
+	wg.health[key].LastHandshake = time.Now()
+	wg.mu.Unlock()
 
-	// Now should be healthy.
-	if !wg.IsHealthy(key) {
-		t.Error("IsHealthy should return true after handshake update")
+	// Now should be connected.
+	if !wg.IsConnected(key) {
+		t.Error("IsConnected should return true after handshake update")
 	}
 
 	// Simulate old handshake.
@@ -89,8 +91,8 @@ func TestPeerHealthHandshakeTracking(t *testing.T) {
 	wg.health[key].LastHandshake = time.Now().Add(-5 * time.Minute)
 	wg.mu.Unlock()
 
-	if wg.IsHealthy(key) {
-		t.Error("IsHealthy should return false for peer with handshake 5 minutes ago")
+	if wg.IsConnected(key) {
+		t.Error("IsConnected should return false for peer with handshake 5 minutes ago")
 	}
 }
 
@@ -100,9 +102,9 @@ func TestWireGuardDelegateUnknownPeer(t *testing.T) {
 		staticKeys: make(map[string]bool),
 	}
 
-	// IsHealthy for unknown peer.
-	if wg.IsHealthy("unknownkey0000000000000000000000000000000000000000000000000000") {
-		t.Error("IsHealthy should return false for unknown peer")
+	// IsConnected for unknown peer.
+	if wg.IsConnected("unknownkey0000000000000000000000000000000000000000000000000000") {
+		t.Error("IsConnected should return false for unknown peer")
 	}
 
 	// GetPeerHealth for unknown peer.
@@ -121,16 +123,16 @@ func TestWireGuardDelegateUnknownPeer(t *testing.T) {
 	}
 }
 
-func TestWireGuardDelegateRemoveDynamicPeerIdempotent(t *testing.T) {
+func TestWireGuardDelegateDisconnectIdempotent(t *testing.T) {
 	wg := &WireGuardDelegate{
 		health:     make(map[string]*PeerHealth),
 		staticKeys: make(map[string]bool),
 	}
 
-	// RemoveDynamicPeer for a non-existent peer should not error.
+	// Disconnect for a non-existent peer should not error.
 	// (It returns nil because the peer is not in the health map.)
-	err := wg.RemoveDynamicPeer("nonexistent00000000000000000000000000000000000000000000000000")
+	err := wg.Disconnect("nonexistent00000000000000000000000000000000000000000000000000")
 	if err != nil {
-		t.Errorf("RemoveDynamicPeer for non-existent peer should not error: %v", err)
+		t.Errorf("Disconnect for non-existent peer should not error: %v", err)
 	}
 }

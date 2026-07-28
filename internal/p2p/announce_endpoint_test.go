@@ -11,7 +11,6 @@ import (
 func TestAnnounceLocalEndpointWithAdvertiseEndpoint(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       1,
@@ -46,7 +45,6 @@ func TestAnnounceLocalEndpointWithAdvertiseEndpoint(t *testing.T) {
 func TestAnnounceLocalEndpointWithWgPort(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       1,
@@ -82,7 +80,6 @@ func TestAnnounceLocalEndpointWithWgPort(t *testing.T) {
 func TestAnnounceLocalEndpointNoConfig(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       1,
@@ -110,7 +107,6 @@ func TestAnnounceLocalEndpointNoConfig(t *testing.T) {
 func TestAnnounceLocalEndpointAdvertiseOverridesAutoDetect(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       1,

@@ -84,9 +84,9 @@ type RelayMessage struct {
 	// In SETUP: the peer whose traffic the relay will forward.
 	TargetKey string `msgpack:"tgk,omitempty"`
 
-	// TargetMeshIP is the mesh IP of the target peer.
-	// The relay uses this to configure WireGuard AllowedIPs for forwarding.
-	TargetMeshIP string `msgpack:"tmi,omitempty"`
+	// TargetEndpoints are the endpoints of the target peer.
+	// The relay uses this to know where to forward traffic.
+	TargetEndpoints []string `msgpack:"teps,omitempty"`
 
 	// RejectReason is a human-readable reason code (only in REJECT).
 	RejectReason string `msgpack:"rr,omitempty"`
@@ -145,10 +145,10 @@ func IsRelayMessage(data []byte) bool {
 // RelaySetupRequest is a convenience constructor for a SETUP message.
 // The entry node sends this to a relay-capable peer to request a new
 // relay circuit.
-func RelaySetupRequest(fromKey, relayKey, circuitID, targetKey, targetMeshIP string) *RelayMessage {
+func RelaySetupRequest(fromKey, relayKey, circuitID, targetKey string, targetEndpoints []string) *RelayMessage {
 	m := NewRelayMessage(MsgRelaySetup, fromKey, relayKey, circuitID)
 	m.TargetKey = targetKey
-	m.TargetMeshIP = targetMeshIP
+	m.TargetEndpoints = targetEndpoints
 	return m
 }
 

@@ -113,8 +113,8 @@ func TestSmoke_L12_PlaintextRoundTrip(t *testing.T) {
 // interceptPipe wraps a net.Conn and records all bytes passing through it.
 type interceptPipe struct {
 	net.Conn
-	buf  *bytes.Buffer
-	mu   sync.Mutex
+	buf *bytes.Buffer
+	mu  sync.Mutex
 }
 
 func newInterceptPipe(conn net.Conn) *interceptPipe {

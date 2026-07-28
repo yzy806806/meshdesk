@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -108,10 +109,16 @@ func main() {
 		p2pCfg.GossipPort = cfg.Mesh.GossipPort
 		p2pCfg.WgPort = cfg.Mesh.Port
 
-		gl, err := p2p.NewGossipLayer(p2pCfg, node, wgDelegate)
+		// Decode the Ed25519 private key for gossip identity.
+		identityBytes, err := hex.DecodeString(node.Identity().PrivateKey)
+		if err != nil {
+			log.Fatalf("Failed to decode identity private key: %v", err)
+		}
+		gl, err := p2p.NewGossipLayer(p2pCfg, identityBytes, wgDelegate)
 		if err != nil {
 			log.Fatalf("Failed to create P2P gossip layer: %v", err)
 		}
+		gl.SetWireGuardDelegate(wgDelegate)
 
 		// Set local identity.
 		hostname := cfg.Node.Hostname
@@ -827,10 +834,16 @@ func runJoinSubcommand(args []string) {
 	p2pCfg.GossipPort = cfg.Mesh.GossipPort
 	p2pCfg.WgPort = cfg.Mesh.Port
 
-	gl, err := p2p.NewGossipLayer(p2pCfg, node, wgDelegate)
+	// Decode the Ed25519 private key for gossip identity.
+	identityBytes, err := hex.DecodeString(node.Identity().PrivateKey)
+	if err != nil {
+		log.Fatalf("Failed to decode identity private key: %v", err)
+	}
+	gl, err := p2p.NewGossipLayer(p2pCfg, identityBytes, wgDelegate)
 	if err != nil {
 		log.Fatalf("Failed to create gossip layer: %v", err)
 	}
+	gl.SetWireGuardDelegate(wgDelegate)
 
 	// Set local identity.
 	hostname := cfg.Node.Hostname
@@ -882,12 +895,12 @@ func runJoinSubcommand(args []string) {
 
 		log.Printf("Join accepted by bootstrap")
 		if result.Bootstrap != nil {
-			log.Printf("  Bootstrap mesh IP: %s", result.Bootstrap.MeshIP)
+			log.Printf("  Bootstrap public key: %s", result.Bootstrap.PublicKey[:8])
 		}
 		log.Printf("  Known peers from bootstrap: %d", len(result.KnownPeers))
 		for _, peer := range result.KnownPeers {
-			log.Printf("    - %s (mesh IP %s, role %s)",
-				peer.PublicKey[:8], peer.MeshIP, peer.Role)
+			log.Printf("    - %s (role %s)",
+				peer.PublicKey[:8], peer.Role)
 		}
 	} else {
 		log.Printf("No bootstrap key provided — relying on memberlist push/pull for peer discovery")

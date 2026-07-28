@@ -560,12 +560,10 @@ func (nt *NatTraversal) handleDirectProbe(session *NatSession) {
 		}
 	}
 
-	// Check if WireGuard handshake completes within timeout.
-	// The hole-punch sent probe packets; now the WG device needs to
-	// complete its handshake. We poll IsHealthy with a short delay.
+	// Check if the connection completes within timeout.
 	time.Sleep(nt.cfg.ProbeTimeout)
 
-	if nt.wgDelegate.IsHealthy(peerKey) {
+	if nt.wgDelegate.IsConnected(peerKey) {
 		// Direct connection established!
 		session.mu.Lock()
 		session.State = NatDirect
@@ -573,7 +571,6 @@ func (nt *NatTraversal) handleDirectProbe(session *NatSession) {
 		session.mu.Unlock()
 		log.Printf("[p2p/nat] peer %s: DIRECT_PROBE → DIRECT (handshake succeeded)",
 			safeShortKey(peerKey))
-		nt.wgDelegate.UpdateHandshakeTime(peerKey)
 		return
 	}
 
@@ -626,21 +623,21 @@ func (nt *NatTraversal) transitionToRelay(session *NatSession) {
 	}
 
 	relayKey := candidate.Meta.PublicKey
-	relayMeshIP := candidate.Meta.MeshIP
+	relayEndpoints := candidate.Meta.Endpoints
 
-	// Look up the target peer's mesh IP from gossip metadata.
+	// Look up the target peer's endpoints from gossip metadata.
 	// The relay needs to know where to forward traffic.
-	targetMeshIP := ""
+	targetEndpoints := []string{}
 	if nt.events != nil {
 		targetMeta := nt.events.GetPeerMeta(session.PeerKey)
 		if targetMeta != nil {
-			targetMeshIP = targetMeta.MeshIP
+			targetEndpoints = targetMeta.Endpoints
 		}
 	}
 
 	// Send relay circuit setup via gossip (§5.3 CREATION step 4).
-	// The relay will configure WireGuard forwarding for this circuit.
-	circuitID := nt.sendRelaySetup(relayKey, session.PeerKey, targetMeshIP)
+	// The relay will configure forwarding for this circuit.
+	circuitID := nt.sendRelaySetup(relayKey, session.PeerKey, targetEndpoints)
 
 	session.mu.Lock()
 	session.State = NatRelayFallback
@@ -648,15 +645,13 @@ func (nt *NatTraversal) transitionToRelay(session *NatSession) {
 	session.CircuitID = circuitID
 	session.mu.Unlock()
 
-	// Update the peer's WireGuard endpoint to the relay's mesh IP.
-	// This routes WireGuard traffic through the relay peer.
-	relayEndpoint := relayMeshIP + ":51820"
-	if err := nt.wgDelegate.UpdateEndpoint(session.PeerKey, relayEndpoint); err != nil {
-		log.Printf("[p2p/nat] peer %s: failed to update endpoint to relay %s: %v",
-			safeShortKey(session.PeerKey), relayMeshIP, err)
+	// Update the peer's endpoints to route through the relay.
+	if err := nt.wgDelegate.UpdateEndpoints(session.PeerKey, relayEndpoints); err != nil {
+		log.Printf("[p2p/nat] peer %s: failed to update endpoints to relay %s: %v",
+			safeShortKey(session.PeerKey), shortKey(relayKey), err)
 	} else {
 		log.Printf("[p2p/nat] peer %s: → RELAY_FALLBACK (via %s, score=%.3f, rtt=%v, circuit=%s)",
-			safeShortKey(session.PeerKey), relayMeshIP, candidate.Score, candidate.RTT, circuitID)
+			safeShortKey(session.PeerKey), shortKey(relayKey), candidate.Score, candidate.RTT, circuitID)
 	}
 }
 
@@ -756,11 +751,8 @@ func (nt *NatTraversal) handleDirectReprobe(session *NatSession) {
 	// Wait for handshake.
 	time.Sleep(nt.cfg.ProbeTimeout)
 
-	if nt.wgDelegate.IsHealthy(peerKey) {
+	if nt.wgDelegate.IsConnected(peerKey) {
 		// Direct connection succeeded! Switch from relay to direct.
-		// Per §3.8: keep the relay path for 30s before tearing down
-		// (prevents flapping). We update the endpoint to the direct
-		// endpoint immediately but don't remove the relay peer.
 		session.mu.Lock()
 		oldRelayKey := session.RelayVia
 		oldCircuitID := session.CircuitID
@@ -771,24 +763,19 @@ func (nt *NatTraversal) handleDirectReprobe(session *NatSession) {
 		session.mu.Unlock()
 
 		// Send teardown to the old relay (§5.3 TEARDOWN).
-		// In a full implementation, this would be delayed by 30s to
-		// ensure the direct path is stable (make-before-break). For
-		// now, we send it immediately — the relay's idle sweep will
-		// catch any stragglers.
 		if oldRelayKey != "" && oldCircuitID != "" {
 			nt.sendRelayTeardown(oldRelayKey, oldCircuitID)
 		}
 
-		// Update WireGuard endpoint to the peer's direct endpoint.
-		directEndpoint := endpoints[0]
-		if err := nt.wgDelegate.UpdateEndpoint(peerKey, directEndpoint); err != nil {
-			log.Printf("[p2p/nat] peer %s: failed to update to direct endpoint: %v",
+		// Update peer endpoints to the direct endpoint.
+		directEndpoints := endpoints
+		if err := nt.wgDelegate.UpdateEndpoints(peerKey, directEndpoints); err != nil {
+			log.Printf("[p2p/nat] peer %s: failed to update to direct endpoints: %v",
 				safeShortKey(peerKey), err)
 		} else {
 			log.Printf("[p2p/nat] peer %s: DIRECT_REPROBE → DIRECT (switched from relay)",
 				safeShortKey(peerKey))
 		}
-		nt.wgDelegate.UpdateHandshakeTime(peerKey)
 		return
 	}
 
@@ -818,12 +805,12 @@ func (nt *NatTraversal) backToRelay(session *NatSession) {
 	session.State = NatRelayFallback
 	session.mu.Unlock()
 
-	// Get the relay peer's mesh IP from the events delegate.
+	// Get the relay peer's endpoints from the events delegate.
 	if nt.events != nil {
 		relayMeta := nt.events.GetPeerMeta(relayKey)
 		if relayMeta != nil {
-			relayEndpoint := relayMeta.MeshIP + ":51820"
-			_ = nt.wgDelegate.UpdateEndpoint(session.PeerKey, relayEndpoint)
+			relayEndpoints := relayMeta.Endpoints
+			_ = nt.wgDelegate.UpdateEndpoints(session.PeerKey, relayEndpoints)
 		}
 	}
 
@@ -857,10 +844,10 @@ func (nt *NatTraversal) SetGossipLayer(gl *GossipLayer) {
 
 // sendRelaySetup sends a circuit_setup message to the selected relay
 // peer via gossip. It generates a unique circuit ID and sends the
-// target peer's key and mesh IP so the relay knows where to forward.
+// target peer's key and endpoints so the relay knows where to forward.
 //
 // Returns the generated circuit ID, or empty string on failure.
-func (nt *NatTraversal) sendRelaySetup(relayKey, targetKey, targetMeshIP string) string {
+func (nt *NatTraversal) sendRelaySetup(relayKey, targetKey string, targetEndpoints []string) string {
 	nt.mu.RLock()
 	gl := nt.gossipLayer
 	localKey := nt.localKey
@@ -871,7 +858,7 @@ func (nt *NatTraversal) sendRelaySetup(relayKey, targetKey, targetMeshIP string)
 	}
 
 	circuitID := generateCircuitID()
-	msg := RelaySetupRequest(localKey, relayKey, circuitID, targetKey, targetMeshIP)
+	msg := RelaySetupRequest(localKey, relayKey, circuitID, targetKey, targetEndpoints)
 	if err := gl.SendRelayMessage(relayKey, msg); err != nil {
 		log.Printf("[p2p/nat] failed to send relay SETUP to %s: %v",
 			safeShortKey(relayKey), err)

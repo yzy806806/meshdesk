@@ -19,7 +19,7 @@ import (
 type NodeMeta struct {
 	// --- Static identity ---
 
-	// PublicKey is the WireGuard public key (hex-encoded, 64 chars).
+	// PublicKey is the Ed25519 public key (hex-encoded, 64 chars).
 	PublicKey string `msgpack:"pk"`
 
 	// Hostname is a human-readable name for the node.
@@ -42,16 +42,13 @@ type NodeMeta struct {
 
 	// --- Connectivity ---
 
-	// Endpoints are public UDP endpoints discovered via STUN.
+	// Endpoints are real IP:port pairs (not mesh IPs).
 	// e.g., ["203.0.113.5:51820", "192.168.1.5:51820"]
 	Endpoints []string `msgpack:"eps,omitempty"`
 
 	// NatType describes the node's NAT situation:
 	// "none", "full_cone", "restricted", "port_restricted", "symmetric", "unknown"
 	NatType string `msgpack:"nt"`
-
-	// MeshIP is the node's deterministic mesh IP (10.10.x.y).
-	MeshIP string `msgpack:"mip"`
 
 	// --- Load metrics (refreshed every gossip interval) ---
 
@@ -69,12 +66,6 @@ type NodeMeta struct {
 
 	// MaxCircuits is the maximum circuits this relay will accept.
 	MaxCircuits int `msgpack:"mc,omitempty"`
-
-	// --- Latency matrix (for exit selection) ---
-
-	// ExitLatency maps region → RTT in milliseconds.
-	// e.g., {"us-west": 8, "eu": 150}
-	ExitLatency map[string]int `msgpack:"el,omitempty"`
 
 	// --- Version ---
 

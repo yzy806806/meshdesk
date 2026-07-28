@@ -234,12 +234,13 @@ func newTestNatTraversal(pm *mockPeerManager, relay *RelaySelector, events *mesh
 // setupTestRelay creates a RelaySelector with mock relay candidates in the
 // event delegate's relay pool.
 func setupTestRelay(t *testing.T, events *meshEventDelegate, relayKey, meshIP string) {
+	t.Helper()
 	events.mu.Lock()
 	defer events.mu.Unlock()
 	events.relayPool[relayKey] = &NodeMeta{
 		PublicKey:   relayKey,
-		MeshIP:      meshIP,
 		CapRelay:    true,
+		Endpoints:   []string{meshIP + ":51820"},
 		NatType:     string(NatTypeFullCone),
 		LoadCPU:     0.1,
 		LoadMem:     0.1,
@@ -303,7 +304,7 @@ func TestNatTraversal_AC5_DirectConnection(t *testing.T) {
 
 	peerKey := "aaaabbbbccccdddd"
 	// Mark peer as healthy (simulating successful WG handshake).
-	pm.SetHealthy(peerKey, true)
+	pm.SetConnected(peerKey, true)
 
 	// Initiate connection — both sides full-cone → hole-punch viable.
 	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeFullCone)
@@ -317,7 +318,7 @@ func TestNatTraversal_AC5_DirectConnection(t *testing.T) {
 	}
 
 	// Verify handshake time was updated (direct connection succeeded).
-	if pm.GetHandshakeCount(peerKey) == 0 {
+	if !pm.IsConnected(peerKey) {
 		t.Error("AC-5: expected UpdateHandshakeTime to be called")
 	}
 }
@@ -340,8 +341,8 @@ func TestNatTraversal_AC6_RelayFallback(t *testing.T) {
 
 	// Set up a relay candidate.
 	relayKey := "eeeeffff00001111"
-	relayMeshIP := "10.10.5.6"
-	setupTestRelay(t, events, relayKey, relayMeshIP)
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
 
 	peerKey := "aaaabbbbccccdddd"
 	// Both sides symmetric → forced relay (§3.9).
@@ -356,13 +357,13 @@ func TestNatTraversal_AC6_RelayFallback(t *testing.T) {
 	}
 
 	// Verify WireGuard endpoint was updated to relay's mesh IP.
-	updatedEP, ok := pm.GetUpdatedEndpoint(peerKey)
+	updatedEP, ok := pm.GetUpdatedEndpoints(peerKey)
 	if !ok {
 		t.Fatal("AC-6: expected endpoint update to relay mesh IP")
 	}
-	expectedEP := relayMeshIP + ":51820"
-	if updatedEP != expectedEP {
-		t.Errorf("AC-6: endpoint = %s, want %s", updatedEP, expectedEP)
+	expectedEP := relayIP + ":51820"
+	if len(updatedEP) == 0 || updatedEP[0] != expectedEP {
+		t.Errorf("AC-6: endpoint = %v, want %s", updatedEP, expectedEP)
 	}
 }
 
@@ -383,8 +384,8 @@ func TestNatTraversal_AC7_DirectReprobe(t *testing.T) {
 
 	// Set up relay candidate.
 	relayKey := "eeeeffff00001111"
-	relayMeshIP := "10.10.5.6"
-	setupTestRelay(t, events, relayKey, relayMeshIP)
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
 
 	peerKey := "aaaabbbbccccdddd"
 	// Both sides symmetric → goes to relay.
@@ -404,7 +405,7 @@ func TestNatTraversal_AC7_DirectReprobe(t *testing.T) {
 	nt.SetLocalDiscovery("203.0.113.5:51821", NatTypeFullCone)
 
 	// Mark peer as healthy (simulating successful handshake on re-probe).
-	pm.SetHealthy(peerKey, true)
+	pm.SetConnected(peerKey, true)
 
 	// Start the re-probe loop.
 	nt.reprobeTC = time.NewTicker(nt.cfg.DirectReprobeInterval)
@@ -424,12 +425,12 @@ func TestNatTraversal_AC7_DirectReprobe(t *testing.T) {
 	}
 
 	// Verify endpoint was updated to direct endpoint (not relay).
-	updatedEP, ok := pm.GetUpdatedEndpoint(peerKey)
+	updatedEP, ok := pm.GetUpdatedEndpoints(peerKey)
 	if !ok {
 		t.Fatal("AC-7: expected endpoint update after re-probe")
 	}
 	// Should be updated to the peer's direct endpoint.
-	if updatedEP != "203.0.113.10:51820" {
+	if len(updatedEP) == 0 || updatedEP[0] != "203.0.113.10:51820" {
 		t.Errorf("AC-7: expected direct endpoint 203.0.113.10:51820, got %s", updatedEP)
 	}
 }
@@ -448,8 +449,8 @@ func TestNatTraversal_ReprobeFailed_BackToRelay(t *testing.T) {
 
 	// Set up relay.
 	relayKey := "eeeeffff00001111"
-	relayMeshIP := "10.10.5.6"
-	setupTestRelay(t, events, relayKey, relayMeshIP)
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
 
 	peerKey := "aaaabbbbccccdddd"
 	// Both symmetric → relay.
@@ -642,8 +643,8 @@ func TestNatTraversal_BothSymmetric_ForcedRelay(t *testing.T) {
 
 	// Set up relay.
 	relayKey := "eeeeffff00001111"
-	relayMeshIP := "10.10.5.6"
-	setupTestRelay(t, events, relayKey, relayMeshIP)
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
 
 	peerKey := "aaaabbbbccccdddd"
 	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeSymmetric)
@@ -657,7 +658,7 @@ func TestNatTraversal_BothSymmetric_ForcedRelay(t *testing.T) {
 	}
 
 	// Should NOT have attempted hole-punching.
-	if pm.GetHandshakeCount(peerKey) > 0 {
+	if pm.IsConnected(peerKey) {
 		t.Error("expected no handshake update for both-symmetric (forced relay)")
 	}
 }

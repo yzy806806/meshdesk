@@ -14,13 +14,11 @@ func TestNodeMetaMarshalRoundTrip(t *testing.T) {
 		CapProxyEntry: true,
 		Endpoints:     []string{"203.0.113.5:51820", "192.168.1.5:51820"},
 		NatType:       "full_cone",
-		MeshIP:        "10.10.1.2",
 		LoadCPU:       0.3,
 		LoadMem:       0.5,
 		LoadCircuits:  10,
 		LoadBW:        500,
 		MaxCircuits:   1024,
-		ExitLatency:   map[string]int{"us-west": 8, "eu": 150},
 		Version:       "1.0.0",
 		Seq:           42,
 	}
@@ -75,9 +73,6 @@ func TestNodeMetaMarshalRoundTrip(t *testing.T) {
 	if decoded.NatType != original.NatType {
 		t.Errorf("NatType mismatch: got %s, want %s", decoded.NatType, original.NatType)
 	}
-	if decoded.MeshIP != original.MeshIP {
-		t.Errorf("MeshIP mismatch: got %s, want %s", decoded.MeshIP, original.MeshIP)
-	}
 	if decoded.LoadCPU != original.LoadCPU {
 		t.Errorf("LoadCPU mismatch: got %f, want %f", decoded.LoadCPU, original.LoadCPU)
 	}
@@ -93,15 +88,6 @@ func TestNodeMetaMarshalRoundTrip(t *testing.T) {
 	if decoded.MaxCircuits != original.MaxCircuits {
 		t.Errorf("MaxCircuits mismatch: got %d, want %d", decoded.MaxCircuits, original.MaxCircuits)
 	}
-	if len(decoded.ExitLatency) != len(original.ExitLatency) {
-		t.Errorf("ExitLatency length mismatch: got %d, want %d", len(decoded.ExitLatency), len(original.ExitLatency))
-	} else {
-		for k, v := range original.ExitLatency {
-			if decoded.ExitLatency[k] != v {
-				t.Errorf("ExitLatency[%s] mismatch: got %d, want %d", k, decoded.ExitLatency[k], v)
-			}
-		}
-	}
 	if decoded.Version != original.Version {
 		t.Errorf("Version mismatch: got %s, want %s", decoded.Version, original.Version)
 	}
@@ -114,7 +100,6 @@ func TestNodeMetaMinimalSize(t *testing.T) {
 	// A minimal NodeMeta should serialize to a small size.
 	minimal := &NodeMeta{
 		PublicKey: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-		MeshIP:    "10.10.0.1",
 		Version:   "1.0.0",
 	}
 

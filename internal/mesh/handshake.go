@@ -17,9 +17,34 @@ type PeerHandshakeInfo struct {
 }
 
 // GetPeerHandshakeInfo returns the handshake status for a specific peer.
-// TODO(v2): implement using the new HandshakeLayer.
+// In v2, this reads from the smux session map: if an active smux session
+// exists for the peer, the session establishment time is treated as the
+// handshake completion time.
 func (n *MeshNode) GetPeerHandshakeInfo(publicKey string) *PeerHandshakeInfo {
-	return nil
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+
+	sess, ok := n.sessions[publicKey]
+	if !ok || sess == nil || sess.IsClosed() {
+		return nil
+	}
+
+	establishedAt, ok := n.sessionEstablishedAt[publicKey]
+	if !ok {
+		// Session exists but no timestamp — treat as just established.
+		establishedAt = time.Now()
+		n.sessionEstablishedAt[publicKey] = establishedAt
+	}
+
+	return &PeerHandshakeInfo{
+		PublicKey:         publicKey,
+		LastHandshakeNano: establishedAt.UnixNano(),
+		LastHandshakeTime: establishedAt,
+		// TxBytes/RxBytes: smux does not expose per-session byte counters
+		// in the current API. These remain zero until byte accounting is
+		// added to the smux Session.
+		// PersistentKeepalive: not applicable in v2 (no WireGuard keepalive).
+	}
 }
 
 // isPeerHandshaked returns true if the peer has a completed handshake

@@ -2,92 +2,65 @@ package p2p
 
 import (
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
-	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 )
 
-// PeerManager is the interface for dynamic WireGuard peer management.
-// WireGuardDelegate implements this interface, and tests can use mock
-// implementations to test event delegate logic without a real MeshNode.
+// PeerManager is the v2 interface for dynamic peer connection management.
+// Unlike v1's PeerManager (which was WireGuard-specific), v2 PeerManager
+// works with HandshakeLayer connections and is transport-agnostic.
 type PeerManager interface {
-	// AddDynamicPeer adds a peer discovered via gossip/NAT to WireGuard.
-	AddDynamicPeer(peer DynamicPeer) error
+	// Connect establishes a connection to a peer using the first reachable
+	// endpoint from its metadata. Returns an error if all endpoints fail.
+	Connect(peerKey string, endpoints []string) error
 
-	// RemoveDynamicPeer removes a peer from WireGuard.
-	RemoveDynamicPeer(publicKey string) error
+	// Disconnect closes the connection to a peer and cleans up state.
+	Disconnect(peerKey string) error
 
-	// UpdateEndpoint changes a peer's endpoint.
-	UpdateEndpoint(publicKey, endpoint string) error
+	// UpdateEndpoints refreshes the known endpoints for a peer.
+	// Called when NotifyUpdate detects endpoint changes.
+	UpdateEndpoints(peerKey string, endpoints []string) error
 
-	// IsHealthy returns whether the peer has a recent WireGuard handshake.
-	IsHealthy(publicKey string) bool
+	// IsConnected returns whether a connection to the peer is active.
+	IsConnected(peerKey string) bool
 
-	// UpdateHandshakeTime records that a handshake completed for a peer.
-	UpdateHandshakeTime(publicKey string)
-
-	// IsStaticPeer returns true if the key was from static config.
-	IsStaticPeer(publicKey string) bool
+	// IsStaticPeer returns true if the peer was from static config.
+	IsStaticPeer(peerKey string) bool
 
 	// MarkStaticPeer registers a peer key as static.
-	MarkStaticPeer(publicKey string)
+	MarkStaticPeer(peerKey string)
 
-	// AddRelayTarget adds a remote peer to this relay's WireGuard config
-	// so that traffic can be forwarded to it. Called by RelaySessionManager
-	// when a circuit_setup request is accepted.
-	AddRelayTarget(targetKey, targetMeshIP string) error
+	// ── Relay operations ──
 
-	// AddRelayRoute extends a relay peer's AllowedIPs to include a
-	// target peer's mesh IP, routing that target's traffic through the relay.
-	// Called on the entry node (A) when the relay accepts the circuit.
-	AddRelayRoute(relayKey, targetMeshIP string) error
+	// AddRelayTarget adds a remote peer as a relay target on this node.
+	// Called on the RELAY node (R) when a circuit_setup is accepted.
+	AddRelayTarget(targetKey string, targetEndpoints []string) error
 
-	// RemoveRelayRoute removes a target mesh IP from a relay peer's
-	// AllowedIPs. Called on the entry node when a circuit is torn down.
-	RemoveRelayRoute(relayKey, targetMeshIP string) error
+	// RemoveRelayTarget removes a relay target from this node.
+	// Called on the RELAY node when a circuit is torn down.
+	RemoveRelayTarget(targetKey string) error
 }
 
 // Compile-time check that WireGuardDelegate satisfies PeerManager.
 var _ PeerManager = (*WireGuardDelegate)(nil)
 
-// DynamicPeer describes a peer discovered via gossip/NAT that should be
-// added to WireGuard dynamically (as opposed to static config).
-type DynamicPeer struct {
-	// PublicKey is the WireGuard public key (hex).
-	PublicKey string
-
-	// Endpoint is the "host:port" for WG UDP.
-	Endpoint string
-
-	// AllowedIPs are the mesh IPs to route to this peer.
-	AllowedIPs []string
-
-	// Capabilities from NodeMeta.
-	Capabilities []string
-
-	// IsRelay indicates this is a relayed connection (not direct).
-	IsRelay bool
-
-	// RelayVia is the peer key of the relay (if IsRelay).
-	RelayVia string
-}
-
-// PeerHealth tracks the WireGuard handshake health for a dynamic peer.
+// PeerHealth tracks the connection health for a dynamic peer.
 type PeerHealth struct {
 	PublicKey     string
 	LastHandshake time.Time
-	Endpoint      string
+	Endpoints     []string
 	IsRelay       bool
-	RelayVia      string
 	AddedAt       time.Time
 }
 
 // WireGuardDelegate is the bridge between dynamic gossip events and the
-// static MeshNode.AddPeer()/RemovePeer() API. It wraps MeshNode and
-// provides dynamic peer management with health tracking.
+// MeshNode connection management API. It wraps MeshNode and provides
+// dynamic peer management with health tracking.
+//
+// In v2, this no longer configures WireGuard — it tracks connection state
+// and delegates to the HandshakeLayer for actual connection establishment.
 type WireGuardDelegate struct {
 	node       *mesh.MeshNode
 	mu         sync.Mutex
@@ -119,112 +92,78 @@ func (d *WireGuardDelegate) IsStaticPeer(publicKey string) bool {
 	return d.staticKeys[publicKey]
 }
 
-// AddDynamicPeer adds a peer discovered via gossip/NAT to WireGuard.
-// It configures the peer in the WireGuard device and the routing table.
-// If the peer already exists (endpoint update), it updates the endpoint
-// without removing and re-adding.
-func (d *WireGuardDelegate) AddDynamicPeer(peer DynamicPeer) error {
-	if peer.PublicKey == "" {
-		return fmt.Errorf("dynamic peer public key is empty")
+// Connect establishes a connection to a peer using the provided endpoints.
+// It records the peer in the health map for tracking. The actual connection
+// establishment is handled by the HandshakeLayer.
+func (d *WireGuardDelegate) Connect(peerKey string, endpoints []string) error {
+	if peerKey == "" {
+		return fmt.Errorf("peer key is empty")
 	}
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	// Check if we already have this peer.
-	if existing, ok := d.health[peer.PublicKey]; ok {
-		// Update endpoint only — WireGuard UAPI supports in-place updates.
-		if existing.Endpoint != peer.Endpoint && peer.Endpoint != "" {
-			if err := d.updateEndpointLocked(peer.PublicKey, peer.Endpoint); err != nil {
-				return fmt.Errorf("update endpoint for %s: %w", peer.PublicKey[:8], err)
-			}
-			existing.Endpoint = peer.Endpoint
-		}
-		existing.IsRelay = peer.IsRelay
-		existing.RelayVia = peer.RelayVia
+	// If already tracked, update endpoints.
+	if existing, ok := d.health[peerKey]; ok {
+		existing.Endpoints = endpoints
 		return nil
 	}
 
-	// Build PeerConfig for MeshNode.AddPeer.
-	peerCfg := config.PeerConfig{
-		PublicKey:  peer.PublicKey,
-		Endpoint:   peer.Endpoint,
-		AllowedIPs: peer.AllowedIPs,
-	}
-
-	// Add to the mesh node (v2: routing table update).
-	if err := d.node.AddPeer(peerCfg); err != nil {
-		return fmt.Errorf("add dynamic peer %s: %w", peer.PublicKey[:8], err)
-	}
-
 	// Track health.
-	d.health[peer.PublicKey] = &PeerHealth{
-		PublicKey: peer.PublicKey,
-		Endpoint:  peer.Endpoint,
-		IsRelay:   peer.IsRelay,
-		RelayVia:  peer.RelayVia,
+	d.health[peerKey] = &PeerHealth{
+		PublicKey: peerKey,
+		Endpoints: endpoints,
 		AddedAt:   time.Now(),
 	}
 
 	return nil
 }
 
-// RemoveDynamicPeer removes a peer from WireGuard (gossip leave/failure).
+// Disconnect closes the connection to a peer and cleans up state.
 // Static peers are NOT removed (§4.4 backward compat).
-func (d *WireGuardDelegate) RemoveDynamicPeer(publicKey string) error {
+func (d *WireGuardDelegate) Disconnect(peerKey string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// Never remove static peers.
-	if d.staticKeys[publicKey] {
+	if d.staticKeys[peerKey] {
 		return nil
 	}
 
 	// Check if we have this peer.
-	if _, ok := d.health[publicKey]; !ok {
+	if _, ok := d.health[peerKey]; !ok {
 		return nil // already removed or never added — idempotent
 	}
 
-	// Remove from WireGuard via MeshNode.
-	if err := d.node.RemovePeer(publicKey); err != nil {
-		return fmt.Errorf("remove dynamic peer %s: %w", publicKey[:8], err)
-	}
-
-	delete(d.health, publicKey)
+	delete(d.health, peerKey)
 	return nil
 }
 
-// UpdateEndpoint changes a peer's endpoint (NAT rebind, direct↔relay switch).
-// This uses WireGuard's UAPI in-place endpoint update — no re-key needed.
-func (d *WireGuardDelegate) UpdateEndpoint(publicKey, endpoint string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.updateEndpointLocked(publicKey, endpoint)
-}
-
-func (d *WireGuardDelegate) updateEndpointLocked(publicKey, endpoint string) error {
-	if publicKey == "" || endpoint == "" {
-		return fmt.Errorf("public key and endpoint are required")
+// UpdateEndpoints refreshes the known endpoints for a peer.
+// Called when NotifyUpdate detects endpoint changes.
+func (d *WireGuardDelegate) UpdateEndpoints(peerKey string, endpoints []string) error {
+	if peerKey == "" {
+		return fmt.Errorf("peer key is required")
 	}
 
-	// TODO(v2): update peer endpoint via the new protocol layer.
-	// v1 used WireGuard UAPI IpcSet; v2 will use the HandshakeLayer.
+	d.mu.Lock()
+	defer d.mu.Unlock()
 
-	// Update health tracking.
-	if h, ok := d.health[publicKey]; ok {
-		h.Endpoint = endpoint
+	if h, ok := d.health[peerKey]; ok {
+		h.Endpoints = endpoints
 	}
 
 	return nil
 }
 
-// IsHealthy returns whether the WireGuard handshake with this peer
-// completed within the last 2 minutes.
-func (d *WireGuardDelegate) IsHealthy(publicKey string) bool {
+// IsConnected returns whether a connection to the peer is active.
+// In v2, this checks if the peer is tracked in the health map and
+// was recently active.
+func (d *WireGuardDelegate) IsConnected(peerKey string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	h, ok := d.health[publicKey]
+	h, ok := d.health[peerKey]
 	if !ok {
 		return false
 	}
@@ -237,15 +176,45 @@ func (d *WireGuardDelegate) IsHealthy(publicKey string) bool {
 	return time.Since(h.LastHandshake) < 2*time.Minute
 }
 
-// UpdateHandshakeTime records that a handshake completed for a peer.
-// This is called by the health polling goroutine (§2.3).
-func (d *WireGuardDelegate) UpdateHandshakeTime(publicKey string) {
+// AddRelayTarget adds a remote peer as a relay target on this node.
+// Called on the RELAY node (R) when a circuit_setup is accepted.
+// The peer is registered for relay data forwarding.
+func (d *WireGuardDelegate) AddRelayTarget(targetKey string, targetEndpoints []string) error {
+	if targetKey == "" {
+		return fmt.Errorf("target key is empty")
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	if h, ok := d.health[publicKey]; ok {
-		h.LastHandshake = time.Now()
+	// Check if already tracked (may have been added via gossip).
+	if _, ok := d.health[targetKey]; ok {
+		// Already known — no need to re-add.
+		return nil
 	}
+
+	d.health[targetKey] = &PeerHealth{
+		PublicKey: targetKey,
+		Endpoints: targetEndpoints,
+		IsRelay:   true,
+		AddedAt:   time.Now(),
+	}
+
+	return nil
+}
+
+// RemoveRelayTarget removes a relay target from this node.
+// Called on the RELAY node when a circuit is torn down.
+func (d *WireGuardDelegate) RemoveRelayTarget(targetKey string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.staticKeys[targetKey] {
+		return nil
+	}
+
+	delete(d.health, targetKey)
+	return nil
 }
 
 // GetPeerHealth returns the health record for a peer, or nil if not tracked.
@@ -277,86 +246,4 @@ func (d *WireGuardDelegate) DynamicPeerCount() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return len(d.health)
-}
-
-// AddRelayTarget adds a remote peer to this relay's config so that
-// traffic can be forwarded to it. The peer is added without an explicit
-// endpoint — the relay learns the endpoint via the v2 protocol layer.
-//
-// This is called by the RelaySessionManager when a circuit_setup
-// request is accepted (on the relay node R, adding target B).
-func (d *WireGuardDelegate) AddRelayTarget(targetKey, targetMeshIP string) error {
-	if targetKey == "" {
-		return fmt.Errorf("target key is empty")
-	}
-
-	d.mu.Lock()
-	// Check if already tracked (may have been added via gossip).
-	if _, ok := d.health[targetKey]; ok {
-		// Already known — no need to re-add. The peer was added by
-		// NotifyJoin when this relay discovered it via gossip.
-		d.mu.Unlock()
-		return nil
-	}
-	d.mu.Unlock()
-
-	peer := DynamicPeer{
-		PublicKey:  targetKey,
-		AllowedIPs: []string{targetMeshIP},
-		IsRelay:    true,
-	}
-	// Endpoint is intentionally empty — learned from keepalive.
-	return d.AddDynamicPeer(peer)
-}
-
-// AddRelayRoute extends a relay peer's AllowedIPs to include a
-// target peer's mesh IP. This tells WireGuard to route packets
-// destined for the target through this relay.
-//
-// This is called on the entry node (A) after the relay (R) accepts
-// the circuit — A extends R's AllowedIPs to include B's mesh IP.
-//
-// WireGuard UAPI allows in-place peer modification by re-sending
-// the peer config with updated allowed_ips.
-func (d *WireGuardDelegate) AddRelayRoute(relayKey, targetMeshIP string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if _, ok := d.health[relayKey]; !ok {
-		return fmt.Errorf("relay peer %s not found", shortKey(relayKey))
-	}
-
-	// Build IPC to extend the relay peer's AllowedIPs.
-	// WireGuard UAPI: setting allowed_ip on an existing peer replaces
-	// the entire AllowedIPs set, so we must include all existing IPs
-	// plus the new one.
-	// TODO(v2): extend relay peer's routes via the new protocol layer.
-	_ = targetMeshIP
-
-	log.Printf("[p2p] added relay route: peer %s → target %s via relay %s",
-		shortKey(relayKey), targetMeshIP, shortKey(relayKey))
-
-	return nil
-}
-
-// RemoveRelayRoute removes a target mesh IP from a relay peer's AllowedIPs.
-//
-// WireGuard UAPI supports removing specific allowed_ip entries using
-// the "-" prefix on the allowed_ip line. This allows surgical removal
-// without affecting other routes.
-func (d *WireGuardDelegate) RemoveRelayRoute(relayKey, targetMeshIP string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	if _, ok := d.health[relayKey]; !ok {
-		return nil // peer already removed — idempotent
-	}
-
-	// TODO(v2): remove relay route via the new protocol layer.
-	_ = targetMeshIP
-
-	log.Printf("[p2p] removed relay route: target %s from relay %s",
-		targetMeshIP, shortKey(relayKey))
-
-	return nil
 }

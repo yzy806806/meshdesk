@@ -49,8 +49,16 @@ type MeshNode struct {
 	hs         handshake.HandshakeLayer
 	sessions   map[string]*smux.Session // peer identity hex → smux session
 	sessionsMu sync.Mutex
-	ctx        context.Context
-	cancel     context.CancelFunc
+	// sessionEstablishedAt records when each smux session was established,
+	// used by GetPeerHandshakeInfo to report handshake completion time.
+	sessionEstablishedAt map[string]time.Time
+	// peerManagers tracks per-peer PeerManager instances for outbound
+	// connections (one per peer). Inbound sessions from handleConnection
+	// do not create a PeerManager — they reuse the session directly.
+	peerManagers   map[string]*PeerManager
+	peerManagersMu sync.Mutex
+	ctx            context.Context
+	cancel         context.CancelFunc
 
 	mu     sync.RWMutex
 	closed bool
@@ -67,13 +75,15 @@ func New(cfg *config.Config) (*MeshNode, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	node := &MeshNode{
-		identity: nodeIdentity,
-		routes:   NewRoutingTable(),
-		cfg:      cfg,
-		registry: registry,
-		sessions: make(map[string]*smux.Session),
-		ctx:      ctx,
-		cancel:   cancel,
+		identity:             nodeIdentity,
+		routes:               NewRoutingTable(),
+		cfg:                  cfg,
+		registry:             registry,
+		sessions:             make(map[string]*smux.Session),
+		sessionEstablishedAt: make(map[string]time.Time),
+		peerManagers:         make(map[string]*PeerManager),
+		ctx:                  ctx,
+		cancel:               cancel,
 	}
 
 	return node, nil
@@ -206,6 +216,7 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 	n.sessionsMu.Lock()
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
+	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
 	// If the same peer reconnected, close the old session.
@@ -223,8 +234,42 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 		Endpoint: remoteAddr,
 	})
 
-	// TODO(v2): hand the smux session to the PeerManager for stream handling.
-	// For now, the session is stored and available via GetSession().
+	// Hand the smux session to the stream handler. This starts a goroutine
+	// that accepts inbound streams on the session.
+	go n.handleSessionStreams(peerIdentityHex, smuxSession)
+}
+
+// handleSessionStreams runs an accept loop on an established smux session,
+// dispatching inbound streams. It runs in a background goroutine and exits
+// when the session is closed or the node context is cancelled.
+//
+// In v2, this replaces the PeerManager's stream-handling role for inbound
+// connections. The PeerManager (used for outbound) manages transport-level
+// connection lifecycle; once a session is established (inbound or outbound),
+// this method handles incoming streams.
+func (n *MeshNode) handleSessionStreams(peerIdentityHex string, sess *smux.Session) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[mesh] panic in stream handler for peer %s: %v", peerIdentityHex[:16]+"...", r)
+		}
+	}()
+
+	for {
+		// AcceptStream blocks until a stream arrives or the session closes.
+		stream, err := sess.AcceptStream(n.ctx)
+		if err != nil {
+			// Session closed or context cancelled — exit the loop.
+			if !sess.IsClosed() {
+				log.Printf("[mesh] stream accept error for peer %s: %v", peerIdentityHex[:16]+"...", err)
+			}
+			return
+		}
+		// Log the inbound stream. In a future iteration, this is where
+		// protocol-level stream handlers (RPC, file transfer, etc.) will
+		// be dispatched.
+		log.Printf("[mesh] inbound stream from peer %s (streams=%d)", peerIdentityHex[:16]+"...", sess.NumStreams())
+		_ = stream // stream is available for future dispatch
+	}
 }
 
 // Close shuts down the mesh node and releases all resources.
@@ -258,7 +303,17 @@ func (n *MeshNode) Close() error {
 		sess.Close()
 	}
 	n.sessions = make(map[string]*smux.Session)
+	n.sessionEstablishedAt = make(map[string]time.Time)
 	n.sessionsMu.Unlock()
+
+	// Stop all PeerManagers.
+	n.peerManagersMu.Lock()
+	for id, pm := range n.peerManagers {
+		log.Printf("[mesh] stopping PeerManager for peer %s", id[:16]+"...")
+		pm.Stop()
+	}
+	n.peerManagers = make(map[string]*PeerManager)
+	n.peerManagersMu.Unlock()
 
 	// Shut down transports.
 	if n.registry != nil {
@@ -339,8 +394,8 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 
 	// 2. Build a client-side Reality handshake config from the peer config.
 	hsCfg := handshake.HandshakeConfig{
-		DialTimeout:     30 * time.Second,
-		TLSFingerprint:  "chrome",
+		DialTimeout:      30 * time.Second,
+		TLSFingerprint:   "chrome",
 		RealityPublicKey: peerCfg.Reality.PublicKey,
 		RealityShortID:   peerCfg.Reality.ShortID,
 		ServerName:       peerCfg.Reality.ServerName,
@@ -390,6 +445,7 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	n.sessionsMu.Lock()
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
+	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
 	if exists {
@@ -502,9 +558,41 @@ func (n *MeshNode) hasPeerConfigByAddress(address string) bool {
 }
 
 // RemovePeer removes a peer from the mesh.
-// TODO(v2): implement using the new handshake layer.
+// It performs full cleanup:
+//   - Closes the smux session (if any) for the peer
+//   - Stops the PeerManager (if any) for the peer
+//   - Removes the peer from the sessions map and sessionEstablishedAt map
+//   - Removes the peer from the routing table
+//
+// This is safe to call even if the peer was never fully connected.
 func (n *MeshNode) RemovePeer(peerKey string) error {
+	// 1. Close and remove the smux session.
+	n.sessionsMu.Lock()
+	sess, ok := n.sessions[peerKey]
+	if ok {
+		sess.Close()
+		delete(n.sessions, peerKey)
+	}
+	delete(n.sessionEstablishedAt, peerKey)
+	n.sessionsMu.Unlock()
+
+	// 2. Stop and remove the PeerManager (if outbound).
+	n.peerManagersMu.Lock()
+	pm, ok := n.peerManagers[peerKey]
+	if ok {
+		pm.Stop()
+		delete(n.peerManagers, peerKey)
+	}
+	n.peerManagersMu.Unlock()
+
+	// 3. Remove from the routing table.
 	n.routes.RemovePeer(peerKey)
+
+	if ok || pm != nil {
+		log.Printf("[mesh] RemovePeer: cleaned up peer %s (session=%v, peerMgr=%v)",
+			peerKey[:min(len(peerKey), 16)]+"...", sess != nil, pm != nil)
+	}
+
 	return nil
 }
 
