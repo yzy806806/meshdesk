@@ -751,3 +751,99 @@ func (s *Server) BroadcastTopologyEdgeUpdate(source, target string, latencyMs, b
 		Data:  string(data),
 	})
 }
+
+// --- REST Handler: GET /api/peers ---
+
+// handlePeersAPI handles GET /api/peers.
+// Returns a JSON array of peers derived from the topology snapshot
+// (which itself is built from the mesh routing table, config roles,
+// and monitor metrics). This is a thin wrapper over the same
+// getTopologySnapshot() used by /api/topology — no logic is duplicated.
+//
+// Each peer object contains: id, role, hostname, status, cpu, mem,
+// and 3D position (x, y, z).
+//
+// Auth: Session cookie (requireAuth).
+func (s *Server) handlePeersAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	snapshot := s.getTopologySnapshot()
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(snapshot.Nodes); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
+}
+
+// --- REST Handler: GET /api/monitor ---
+
+// monitorNodeJSON is the JSON representation of a single node's
+// monitor metrics for the /api/monitor endpoint.
+type monitorNodeJSON struct {
+	NodeID    string  `json:"node_id"`
+	ShortID   string  `json:"short_id"`
+	Hostname  string  `json:"hostname"`
+	CPUUsage  float64 `json:"cpu_usage"`
+	CoreCount int     `json:"core_count"`
+	MemUsed   uint64  `json:"mem_used"`
+	MemTotal  uint64  `json:"mem_total"`
+	MemUsage  float64 `json:"mem_usage"`
+	Load1     float64 `json:"load1"`
+	Load5     float64 `json:"load5"`
+	Load15    float64 `json:"load15"`
+	Uptime    int64   `json:"uptime_seconds"`
+}
+
+type monitorResponse struct {
+	Nodes          []monitorNodeJSON `json:"nodes"`
+	NodeCount      int               `json:"node_count"`
+	ActiveSessions int               `json:"active_sessions"`
+}
+
+// handleMonitorAPI handles GET /api/monitor.
+// Returns node monitor metrics (CPU, memory, load average, uptime)
+// as JSON for all nodes known to the monitor store. This is a thin
+// wrapper over buildNodeCards() — the same data used by the dashboard
+// HTML partial and SSE stream.
+//
+// Auth: Session cookie (requireAuth).
+func (s *Server) handleMonitorAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
+		return
+	}
+
+	cards := s.buildNodeCards()
+
+	nodes := make([]monitorNodeJSON, 0, len(cards))
+	for _, c := range cards {
+		nodes = append(nodes, monitorNodeJSON{
+			NodeID:    c.NodeID,
+			ShortID:   c.ShortID,
+			Hostname:  c.Hostname,
+			CPUUsage:  c.CPUUsage,
+			CoreCount: c.CoreCount,
+			MemUsed:   c.MemUsed,
+			MemTotal:  c.MemTotal,
+			MemUsage:  c.MemUsage,
+			Load1:     c.Load1,
+			Load5:     c.Load5,
+			Load15:    c.Load15,
+			Uptime:    c.Uptime,
+		})
+	}
+
+	resp := monitorResponse{
+		Nodes:          nodes,
+		NodeCount:      len(nodes),
+		ActiveSessions: s.activeSessionCount(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		http.Error(w, `{"error":"failed to encode response"}`, http.StatusInternalServerError)
+	}
+}
