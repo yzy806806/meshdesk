@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -511,10 +510,11 @@ func main() {
 		}
 
 		// Create the WebSSH hub for terminal sessions.
+		knownHosts := webssh.NewKnownHostsStore()
 		sshClient := webssh.NewSSHClient(
 			web.NewMeshDialer(node),
 			time.Duration(cfg.WebSSH.DialTimeout)*time.Second,
-			nil, // accept-first-key for now; TODO: known-hosts store
+			knownHosts.HostKeyCallback(),
 		)
 		sshHub := webssh.NewHub(
 			sshClient,
@@ -681,21 +681,10 @@ type meshDialerAdapter struct {
 }
 
 func (d *meshDialerAdapter) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {
-	// Resolve peer ID to mesh IP via routing table.
-	entry, ok := d.node.RoutingTable().GetPeer(peerID)
-	if !ok {
-		return nil, fmt.Errorf("peer %s not found in routing table", peerID)
-	}
-	if len(entry.AllowedIPs) == 0 {
-		return nil, fmt.Errorf("peer %s has no mesh IP", peerID)
-	}
-	meshIP := entry.AllowedIPs[0]
-	// Strip CIDR if present
-	if idx := strings.IndexByte(meshIP, '/'); idx >= 0 {
-		meshIP = meshIP[:idx]
-	}
-	addr := fmt.Sprintf("%s:%d", meshIP, port)
-	return d.node.Dial(ctx, "tcp", addr)
+	// In v2, DialMesh opens a virtual-port stream over an existing smux
+	// session. The peer must already be connected (via AddPeer or an
+	// inbound session). peerID is the peer's identity hex.
+	return d.node.DialVirtualPort(ctx, peerID, port)
 }
 
 // meshListenerAdapter adapts mesh.MeshNode to the monitor.MeshListener interface.
@@ -704,8 +693,7 @@ type meshListenerAdapter struct {
 }
 
 func (a *meshListenerAdapter) ListenMesh(port int) (net.Listener, error) {
-	// TODO(v2): implement listener via smux/Reality TLS transport.
-	return nil, fmt.Errorf("v2: ListenMesh not implemented")
+	return a.node.ListenVirtualPort(port)
 }
 
 // entryNodeStatusAdapter adapts *proxy.EntryNode to the

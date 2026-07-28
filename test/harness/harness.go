@@ -28,6 +28,7 @@ package harness
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -54,6 +55,10 @@ const (
 	DefaultWebBasePort    = 18080
 	DefaultHealthInterval = 500 * time.Millisecond
 	DefaultStartupTimeout = 30 * time.Second
+
+	// defaultShortID is the REALITY short ID used by all test nodes.
+	// Hex-encoded, 8 bytes — the max length accepted by the REALITY protocol.
+	defaultShortID = "0123456789abcdef"
 )
 
 // NodeRole defines the operational role of a test node.
@@ -80,14 +85,19 @@ type Config struct {
 type Node struct {
 	Index      int
 	Role       NodeRole
-	PublicKey  string
-	PrivateKey string
-	MeshPort   int
+	PublicKey  string // Ed25519 public key (hex) — node identity
+	PrivateKey string // Ed25519 private key (hex) — node identity
+	MeshPort   int    // Reality TLS TCP listen port
 	WebPort    int
 	ConfigPath string
 	StateDir   string
-	cmd        *exec.Cmd
-	logBuf     *safeBuffer
+
+	// Reality TLS keypair (X25519, distinct from the Ed25519 identity).
+	RealityPrivKey string // hex-encoded X25519 private key (server-side)
+	RealityPubKey  string // hex-encoded X25519 public key (client-side)
+
+	cmd    *exec.Cmd
+	logBuf *safeBuffer
 }
 
 // Harness manages a cluster of meshdesk nodes for integration testing.
@@ -287,9 +297,10 @@ func (h *Harness) RunScenario(id, category, description string, fn func() (strin
 
 // --- Internal helpers ---
 
-// createNode generates a WireGuard keypair and creates a Node struct
-// (without writing the config — that happens in a second pass once all
-// nodes exist, so each peer list is complete).
+// createNode generates an Ed25519 identity keypair and an X25519 Reality
+// TLS keypair, then creates a Node struct (without writing the config —
+// that happens in a second pass once all nodes exist, so each peer list
+// is complete).
 func (h *Harness) createNode(index int) *Node {
 	role := RoleAgent
 	webPort := 0
@@ -298,25 +309,34 @@ func (h *Harness) createNode(index int) *Node {
 		webPort = DefaultWebBasePort + index
 	}
 
-	// Generate Ed25519 keypair.
+	// Generate Ed25519 identity keypair.
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		h.t.Fatalf("harness: generate key for node %d: %v", index, err)
+		h.t.Fatalf("harness: generate identity key for node %d: %v", index, err)
 	}
+
+	// Generate X25519 Reality TLS keypair (separate from Ed25519 identity).
+	realityPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		h.t.Fatalf("harness: generate reality key for node %d: %v", index, err)
+	}
+	realityPub := realityPriv.PublicKey()
 
 	meshPort := DefaultMeshBasePort + index
 	stateDir := filepath.Join(h.tmpDir, fmt.Sprintf("node%d", index))
 	os.MkdirAll(stateDir, 0700)
 
 	node := &Node{
-		Index:      index,
-		Role:       role,
-		PrivateKey: hex.EncodeToString(priv),
-		PublicKey:  hex.EncodeToString(pub),
-		MeshPort:   meshPort,
-		WebPort:    webPort,
-		StateDir:   stateDir,
-		ConfigPath: filepath.Join(stateDir, "config.yaml"),
+		Index:          index,
+		Role:           role,
+		PrivateKey:     hex.EncodeToString(priv),
+		PublicKey:      hex.EncodeToString(pub),
+		MeshPort:       meshPort,
+		WebPort:        webPort,
+		StateDir:       stateDir,
+		ConfigPath:     filepath.Join(stateDir, "config.yaml"),
+		RealityPrivKey: hex.EncodeToString(realityPriv.Bytes()),
+		RealityPubKey:  hex.EncodeToString(realityPub.Bytes()),
 	}
 
 	h.t.Logf("[harness] Node %d: pubkey=%s mesh=%d web=%d role=%s",
@@ -325,25 +345,31 @@ func (h *Harness) createNode(index int) *Node {
 }
 
 // generateConfig creates the YAML config for a node.
+// Produces v2-style configs with Reality TLS enabled.
 func (h *Harness) generateConfig(node *Node) string {
 	webAddr := ""
 	if node.Role == RoleCollector {
 		webAddr = fmt.Sprintf(":%d", node.WebPort)
 	}
 
-	// Build peer list (all other nodes).
+	// Build peer list (all other nodes) with v2 Reality TLS peer config.
 	var peerYAML strings.Builder
 	for _, other := range h.nodes {
 		if other.Index == node.Index {
 			continue
 		}
-		peerYAML.WriteString(fmt.Sprintf(`  - public_key: "%s"
+		fmt.Fprintf(&peerYAML, `  - public_key: "%s"
     endpoint: "127.0.0.1:%d"
     allowed_ips:
       - "10.10.%d.1/32"
     capabilities:
       - ssh_proxy
-`, other.PublicKey, other.MeshPort, other.Index+1))
+    reality:
+      server_name: "www.apple.com"
+      public_key: "%s"
+      short_id: "%s"
+`, other.PublicKey, other.MeshPort, other.Index+1,
+			other.RealityPubKey, defaultShortID)
 	}
 
 	cfg := fmt.Sprintf(`node:
@@ -352,6 +378,16 @@ func (h *Harness) generateConfig(node *Node) string {
   web: "%s"
 mesh:
   port: %d
+reality:
+  enabled: true
+  listen_addr: "127.0.0.1"
+  listen_port: %d
+  dest: "www.apple.com:443"
+  private_key: "%s"
+  short_ids:
+    - "%s"
+  server_names:
+    - "www.apple.com"
 peers:
 %s
 monitoring:
@@ -369,6 +405,7 @@ transfer:
   max_file_size: 10485760
   upload_dir: "%s"
 `, node.PrivateKey, node.Index, webAddr, node.MeshPort,
+		node.MeshPort, node.RealityPrivKey, defaultShortID,
 		peerYAML.String(),
 		filepath.Join(node.StateDir, "uploads"))
 	return cfg
@@ -465,10 +502,11 @@ func (h *Harness) isNodeHealthy(node *Node) bool {
 		return false
 	}
 
-	// For agent nodes, check if the log shows startup completed and the mesh port is open.
+	// For agent nodes, check if the log shows startup completed and the
+	// Reality TLS TCP port is open.
 	log := node.logString()
 	if strings.Contains(log, "MeshDesk node started") || strings.Contains(log, "agent-only") {
-		conn, err := net.DialTimeout("udp", fmt.Sprintf("127.0.0.1:%d", node.MeshPort), 500*time.Millisecond)
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", node.MeshPort), 500*time.Millisecond)
 		if err == nil {
 			conn.Close()
 			return true
@@ -550,13 +588,13 @@ func (h *Harness) ScenarioMeshPing() (result, details string) {
 		return "SKIP", "need at least 2 nodes"
 	}
 
-	// Verify each node's process is alive and the mesh port is listening.
+	// Verify each node's process is alive and the Reality TLS port is listening.
 	alive := 0
 	for _, node := range h.nodes {
 		if !h.isNodeHealthy(node) {
 			continue
 		}
-		conn, err := net.DialTimeout("udp", fmt.Sprintf("127.0.0.1:%d", node.MeshPort), 1*time.Second)
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", node.MeshPort), 1*time.Second)
 		if err != nil {
 			continue
 		}
