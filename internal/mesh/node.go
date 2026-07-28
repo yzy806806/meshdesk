@@ -60,6 +60,12 @@ type MeshNode struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 
+	// portMux dispatches inbound smux streams to virtual-port listeners.
+	// When a peer opens a stream, the first frame carries a 2-byte port
+	// number; the stream is then delivered to the VirtualListener
+	// registered for that port via ListenVirtualPort.
+	portMux *virtualPortMux
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -82,6 +88,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		sessions:             make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		peerManagers:         make(map[string]*PeerManager),
+		portMux:              newVirtualPortMux(),
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
@@ -260,15 +267,23 @@ func (n *MeshNode) handleSessionStreams(peerIdentityHex string, sess *smux.Sessi
 		if err != nil {
 			// Session closed or context cancelled — exit the loop.
 			if !sess.IsClosed() {
-				log.Printf("[mesh] stream accept error for peer %s: %v", peerIdentityHex[:16]+"...", err)
+				log.Printf("[mesh] stream accept error for peer %s: %v", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
 			}
 			return
 		}
-		// Log the inbound stream. In a future iteration, this is where
-		// protocol-level stream handlers (RPC, file transfer, etc.) will
-		// be dispatched.
-		log.Printf("[mesh] inbound stream from peer %s (streams=%d)", peerIdentityHex[:16]+"...", sess.NumStreams())
-		_ = stream // stream is available for future dispatch
+
+		// Read the virtual port prefix (2 bytes, big-endian uint16).
+		port, err := readPortFrame(stream)
+		if err != nil {
+			log.Printf("[mesh] failed to read virtual port from peer %s: %v", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+			stream.Close()
+			continue
+		}
+
+		log.Printf("[mesh] inbound stream from peer %s on virtual port %d", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", port)
+
+		// Dispatch the stream to the virtual listener registered for this port.
+		n.portMux.dispatch(port, stream)
 	}
 }
 
@@ -314,6 +329,16 @@ func (n *MeshNode) Close() error {
 	}
 	n.peerManagers = make(map[string]*PeerManager)
 	n.peerManagersMu.Unlock()
+
+	// Close all virtual port listeners.
+	if n.portMux != nil {
+		n.portMux.mu.Lock()
+		for port, vl := range n.portMux.listeners {
+			delete(n.portMux.listeners, port)
+			vl.Close()
+		}
+		n.portMux.mu.Unlock()
+	}
 
 	// Shut down transports.
 	if n.registry != nil {
@@ -383,6 +408,11 @@ func (n *MeshNode) Registry() *TransportRegistry {
 // network is the transport type ("tcp", "tcp4", "tcp6" — all mapped to TCP).
 // address is "host:port" and must match a configured peer's Endpoint field.
 func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn, error) {
+	// Check for mesh-internal virtual port address (e.g. "mesh:2222").
+	if network == "mesh" || isMeshAddress(address) {
+		return n.dialVirtualPort(ctx, address)
+	}
+
 	// 1. Find the peer's Reality config by address.
 	peerCfg, ok := n.findPeerConfigByAddress(address)
 	if !ok {
@@ -467,6 +497,14 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 		return nil, fmt.Errorf("mesh: open stream to %s: %w", address, err)
 	}
 
+	// 12. Write the virtual port prefix. For regular (non-mesh) dials,
+	// use port 0 — handleSessionStreams will close the stream if no
+	// listener is registered for port 0.
+	if err := writePortFrame(stream, 0); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("mesh: write port frame to %s: %w", address, err)
+	}
+
 	return stream, nil
 }
 
@@ -479,6 +517,109 @@ func (n *MeshNode) findPeerConfigByAddress(address string) (*config.PeerConfig, 
 		}
 	}
 	return nil, false
+}
+
+// isMeshAddress returns true if the address is a mesh-internal virtual
+// port address of the form "mesh:PORT" or "mesh://PORT".
+func isMeshAddress(address string) bool {
+	return len(address) > 5 && address[:5] == "mesh:"
+}
+
+// parseMeshPort extracts the port number from a mesh address like "mesh:2222".
+func parseMeshPort(address string) (uint16, error) {
+	if !isMeshAddress(address) {
+		return 0, fmt.Errorf("not a mesh address: %s", address)
+	}
+	portStr := address[5:]
+	port, err := strconv.ParseUint(portStr, 10, 16)
+	if err != nil {
+		return 0, fmt.Errorf("invalid mesh port %q: %w", portStr, err)
+	}
+	if port == 0 {
+		return 0, fmt.Errorf("mesh port 0 is reserved")
+	}
+	return uint16(port), nil
+}
+
+// ListenVirtualPort registers a virtual listener for the given port number
+// and returns a net.Listener that accepts inbound smux streams addressed
+// to that port.
+//
+// The caller is responsible for calling Close on the returned listener
+// when done. If a listener is already registered for the port, an error
+// is returned.
+func (n *MeshNode) ListenVirtualPort(port int) (net.Listener, error) {
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("mesh: virtual port %d out of range", port)
+	}
+	return n.portMux.register(uint16(port))
+}
+
+// DialVirtualPort opens a smux stream to a peer's virtual port.
+//
+// peerIdentityHex identifies the peer (the key in the sessions map).
+// port is the virtual port to dial (must be > 0).
+//
+// The first frame written on the stream carries the 2-byte port number,
+// which the remote side reads to dispatch to the correct VirtualListener.
+func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, port int) (net.Conn, error) {
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("mesh: virtual port %d out of range", port)
+	}
+	if port == 0 {
+		return nil, fmt.Errorf("mesh: virtual port 0 is reserved")
+	}
+
+	// Look up the smux session for this peer.
+	n.sessionsMu.Lock()
+	sess, ok := n.sessions[peerIdentityHex]
+	n.sessionsMu.Unlock()
+
+	if !ok {
+		return nil, fmt.Errorf("mesh: no session for peer %s", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...")
+	}
+
+	// Open a new stream on the existing session.
+	stream, err := sess.OpenStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: open stream to peer %s: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+	}
+
+	// Write the virtual port prefix.
+	if err := writePortFrame(stream, uint16(port)); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("mesh: write port frame: %w", err)
+	}
+
+	return stream, nil
+}
+
+// dialVirtualPort handles mesh-internal dialing for addresses like "mesh:2222".
+// It finds any active peer session and opens a stream to the virtual port.
+// This is used for testing and simple scenarios; production code should use
+// DialVirtualPort with an explicit peer identity.
+func (n *MeshNode) dialVirtualPort(ctx context.Context, address string) (net.Conn, error) {
+	port, err := parseMeshPort(address)
+	if err != nil {
+		return nil, err
+	}
+
+	// Find any active session (for testing / simple mesh dial).
+	n.sessionsMu.Lock()
+	var peerID string
+	var sess *smux.Session
+	for id, s := range n.sessions {
+		peerID = id
+		sess = s
+		break
+	}
+	n.sessionsMu.Unlock()
+
+	if sess == nil {
+		return nil, fmt.Errorf("mesh: no active peer session for dial to %s", address)
+	}
+
+	return n.DialVirtualPort(ctx, peerID, int(port))
 }
 
 // AddPeer adds a new peer to the mesh and, when Reality TLS parameters
