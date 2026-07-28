@@ -32,16 +32,18 @@ type SSHClient struct {
 
 // NewSSHClient creates an SSH client that dials through the mesh VPN.
 // dialTimeout is the max time to wait for the SSH connection (default 10s).
-// hostKeyCallback: pass nil for "accept first key and pin it" (InsecureIgnoreHostKey
-// is NOT recommended — use PinnedHostKey for production).
+// hostKeyCallback: pass nil to use a TOFU known-hosts store (first key is
+// pinned, subsequent mismatches are rejected). Pass a custom callback for
+// pre-pinned keys.
 func NewSSHClient(dialer MeshDialer, dialTimeout time.Duration, hostKeyCallback ssh.HostKeyCallback) *SSHClient {
 	if dialTimeout == 0 {
 		dialTimeout = 10 * time.Second
 	}
 	if hostKeyCallback == nil {
-		// Default: accept first key, pin it (prevents MITM after first connection)
-		hostKeyCallback = ssh.InsecureIgnoreHostKey()
-		// TODO(v2): use a proper known-hosts store with PinnedHostKey
+		// Default: TOFU (trust on first use) — pin the first key seen.
+		// This prevents MITM attacks after the first connection.
+		store := NewKnownHostsStore()
+		hostKeyCallback = store.HostKeyCallback()
 	}
 	return &SSHClient{
 		dialer:          dialer,

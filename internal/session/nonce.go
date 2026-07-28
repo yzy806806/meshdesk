@@ -22,8 +22,8 @@ const MaxNonceCache = 1024
 type nonceCache struct {
 	mu    sync.Mutex
 	seen  map[[32]byte]int64 // nonce → unix timestamp (seconds)
-	order [][32]byte          // FIFO eviction queue
-	max   int                 // maximum entries (default: MaxNonceCache)
+	order [][32]byte         // FIFO eviction queue
+	max   int                // maximum entries (default: MaxNonceCache)
 }
 
 // newNonceCache creates a nonceCache with the given capacity.

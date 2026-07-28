@@ -11,7 +11,6 @@ import (
 func TestSetLocalEndpointsNilMemberlistNoCrash(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       1,
@@ -48,7 +47,6 @@ func TestSetLocalEndpointsNilMemberlistNoCrash(t *testing.T) {
 func TestSetLocalEndpointsUpdatesSeqAndNatType(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       1,
@@ -91,7 +89,6 @@ func TestSetLocalEndpointsUpdatesSeqAndNatType(t *testing.T) {
 func TestSetLocalEndpointsEmptyEndpointsClears(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{"203.0.113.5:51820"},
 		NatType:   "full_cone",
 		Seq:       5,
@@ -123,7 +120,6 @@ func TestSetLocalEndpointsEmptyEndpointsClears(t *testing.T) {
 func TestAnnounceLocalEndpointWithNilMemberlist(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 		Endpoints: []string{},
 		NatType:   "unknown",
 		Seq:       1,

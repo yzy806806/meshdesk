@@ -8,7 +8,7 @@
     "test": "test"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "go test ./internal/p2p/... -count=1 -timeout 120s"
   },
   "repository": {
     "type": "git",

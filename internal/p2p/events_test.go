@@ -12,7 +12,6 @@ import (
 func TestEventDelegateNotifyJoin(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -28,7 +27,6 @@ func TestEventDelegateNotifyJoin(t *testing.T) {
 		CapProxyEntry: true,
 		Endpoints:     []string{"203.0.113.5:51820"},
 		NatType:       "none",
-		MeshIP:        "10.10.1.5",
 		MaxCircuits:   1024,
 	}
 
@@ -87,7 +85,6 @@ func TestEventDelegateNotifyJoin(t *testing.T) {
 func TestEventDelegateNotifyJoinSelf(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -118,7 +115,6 @@ func TestEventDelegateNotifyJoinSelf(t *testing.T) {
 func TestEventDelegateNotifyLeaveRemovesPeer(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -129,7 +125,6 @@ func TestEventDelegateNotifyLeaveRemovesPeer(t *testing.T) {
 		Hostname:    "relay-node-1",
 		CapRelay:    true,
 		Endpoints:   []string{"203.0.113.5:51820"},
-		MeshIP:      "10.10.1.5",
 		MaxCircuits: 1024,
 	}
 
@@ -175,7 +170,6 @@ func TestEventDelegateNotifyLeaveRemovesPeer(t *testing.T) {
 func TestEventDelegateNotifyUpdate(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -188,7 +182,6 @@ func TestEventDelegateNotifyUpdate(t *testing.T) {
 		CapRelay:    true,
 		LoadCPU:     0.3,
 		LoadMem:     0.2,
-		MeshIP:      "10.10.1.5",
 		MaxCircuits: 1024,
 		Seq:         1,
 	}
@@ -205,7 +198,6 @@ func TestEventDelegateNotifyUpdate(t *testing.T) {
 		CapRelay:    true,
 		LoadCPU:     0.8, // increased
 		LoadMem:     0.2,
-		MeshIP:      "10.10.1.5",
 		MaxCircuits: 1024,
 		Seq:         2,
 	}
@@ -245,7 +237,6 @@ func TestEventDelegateNotifyUpdate(t *testing.T) {
 func TestEventDelegateNotifyUpdateStaleIgnored(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -255,7 +246,6 @@ func TestEventDelegateNotifyUpdateStaleIgnored(t *testing.T) {
 	peerMeta := &NodeMeta{
 		PublicKey: "peerkey0000000000000000000000000000000000000000000000000000000",
 		LoadCPU:   0.5,
-		MeshIP:    "10.10.1.5",
 		Seq:       5,
 	}
 	events.mu.Lock()
@@ -266,7 +256,6 @@ func TestEventDelegateNotifyUpdateStaleIgnored(t *testing.T) {
 	staleMeta := &NodeMeta{
 		PublicKey: peerMeta.PublicKey,
 		LoadCPU:   0.9, // different value but older Seq
-		MeshIP:    "10.10.1.5",
 		Seq:       3,
 	}
 	metaData, _ := staleMeta.MarshalMeta()
@@ -296,7 +285,6 @@ func TestEventDelegateNotifyUpdateStaleIgnored(t *testing.T) {
 func TestEventDelegateAllKnownPeers(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()
@@ -306,7 +294,6 @@ func TestEventDelegateAllKnownPeers(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		meta := &NodeMeta{
 			PublicKey: "peerkey000000000000000000000000000000000000000000000000000000" + string(rune('A'+i)),
-			MeshIP:    "10.10.1.5",
 			Seq:       1,
 		}
 		events.mu.Lock()
@@ -323,7 +310,6 @@ func TestEventDelegateAllKnownPeers(t *testing.T) {
 func TestEventDelegateConcurrentAccess(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	mockPM := newMockPeerManager()

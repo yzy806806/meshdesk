@@ -12,7 +12,7 @@ func TestRelayMessageMarshalRoundTrip(t *testing.T) {
 	}{
 		{
 			name: "setup message",
-			msg:  RelaySetupRequest("entrykey1234567890abcdef", "relaykey1234567890abcdef", "circuit001", "targetkey1234567890ab", "10.10.1.5"),
+			msg:  RelaySetupRequest("entrykey1234567890abcdef", "relaykey1234567890abcdef", "circuit001", "targetkey1234567890ab", []string{"10.10.1.5"}),
 		},
 		{
 			name: "accept message",
@@ -66,8 +66,8 @@ func TestRelayMessageMarshalRoundTrip(t *testing.T) {
 			if decoded.TargetKey != tt.msg.TargetKey {
 				t.Errorf("TargetKey mismatch: got %s, want %s", decoded.TargetKey, tt.msg.TargetKey)
 			}
-			if decoded.TargetMeshIP != tt.msg.TargetMeshIP {
-				t.Errorf("TargetMeshIP mismatch: got %s, want %s", decoded.TargetMeshIP, tt.msg.TargetMeshIP)
+			if len(decoded.TargetEndpoints) != len(tt.msg.TargetEndpoints) {
+				t.Errorf("TargetEndpoints length mismatch: got %v, want %v", decoded.TargetEndpoints, tt.msg.TargetEndpoints)
 			}
 			if decoded.RejectReason != tt.msg.RejectReason {
 				t.Errorf("RejectReason mismatch: got %s, want %s", decoded.RejectReason, tt.msg.RejectReason)
@@ -81,7 +81,7 @@ func TestRelayMessageMarshalRoundTrip(t *testing.T) {
 
 func TestIsRelayMessage(t *testing.T) {
 	// Valid relay message
-	msg := RelaySetupRequest("from", "to", "c1", "target", "10.10.0.1")
+	msg := RelaySetupRequest("from", "to", "c1", "target", []string{"10.10.0.1"})
 	data, err := msg.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal failed: %v", err)
@@ -151,7 +151,7 @@ func TestRelayMessageCompactness(t *testing.T) {
 		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		"circuit001",
 		"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		"10.10.1.5",
+		[]string{"10.10.1.5"},
 	)
 	data, err := msg.Marshal()
 	if err != nil {

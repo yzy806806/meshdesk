@@ -32,7 +32,6 @@ func newTestRelayEnv(t *testing.T, maxCircuits int) *testRelayEnv {
 		Hostname:    "test-relay",
 		Role:        "relay",
 		CapRelay:    true,
-		MeshIP:      "10.10.0.1",
 		MaxCircuits: maxCircuits,
 		Seq:         1,
 	}
@@ -81,7 +80,7 @@ func TestRelaySessionSetupAccept(t *testing.T) {
 	circuitID := "circuit-test-001"
 
 	// Send a setup request.
-	setupMsg := RelaySetupRequest(entryKey, env.localKey, circuitID, targetKey, "10.10.1.5")
+	setupMsg := RelaySetupRequest(entryKey, env.localKey, circuitID, targetKey, []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setupMsg); err != nil {
 		t.Fatalf("HandleMessage(setup) failed: %v", err)
 	}
@@ -123,8 +122,8 @@ func TestRelaySessionSetupAccept(t *testing.T) {
 	if info.TargetKey != targetKey {
 		t.Errorf("target key = %s, want %s", info.TargetKey, targetKey)
 	}
-	if info.TargetMeshIP != "10.10.1.5" {
-		t.Errorf("target mesh IP = %s, want 10.10.1.5", info.TargetMeshIP)
+	if len(info.TargetEndpoints) == 0 || info.TargetEndpoints[0] != "10.10.1.5" {
+		t.Errorf("target endpoints = %v, want [10.10.1.5]", info.TargetEndpoints)
 	}
 }
 
@@ -135,14 +134,14 @@ func TestRelaySessionDuplicateReject(t *testing.T) {
 	circuitID := "circuit-dup-001"
 
 	// First setup should succeed.
-	setup1 := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", "10.10.1.5")
+	setup1 := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setup1); err != nil {
 		t.Fatalf("first HandleMessage failed: %v", err)
 	}
 	env.clearSent()
 
 	// Second setup with same circuit ID should be rejected.
-	setup2 := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", "10.10.1.5")
+	setup2 := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setup2); err != nil {
 		t.Fatalf("second HandleMessage failed: %v", err)
 	}
@@ -171,14 +170,14 @@ func TestRelaySessionCapacityReject(t *testing.T) {
 	entryKey := "entrykey1234567890abcdef"
 
 	// First circuit should succeed.
-	setup1 := RelaySetupRequest(entryKey, env.localKey, "c1", "target1key1234567890a", "10.10.1.5")
+	setup1 := RelaySetupRequest(entryKey, env.localKey, "c1", "target1key1234567890a", []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setup1); err != nil {
 		t.Fatalf("first HandleMessage failed: %v", err)
 	}
 	env.clearSent()
 
 	// Second circuit should be rejected (at capacity).
-	setup2 := RelaySetupRequest(entryKey, env.localKey, "c2", "target2key1234567890a", "10.10.1.6")
+	setup2 := RelaySetupRequest(entryKey, env.localKey, "c2", "target2key1234567890a", []string{"10.10.1.6"})
 	if err := env.rsm.HandleMessage(setup2); err != nil {
 		t.Fatalf("second HandleMessage failed: %v", err)
 	}
@@ -207,7 +206,7 @@ func TestRelaySessionTeardown(t *testing.T) {
 	circuitID := "circuit-td-001"
 
 	// Setup a circuit.
-	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", "10.10.1.5")
+	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setup); err != nil {
 		t.Fatalf("HandleMessage(setup) failed: %v", err)
 	}
@@ -240,7 +239,7 @@ func TestRelaySessionTeardownUnauthorized(t *testing.T) {
 	circuitID := "circuit-unauth-001"
 
 	// Setup a circuit from entryKey.
-	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", "10.10.1.5")
+	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setup); err != nil {
 		t.Fatalf("HandleMessage(setup) failed: %v", err)
 	}
@@ -266,7 +265,7 @@ func TestRelaySessionPingPong(t *testing.T) {
 	circuitID := "circuit-ping-001"
 
 	// Setup a circuit.
-	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", "10.10.1.5")
+	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setup); err != nil {
 		t.Fatalf("HandleMessage(setup) failed: %v", err)
 	}
@@ -334,7 +333,7 @@ func TestRelaySessionIdleSweep(t *testing.T) {
 	circuitID := "circuit-idle-001"
 
 	// Setup a circuit.
-	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", "10.10.1.5")
+	setup := RelaySetupRequest(entryKey, env.localKey, circuitID, "targetkey1234567890ab", []string{"10.10.1.5"})
 	if err := env.rsm.HandleMessage(setup); err != nil {
 		t.Fatalf("HandleMessage(setup) failed: %v", err)
 	}
@@ -390,7 +389,7 @@ func TestRelaySessionAllSessions(t *testing.T) {
 			env.localKey,
 			circuitID,
 			"targetkey1234567890ab",
-			"10.10.1.5",
+			[]string{"10.10.1.5"},
 		)
 		if err := env.rsm.HandleMessage(setup); err != nil {
 			t.Fatalf("HandleMessage(%d) failed: %v", i, err)
@@ -428,7 +427,7 @@ func TestRelaySessionMessageNotForUs(t *testing.T) {
 		"differentrelaykey1234567", // not our key
 		"circuit-notforus",
 		"targetkey1234567890ab",
-		"10.10.1.5",
+		[]string{"10.10.1.5"},
 	)
 	// The ToKey is set to "differentrelaykey1234567", which is not us.
 	if err := env.rsm.HandleMessage(msg); err != nil {
@@ -450,7 +449,7 @@ func TestRelaySessionLoadMetricUpdate(t *testing.T) {
 		env.localKey,
 		"circuit-load-001",
 		"targetkey1234567890ab",
-		"10.10.1.5",
+		[]string{"10.10.1.5"},
 	)
 	if err := env.rsm.HandleMessage(setup); err != nil {
 		t.Fatalf("HandleMessage failed: %v", err)
@@ -503,7 +502,6 @@ func TestDelegateNotifyMsgRelay(t *testing.T) {
 	// relay messages to the installed handler.
 	localMeta := &NodeMeta{
 		PublicKey: "relaykey1234567890abcdef",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 
@@ -517,7 +515,7 @@ func TestDelegateNotifyMsgRelay(t *testing.T) {
 	})
 
 	// Create and send a relay message.
-	origMsg := RelaySetupRequest("entrykey1234567890abcdef", "relaykey1234567890abcdef", "c1", "target", "10.10.1.5")
+	origMsg := RelaySetupRequest("entrykey1234567890abcdef", "relaykey1234567890abcdef", "c1", "target", []string{"10.10.1.5"})
 	data, err := origMsg.Marshal()
 	if err != nil {
 		t.Fatalf("Marshal failed: %v", err)

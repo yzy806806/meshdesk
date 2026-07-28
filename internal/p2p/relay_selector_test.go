@@ -17,7 +17,6 @@ func TestRelaySelectorScoring(t *testing.T) {
 	// Create a mock event delegate with relay candidates.
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	wg := &WireGuardDelegate{health: make(map[string]*PeerHealth), staticKeys: make(map[string]bool)}
@@ -26,7 +25,6 @@ func TestRelaySelectorScoring(t *testing.T) {
 	// R1: RTT=10ms, CPU=0.1 (should score highest)
 	r1 := &NodeMeta{
 		PublicKey:    "r1publickey0000000000000000000000000000000000000000000000000000",
-		MeshIP:       "10.10.1.1",
 		CapRelay:     true,
 		LoadCPU:      0.1,
 		LoadMem:      0.1,
@@ -38,7 +36,6 @@ func TestRelaySelectorScoring(t *testing.T) {
 	// R2: RTT=5ms, CPU=0.9 (low RTT but high load)
 	r2 := &NodeMeta{
 		PublicKey:    "r2publickey0000000000000000000000000000000000000000000000000000",
-		MeshIP:       "10.10.1.2",
 		CapRelay:     true,
 		LoadCPU:      0.9,
 		LoadMem:      0.5,
@@ -50,7 +47,6 @@ func TestRelaySelectorScoring(t *testing.T) {
 	// R3: RTT=50ms, CPU=0.1 (low load but high latency)
 	r3 := &NodeMeta{
 		PublicKey:    "r3publickey0000000000000000000000000000000000000000000000000000",
-		MeshIP:       "10.10.1.3",
 		CapRelay:     true,
 		LoadCPU:      0.1,
 		LoadMem:      0.1,
@@ -121,7 +117,6 @@ func TestRelaySelectorScoring(t *testing.T) {
 func TestRelaySelectorSelectBest(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	wg := &WireGuardDelegate{health: make(map[string]*PeerHealth), staticKeys: make(map[string]bool)}
@@ -130,7 +125,6 @@ func TestRelaySelectorSelectBest(t *testing.T) {
 	// Add one relay candidate.
 	best := &NodeMeta{
 		PublicKey:   "bestkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:      "10.10.1.1",
 		CapRelay:    true,
 		LoadCPU:     0.1,
 		MaxCircuits: 1024,
@@ -153,7 +147,6 @@ func TestRelaySelectorSelectBest(t *testing.T) {
 func TestRelaySelectorEmptyPool(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	wg := &WireGuardDelegate{health: make(map[string]*PeerHealth), staticKeys: make(map[string]bool)}
@@ -169,7 +162,6 @@ func TestRelaySelectorEmptyPool(t *testing.T) {
 func TestRelaySelectorFiltersIneligible(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	wg := &WireGuardDelegate{health: make(map[string]*PeerHealth), staticKeys: make(map[string]bool)}
@@ -178,7 +170,6 @@ func TestRelaySelectorFiltersIneligible(t *testing.T) {
 	// At-capacity relay (should be filtered).
 	atCapacity := &NodeMeta{
 		PublicKey:    "atcapacity000000000000000000000000000000000000000000000000000000",
-		MeshIP:       "10.10.1.1",
 		CapRelay:     true,
 		LoadCircuits: 1024,
 		MaxCircuits:  1024,
@@ -188,7 +179,6 @@ func TestRelaySelectorFiltersIneligible(t *testing.T) {
 	// Symmetric NAT relay (should be filtered).
 	symmetricNAT := &NodeMeta{
 		PublicKey:   "symmetric00000000000000000000000000000000000000000000000000000",
-		MeshIP:      "10.10.1.2",
 		CapRelay:    true,
 		MaxCircuits: 1024,
 		NatType:     "symmetric",
@@ -197,7 +187,6 @@ func TestRelaySelectorFiltersIneligible(t *testing.T) {
 	// Eligible relay.
 	eligible := &NodeMeta{
 		PublicKey:   "eligible000000000000000000000000000000000000000000000000000000",
-		MeshIP:      "10.10.1.3",
 		CapRelay:    true,
 		MaxCircuits: 1024,
 		NatType:     "none",
@@ -222,7 +211,6 @@ func TestRelaySelectorFiltersIneligible(t *testing.T) {
 func TestRelaySelectorSelectK(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		MeshIP:    "10.10.0.1",
 	}
 	delegate := newMeshDelegate(localMeta)
 	wg := &WireGuardDelegate{health: make(map[string]*PeerHealth), staticKeys: make(map[string]bool)}

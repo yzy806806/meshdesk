@@ -37,14 +37,14 @@ func (s relayCircuitState) String() string {
 
 // relayCircuit holds the per-target-peer circuit state on the entry node (A).
 type relayCircuit struct {
-	circuitID    string
-	relayKey     string // current relay's public key
-	targetKey    string // target peer (B) public key
-	targetMeshIP string // target peer (B) mesh IP
-	state        relayCircuitState
-	pingFailures int       // consecutive missed PONGs
-	lastPong     time.Time // last successful PONG
-	createdAt    time.Time
+	circuitID       string
+	relayKey        string   // current relay's public key
+	targetKey       string   // target peer (B) public key
+	targetEndpoints []string // target peer (B) endpoints
+	state           relayCircuitState
+	pingFailures    int       // consecutive missed PONGs
+	lastPong        time.Time // last successful PONG
+	createdAt       time.Time
 
 	// fallbackRelayKey is the secondary relay for failover.
 	fallbackRelayKey string
@@ -68,7 +68,7 @@ type RelayPathBuilderImpl struct {
 	// gossip provides access to relay message sending and relay selection.
 	gossip *GossipLayer
 
-	// wg is the WireGuard peer manager (for AddRelayRoute/RemoveRelayRoute).
+	// wg is the peer manager (for AddRelayTarget/RemoveRelayTarget).
 	wg PeerManager
 
 	// selector scores and selects relay candidates.
@@ -94,7 +94,7 @@ type RelayPathBuilderImpl struct {
 //
 // Parameters:
 //   - gossip: the gossip layer (for sending relay messages and selecting relays)
-//   - wg: the WireGuard peer manager (for AddRelayRoute on the entry node)
+//   - wg: the peer manager (for AddRelayTarget on the entry node)
 //   - selector: the relay selector (for scoring relay candidates)
 //   - events: the event delegate (for accessing peer metadata)
 //   - localKey: this node's public key
@@ -140,8 +140,8 @@ func (rpb *RelayPathBuilderImpl) OnNATPeerDiscovered(meta *NodeMeta) {
 	}
 	rpb.mu.Unlock()
 
-	log.Printf("[p2p/relay] NAT peer %s discovered (mesh IP %s), selecting relay...",
-		meta.PublicKey[:8], meta.MeshIP)
+	log.Printf("[p2p/relay] NAT peer %s discovered (no endpoints), selecting relay...",
+		meta.PublicKey[:8])
 
 	// Select top-K=2 relay candidates.
 	rpb.mu.Lock()
@@ -166,7 +166,7 @@ func (rpb *RelayPathBuilderImpl) OnNATPeerDiscovered(meta *NodeMeta) {
 		circuitID:        circuitID,
 		relayKey:         primary.Meta.PublicKey,
 		targetKey:        meta.PublicKey,
-		targetMeshIP:     meta.MeshIP,
+		targetEndpoints:  meta.Endpoints,
 		state:            circuitSelecting,
 		createdAt:        time.Now(),
 		fallbackRelayKey: fallbackKey,
@@ -198,10 +198,10 @@ func (rpb *RelayPathBuilderImpl) OnPeerLeft(peerKey string) {
 	// Tear down the circuit on the relay.
 	rpb.sendCircuitTeardown(circuit)
 
-	// Remove the relay route from our WireGuard config.
+	// Remove the relay target from our PeerManager.
 	if rpb.wg != nil {
-		if err := rpb.wg.RemoveRelayRoute(circuit.relayKey, circuit.targetMeshIP); err != nil {
-			log.Printf("[p2p/relay] failed to remove relay route for %s: %v",
+		if err := rpb.wg.RemoveRelayTarget(circuit.targetKey); err != nil {
+			log.Printf("[p2p/relay] failed to remove relay target for %s: %v",
 				peerKey[:8], err)
 		}
 	}
@@ -222,11 +222,11 @@ func (rpb *RelayPathBuilderImpl) sendCircuitSetup(circuit *relayCircuit) {
 	circuit.mu.Unlock()
 
 	msg := RelaySetupRequest(
-		rpb.localKey,         // from (A)
-		circuit.relayKey,     // to (R)
-		circuit.circuitID,    // circuit ID
-		circuit.targetKey,    // target (B)
-		circuit.targetMeshIP, // target mesh IP
+		rpb.localKey,            // from (A)
+		circuit.relayKey,        // to (R)
+		circuit.circuitID,       // circuit ID
+		circuit.targetKey,       // target (B)
+		circuit.targetEndpoints, // target endpoints
 	)
 
 	rpb.gossip.SendRelayMessage(circuit.relayKey, msg)
@@ -276,11 +276,11 @@ func (rpb *RelayPathBuilderImpl) HandleAccept(msg *RelayMessage) {
 	circuit.pingFailures = 0
 	circuit.mu.Unlock()
 
-	// On the entry node (A), extend the relay peer's AllowedIPs to include
-	// B's mesh IP. This tells WireGuard to route B-bound traffic through R.
+	// On the entry node (A), add the relay target so that traffic
+	// destined for B is forwarded through R.
 	if rpb.wg != nil && previousState != circuitActive {
-		if err := rpb.wg.AddRelayRoute(circuit.relayKey, circuit.targetMeshIP); err != nil {
-			log.Printf("[p2p/relay] failed to add relay route for target %s via relay %s: %v",
+		if err := rpb.wg.AddRelayTarget(circuit.targetKey, circuit.targetEndpoints); err != nil {
+			log.Printf("[p2p/relay] failed to add relay target for %s via relay %s: %v",
 				circuit.targetKey[:8], circuit.relayKey[:8], err)
 		} else {
 			log.Printf("[p2p/relay] circuit %s active: target %s routed via relay %s",
