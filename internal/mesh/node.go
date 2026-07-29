@@ -66,6 +66,13 @@ type MeshNode struct {
 	// registered for that port via ListenVirtualPort.
 	portMux *virtualPortMux
 
+	// muxTransport is the shared TCP listener multiplexer between gossip
+	// and Reality TLS. When non-nil, Start() creates it and passes its
+	// RealityListener() to the Reality handshake layer, and the caller
+	// passes the MuxTransport itself to the gossip layer via SetTransport.
+	// nil when port multiplexing is not used (P2P disabled).
+	muxTransport *MuxTransport
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -100,6 +107,11 @@ func New(cfg *config.Config) (*MeshNode, error) {
 // It creates a Reality TLS listener, starts an accept loop in a background
 // goroutine, and for each accepted connection performs X25519 ECDH key
 // exchange, wraps the connection in AES-256-GCM, and creates an smux session.
+//
+// When P2P is enabled (cfg.P2P.Enabled), Start() creates a MuxTransport
+// that shares a single TCP listener between gossip (memberlist) and Reality
+// TLS. The MuxTransport is exposed via MuxTransport() for the caller to
+// inject into the gossip layer.
 func (n *MeshNode) Start() error {
 	if !n.cfg.Reality.Enabled {
 		return fmt.Errorf("mesh: Reality TLS not enabled in config (set reality.enabled=true)")
@@ -108,7 +120,7 @@ func (n *MeshNode) Start() error {
 	// Build the listen address from config.
 	addr := buildRealityListenAddr(n.cfg)
 
-	// Create the Reality TLS listener.
+	// Create the Reality TLS handshake config.
 	hsCfg := handshake.HandshakeConfig{
 		ListenAddr:         addr,
 		RealityDest:        n.cfg.Reality.Dest,
@@ -120,9 +132,46 @@ func (n *MeshNode) Start() error {
 	}
 
 	hs := handshake.NewRealityHandshake(hsCfg)
-	ln, err := hs.Listen(n.ctx, addr)
-	if err != nil {
-		return fmt.Errorf("mesh: start reality listener on %s: %w", addr, err)
+
+	var ln net.Listener
+	var err error
+
+	if n.cfg.P2P.Enabled {
+		// Port multiplexing: create a shared TCP listener and MuxTransport,
+		// then wrap the MuxTransport's RealityListener with REALITY auth.
+		tcpListener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("mesh: start shared TCP listener on %s: %w", addr, err)
+		}
+
+		muxCfg := MuxTransportConfig{
+			TCPListener:   tcpListener,
+			BindAddr:      "0.0.0.0",
+			AdvertiseAddr: "", // auto-detect
+		}
+		mt, err := NewMuxTransport(muxCfg)
+		if err != nil {
+			tcpListener.Close()
+			return fmt.Errorf("mesh: create mux transport: %w", err)
+		}
+
+		n.mu.Lock()
+		n.muxTransport = mt
+		n.mu.Unlock()
+
+		// Wrap the MuxTransport's RealityListener with REALITY auth.
+		realityLn := mt.RealityListener()
+		ln, err = hs.ListenWithListener(n.ctx, realityLn)
+		if err != nil {
+			mt.Shutdown()
+			return fmt.Errorf("mesh: start reality listener on %s: %w", addr, err)
+		}
+	} else {
+		// No P2P — create a standalone Reality TLS listener.
+		ln, err = hs.Listen(n.ctx, addr)
+		if err != nil {
+			return fmt.Errorf("mesh: start reality listener on %s: %w", addr, err)
+		}
 	}
 
 	n.mu.Lock()
@@ -309,6 +358,11 @@ func (n *MeshNode) Close() error {
 		n.hs.Close()
 	}
 
+	// Close the MuxTransport if active (shared TCP/UDP listener).
+	if n.muxTransport != nil {
+		n.muxTransport.Shutdown()
+	}
+
 	n.mu.Unlock()
 
 	// Close all smux sessions.
@@ -374,6 +428,15 @@ func (n *MeshNode) Listener() net.Listener {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.listener
+}
+
+// MuxTransport returns the shared TCP/UDP transport multiplexer, or nil
+// when port multiplexing is not active (P2P disabled). The caller uses
+// this to inject the transport into the gossip layer via SetTransport().
+func (n *MeshNode) MuxTransport() *MuxTransport {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.muxTransport
 }
 
 // Identity returns this node's Ed25519 identity.
