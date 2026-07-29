@@ -1039,26 +1039,16 @@ func NewMeshDialer(node *mesh.MeshNode) webssh.MeshDialer {
 // --- PeerMeshDialer adapter for service/transfer ---
 
 // peerMeshDialer adapts mesh.MeshNode to the service.MeshDialer interface,
-// which resolves a peer ID to a mesh IP and dials a specific port.
+// which resolves a peer ID and dials a specific virtual port over the mesh.
 type peerMeshDialer struct {
 	node *mesh.MeshNode
 }
 
 func (d *peerMeshDialer) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {
-	entry, ok := d.node.RoutingTable().GetPeer(peerID)
-	if !ok {
-		return nil, fmt.Errorf("peer %s not found in routing table", peerID)
-	}
-	if len(entry.AllowedIPs) == 0 {
-		return nil, fmt.Errorf("peer %s has no mesh IP", peerID)
-	}
-	meshIP := entry.AllowedIPs[0]
-	// Strip CIDR if present
-	if idx := strings.IndexByte(meshIP, '/'); idx >= 0 {
-		meshIP = meshIP[:idx]
-	}
-	addr := fmt.Sprintf("%s:%d", meshIP, port)
-	return d.node.Dial(ctx, "tcp", addr)
+	// In v2, DialMesh opens a virtual-port stream over an existing smux
+	// session. The peer must already be connected (via AddPeer or an
+	// inbound session). peerID is the peer's public key hex.
+	return d.node.DialVirtualPort(ctx, peerID, port)
 }
 
 // NewPeerMeshDialer creates a MeshDialer (service.MeshDialer compatible)
