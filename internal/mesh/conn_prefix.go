@@ -97,5 +97,28 @@ func (c *connWithPrefix) SetWriteDeadline(t time.Time) error {
 	return c.conn.SetWriteDeadline(t)
 }
 
+// CloseWrite delegates to the underlying connection's CloseWrite method.
+// This is required by the xtls/reality library, which type-asserts the
+// net.Conn to CloseWriteConn (interface { net.Conn; CloseWrite() error }).
+// Without this method, the reality server's goroutine panics on the type
+// assertion, silently drops the connection (recovered by defer/recover),
+// and the REALITY TLS handshake hangs forever.
+//
+// The underlying conn is always *net.TCPConn when used with the MuxTransport
+// (which accepts from a net.TCPListener), so the delegation always succeeds.
+type closeWriter interface {
+	CloseWrite() error
+}
+
+func (c *connWithPrefix) CloseWrite() error {
+	if cw, ok := c.conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	// Best-effort: if the underlying conn doesn't implement CloseWrite,
+	// a no-op return is safe — the reality library only uses it to signal
+	// FIN to the target, and Close() will follow immediately after.
+	return nil
+}
+
 // Ensure connWithPrefix satisfies net.Conn.
 var _ net.Conn = (*connWithPrefix)(nil)
