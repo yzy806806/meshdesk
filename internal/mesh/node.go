@@ -47,10 +47,12 @@ type MeshNode struct {
 	// v2 session management
 	listener   net.Listener
 	hs         handshake.HandshakeLayer
-	sessions   map[string]*smux.Session // peer identity hex → smux session
+	sessions   map[string]*smux.Session // peer identity hex → smux session (preferred: client)
 	sessionsMu sync.Mutex
-	// sessionEstablishedAt records when each smux session was established,
-	// used by GetPeerHandshakeInfo to report handshake completion time.
+	// clientSessions stores outbound (client-mode) sessions separately so
+	// that DialVirtualPort can prefer them even when a server-mode session
+	// from an inbound connection has replaced the entry in sessions.
+	clientSessions      map[string]*smux.Session
 	sessionEstablishedAt map[string]time.Time
 	// peerManagers tracks per-peer PeerManager instances for outbound
 	// connections (one per peer). Inbound sessions from handleConnection
@@ -93,6 +95,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		cfg:                  cfg,
 		registry:             registry,
 		sessions:             make(map[string]*smux.Session),
+		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		peerManagers:         make(map[string]*PeerManager),
 		portMux:              newVirtualPortMux(),
@@ -269,16 +272,34 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 	}
 
 	// Step 4: Store the session.
+	// If the old session was a client session (outbound), preserve it in
+	// clientSessions so DialVirtualPort can still open streams. Only close
+	// the old session if it was also a server session (inbound reconnect).
 	n.sessionsMu.Lock()
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
+	// If the old session is a client session, keep it in clientSessions.
+	// If not a client session (or no client session exists), don't touch clientSessions.
+	if _, hasClient := n.clientSessions[peerIdentityHex]; !hasClient {
+		// No client session to preserve.
+	}
 	n.sessionsMu.Unlock()
 
-	// If the same peer reconnected, close the old session.
+	// If the same peer reconnected via an inbound connection, close the old
+	// session ONLY if it's not still alive as a client session.
 	if exists {
-		log.Printf("[mesh] peer %s reconnected — closing old session", peerIdentityHex[:16]+"...")
-		oldSession.Close()
+		// Check if the old session is the same as the client session.
+		n.sessionsMu.Lock()
+		clientSess, hasClient := n.clientSessions[peerIdentityHex]
+		n.sessionsMu.Unlock()
+		if hasClient && clientSess == oldSession {
+			// The old session is the client session — keep it alive.
+			log.Printf("[mesh] peer %s reconnected via inbound — preserving outbound client session", peerIdentityHex[:16]+"...")
+		} else {
+			log.Printf("[mesh] peer %s reconnected — closing old session", peerIdentityHex[:16]+"...")
+			oldSession.Close()
+		}
 	}
 
 	log.Printf("[mesh] session established with %s (peer=%s, addr=%s)",
@@ -372,6 +393,7 @@ func (n *MeshNode) Close() error {
 		sess.Close()
 	}
 	n.sessions = make(map[string]*smux.Session)
+	n.clientSessions = make(map[string]*smux.Session)
 	n.sessionEstablishedAt = make(map[string]time.Time)
 	n.sessionsMu.Unlock()
 
@@ -538,6 +560,7 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	n.sessionsMu.Lock()
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
+	n.clientSessions[peerIdentityHex] = smuxSession // client session for DialVirtualPort
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
@@ -634,18 +657,65 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 	}
 
 	// Look up the smux session for this peer.
+	// Prefer client-mode sessions (outbound) for dialing, since server-mode
+	// sessions cannot open new streams.
 	n.sessionsMu.Lock()
-	sess, ok := n.sessions[peerIdentityHex]
+	sess, ok := n.clientSessions[peerIdentityHex]
+	if !ok {
+		sess, ok = n.sessions[peerIdentityHex]
+	}
 	n.sessionsMu.Unlock()
 
 	if !ok {
 		return nil, fmt.Errorf("mesh: no session for peer %s", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...")
 	}
 
-	// Open a new stream on the existing session.
+	// Try to open a stream on the existing session.
+	// If the client session is closed, attempt to re-establish it by
+	// dialing the peer's configured endpoint.
 	stream, err := sess.OpenStream(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("mesh: open stream to peer %s: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+		// Try to re-establish an outbound client session.
+		// Look up the peer's configured endpoint (not the routing table
+		// entry, which may contain an ephemeral source address from an
+		// inbound connection).
+		var dialAddr string
+		for i := range n.cfg.Peers {
+			if n.cfg.Peers[i].PublicKey == peerIdentityHex {
+				dialAddr = n.cfg.Peers[i].Endpoint
+				break
+			}
+		}
+		if dialAddr == "" {
+			// Fall back to routing table endpoint.
+			entry, rtOK := n.routes.GetPeer(peerIdentityHex)
+			if rtOK && entry.Endpoint != "" {
+				dialAddr = entry.Endpoint
+			}
+		}
+		if dialAddr != "" {
+			log.Printf("[mesh] DialVirtualPort: session closed, re-dialing peer %s at %s", peerIdentityHex[:16]+"...", dialAddr)
+			newStream, dialErr := n.Dial(ctx, "tcp", dialAddr)
+			if dialErr != nil {
+				return nil, fmt.Errorf("mesh: open stream to peer %s: %w (re-dial also failed: %v)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err, dialErr)
+			}
+			// The Dial already wrote port 0. Close the initial stream
+			// and open a new one on the re-established session.
+			newStream.Close()
+			n.sessionsMu.Lock()
+			newSess, hasNew := n.clientSessions[peerIdentityHex]
+			n.sessionsMu.Unlock()
+			if hasNew {
+				stream, err = newSess.OpenStream(ctx)
+				if err != nil {
+					return nil, fmt.Errorf("mesh: open stream to peer %s after re-dial: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+				}
+			} else {
+				return nil, fmt.Errorf("mesh: open stream to peer %s: %w (re-dial failed to store session)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+			}
+		} else {
+			return nil, fmt.Errorf("mesh: open stream to peer %s: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+		}
 	}
 
 	// Write the virtual port prefix.
