@@ -161,9 +161,6 @@ func Value(vals ...byte) (value int) {
 // if you don't use REALITY's listener, e.g., Xray-core's RAW transport.
 func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 	remoteAddr := conn.RemoteAddr().String()
-	if config.Show {
-		fmt.Printf("REALITY remoteAddr: %v\n", remoteAddr)
-	}
 
 	target, err := config.DialContext(ctx, config.Type, config.Dest)
 	if err != nil {
@@ -235,9 +232,6 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				}
 				block, _ := aes.NewCipher(hs.c.AuthKey)
 				aead, _ := cipher.NewGCM(block)
-				if config.Show {
-					fmt.Printf("REALITY remoteAddr: %v\ths.c.AuthKey[:16]: %v\tAEAD: %T\n", remoteAddr, hs.c.AuthKey[:16], aead)
-				}
 				ciphertext := make([]byte, 32)
 				plainText := make([]byte, 32)
 				copy(ciphertext, hs.clientHello.sessionId)
@@ -249,11 +243,6 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				copy(hs.c.ClientVer[:], plainText)
 				hs.c.ClientTime = time.Unix(int64(binary.BigEndian.Uint32(plainText[4:])), 0)
 				copy(hs.c.ClientShortId[:], plainText[8:])
-				if config.Show {
-					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientVer: %v\n", remoteAddr, hs.c.ClientVer)
-					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientTime: %v\n", remoteAddr, hs.c.ClientTime)
-					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientShortId: %v\n", remoteAddr, hs.c.ClientShortId)
-				}
 				if (config.MinClientVer == nil || Value(hs.c.ClientVer[:]...) >= Value(config.MinClientVer...)) &&
 					(config.MaxClientVer == nil || Value(hs.c.ClientVer[:]...) <= Value(config.MaxClientVer...)) &&
 					(config.MaxTimeDiff == 0 || time.Since(hs.c.ClientTime).Abs() <= config.MaxTimeDiff) &&
@@ -262,29 +251,23 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				}
 				break
 			}
-			if config.Show {
-				fmt.Printf("REALITY remoteAddr: %v\ths.c.conn == conn: %v\n", remoteAddr, hs.c.conn == conn)
-			}
 			break
-		}
-		mutex.Unlock()
-		if hs.c.conn != conn {
-			if config.Show && hs.clientHello != nil {
-				fmt.Printf("REALITY remoteAddr: %v\tforwarded SNI: %v\n", remoteAddr, hs.clientHello.serverName)
 			}
-			_, err := io.Copy(target, NewRatelimitedConn(underlying, &config.LimitFallbackUpload))
-			// close target writer when received FIN (err==nil)
-			if err == nil {
-				targetWriterCloser, ok := target.(CloseWriteConn)
-				if ok {
-					targetWriterCloser.CloseWrite()
+			mutex.Unlock()
+			if hs.c.conn != conn {
+				_, err := io.Copy(target, NewRatelimitedConn(underlying, &config.LimitFallbackUpload))
+				// close target writer when received FIN (err==nil)
+				if err == nil {
+					targetWriterCloser, ok := target.(CloseWriteConn)
+					if ok {
+						targetWriterCloser.CloseWrite()
+					}
+				} else {
+					// Close target when encountering RST (or any other errors)
+					target.Close()
 				}
-			} else {
-				// Close target when encountering RST (or any other errors)
-				target.Close()
 			}
-		}
-		waitGroup.Done()
+			waitGroup.Done()
 	}()
 
 	go func() {
@@ -312,7 +295,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 			if len(s2cSaved) > size {
 				break
 			}
-			for i, t := range types {
+			for i := range types {
 				if hs.c.out.handshakeLen[i] != 0 {
 					continue
 				}
@@ -327,9 +310,6 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 						break f
 					}
 					handshakeLen = recordHeaderLen + Value(s2cSaved[3:5]...)
-				}
-				if config.Show {
-					fmt.Printf("REALITY remoteAddr: %v\tlen(s2cSaved): %v\t%v: %v\n", remoteAddr, len(s2cSaved), t, handshakeLen)
 				}
 				if handshakeLen > size { // too long
 					break f
@@ -364,11 +344,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				s2cSaved = s2cSaved[handshakeLen:]
 				handshakeLen = 0
 			}
-			start := time.Now()
 			err = hs.handshake()
-			if config.Show {
-				fmt.Printf("REALITY remoteAddr: %v\ths.handshake() err: %v\n", remoteAddr, err)
-			}
 			if err != nil {
 				break
 			}
@@ -376,57 +352,49 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				if handshakeLen-len(s2cSaved) > 0 {
 					io.ReadFull(target, buf[:handshakeLen-len(s2cSaved)])
 				}
-				if n, err := target.Read(buf); !hs.c.isHandshakeComplete.Load() {
+				if _, err := target.Read(buf); !hs.c.isHandshakeComplete.Load() {
 					if err != nil {
 						conn.Close()
-					}
-					if config.Show {
-						fmt.Printf("REALITY remoteAddr: %v\ttime.Since(start): %v\tn: %v\terr: %v\n", remoteAddr, time.Since(start), n, err)
 					}
 				}
 			}()
 			err = hs.readClientFinished()
-			if config.Show {
-				fmt.Printf("REALITY remoteAddr: %v\ths.readClientFinished() err: %v\n", remoteAddr, err)
-			}
 			if err != nil {
 				break
 			}
-			for {
-				key := config.Dest + " " + hs.clientHello.serverName
-				if len(hs.clientHello.alpnProtocols) == 0 {
-					key += " 0"
-				} else if hs.clientHello.alpnProtocols[0] == "h2" {
-					key += " 2"
-				} else {
-					key += " 1"
-				}
-				if val, ok := GlobalPostHandshakeRecordsLens.Load(key); ok {
-					if postHandshakeRecordsLens, ok := val.([]int); ok {
-						for _, length := range postHandshakeRecordsLens {
-							plainText := make([]byte, length-16)
-							plainText[0] = 23
-							plainText[1] = 3
-							plainText[2] = 3
-							plainText[3] = byte((length - 5) >> 8)
-							plainText[4] = byte((length - 5))
-							plainText[5] = 23
-							postHandshakeRecord := hs.c.out.cipher.(aead).Seal(plainText[:5], hs.c.out.seq[:], plainText[5:], plainText[:5])
-							hs.c.out.incSeq()
-							hs.c.write(postHandshakeRecord)
-							if config.Show {
-								fmt.Printf("REALITY remoteAddr: %v\tlen(postHandshakeRecord): %v\n", remoteAddr, len(postHandshakeRecord))
-							}
-						}
-						break
+			hs.c.isHandshakeComplete.Store(true)
+			key := config.Dest + " " + hs.clientHello.serverName
+			if len(hs.clientHello.alpnProtocols) == 0 {
+				key += " 0"
+			} else if hs.clientHello.alpnProtocols[0] == "h2" {
+				key += " 2"
+			} else {
+				key += " 1"
+			}
+			// Post-handshake records and MaxCSSMsgCount are optional REALITY
+			// fingerprinting features. Try once without blocking; if the async
+			// detection hasn't finished yet, skip — do NOT sleep here, as that
+			// delays the handshake completion signal to the client and causes
+			// the mesh session key exchange to fail with EOF.
+			if val, ok := GlobalPostHandshakeRecordsLens.Load(key); ok {
+				if postHandshakeRecordsLens, ok := val.([]int); ok {
+					for _, length := range postHandshakeRecordsLens {
+						plainText := make([]byte, length-16)
+						plainText[0] = 23
+						plainText[1] = 3
+						plainText[2] = 3
+						plainText[3] = byte((length - 5) >> 8)
+						plainText[4] = byte((length - 5))
+						plainText[5] = 23
+						postHandshakeRecord := hs.c.out.cipher.(aead).Seal(plainText[:5], hs.c.out.seq[:], plainText[5:], plainText[:5])
+						hs.c.out.incSeq()
+						hs.c.write(postHandshakeRecord)
 					}
 				}
-				time.Sleep(5 * time.Second)
-				if maxUseless, ok := GlobalMaxCSSMsgCount.Load(key); ok {
-					hs.c.MaxUselessRecords = maxUseless.(int)
-				}
 			}
-			hs.c.isHandshakeComplete.Store(true)
+			if maxUseless, ok := GlobalMaxCSSMsgCount.Load(key); ok {
+				hs.c.MaxUselessRecords = maxUseless.(int)
+			}
 			break
 		}
 		mutex.Unlock()
