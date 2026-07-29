@@ -31,6 +31,12 @@ type GossipLayer struct {
 	stopCh       chan struct{}
 	healthTicker *time.Ticker
 
+	// transport is an optional pre-configured memberlist.Transport.
+	// When non-nil, Start() uses it instead of creating a NetTransport.
+	// This is used for port multiplexing (MuxTransport shares one TCP
+	// listener between gossip and Reality TLS).
+	transport memberlist.Transport
+
 	// relaySessionMgr manages relay circuits when this node is relay-capable.
 	// nil when relay mode is not enabled.
 	relaySessionMgr *RelaySessionManager
@@ -105,6 +111,17 @@ func NewGossipLayer(cfg P2pConfig, identity []byte, peerManager PeerManager) (*G
 func (g *GossipLayer) SetWireGuardDelegate(wgd *WireGuardDelegate) {
 	g.mu.Lock()
 	g.wgDelegate = wgd
+	g.mu.Unlock()
+}
+
+// SetTransport injects a pre-configured memberlist.Transport (e.g.,
+// MuxTransport) to use instead of creating a NetTransport in Start().
+// When set, Start() skips NetTransport creation and uses this transport.
+// The caller is responsible for the transport's lifecycle (it will NOT
+// be closed by GossipLayer.Stop() — the owner must close it).
+func (g *GossipLayer) SetTransport(t memberlist.Transport) {
+	g.mu.Lock()
+	g.transport = t
 	g.mu.Unlock()
 }
 
@@ -326,17 +343,22 @@ func (g *GossipLayer) Start() error {
 	// Use a custom logger that prefixes with [p2p].
 	mlConfig.Logger = log.New(log.Writer(), "[p2p/memberlist] ", log.LstdFlags)
 
-	// Use memberlist's built-in NetTransport (standard TCP).
-	nc := &memberlist.NetTransportConfig{
-		BindAddrs: []string{bindAddr},
-		BindPort:  g.cfg.GossipPort,
-		Logger:    log.New(log.Writer(), "[p2p/transport] ", log.LstdFlags),
+	// Use the injected transport (MuxTransport) if set, otherwise create
+	// the default NetTransport.
+	if g.transport != nil {
+		mlConfig.Transport = g.transport
+	} else {
+		nc := &memberlist.NetTransportConfig{
+			BindAddrs: []string{bindAddr},
+			BindPort:  g.cfg.GossipPort,
+			Logger:    log.New(log.Writer(), "[p2p/transport] ", log.LstdFlags),
+		}
+		nt, err := memberlist.NewNetTransport(nc)
+		if err != nil {
+			return fmt.Errorf("create net transport: %w", err)
+		}
+		mlConfig.Transport = nt
 	}
-	nt, err := memberlist.NewNetTransport(nc)
-	if err != nil {
-		return fmt.Errorf("create net transport: %w", err)
-	}
-	mlConfig.Transport = nt
 
 	// Create the memberlist.
 	ml, err := memberlist.Create(mlConfig)

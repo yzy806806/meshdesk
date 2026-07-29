@@ -277,8 +277,53 @@ func (h *RealityHandshake) Listen(ctx context.Context, addr string) (net.Listene
 		return nil, NewHandshakeError("listen", addr, err, retryable)
 	}
 
+	return h.wrapListener(ctx, innerListener), nil
+}
+
+// ListenWithListener wraps an existing net.Listener with REALITY TLS
+// authentication. This is used when the TCP listener is shared between
+// multiple protocols (e.g., MuxTransport demuxing gossip and Reality TLS
+// on the same port).
+//
+// The caller provides the inner listener (typically a MuxTransport's
+// RealityListener), and this method wraps it with reality.NewListener
+// to perform the REALITY server-side handshake on each accepted connection.
+//
+// Context cancellation closes the listener.
+func (h *RealityHandshake) ListenWithListener(ctx context.Context, inner net.Listener) (net.Listener, error) {
+	if h.closed.Load() {
+		return nil, NewHandshakeError("listen", inner.Addr().String(), ErrShutdown, false)
+	}
+
+	// Validate required server-side fields.
+	if h.cfg.RealityPrivateKey == "" {
+		return nil, NewHandshakeError("listen", inner.Addr().String(),
+			&ConfigError{Field: "RealityPrivateKey", Reason: "required for reality server-side"}, false)
+	}
+	if h.cfg.RealityDest == "" {
+		return nil, NewHandshakeError("listen", inner.Addr().String(),
+			&ConfigError{Field: "RealityDest", Reason: "required for reality server-side camouflage"}, false)
+	}
+
+	// Build the reality.Config.
+	realityCfg, err := h.buildRealityConfig()
+	if err != nil {
+		return nil, NewHandshakeError("listen", inner.Addr().String(), err, false)
+	}
+
+	// Wrap the existing listener with reality.NewListener.
+	// This applies REALITY auth to each accepted connection.
+	wrapped := realitypkg.NewListener(inner, realityCfg)
+
+	return h.wrapListener(ctx, wrapped), nil
+}
+
+// wrapListener creates a realityListener wrapper around a net.Listener
+// that is already producing REALITY-authenticated connections. It starts
+// the accept loop and registers the listener for graceful shutdown.
+func (h *RealityHandshake) wrapListener(ctx context.Context, inner net.Listener) net.Listener {
 	l := &realityListener{
-		listener: innerListener,
+		listener: inner,
 		hs:       h,
 		acceptCh: make(chan net.Conn, 64),
 		closeCh:  make(chan struct{}),
@@ -292,7 +337,7 @@ func (h *RealityHandshake) Listen(ctx context.Context, addr string) (net.Listene
 	// Start the accept loop.
 	go l.acceptLoop()
 
-	return l, nil
+	return l
 }
 
 // Close shuts down the handshake layer and all active listeners.
