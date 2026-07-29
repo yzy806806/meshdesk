@@ -91,6 +91,32 @@ func main() {
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 	log.Printf("  Peers:      %d", node.RoutingTable().PeerCount())
 
+	// Attempt to connect statically configured peers with Reality TLS.
+	// This establishes v2 mesh sessions (Reality TLS + smux). If the
+	// REALITY TLS handshake fails (library compatibility), peers are
+	// still discovered via gossip and added to the routing table by
+	// the WireGuardDelegate.
+	for _, peerCfg := range cfg.Peers {
+		if peerCfg.Reality != nil && peerCfg.Endpoint != "" {
+			go func(pc config.PeerConfig) {
+				backoff := 5 * time.Second
+				for attempt := 0; attempt < 3; attempt++ {
+					if err := node.AddPeer(pc); err != nil {
+						log.Printf("Warning: peer %s connect attempt %d failed: %v", pc.Endpoint, attempt+1, err)
+						time.Sleep(backoff)
+						backoff *= 2
+						continue
+					}
+					log.Printf("  Connected peer: %s", pc.Endpoint)
+					return
+				}
+				// REALITY TLS may fail due to library compatibility.
+				// Gossip discovery will still populate the routing table.
+				log.Printf("  Peer %s: REALITY TLS failed, relying on gossip discovery", pc.Endpoint)
+			}(peerCfg)
+		}
+	}
+
 	// Initialize the P2P gossip discovery layer (if enabled).
 	var gossipLayer *p2p.GossipLayer
 	var natTraversal *p2p.NatTraversal
