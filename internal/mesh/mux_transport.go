@@ -180,9 +180,13 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 // FinalAdvertiseAddr returns the IP and port to advertise to the cluster.
 // If the user supplied an explicit address, it is used. Otherwise, if
 // bound to 0.0.0.0, a private IP is auto-detected via go-sockaddr.
+//
+// The advertised port is always the MuxTransport's own port (the shared
+// TCP/UDP port), regardless of the port memberlist passes. This is correct
+// because the MuxTransport knows its own listener port, which may differ
+// from the GossipPort in the memberlist config when multiplexing.
 func (t *MuxTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, error) {
 	var advertiseAddr net.IP
-	var advertisePort int
 
 	if ip != "" {
 		advertiseAddr = net.ParseIP(ip)
@@ -192,7 +196,6 @@ func (t *MuxTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, err
 		if ip4 := advertiseAddr.To4(); ip4 != nil {
 			advertiseAddr = ip4
 		}
-		advertisePort = port
 	} else if t.advertiseAddr != "" {
 		// Use the transport's configured advertise address.
 		advertiseAddr = net.ParseIP(t.advertiseAddr)
@@ -202,7 +205,6 @@ func (t *MuxTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, err
 		if ip4 := advertiseAddr.To4(); ip4 != nil {
 			advertiseAddr = ip4
 		}
-		advertisePort = t.advertisePort
 	} else {
 		// No explicit advertise address — auto-detect.
 		if t.bindAddr == "0.0.0.0" || t.bindAddr == "::" {
@@ -220,10 +222,12 @@ func (t *MuxTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, err
 		} else {
 			advertiseAddr = net.ParseIP(t.bindAddr)
 		}
-		advertisePort = t.advertisePort
 	}
 
-	return advertiseAddr, advertisePort, nil
+	// Always use our own advertise port (the shared TCP/UDP port).
+	// The port from memberlist config is the GossipPort, which may differ
+	// from the actual TCP listener port when multiplexing with Reality TLS.
+	return advertiseAddr, t.advertisePort, nil
 }
 
 // WriteTo sends a UDP packet to the given address. The address is a

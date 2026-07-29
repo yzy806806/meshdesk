@@ -119,6 +119,12 @@ func main() {
 		}
 		gl.SetWireGuardDelegate(wgDelegate)
 
+		// Inject the MuxTransport from the mesh node so gossip and Reality
+		// TLS share the same TCP port.
+		if mt := node.MuxTransport(); mt != nil {
+			gl.SetTransport(mt)
+		}
+
 		// Set local identity.
 		hostname := cfg.Node.Hostname
 		if hostname == "" {
@@ -832,6 +838,12 @@ func runJoinSubcommand(args []string) {
 		log.Fatalf("Failed to create gossip layer: %v", err)
 	}
 	gl.SetWireGuardDelegate(wgDelegate)
+
+	// Inject the MuxTransport from the mesh node so gossip and Reality
+	// TLS share the same TCP port.
+	if mt := node.MuxTransport(); mt != nil {
+		gl.SetTransport(mt)
+	}
 
 	// Set local identity.
 	hostname := cfg.Node.Hostname

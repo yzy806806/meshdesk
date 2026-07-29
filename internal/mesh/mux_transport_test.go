@@ -357,7 +357,8 @@ func TestMuxTransport_FinalAdvertiseAddr_UserOverride(t *testing.T) {
 	}
 	defer mt.Shutdown()
 
-	// When ip is provided, it overrides.
+	// When ip is provided, it overrides the address but the port is
+	// always the MuxTransport's own port (the shared TCP listener port).
 	ip, port, err := mt.FinalAdvertiseAddr("192.168.1.1", 12345)
 	if err != nil {
 		t.Fatalf("FinalAdvertiseAddr: %v", err)
@@ -365,8 +366,10 @@ func TestMuxTransport_FinalAdvertiseAddr_UserOverride(t *testing.T) {
 	if !ip.Equal(net.ParseIP("192.168.1.1")) {
 		t.Fatalf("expected 192.168.1.1, got %s", ip)
 	}
-	if port != 12345 {
-		t.Fatalf("expected port 12345, got %d", port)
+	// Port should be the TCP listener's port, not the passed-in 12345.
+	expectedPort := tcpLn.Addr().(*net.TCPAddr).Port
+	if port != expectedPort {
+		t.Fatalf("expected port %d (TCP listener port), got %d", expectedPort, port)
 	}
 }
 
