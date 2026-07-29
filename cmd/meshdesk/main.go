@@ -331,6 +331,31 @@ func main() {
 	}
 	defer transferServer.Stop()
 
+	// Start the WebSSH server (listens on mesh).
+	// Every node accepts incoming SSH connections from the web node
+	// for terminal sessions. The SSH server allocates a PTY and runs
+	// a shell, providing remote terminal access via the mesh.
+	sshListener := &meshListenerAdapter{node: node}
+	sshServer, err := webssh.NewSSHServer(cfg.WebSSH.HostKey, cfg.WebSSH.Shell)
+	if err != nil {
+		log.Printf("Warning: failed to create WebSSH server: %v", err)
+	} else {
+		sshLn, err := sshListener.ListenMesh(cfg.WebSSH.Port)
+		if err != nil {
+			log.Printf("Warning: failed to listen for WebSSH on mesh port %d: %v", cfg.WebSSH.Port, err)
+		} else {
+			go func() {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if err := sshServer.Serve(ctx, sshLn); err != nil {
+					log.Printf("WebSSH server stopped: %v", err)
+				}
+			}()
+			log.Printf("  WebSSH:     listening on mesh port %d", cfg.WebSSH.Port)
+			defer sshServer.Close()
+		}
+	}
+
 	// ───────────────────────────────────────────────────────────────────
 	// Proxy data plane (multi-path anonymous proxy).
 	//

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -480,6 +481,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		// Store username in request context for handlers
 		ctx := context.WithValue(r.Context(), ctxUsernameKey{}, session.Username)
+		ctx = context.WithValue(ctx, ctxSessionTokenKey{}, session.Token)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -531,6 +533,7 @@ func (s *Server) requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 		}
 
 		ctx := context.WithValue(r.Context(), ctxUsernameKey{}, session.Username)
+		ctx = context.WithValue(ctx, ctxSessionTokenKey{}, session.Token)
 		handler(w, r.WithContext(ctx))
 	}
 }
@@ -1008,10 +1011,12 @@ func (r *meshPeerResolver) ResolvePeerMeshIP(peerID string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("peer %s not found in routing table", peerID)
 	}
+	// In v2, there are no mesh IPs. Return the peer ID so the
+	// sshMeshDialer can use DialVirtualPort(peerID, port).
 	if len(entry.AllowedIPs) == 0 {
-		return "", fmt.Errorf("peer %s has no mesh IP", peerID)
+		return entry.ID, nil
 	}
-	// Use the first allowed IP as the mesh IP
+	// Use the first allowed IP as the mesh IP (v1 compat)
 	return strings.Split(entry.AllowedIPs[0], "/")[0], nil
 }
 
@@ -1028,6 +1033,21 @@ type sshMeshDialer struct {
 }
 
 func (d *sshMeshDialer) DialMesh(ctx context.Context, network, addr string) (net.Conn, error) {
+	// In v2, addr may be "peerID:port" (when AllowedIPs is empty).
+	// Parse the host part; if it's a hex peer ID (64 chars), use
+	// DialVirtualPort instead of the v1 address-based Dial.
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %s: %w", addr, err)
+	}
+	// Check if host is a hex peer ID (64 hex chars = 32 bytes).
+	if len(host) == 64 {
+		if _, err := hex.DecodeString(host); err == nil {
+			portInt, _ := strconv.Atoi(port)
+			return d.node.DialVirtualPort(ctx, host, portInt)
+		}
+	}
+	// Fall back to v1 address-based dial.
 	return d.node.Dial(ctx, network, addr)
 }
 
