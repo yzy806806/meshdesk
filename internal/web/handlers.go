@@ -349,6 +349,12 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 		defer conn.Close()
 
 		// Create a file header from the uploaded file info.
+		// Use the local node's public key as SrcPeerID so the remote node
+		// can authorize the file transfer via its capability engine.
+		srcPeerID := "local"
+		if s.node != nil && s.node.Identity() != nil {
+			srcPeerID = s.node.Identity().PublicKey
+		}
 		fileHeader := &transfer.FileHeader{
 			Version:   transfer.ProtocolVersion,
 			Filename:  header.Filename,
@@ -356,7 +362,7 @@ func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 			Mode:      0644,
 			FileType:  transfer.FileTypeRegular,
 			ModTime:   time.Now().Format(time.RFC3339),
-			SrcPeerID: "local",
+			SrcPeerID: srcPeerID,
 		}
 
 		// Send the file over the mesh.
