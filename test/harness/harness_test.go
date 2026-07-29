@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
@@ -207,7 +208,7 @@ func TestNodeLifecycle(t *testing.T) {
 			t.Errorf("Web UI not accessible: %v", err)
 		} else {
 			resp.Body.Close()
-			if resp.StatusCode < 200 || resp.StatusCode >= 500 {
+			if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 				t.Errorf("Web UI returned %d", resp.StatusCode)
 			} else {
 				t.Logf("Web UI: %d", resp.StatusCode)
@@ -243,10 +244,18 @@ func TestFileUploadAPI(t *testing.T) {
 		t.Skip("no web UI on single agent node")
 	}
 
-	// Test file upload.
+	// Test file upload with proper multipart form.
 	url := h.WebURL(0) + "/api/files/upload"
 	content := []byte("meshdesk-test-file-content-12345")
-	resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(content))
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "test-upload.txt")
+	if err != nil {
+		t.Fatalf("CreateFormFile: %v", err)
+	}
+	part.Write(content)
+	writer.Close()
+	resp, err := http.Post(url, writer.FormDataContentType(), body)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}
@@ -255,13 +264,11 @@ func TestFileUploadAPI(t *testing.T) {
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	t.Logf("Upload response: %d — %s", resp.StatusCode, string(respBody))
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 500 {
-		// 4xx is acceptable (e.g., missing form fields) — the endpoint exists.
-		if resp.StatusCode >= 500 {
-			t.Errorf("Upload API returned 5xx: %d", resp.StatusCode)
-		} else {
-			t.Logf("Upload API returns %d (endpoint exists, may need multipart form)", resp.StatusCode)
-		}
+	// Only 2xx is success. 4xx and 5xx are errors.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		t.Errorf("Upload API returned %d: %s (expected 2xx)", resp.StatusCode, trunc(string(respBody), 200))
+	} else {
+		t.Logf("Upload API: %d OK", resp.StatusCode)
 	}
 }
 
@@ -287,7 +294,7 @@ func TestServiceAPI(t *testing.T) {
 		t.Skip("no web UI on single agent node")
 	}
 
-	url := h.WebURL(0) + "/api/services"
+	url := h.WebURL(0) + "/api/services/list"
 	resp, err := httpGet(url, 3*time.Second)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
@@ -297,8 +304,18 @@ func TestServiceAPI(t *testing.T) {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	t.Logf("Services API response: %d — %s", resp.StatusCode, string(body))
 
-	if resp.StatusCode >= 500 {
-		t.Errorf("Services API returned 5xx: %d", resp.StatusCode)
+	// Only HTTP 200 is success. 4xx (including 404) and 5xx are errors.
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Services API returned %d: %s (expected 200 with service data)", resp.StatusCode, trunc(string(body), 200))
+		return
+	}
+
+	// Verify the response body contains service data.
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "[") && !strings.Contains(bodyStr, "{") && !strings.Contains(bodyStr, "service") {
+		t.Errorf("Services API returned 200 but body lacks JSON/service data: %s", trunc(bodyStr, 200))
+	} else {
+		t.Logf("Services API: 200 OK with service data")
 	}
 }
 

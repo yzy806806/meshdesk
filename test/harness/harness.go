@@ -609,23 +609,57 @@ func (h *Harness) ScenarioMeshPing() (result, details string) {
 }
 
 // ScenarioWebSSHConnect tests WebSSH terminal endpoint availability.
+// It verifies the web UI is reachable, checks that WebSSH-related
+// frontend assets are served, and — when the cluster has ≥2 nodes —
+// attempts a real WebSocket dial to confirm the /ws/terminal endpoint
+// is accepting connections.
+//
+// A full WebSocket lifecycle test is provided by ScenarioWebSSHLifecycle.
 func (h *Harness) ScenarioWebSSHConnect() (result, details string) {
 	if len(h.nodes) < 1 || h.WebURL(0) == "" {
 		return "SKIP", "no collector node with web UI available"
 	}
 
-	// Verify the web server is serving pages.
 	url := h.WebURL(0) + "/"
 	resp, err := httpGet(url, 3*time.Second)
 	if err != nil {
 		return "FAIL", fmt.Sprintf("web UI not reachable: %v", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-		return "PASS", fmt.Sprintf("web UI reachable at %s (status %d)", url, resp.StatusCode)
+	// Only 2xx is success. 4xx/5xx are errors.
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return "FAIL", fmt.Sprintf("web UI returned %d: %s", resp.StatusCode, trunc(string(body), 200))
 	}
-	return "FAIL", fmt.Sprintf("web UI returned %d", resp.StatusCode)
+
+	// Read body to confirm WebSSH content is served.
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 65536))
+	bodyStr := string(body)
+
+	// Verify the dashboard includes WebSSH-related assets.
+	hasWebSSH := strings.Contains(bodyStr, "terminal") ||
+		strings.Contains(bodyStr, "webssh") ||
+		strings.Contains(bodyStr, "WebSSH") ||
+		strings.Contains(bodyStr, "websocket") ||
+		strings.Contains(bodyStr, "/ws/")
+
+	if !hasWebSSH {
+		return "PASS", fmt.Sprintf("web UI reachable at %s (status %d, %d bytes — WebSSH assets may load dynamically)", url, resp.StatusCode, len(bodyStr))
+	}
+
+	// If we have ≥2 nodes, try an actual WebSocket connection.
+	if len(h.nodes) >= 2 {
+		peerID := h.nodes[1].PublicKey
+		ws, wsURL, err := h.dialWebSSH(peerID, 80, 24)
+		if err != nil {
+			return "FAIL", fmt.Sprintf("WebSSH WebSocket dial failed: %v (peer=%s, ws=%s)", err, truncateKey(peerID), wsURL)
+		}
+		ws.Close()
+		return "PASS", fmt.Sprintf("WebSSH endpoint available: WebSocket connected to %s", wsURL)
+	}
+
+	return "PASS", fmt.Sprintf("web UI reachable at %s (status %d, WebSSH assets detected)", url, resp.StatusCode)
 }
 
 // ScenarioMetricsCollection tests that the web dashboard is accessible.
@@ -667,10 +701,25 @@ func (h *Harness) ScenarioServiceManagement() (result, details string) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-		return "PASS", fmt.Sprintf("service API returns %d", resp.StatusCode)
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	bodyStr := trunc(string(respBody), 200)
+
+	// Only HTTP 200 with actual service data is success.
+	// 4xx (404, 400, etc.) and 5xx are errors — never mark them as PASS.
+	if resp.StatusCode != http.StatusOK {
+		return "FAIL", fmt.Sprintf("service API returned %d: %s", resp.StatusCode, bodyStr)
 	}
-	return "FAIL", fmt.Sprintf("service API returned %d", resp.StatusCode)
+
+	// Verify the response body contains service data (JSON array/object).
+	hasData := strings.Contains(string(respBody), "service") ||
+		strings.Contains(string(respBody), "[") ||
+		strings.Contains(string(respBody), "{")
+
+	if !hasData {
+		return "FAIL", fmt.Sprintf("service API returned 200 but body lacks service data: %s", bodyStr)
+	}
+
+	return "PASS", fmt.Sprintf("service API returns %d with service data: %s", resp.StatusCode, bodyStr)
 }
 
 // ScenarioFileUpload tests the file upload endpoint.
@@ -691,8 +740,10 @@ func (h *Harness) ScenarioFileUpload() (result, details string) {
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	detailsStr := trunc(string(respBody), 200)
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-		return "PASS", fmt.Sprintf("file upload API returns %d", resp.StatusCode)
+	// Only 2xx is success. HTTP 400, 404, and all other 4xx/5xx are errors.
+	// The harness must NEVER mark an error response as PASS.
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return "PASS", fmt.Sprintf("file upload API returns %d: %s", resp.StatusCode, detailsStr)
 	}
 	return "FAIL", fmt.Sprintf("file upload API returned %d: %s", resp.StatusCode, detailsStr)
 }
@@ -710,8 +761,8 @@ func (h *Harness) ScenarioClusterEndToEnd() (result, details string) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode >= 500 {
-		return "FAIL", fmt.Sprintf("collector returned 5xx: %d", resp.StatusCode)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "FAIL", fmt.Sprintf("collector returned %d", resp.StatusCode)
 	}
 
 	// Verify all agent nodes are still running.
