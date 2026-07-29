@@ -369,13 +369,14 @@ func (h *RealityHandshake) buildRealityConfig() (*realitypkg.Config, error) {
 	}
 
 	cfg := &realitypkg.Config{
-		Show:        false,
-		Type:        "tcp",
-		Dest:        h.cfg.RealityDest,
-		Xver:        0,
-		ServerNames: make(map[string]bool),
-		PrivateKey:  privKeyBytes,
-		ShortIds:    make(map[[8]byte]bool),
+		Show:                   false,
+		Type:                   "tcp",
+		Dest:                   h.cfg.RealityDest,
+		Xver:                   0,
+		ServerNames:            make(map[string]bool),
+		PrivateKey:             privKeyBytes,
+		ShortIds:               make(map[[8]byte]bool),
+		SessionTicketsDisabled: true,
 	}
 
 	// Populate accepted server names.
