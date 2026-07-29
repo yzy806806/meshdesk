@@ -116,6 +116,17 @@ func (d *WireGuardDelegate) Connect(peerKey string, endpoints []string) error {
 		AddedAt:   time.Now(),
 	}
 
+	// Add to routing table so peer appears in /api/peers.
+	// In v2, the REALITY TLS + smux session may not be established yet
+	// due to library compatibility issues. Adding to the routing table
+	// allows the topology API to show the peer.
+	if d.node != nil && len(endpoints) > 0 {
+		d.node.RoutingTable().AddPeer(&mesh.PeerEntry{
+			ID:       peerKey,
+			Endpoint: endpoints[0],
+		})
+	}
+
 	return nil
 }
 

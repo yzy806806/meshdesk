@@ -624,7 +624,10 @@ func GenerateRealityKeyPair() (string, string, error) {
 func fingerprintToHelloID(fp string) utls.ClientHelloID {
 	switch strings.ToLower(fp) {
 	case "", "chrome":
-		return utls.HelloChrome_Auto
+		// Use Chrome 120 (not Auto) to avoid X25519MLKEM768 which
+		// causes REALITY TLS handshake failures with the xtls/reality
+		// library's internal TLS implementation.
+		return utls.HelloChrome_120
 	case "firefox":
 		return utls.HelloFirefox_Auto
 	case "safari":
@@ -636,6 +639,6 @@ func fingerprintToHelloID(fp string) utls.ClientHelloID {
 	case "android":
 		return utls.HelloAndroid_11_OkHttp
 	default:
-		return utls.HelloChrome_Auto
+		return utls.HelloChrome_120
 	}
 }
