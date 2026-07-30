@@ -461,7 +461,10 @@ func (g *GossipLayer) Start() error {
 	mlConfig.SuspicionMaxTimeoutMult = 6
 	mlConfig.PushPullInterval = time.Duration(g.cfg.GossipInterval) * time.Second
 	mlConfig.ProbeInterval = time.Duration(g.cfg.GossipProbeInterval) * time.Second
-	mlConfig.ProbeTimeout = 500 * time.Millisecond
+	// ProbeTimeout: allow enough time for cross-network RTT (up to 300ms
+	// jitter on inter-cloud VPN links). The TCP fallback ping runs in a
+	// goroutine and needs headroom after the UDP ping times out.
+	mlConfig.ProbeTimeout = 2 * time.Second
 	mlConfig.DisableTcpPings = false
 	mlConfig.Delegate = g.delegate
 	mlConfig.Events = g.events
