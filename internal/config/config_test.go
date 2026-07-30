@@ -417,3 +417,55 @@ func TestNoLegacyTOTPSecret(t *testing.T) {
 		t.Errorf("LegacyTOTPSecret should be empty, got %q", cfg.Auth.LegacyTOTPSecret())
 	}
 }
+
+// TestAdvertiseEndpointsMultiEndpoint verifies that the advertise_endpoints
+// YAML field is parsed correctly into a list of strings.
+func TestAdvertiseEndpointsMultiEndpoint(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := []byte("node:\n  hostname: dualstack\nmesh:\n  port: 51820\np2p:\n  enabled: true\n  advertise_endpoints:\n    - 203.0.113.99:51820\n    - \"[2001:db8::1]:51820\"\n")
+	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if len(cfg.P2P.AdvertiseEndpoints) != 2 {
+		t.Fatalf("AdvertiseEndpoints length = %d, want 2", len(cfg.P2P.AdvertiseEndpoints))
+	}
+	if cfg.P2P.AdvertiseEndpoints[0] != "203.0.113.99:51820" {
+		t.Errorf("AdvertiseEndpoints[0] = %q, want %q", cfg.P2P.AdvertiseEndpoints[0], "203.0.113.99:51820")
+	}
+	if cfg.P2P.AdvertiseEndpoints[1] != "[2001:db8::1]:51820" {
+		t.Errorf("AdvertiseEndpoints[1] = %q, want %q", cfg.P2P.AdvertiseEndpoints[1], "[2001:db8::1]:51820")
+	}
+}
+
+// TestAdvertiseEndpointLegacyBackwardCompat verifies that the old
+// advertise_endpoint (singular) YAML field is still accepted and migrated
+// to AdvertiseEndpoints as a single-element list.
+func TestAdvertiseEndpointLegacyBackwardCompat(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := []byte("node:\n  hostname: legacy\nmesh:\n  port: 51820\np2p:\n  enabled: true\n  advertise_endpoint: 203.0.113.99:51820\n")
+	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+
+	if len(cfg.P2P.AdvertiseEndpoints) != 1 {
+		t.Fatalf("AdvertiseEndpoints length = %d, want 1 (from legacy field)", len(cfg.P2P.AdvertiseEndpoints))
+	}
+	if cfg.P2P.AdvertiseEndpoints[0] != "203.0.113.99:51820" {
+		t.Errorf("AdvertiseEndpoints[0] = %q, want %q", cfg.P2P.AdvertiseEndpoints[0], "203.0.113.99:51820")
+	}
+}

@@ -183,37 +183,37 @@ func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 	}
 }
 
-// announceLocalEndpoint proactively sets the local node's WireGuard endpoint
-// so gossip propagates it to all peers. This breaks the chicken-and-egg
+// announceLocalEndpoint proactively sets the local node's WireGuard endpoint(s)
+// so gossip propagates them to all peers. This breaks the chicken-and-egg
 // problem where reactive OnEndpointDiscovered only fires when a peer already
 // knows our address and sends us a packet.
 //
 // Priority:
-//  1. cfg.AdvertiseEndpoint (explicit, user-configured — for NAT)
+//  1. cfg.AdvertiseEndpoints (explicit, user-configured — for NAT)
 //  2. auto-detected outbound IP + WgPort
 //
 // If neither is available, the reactive learning path remains the sole source.
 func (g *GossipLayer) announceLocalEndpoint() {
-	var endpoint string
+	var endpoints []string
 
-	if g.cfg.AdvertiseEndpoint != "" {
-		// User provided an explicit endpoint — trust it.
-		endpoint = g.cfg.AdvertiseEndpoint
+	if len(g.cfg.AdvertiseEndpoints) > 0 {
+		// User provided explicit endpoints — trust them.
+		endpoints = g.cfg.AdvertiseEndpoints
 	} else if g.cfg.WgPort > 0 {
 		// Auto-detect the outbound IP.
 		ip := detectOutboundIP()
 		if ip != "" {
-			endpoint = net.JoinHostPort(ip, fmt.Sprintf("%d", g.cfg.WgPort))
+			endpoints = []string{net.JoinHostPort(ip, fmt.Sprintf("%d", g.cfg.WgPort))}
 		}
 	}
 
-	if endpoint == "" {
+	if len(endpoints) == 0 {
 		log.Printf("[p2p] endpoint learning: no local endpoint to announce (reactive learning only)")
 		return
 	}
 
-	g.SetLocalEndpoints([]string{endpoint}, "unknown")
-	log.Printf("[p2p] endpoint learning: announced local endpoint %s", endpoint)
+	g.SetLocalEndpoints(endpoints, "unknown")
+	log.Printf("[p2p] endpoint learning: announced %d local endpoint(s): %v", len(endpoints), endpoints)
 }
 
 // detectOutboundIP returns the preferred non-loopback IPv4 address of this
@@ -285,12 +285,12 @@ func (g *GossipLayer) OnEndpointDiscovered(peerKey, endpoint string) {
 
 // resolveAdvertiseAddr determines the address to advertise to gossip peers.
 // Priority:
-//  1. cfg.AdvertiseEndpoint (explicit, user-configured — for NAT)
+//  1. cfg.AdvertiseEndpoints[0] (explicit, user-configured — for NAT)
 //  2. first entry in localMeta.Endpoints
 //  3. auto-detected outbound IP
 func (g *GossipLayer) resolveAdvertiseAddr() string {
-	if g.cfg.AdvertiseEndpoint != "" {
-		host, _, _ := net.SplitHostPort(g.cfg.AdvertiseEndpoint)
+	if len(g.cfg.AdvertiseEndpoints) > 0 && g.cfg.AdvertiseEndpoints[0] != "" {
+		host, _, _ := net.SplitHostPort(g.cfg.AdvertiseEndpoints[0])
 		return host
 	}
 	eps := g.localMeta.Endpoints

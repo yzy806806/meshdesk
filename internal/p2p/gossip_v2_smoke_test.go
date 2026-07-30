@@ -41,7 +41,7 @@ func newTestGossipLayer(t *testing.T, name string, port int, seeds []string) *Go
 		MaxPeers:            256,
 		JoinApproval:        "auto",
 		AuthorizedKeys:      []string{pubKey},
-		AdvertiseEndpoint:   fmt.Sprintf("127.0.0.1:%d", port),
+		AdvertiseEndpoints: []string{fmt.Sprintf("127.0.0.1:%d", port)},
 	}
 
 	pm := newMockPeerManager()
@@ -54,7 +54,7 @@ func newTestGossipLayer(t *testing.T, name string, port int, seeds []string) *Go
 	gl.SetLocalCapabilities(false, false, false)
 
 	// Override the announceLocalEndpoint auto-detection by setting endpoints
-	// explicitly — AdvertiseEndpoint is already set, but announceLocalEndpoint
+	// explicitly — AdvertiseEndpoints is already set, but announceLocalEndpoint
 	// uses detectOutboundIP which may return a non-loopback address in CI.
 	// We rely on AdvertiseEndpoint in the config instead.
 

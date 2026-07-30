@@ -303,8 +303,8 @@ this node for gossip. In v2:
 ```go
 func (g *GossipLayer) resolveAdvertiseAddr() string {
     // Priority 1: explicit config
-    if g.cfg.AdvertiseEndpoint != "" {
-        host, _, _ := net.SplitHostPort(g.cfg.AdvertiseEndpoint)
+    if len(g.cfg.AdvertiseEndpoints) > 0 && g.cfg.AdvertiseEndpoints[0] != "" {
+        host, _, _ := net.SplitHostPort(g.cfg.AdvertiseEndpoints[0])
         return host
     }
 
@@ -676,11 +676,15 @@ type P2pConfig struct {
     // Set to a specific interface IP to restrict gossip to one network.
     GossipBindAddr string `yaml:"gossip_bind_addr,omitempty"`
 
-    // AdvertiseEndpoint is the host:port that this node advertises to
-    // peers for gossip connections. When empty, auto-detected from
-    // STUN or outbound IP detection. Unlike v1, this is a real address
-    // (not a mesh IP).
-    // Example: "203.0.113.10:7946"
+    // AdvertiseEndpoints is a list of host:port addresses that this node
+    // advertises to peers for gossip connections. When empty, auto-detected
+    // from STUN or outbound IP detection. Multiple endpoints are useful for
+    // dual-stack IPv4/IPv6 nodes.
+    // Example: ["203.0.113.10:7946", "[2001:db8::1]:7946"]
+    AdvertiseEndpoints []string `yaml:"advertise_endpoints,omitempty"`
+
+    // AdvertiseEndpoint (legacy, deprecated) — singular form for backward
+    // compatibility. If set, migrated to AdvertiseEndpoints[0] during Load().
     AdvertiseEndpoint string `yaml:"advertise_endpoint,omitempty"`
 
     // GossipEncryption enables AES-256-GCM encryption of gossip messages

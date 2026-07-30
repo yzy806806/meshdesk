@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// TestAnnounceLocalEndpointWithAdvertiseEndpoint tests that when
-// AdvertiseEndpoint is set in the config, announceLocalEndpoint uses it
+// TestAnnounceLocalEndpointWithAdvertiseEndpoints tests that when
+// AdvertiseEndpoints is set in the config, announceLocalEndpoint uses them
 // verbatim and populates NodeMeta.Endpoints.
-func TestAnnounceLocalEndpointWithAdvertiseEndpoint(t *testing.T) {
+func TestAnnounceLocalEndpointWithAdvertiseEndpoints(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
 		Endpoints: []string{},
@@ -19,8 +19,8 @@ func TestAnnounceLocalEndpointWithAdvertiseEndpoint(t *testing.T) {
 
 	gl := &GossipLayer{
 		cfg: P2pConfig{
-			AdvertiseEndpoint: "203.0.113.99:51820",
-			WgPort:            51820,
+			AdvertiseEndpoints: []string{"203.0.113.99:51820"},
+			WgPort:             51820,
 		},
 		delegate: delegate,
 	}
@@ -39,7 +39,7 @@ func TestAnnounceLocalEndpointWithAdvertiseEndpoint(t *testing.T) {
 	}
 }
 
-// TestAnnounceLocalEndpointWithWgPort tests that when no AdvertiseEndpoint
+// TestAnnounceLocalEndpointWithWgPort tests that when no AdvertiseEndpoints
 // is set but WgPort is configured, announceLocalEndpoint auto-detects the
 // outbound IP and appends the WgPort.
 func TestAnnounceLocalEndpointWithWgPort(t *testing.T) {
@@ -75,7 +75,7 @@ func TestAnnounceLocalEndpointWithWgPort(t *testing.T) {
 	}
 }
 
-// TestAnnounceLocalEndpointNoConfig tests that when neither AdvertiseEndpoint
+// TestAnnounceLocalEndpointNoConfig tests that when neither AdvertiseEndpoints
 // nor WgPort is set, announceLocalEndpoint does nothing (endpoints stay empty).
 func TestAnnounceLocalEndpointNoConfig(t *testing.T) {
 	localMeta := &NodeMeta{
@@ -103,7 +103,7 @@ func TestAnnounceLocalEndpointNoConfig(t *testing.T) {
 }
 
 // TestAnnounceLocalEndpointAdvertiseOverridesAutoDetect tests that
-// AdvertiseEndpoint takes priority over auto-detection.
+// AdvertiseEndpoints takes priority over auto-detection.
 func TestAnnounceLocalEndpointAdvertiseOverridesAutoDetect(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
@@ -115,8 +115,8 @@ func TestAnnounceLocalEndpointAdvertiseOverridesAutoDetect(t *testing.T) {
 
 	gl := &GossipLayer{
 		cfg: P2pConfig{
-			AdvertiseEndpoint: "198.51.100.1:12345",
-			WgPort:            51820,
+			AdvertiseEndpoints: []string{"198.51.100.1:12345"},
+			WgPort:             51820,
 		},
 		delegate: delegate,
 	}
@@ -130,6 +130,42 @@ func TestAnnounceLocalEndpointAdvertiseOverridesAutoDetect(t *testing.T) {
 	// Should use the explicit endpoint, not the auto-detected one with WgPort
 	if meta.Endpoints[0] != "198.51.100.1:12345" {
 		t.Errorf("expected advertised endpoint 198.51.100.1:12345, got %s", meta.Endpoints[0])
+	}
+}
+
+// TestAnnounceLocalEndpointMultipleAdvertiseEndpoints tests that when
+// multiple AdvertiseEndpoints are set, all of them are announced.
+func TestAnnounceLocalEndpointMultipleAdvertiseEndpoints(t *testing.T) {
+	localMeta := &NodeMeta{
+		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+		Endpoints: []string{},
+		NatType:   "unknown",
+		Seq:       1,
+	}
+	delegate := newMeshDelegate(localMeta)
+
+	gl := &GossipLayer{
+		cfg: P2pConfig{
+			AdvertiseEndpoints: []string{"203.0.113.99:51820", "[2001:db8::1]:51820"},
+			WgPort:             51820,
+		},
+		delegate: delegate,
+	}
+
+	gl.announceLocalEndpoint()
+
+	meta := delegate.getLocalMeta()
+	if len(meta.Endpoints) != 2 {
+		t.Fatalf("expected 2 endpoints, got %d", len(meta.Endpoints))
+	}
+	if meta.Endpoints[0] != "203.0.113.99:51820" {
+		t.Errorf("expected first endpoint 203.0.113.99:51820, got %s", meta.Endpoints[0])
+	}
+	if meta.Endpoints[1] != "[2001:db8::1]:51820" {
+		t.Errorf("expected second endpoint [2001:db8::1]:51820, got %s", meta.Endpoints[1])
+	}
+	if meta.Seq != 2 {
+		t.Errorf("expected Seq=2 after announce, got %d", meta.Seq)
 	}
 }
 
