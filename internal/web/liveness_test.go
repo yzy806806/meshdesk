@@ -50,9 +50,9 @@ func TestLiveness_AllPeerIDsIncludesGossipPeers(t *testing.T) {
 	}
 }
 
-// --- Test 2: NodeStatus returns "offline" when gossip says dead (even with fresh metrics) ---
+// --- Test 2: NodeStatus returns "online" when metrics fresh even if gossip says dead ---
 
-func TestLiveness_NodeStatusOfflineWhenGossipDead(t *testing.T) {
+func TestLiveness_NodeStatusOnlineWhenFreshMetricsGossipDead(t *testing.T) {
 	store := monitor.NewStore()
 	now := time.Now().UTC()
 	store.Append("dead-peer", &monitor.Metrics{
@@ -68,9 +68,77 @@ func TestLiveness_NodeStatusOfflineWhenGossipDead(t *testing.T) {
 		},
 	}
 
+	// Metrics are authoritative — fresh metrics → "online" even if gossip says dead.
 	status := m.NodeStatus("dead-peer", 60*time.Second)
+	if status != "online" {
+		t.Errorf("Expected 'online' for fresh metrics (metrics-first priority), got %q", status)
+	}
+}
+
+// --- Test 2b: NodeStatus returns "offline" when stale metrics + gossip dead ---
+
+func TestLiveness_NodeStatusOfflineWhenStaleMetricsGossipDead(t *testing.T) {
+	store := monitor.NewStore()
+	now := time.Now().UTC()
+	store.Append("stale-dead", &monitor.Metrics{
+		Timestamp: now.Add(-5 * time.Minute), // stale metrics
+		NodeID:    "stale-dead",
+		Hostname:  "stale-dead-host",
+	})
+
+	m := &monitorTopologyMetrics{
+		store: store,
+		liveness: &mockLiveness{
+			alive: map[string]bool{"stale-dead": false}, // gossip says dead
+		},
+	}
+
+	status := m.NodeStatus("stale-dead", 60*time.Second)
 	if status != "offline" {
-		t.Errorf("Expected 'offline' for gossip-dead peer with fresh metrics, got %q", status)
+		t.Errorf("Expected 'offline' for stale metrics + gossip dead, got %q", status)
+	}
+}
+
+// --- Test 2c: NodeStatus returns "online" when stale metrics + gossip alive ---
+
+func TestLiveness_NodeStatusOnlineWhenStaleMetricsGossipAlive(t *testing.T) {
+	store := monitor.NewStore()
+	now := time.Now().UTC()
+	store.Append("stale-alive", &monitor.Metrics{
+		Timestamp: now.Add(-5 * time.Minute), // stale metrics
+		NodeID:    "stale-alive",
+		Hostname:  "stale-alive-host",
+	})
+
+	m := &monitorTopologyMetrics{
+		store: store,
+		liveness: &mockLiveness{
+			alive: map[string]bool{"stale-alive": true}, // gossip says alive
+		},
+	}
+
+	status := m.NodeStatus("stale-alive", 60*time.Second)
+	if status != "online" {
+		t.Errorf("Expected 'online' for stale metrics + gossip alive (fallback), got %q", status)
+	}
+}
+
+// --- Test 2d: NodeStatus returns "offline" when no metrics + gossip dead ---
+
+func TestLiveness_NodeStatusOfflineWhenNoMetricsGossipDead(t *testing.T) {
+	store := monitor.NewStore()
+	// No metrics stored for "no-metrics-dead"
+
+	m := &monitorTopologyMetrics{
+		store: store,
+		liveness: &mockLiveness{
+			alive: map[string]bool{"no-metrics-dead": false}, // gossip says dead
+		},
+	}
+
+	status := m.NodeStatus("no-metrics-dead", 60*time.Second)
+	if status != "offline" {
+		t.Errorf("Expected 'offline' for no metrics + gossip dead, got %q", status)
 	}
 }
 
