@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -306,7 +307,7 @@ func (h *Harness) createNode(index int) *Node {
 	webPort := 0
 	if index == 0 {
 		role = RoleCollector
-		webPort = DefaultWebBasePort + index
+		webPort = h.allocPort()
 	}
 
 	// Generate Ed25519 identity keypair.
@@ -322,7 +323,7 @@ func (h *Harness) createNode(index int) *Node {
 	}
 	realityPub := realityPriv.PublicKey()
 
-	meshPort := DefaultMeshBasePort + index
+	meshPort := h.allocPort()
 	stateDir := filepath.Join(h.tmpDir, fmt.Sprintf("node%d", index))
 	os.MkdirAll(stateDir, 0700)
 
@@ -342,6 +343,20 @@ func (h *Harness) createNode(index int) *Node {
 	h.t.Logf("[harness] Node %d: pubkey=%s mesh=%d web=%d role=%s",
 		index, truncateKey(node.PublicKey), meshPort, webPort, role)
 	return node
+}
+
+// allocPort returns a free TCP port on localhost that the caller can use.
+// The port is obtained by letting the kernel assign an ephemeral port via
+// a listen+close cycle. There is an inherent race window between close and
+// re-bind, but in practice this is reliable enough for test harness use.
+func (h *Harness) allocPort() int {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		h.t.Fatalf("harness: allocPort: %v", err)
+	}
+	addr := l.Addr().(*net.TCPAddr)
+	l.Close()
+	return addr.Port
 }
 
 // generateConfig creates the YAML config for a node.
@@ -694,7 +709,7 @@ func (h *Harness) ScenarioServiceManagement() (result, details string) {
 		return "SKIP", "no collector node with web UI available"
 	}
 
-	url := h.WebURL(0) + "/api/services"
+	url := h.WebURL(0) + "/api/services/list"
 	resp, err := httpGet(url, 3*time.Second)
 	if err != nil {
 		return "FAIL", fmt.Sprintf("service API not reachable: %v", err)
@@ -730,8 +745,15 @@ func (h *Harness) ScenarioFileUpload() (result, details string) {
 
 	url := h.WebURL(0) + "/api/files/upload"
 	content := []byte("meshdesk-integration-test-content")
-	body := bytes.NewReader(content)
-	resp, err := http.Post(url, "application/octet-stream", body)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "test-upload.txt")
+	if err != nil {
+		return "FAIL", fmt.Sprintf("CreateFormFile: %v", err)
+	}
+	part.Write(content)
+	writer.Close()
+	resp, err := http.Post(url, writer.FormDataContentType(), body)
 	if err != nil {
 		return "FAIL", fmt.Sprintf("file upload API not reachable: %v", err)
 	}
