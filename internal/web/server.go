@@ -55,6 +55,10 @@ type Server struct {
 	topologyMetricsProvider topology.TopologyMetrics
 	topologyPathsProvider   topology.TopologyPathInfo
 
+	// liveness provides gossip-based peer liveness for topology.
+	// When nil, topology falls back to monitor-only liveness (existing behavior).
+	liveness PeerLiveness
+
 	// Mock topology support (development/testing).
 	mockTopologyQuery func() bool
 	mockSnapshotFn    func() topology.TopologySnapshot
@@ -122,6 +126,10 @@ type Deps struct {
 	TopologyPeers   topology.TopologyPeers
 	TopologyMetrics topology.TopologyMetrics
 	TopologyPaths   topology.TopologyPathInfo
+
+	// Liveness provides gossip-based peer liveness for topology.
+	// Optional — when nil, topology uses monitor-only liveness.
+	Liveness PeerLiveness
 
 	// ConfigPath is the on-disk YAML config file path. When set,
 	// the config API (GET/PUT/PATCH /api/config) reads from and
@@ -200,6 +208,7 @@ func New(deps Deps) (*Server, error) {
 		topologyPeersProvider:   deps.TopologyPeers,
 		topologyMetricsProvider: deps.TopologyMetrics,
 		topologyPathsProvider:   deps.TopologyPaths,
+		liveness:               deps.Liveness,
 		configAPI:               NewConfigAPIManager(deps.ConfigPath),
 	}
 
