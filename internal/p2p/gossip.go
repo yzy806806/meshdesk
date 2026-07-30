@@ -200,10 +200,10 @@ func (g *GossipLayer) announceLocalEndpoint() {
 		// User provided explicit endpoints — trust them.
 		announced = g.cfg.AdvertiseEndpoints
 	} else if g.cfg.WgPort > 0 {
-		// Auto-detect the outbound IP.
-		ip := detectOutboundIP()
-		if ip != "" {
-			announced = []string{net.JoinHostPort(ip, fmt.Sprintf("%d", g.cfg.WgPort))}
+		// Auto-detect all outbound IPs (both IPv4 and IPv6).
+		ips := detectOutboundIPs()
+		for _, ip := range ips {
+			announced = append(announced, net.JoinHostPort(ip, fmt.Sprintf("%d", g.cfg.WgPort)))
 		}
 	}
 
@@ -247,45 +247,98 @@ func mergeEndpoints(primary, extra []string) []string {
 	return result
 }
 
-// detectOutboundIP returns the preferred non-loopback IPv4 address of this
-// machine by opening a UDP socket to a public address (no actual data is
-// sent — the kernel picks the source IP it would use for routing). Returns
-// "" if no suitable address is found.
-func detectOutboundIP() string {
-	// Use 8.8.8.8 as a well-known public address. The kernel selects the
-	// interface it would route through, giving us the correct source IP.
-	// No packets are actually sent for UDP connect.
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		// Fallback: scan interfaces.
-		return detectOutboundIPFromInterfaces()
-	}
-	defer conn.Close()
+// detectOutboundIPs returns all preferred non-loopback outbound IP addresses
+// of this machine (both IPv4 and IPv6) by opening UDP sockets to well-known
+// public addresses. No actual data is sent — the kernel picks the source IP
+// it would use for routing. If no IPs are found via UDP dial, falls back to
+// scanning network interfaces. Returns an empty slice if no suitable address
+// is found.
+func detectOutboundIPs() []string {
+	var ips []string
+	seen := make(map[string]bool)
 
-	addr := conn.LocalAddr().(*net.UDPAddr)
-	ip := addr.IP.String()
-	if ip == "" || ip == "0.0.0.0" {
-		return ""
+	addIP := func(ip string) {
+		if ip == "" || ip == "0.0.0.0" || ip == "::" {
+			return
+		}
+		if !seen[ip] {
+			seen[ip] = true
+			ips = append(ips, ip)
+		}
 	}
-	return ip
+
+	// IPv4: dial a public IPv4 address. The kernel selects the interface
+	// it would route through, giving us the correct source IPv4 address.
+	if conn, err := net.Dial("udp", "8.8.8.8:80"); err == nil {
+		addr := conn.LocalAddr().(*net.UDPAddr)
+		addIP(addr.IP.String())
+		conn.Close()
+	}
+
+	// IPv6: dial a public IPv6 address (Google Public DNS). The kernel
+	// selects the interface it would route through for IPv6.
+	if conn, err := net.Dial("udp", "[2001:4860:4860::8888]:80"); err == nil {
+		addr := conn.LocalAddr().(*net.UDPAddr)
+		addIP(addr.IP.String())
+		conn.Close()
+	}
+
+	// Fallback: if no IPs found via UDP dial (e.g., no default route),
+	// scan network interfaces for both IPv4 and IPv6 addresses.
+	if len(ips) == 0 {
+		for _, ip := range detectOutboundIPsFromInterfaces() {
+			addIP(ip)
+		}
+	}
+
+	return ips
 }
 
-// detectOutboundIPFromInterfaces scans network interfaces for a non-loopback,
-// non-link-local IPv4 address. This is a fallback used when the UDP dial
-// trick fails (e.g., no default route).
-func detectOutboundIPFromInterfaces() string {
+// detectOutboundIP returns the preferred non-loopback outbound IP address of
+// this machine (IPv4 preferred, IPv6 as fallback). This is a convenience
+// wrapper around detectOutboundIPs for callers that need only a single
+// address (e.g., memberlist AdvertiseAddr). Returns "" if no suitable
+// address is found.
+func detectOutboundIP() string {
+	ips := detectOutboundIPs()
+	if len(ips) > 0 {
+		return ips[0]
+	}
+	return ""
+}
+
+// detectOutboundIPsFromInterfaces scans network interfaces for all non-loopback,
+// non-link-local IP addresses (both IPv4 and IPv6). This is a fallback used
+// when the UDP dial trick fails (e.g., no default route).
+func detectOutboundIPsFromInterfaces() []string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
-		return ""
+		return nil
 	}
+	var ips []string
 	for _, addr := range addrs {
 		// addr is either *net.IPNet or *net.IPAddr
 		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
 			ip := ipnet.IP
-			if ip.To4() != nil && !ip.IsLinkLocalUnicast() {
-				return ip.String()
+			// Include both IPv4 and IPv6 addresses. Exclude link-local
+			// addresses (IPv4 169.254.x.x and IPv6 fe80::/10) since they
+			// are not routable beyond the local network segment.
+			if !ip.IsLinkLocalUnicast() {
+				ips = append(ips, ip.String())
 			}
 		}
+	}
+	return ips
+}
+
+// detectOutboundIPFromInterfaces returns the first non-loopback, non-link-local
+// IP address (IPv4 or IPv6) found on any network interface. This is a
+// convenience wrapper around detectOutboundIPsFromInterfaces for callers
+// that need only a single address. Returns "" if no suitable address is found.
+func detectOutboundIPFromInterfaces() string {
+	ips := detectOutboundIPsFromInterfaces()
+	if len(ips) > 0 {
+		return ips[0]
 	}
 	return ""
 }
