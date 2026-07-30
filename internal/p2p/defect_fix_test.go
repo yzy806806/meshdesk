@@ -128,7 +128,7 @@ func TestAnnounceLocalEndpointWithNilMemberlist(t *testing.T) {
 
 	gl := &GossipLayer{
 		cfg: P2pConfig{
-			AdvertiseEndpoint: "203.0.113.99:51820",
+			AdvertiseEndpoints: []string{"203.0.113.99:51820"},
 			WgPort:            51820,
 		},
 		delegate: delegate,
