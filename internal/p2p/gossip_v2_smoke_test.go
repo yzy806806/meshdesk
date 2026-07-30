@@ -41,7 +41,10 @@ func newTestGossipLayer(t *testing.T, name string, port int, seeds []string) *Go
 		MaxPeers:            256,
 		JoinApproval:        "auto",
 		AuthorizedKeys:      []string{pubKey},
-		AdvertiseEndpoints: []string{fmt.Sprintf("127.0.0.1:%d", port)},
+		AdvertiseEndpoints: []string{
+			fmt.Sprintf("127.0.0.1:%d", port),
+			fmt.Sprintf("[::1]:%d", port),
+		},
 	}
 
 	pm := newMockPeerManager()

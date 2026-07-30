@@ -1,41 +1,73 @@
 package p2p
 
 import (
+	"net"
 	"strings"
 	"testing"
 )
 
 // TestAnnounceLocalEndpointWithAdvertiseEndpoints tests that when
 // AdvertiseEndpoints is set in the config, announceLocalEndpoint uses them
-// verbatim and populates NodeMeta.Endpoints.
+// verbatim and populates NodeMeta.Endpoints.  Both single-endpoint (backward
+// compat) and multi-endpoint (IPv4+IPv6) configurations are verified.
 func TestAnnounceLocalEndpointWithAdvertiseEndpoints(t *testing.T) {
-	localMeta := &NodeMeta{
-		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		Endpoints: []string{},
-		NatType:   "unknown",
-		Seq:       1,
-	}
-	delegate := newMeshDelegate(localMeta)
-
-	gl := &GossipLayer{
-		cfg: P2pConfig{
-			AdvertiseEndpoints: []string{"203.0.113.99:51820"},
-			WgPort:             51820,
+	tests := []struct {
+		name      string
+		endpoints []string
+		wantCount int
+		wantFirst string
+	}{
+		{
+			name:      "single IPv4",
+			endpoints: []string{"203.0.113.99:51820"},
+			wantCount: 1,
+			wantFirst: "203.0.113.99:51820",
 		},
-		delegate: delegate,
+		{
+			name:      "single IPv6",
+			endpoints: []string{"[2001:db8::1]:51820"},
+			wantCount: 1,
+			wantFirst: "[2001:db8::1]:51820",
+		},
+		{
+			name:      "dual-stack IPv4+IPv6",
+			endpoints: []string{"203.0.113.99:51820", "[2001:db8::1]:51820"},
+			wantCount: 2,
+			wantFirst: "203.0.113.99:51820",
+		},
 	}
 
-	gl.announceLocalEndpoint()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localMeta := &NodeMeta{
+				PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+				Endpoints: []string{},
+				NatType:   "unknown",
+				Seq:       1,
+			}
+			delegate := newMeshDelegate(localMeta)
 
-	meta := delegate.getLocalMeta()
-	if len(meta.Endpoints) != 1 {
-		t.Fatalf("expected 1 endpoint, got %d", len(meta.Endpoints))
-	}
-	if meta.Endpoints[0] != "203.0.113.99:51820" {
-		t.Errorf("expected endpoint 203.0.113.99:51820, got %s", meta.Endpoints[0])
-	}
-	if meta.Seq != 2 {
-		t.Errorf("expected Seq=2 after announce, got %d", meta.Seq)
+			gl := &GossipLayer{
+				cfg: P2pConfig{
+					AdvertiseEndpoints: tt.endpoints,
+					WgPort:             51820,
+				},
+				delegate: delegate,
+			}
+
+			gl.announceLocalEndpoint()
+
+			meta := delegate.getLocalMeta()
+			if len(meta.Endpoints) != tt.wantCount {
+				t.Fatalf("expected %d endpoint(s), got %d: %v", tt.wantCount, len(meta.Endpoints), meta.Endpoints)
+			}
+			if meta.Endpoints[0] != tt.wantFirst {
+				t.Errorf("expected first endpoint %s, got %s", tt.wantFirst, meta.Endpoints[0])
+			}
+			if meta.Seq != 2 {
+				t.Errorf("expected Seq=2 after announce, got %d", meta.Seq)
+			}
+		})
 	}
 }
 
@@ -43,6 +75,8 @@ func TestAnnounceLocalEndpointWithAdvertiseEndpoints(t *testing.T) {
 // is set but WgPort is configured, announceLocalEndpoint auto-detects the
 // outbound IP(s) and appends the WgPort. On dual-stack hosts this may
 // produce multiple endpoints (one IPv4 + one IPv6).
+// Each endpoint is validated for correct format: non-empty IP, WgPort
+// suffix, IPv6 addresses properly wrapped in brackets.
 func TestAnnounceLocalEndpointWithWgPort(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
@@ -74,6 +108,42 @@ func TestAnnounceLocalEndpointWithWgPort(t *testing.T) {
 		if strings.HasPrefix(ep, "0.0.0.0:") || strings.HasPrefix(ep, "[::]:") || strings.HasPrefix(ep, ":") {
 			t.Errorf("expected a real IP in endpoint, got %s", ep)
 		}
+		// IPv6 addresses must be properly wrapped in brackets: [addr]:port
+		host, _, err := net.SplitHostPort(ep)
+		if err != nil {
+			t.Errorf("endpoint[%d] %s: cannot parse host:port: %v", i, ep, err)
+			continue
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			t.Errorf("endpoint[%d] %s: host %q is not a valid IP", i, ep, host)
+			continue
+		}
+		if ip.To4() == nil {
+			// IPv6 — verify the original endpoint uses bracket notation
+			if !strings.HasPrefix(ep, "[") {
+				t.Errorf("endpoint[%d] %s: IPv6 address must use bracket notation", i, ep)
+			}
+		}
+	}
+
+	// If dual-stack, verify we got both IPv4 and IPv6.
+	hasIPv4, hasIPv6 := false, false
+	for _, ep := range meta.Endpoints {
+		host, _, err := net.SplitHostPort(ep)
+		if err != nil {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			if ip.To4() != nil {
+				hasIPv4 = true
+			} else {
+				hasIPv6 = true
+			}
+		}
+	}
+	if hasIPv4 && hasIPv6 {
+		t.Logf("dual-stack detected: %d endpoints (IPv4+IPv6)", len(meta.Endpoints))
 	}
 }
 
@@ -105,33 +175,60 @@ func TestAnnounceLocalEndpointNoConfig(t *testing.T) {
 }
 
 // TestAnnounceLocalEndpointAdvertiseOverridesAutoDetect tests that
-// AdvertiseEndpoints takes priority over auto-detection.
+// AdvertiseEndpoints takes priority over auto-detection.  Both single-
+// endpoint (backward compat) and multi-endpoint (dual-stack) cases are
+// covered to ensure the override is complete regardless of count.
 func TestAnnounceLocalEndpointAdvertiseOverridesAutoDetect(t *testing.T) {
-	localMeta := &NodeMeta{
-		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
-		Endpoints: []string{},
-		NatType:   "unknown",
-		Seq:       1,
-	}
-	delegate := newMeshDelegate(localMeta)
-
-	gl := &GossipLayer{
-		cfg: P2pConfig{
-			AdvertiseEndpoints: []string{"198.51.100.1:12345"},
-			WgPort:             51820,
+	tests := []struct {
+		name      string
+		endpoints []string
+		wantCount int
+		wantEndps []string
+	}{
+		{
+			name:      "single endpoint override",
+			endpoints: []string{"198.51.100.1:12345"},
+			wantCount: 1,
+			wantEndps: []string{"198.51.100.1:12345"},
 		},
-		delegate: delegate,
+		{
+			name:      "dual-stack override",
+			endpoints: []string{"198.51.100.1:12345", "[2001:db8::2]:12345"},
+			wantCount: 2,
+			wantEndps: []string{"198.51.100.1:12345", "[2001:db8::2]:12345"},
+		},
 	}
 
-	gl.announceLocalEndpoint()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localMeta := &NodeMeta{
+				PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+				Endpoints: []string{},
+				NatType:   "unknown",
+				Seq:       1,
+			}
+			delegate := newMeshDelegate(localMeta)
 
-	meta := delegate.getLocalMeta()
-	if len(meta.Endpoints) != 1 {
-		t.Fatalf("expected 1 endpoint, got %d", len(meta.Endpoints))
-	}
-	// Should use the explicit endpoint, not the auto-detected one with WgPort
-	if meta.Endpoints[0] != "198.51.100.1:12345" {
-		t.Errorf("expected advertised endpoint 198.51.100.1:12345, got %s", meta.Endpoints[0])
+			gl := &GossipLayer{
+				cfg: P2pConfig{
+					AdvertiseEndpoints: tt.endpoints,
+					WgPort:             51820,
+				},
+				delegate: delegate,
+			}
+
+			gl.announceLocalEndpoint()
+
+			meta := delegate.getLocalMeta()
+			if len(meta.Endpoints) != tt.wantCount {
+				t.Fatalf("expected %d endpoint(s), got %d", tt.wantCount, len(meta.Endpoints))
+			}
+			for i, want := range tt.wantEndps {
+				if meta.Endpoints[i] != want {
+					t.Errorf("endpoint[%d]: expected %s, got %s", i, want, meta.Endpoints[i])
+				}
+			}
+		})
 	}
 }
 
@@ -425,5 +522,189 @@ func TestAnnounceLocalEndpointWithWgPortDualStack(t *testing.T) {
 		if !strings.HasSuffix(ep, ":51820") {
 			t.Errorf("endpoint[%d] does not end with :51820: %s", i, ep)
 		}
+	}
+}
+
+// TestMultiEndpointBroadcast verifies that multiple endpoints (both IPv4 and
+// IPv6) are correctly announced and the first IPv4 endpoint is preferred for
+// memberlist's AdvertiseAddr (required for hashicorp memberlist's IPv4-native
+// TCP transport).  This is the integration point between announceLocalEndpoint
+// and resolveAdvertiseAddr.
+func TestMultiEndpointBroadcast(t *testing.T) {
+	localMeta := &NodeMeta{
+		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+		Endpoints: []string{},
+		NatType:   "unknown",
+		Seq:       1,
+	}
+	delegate := newMeshDelegate(localMeta)
+
+	gl := &GossipLayer{
+		cfg: P2pConfig{
+			AdvertiseEndpoints: []string{"[2001:db8::1]:51820", "198.51.100.1:51820", "[2001:db8::2]:51821"},
+			WgPort:             51820,
+		},
+		delegate:  delegate,
+		localMeta: localMeta,
+	}
+
+	// Announce all endpoints.
+	gl.announceLocalEndpoint()
+
+	meta := delegate.getLocalMeta()
+	if len(meta.Endpoints) != 3 {
+		t.Fatalf("expected 3 endpoints, got %d: %v", len(meta.Endpoints), meta.Endpoints)
+	}
+	if meta.Endpoints[0] != "[2001:db8::1]:51820" {
+		t.Errorf("first endpoint should be [2001:db8::1]:51820, got %s", meta.Endpoints[0])
+	}
+	if meta.Endpoints[1] != "198.51.100.1:51820" {
+		t.Errorf("second endpoint should be 198.51.100.1:51820, got %s", meta.Endpoints[1])
+	}
+	if meta.Endpoints[2] != "[2001:db8::2]:51821" {
+		t.Errorf("third endpoint should be [2001:db8::2]:51821, got %s", meta.Endpoints[2])
+	}
+
+	// resolveAdvertiseAddr must prefer the first IPv4 endpoint for memberlist.
+	addr := gl.resolveAdvertiseAddr()
+	if addr != "198.51.100.1" {
+		t.Errorf("resolveAdvertiseAddr: expected 198.51.100.1 (first IPv4), got %s", addr)
+	}
+}
+
+// TestIPv6DetectionAndAnnounce verifies that IPv6 addresses are properly
+// detected, formatted with bracket notation when used as host:port endpoints,
+// and that pure IPv6 endpoint lists are handled correctly throughout the
+// announce and resolve pipeline.
+func TestIPv6DetectionAndAnnounce(t *testing.T) {
+	tests := []struct {
+		name           string
+		endpoints      []string
+		wantCount      int
+		wantResolvedIP string
+	}{
+		{
+			name:           "single IPv6 endpoint",
+			endpoints:      []string{"[2001:db8::1]:51820"},
+			wantCount:      1,
+			wantResolvedIP: "2001:db8::1", // no IPv4 available, fallback to first
+		},
+		{
+			name:           "multiple IPv6 only",
+			endpoints:      []string{"[2001:db8::1]:51820", "[2001:db8::2]:51821"},
+			wantCount:      2,
+			wantResolvedIP: "2001:db8::1", // no IPv4, first IPv6 used
+		},
+		{
+			name:           "IPv4 mixed with IPv6",
+			endpoints:      []string{"[::1]:51820", "10.0.0.1:51820"},
+			wantCount:      2,
+			wantResolvedIP: "10.0.0.1", // IPv4 preferred
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localMeta := &NodeMeta{
+				PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+				Endpoints: []string{},
+				NatType:   "unknown",
+				Seq:       1,
+			}
+			delegate := newMeshDelegate(localMeta)
+
+			gl := &GossipLayer{
+				cfg: P2pConfig{
+					AdvertiseEndpoints: tt.endpoints,
+					WgPort:             51820,
+				},
+				delegate:  delegate,
+				localMeta: localMeta,
+			}
+
+			gl.announceLocalEndpoint()
+
+			meta := delegate.getLocalMeta()
+			if len(meta.Endpoints) != tt.wantCount {
+				t.Fatalf("expected %d endpoint(s), got %d: %v", tt.wantCount, len(meta.Endpoints), meta.Endpoints)
+			}
+
+			// Verify all IPv6 endpoints use bracket notation.
+			for _, ep := range meta.Endpoints {
+				host, _, err := net.SplitHostPort(ep)
+				if err != nil {
+					t.Errorf("cannot parse endpoint %q: %v", ep, err)
+					continue
+				}
+				ip := net.ParseIP(host)
+				if ip == nil {
+					t.Errorf("endpoint %q: host %q is not a valid IP", ep, host)
+				}
+				if ip.To4() == nil && !strings.HasPrefix(ep, "[") {
+					t.Errorf("IPv6 endpoint %q must use bracket notation", ep)
+				}
+			}
+
+			// Verify resolveAdvertiseAddr behavior for this endpoint config.
+			resolved := gl.resolveAdvertiseAddr()
+			if resolved != tt.wantResolvedIP {
+				t.Errorf("resolveAdvertiseAddr: expected %s, got %s", tt.wantResolvedIP, resolved)
+			}
+		})
+	}
+}
+
+// TestBackwardCompatibilitySingleEndpoint verifies that the new multi-endpoint
+// code paths are fully backward-compatible with single-endpoint configurations.
+// A single AdvertiseEndpoint must still work identically — same endpoint count,
+// same metadata, and correct resolveAdvertiseAddr behavior.
+func TestBackwardCompatibilitySingleEndpoint(t *testing.T) {
+	tests := []struct {
+		name      string
+		endpoints []string
+	}{
+		{"single IPv4", []string{"203.0.113.50:51820"}},
+		{"single IPv6", []string{"[2001:db8::f:1]:51820"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			localMeta := &NodeMeta{
+				PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+				Endpoints: []string{},
+				NatType:   "unknown",
+				Seq:       1,
+			}
+			delegate := newMeshDelegate(localMeta)
+
+			gl := &GossipLayer{
+				cfg: P2pConfig{
+					AdvertiseEndpoints: tt.endpoints,
+					WgPort:             51820,
+				},
+				delegate:  delegate,
+				localMeta: localMeta,
+			}
+
+			gl.announceLocalEndpoint()
+
+			meta := delegate.getLocalMeta()
+			if len(meta.Endpoints) != 1 {
+				t.Fatalf("expected exactly 1 endpoint, got %d: %v", len(meta.Endpoints), meta.Endpoints)
+			}
+			if meta.Endpoints[0] != tt.endpoints[0] {
+				t.Errorf("expected %s, got %s", tt.endpoints[0], meta.Endpoints[0])
+			}
+			if meta.Seq != 2 {
+				t.Errorf("expected Seq=2 after announce, got %d", meta.Seq)
+			}
+
+			// Invoking announceLocalEndpoint a second time must NOT duplicate the endpoint.
+			gl.announceLocalEndpoint()
+			meta = delegate.getLocalMeta()
+			if len(meta.Endpoints) != 1 {
+				t.Errorf("expected still 1 endpoint after second announce (dedup), got %d: %v", len(meta.Endpoints), meta.Endpoints)
+			}
+		})
 	}
 }
