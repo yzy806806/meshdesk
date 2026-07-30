@@ -638,6 +638,15 @@ func main() {
 		}
 
 		// Create and start the web server.
+		// Wire gossip liveness into the web server for topology.
+		var webLiveness web.PeerLiveness
+		if gossipLayer != nil {
+			webLiveness = &gossipLiveness{
+				gl:       gossipLayer,
+				localKey: node.Identity().PublicKey,
+			}
+		}
+
 		webServer, err = web.New(web.Deps{
 			Config:              cfg,
 			Node:                node,
@@ -648,6 +657,7 @@ func main() {
 			MeshDialer:          web.NewPeerMeshDialer(node),
 			XrayManager:         xrayMgr,
 			ProxyStatusProvider: &entryNodeStatusAdapter{entryNode: proxyEntryNode},
+			Liveness:            webLiveness,
 		})
 		if err != nil {
 			log.Fatalf("Failed to create web server: %v", err)
@@ -774,6 +784,33 @@ func (a *entryNodeStatusAdapter) ProxyStatus() any {
 		Path2Relays:   s.Path2Relays,
 		ExitAddr:      s.ExitAddr,
 	}
+}
+
+// gossipLiveness adapts *p2p.GossipLayer to web.PeerLiveness.
+// It queries the gossip layer's event delegate (metaCache) to determine
+// which peers are currently alive in the memberlist cluster.
+type gossipLiveness struct {
+	gl       *p2p.GossipLayer
+	localKey string
+}
+
+func (g *gossipLiveness) IsAlive(peerID string) bool {
+	if peerID == g.localKey {
+		return true // local node is always alive
+	}
+	return g.gl.Events().GetPeerMeta(peerID) != nil
+}
+
+func (g *gossipLiveness) AlivePeerIDs() []string {
+	peers := g.gl.Events().AllKnownPeers()
+	ids := make([]string, 0, len(peers)+1)
+	if g.localKey != "" {
+		ids = append(ids, g.localKey)
+	}
+	for _, p := range peers {
+		ids = append(ids, p.PublicKey)
+	}
+	return ids
 }
 
 // runJoinSubcommand implements `meshdesk join <bootstrap-addr>`.

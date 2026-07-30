@@ -14,6 +14,21 @@ import (
 	"github.com/yzy806806/meshdesk/internal/topology"
 )
 
+// PeerLiveness provides memberlist alive/dead state for topology
+// visualization. Implemented by a thin adapter over *p2p.GossipLayer.
+// This interface lives in the web package to avoid importing p2p/memberlist.
+type PeerLiveness interface {
+	// IsAlive reports whether a peer is currently known to the gossip
+	// cluster (i.e., present in metaCache — NotifyJoin received, no
+	// NotifyLeave yet).
+	IsAlive(peerID string) bool
+
+	// AlivePeerIDs returns the public keys of all peers currently known
+	// to the gossip cluster. This includes peers not in the routing table
+	// (gossip-discovered only).
+	AlivePeerIDs() []string
+}
+
 // --- Adapters: bridge existing types to topology interfaces ---
 
 // meshTopologyPeers adapts mesh.RoutingTable + config.Config to
@@ -24,6 +39,10 @@ type meshTopologyPeers struct {
 	cfg *config.Config
 	// localNodeID is this node's own public key (so it appears in topology)
 	localNodeID string
+	// liveness provides gossip-based peer liveness. When non-nil,
+	// gossip-discovered peers not in the routing table are included.
+	// nil = backward compatible (routing table only).
+	liveness PeerLiveness
 }
 
 // Compile-time assertion that meshTopologyPeers implements TopologyPeers.
@@ -31,11 +50,12 @@ var _ topology.TopologyPeers = (*meshTopologyPeers)(nil)
 
 func (m *meshTopologyPeers) AllPeerIDs() []string {
 	if m.rt == nil {
-		// Even with no routing table, include the local node.
+		// Even with no routing table, include the local node + gossip peers.
+		var ids []string
 		if m.localNodeID != "" {
-			return []string{m.localNodeID}
+			ids = []string{m.localNodeID}
 		}
-		return nil
+		return mergeGossipPeers(ids, m.liveness)
 	}
 
 	peers := m.rt.AllPeers()
@@ -55,6 +75,25 @@ func (m *meshTopologyPeers) AllPeerIDs() []string {
 		ids = append(ids, p.ID)
 	}
 
+	return mergeGossipPeers(ids, m.liveness)
+}
+
+// mergeGossipPeers appends gossip-discovered peer IDs not already
+// present in ids. When liveness is nil, ids is returned unchanged.
+func mergeGossipPeers(ids []string, liveness PeerLiveness) []string {
+	if liveness == nil {
+		return ids
+	}
+	known := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		known[id] = true
+	}
+	for _, id := range liveness.AlivePeerIDs() {
+		if !known[id] {
+			ids = append(ids, id)
+			known[id] = true
+		}
+	}
 	return ids
 }
 
@@ -62,11 +101,16 @@ func (m *meshTopologyPeers) PeerExists(peerID string) bool {
 	if m.localNodeID != "" && peerID == m.localNodeID {
 		return true
 	}
-	if m.rt == nil {
-		return false
+	if m.rt != nil {
+		if _, ok := m.rt.GetPeer(peerID); ok {
+			return true
+		}
 	}
-	_, ok := m.rt.GetPeer(peerID)
-	return ok
+	// Check gossip liveness for peers not in the routing table.
+	if m.liveness != nil {
+		return m.liveness.IsAlive(peerID)
+	}
+	return false
 }
 
 func (m *meshTopologyPeers) PeerRole(peerID string) string {
@@ -141,6 +185,10 @@ func isPeerRelay(cfg *config.Config, peerID string) bool {
 // monitorTopologyMetrics adapts monitor.Store to topology.TopologyMetrics.
 type monitorTopologyMetrics struct {
 	store *monitor.Store
+	// liveness provides gossip-based peer liveness. When non-nil,
+	// NodeStatus consults gossip state as an override.
+	// nil = backward compatible (monitor-only liveness).
+	liveness PeerLiveness
 }
 
 // Compile-time assertion.
@@ -190,6 +238,28 @@ func (m *monitorTopologyMetrics) LatestHostname(nodeID string) string {
 }
 
 func (m *monitorTopologyMetrics) NodeStatus(nodeID string, freshnessThreshold time.Duration) string {
+	// When liveness is available, it takes precedence:
+	// - Gossip says dead → "offline" (overrides stale monitor metrics)
+	// - Gossip says alive but no/stale metrics → "online" (alive, no metrics)
+	if m.liveness != nil {
+		if !m.liveness.IsAlive(nodeID) {
+			return "offline"
+		}
+		// Peer is alive in gossip. If we also have fresh metrics, great.
+		// If not, the node is still "online" — just hasn't reported
+		// monitor data recently. CPU/mem will be zero (already handled
+		// by the freshness check in buildTopologySnapshot).
+		if m.store == nil {
+			return "online"
+		}
+		metrics := m.store.Latest(nodeID)
+		if metrics == nil || time.Since(metrics.Timestamp) > freshnessThreshold {
+			return "online" // alive but no fresh metrics
+		}
+		return "online"
+	}
+
+	// Fallback: liveness not available — use monitor-only logic (existing).
 	if m.store == nil {
 		return "offline"
 	}
@@ -519,6 +589,7 @@ func (s *Server) topologyPeers() topology.TopologyPeers {
 			rt:          s.node.RoutingTable(),
 			cfg:         s.cfg,
 			localNodeID: localID,
+			liveness:    s.liveness,
 		}
 	}
 
@@ -532,7 +603,7 @@ func (s *Server) topologyMetrics() topology.TopologyMetrics {
 	}
 
 	if s.monitorStore != nil {
-		return &monitorTopologyMetrics{store: s.monitorStore}
+		return &monitorTopologyMetrics{store: s.monitorStore, liveness: s.liveness}
 	}
 
 	return nil
