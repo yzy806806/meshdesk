@@ -317,7 +317,7 @@ func (g *GossipLayer) resolveAdvertiseAddr() string {
         }
     }
 
-    // Priority 3: auto-detect outbound IP (UDP dial trick)
+    // Priority 3: auto-detect outbound IP (UDP dial trick, supports IPv4+IPv6)
     if ip := detectOutboundIP(); ip != "" {
         return ip
     }
