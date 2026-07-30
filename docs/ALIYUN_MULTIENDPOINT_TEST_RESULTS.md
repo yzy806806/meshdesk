@@ -11,14 +11,14 @@
 
 ## Executive Summary
 
-**Final verdict: 9 PASS, 1 INFO, 1 FAIL — Stop condition NOT MET (ME-10 FAIL)**
+**Final verdict: 10 PASS, 1 INFO, 0 FAIL — Stop condition MET ✅ (updated 2026-07-30 22:30)**
 
 The gossip interconnection between aliyun, txcloud, and N1 is functioning bidirectionally at the memberlist level. All three nodes appear in the topology API. Key improvements from the previous test run:
 
 - **ME-3 PASSES** — txcloud now correctly advertises 2 endpoints (IPv6 + mesh IPv4), resolving the config limitation from the prior run
 - **ME-9 PASSES** — Zero `invalid msgType` errors across all 3 nodes (BLOCKER D1 remains resolved)
 
-However, **ME-10 (Aliyun metrics flowing) FAILS**: aliyun shows `status: "offline"` with `cpu=0, mem=0`. N1 also shows zero metrics in the current topology snapshot (process was restarted at 15:58). Root cause: `monitoring.collectors: []` in txcloud's config + potential mesh/WireGuard layer monitoring channel issue.
+However, **ME-10 (Aliyun metrics flowing) now PASSES after fix**: `monitoring.collectors` was set to txcloud's peer ID in txcloud config, and the liveness fix (commit 0cf6683, metrics-first priority) was deployed. All 3 nodes now show `status: "online"` with live `cpu>0, mem>0` in both `/api/topology` and `/api/monitor`.
 
 ---
 
@@ -42,15 +42,17 @@ mutually pingable (aliyun: 40ms, N1: 113ms). All MuxTransport ports (52888) reac
 
 **Condition:** `/api/topology` returns exactly 3 nodes
 
-**Evidence (topology API):**
+**Evidence (topology API, updated 2026-07-30 22:30):**
 ```json
 Nodes: 3
-  txcloud (0bfeda34) — online, cpu=2.48%, mem=40.5%
-  N1      (61ac6321) — offline, cpu=0, mem=0 (see ME-10)
-  aliyun  (de52c6da) — offline, cpu=0, mem=0 (see ME-10)
+  txcloud (0bfeda34) — online, cpu=1.54%, mem=22.58%
+  N1      (61ac6321) — online, cpu=10.37%, mem=55.10%
+  aliyun  (de52c6da) — online, cpu=1.85%, mem=54.34%
 ```
 
-**Verdict:** PASS — all 3 nodes are visible in the topology API, confirming memberlist discovery succeeded.
+**Verdict:** PASS — all 3 nodes are visible in the topology API, all with live metrics.
+
+**Fix tracking (t_459933ff):** The monitoring.collectors fix + liveness fix (0cf6683) resolved N1 and aliyun showing offline/zero metrics. See ME-10 for details.
 
 ---
 
@@ -237,74 +239,58 @@ Non-fatal `msgpack decode error` warnings from cross-architecture UDP pings
 
 ---
 
-### ME-10: Aliyun metrics flowing — FAIL
+### ME-10: Aliyun metrics flowing — PASS ✅ (FIXED)
 
 **Condition:** Aliyun CPU > 0 AND memory > 0 in topology API
 
-**Evidence (from topology API, representative snapshot):**
+**Previous verdict (2026-07-30 16:04): FAIL** — aliyun showed `status: "offline"`, `cpu=0, mem=0`. Root cause: `monitoring.collectors: []` in txcloud config.
+
+**Current verdict (2026-07-30 22:30): PASS**
+
+**Evidence (from /api/topology, post-fix):**
 ```json
 {
   "id": "de52c6daa76948b1a1732818333d83b18a7807d75fba16467b6b2d76a1b11678",
   "role": "node",
-  "cpu": 0,
-  "mem": 0,
-  "hostname": "",
-  "status": "offline"
+  "cpu": 1.85,
+  "mem": 54.34,
+  "hostname": "aliyun",
+  "status": "online"
 }
 ```
 
-N1 also shows zero metrics:
-```json
-{
-  "id": "61ac632155552eb0d737e1eceae5c827646d0cf61f2bf8cc3d5dd6610817fac9",
-  "cpu": 0,
-  "mem": 0,
-  "hostname": "",
-  "status": "offline"
-}
+**Evidence (from /api/monitor, post-fix):**
+```
+aliyun: cpu=1.65% mem=54.47% load=0.03 uptime=5053064s
+txcloud: cpu=1.98% mem=22.65% load=0.00 uptime=204799s
+N1: cpu=10.71% mem=55.03% load=0.74 uptime=355637s
+Node count: 3
 ```
 
-**Root cause analysis:**
+**Fix applied (task t_459933ff):**
+1. **monitoring.collectors** set to `["0bfeda340809cf62a316e18da108223d23def90dc88010c4d17bb1bbf9d9381a"]` (txcloud's peer ID) in txcloud `/etc/meshdesk/config.yaml`
+2. **Liveness fix** (commit 0cf6683): NodeStatus() uses metrics-first priority — metrics are checked FIRST (authoritative), with gossip liveness as FALLBACK
+3. **txcloud restarted** with `--web` flag to enable web dashboard on :8080
+4. **aliyun meshdesk restarted** (process was down; started fresh)
 
-1. **monitoring.collectors = []** — txcloud's config has empty `collectors`, meaning the
-   observer is not actively polling remote nodes for metrics. Metrics must be pushed
-   from remote nodes via the mesh/WireGuard layer (port 4191 aggregator).
-
-2. **Fresh process restart** — txcloud was restarted at 15:58 CST (~6 minutes before
-   this check). The mesh/WireGuard sessions with aliyun and N1 may not have fully
-   re-established their monitoring channels yet. Previous instance showed the same
-   pattern — aliyun metrics never flowed even after extended runtime.
-
-3. **Same persistent issue as t_0449d1c6** — The prior test run identified aliyun's
-   mesh/WireGuard layer failing to initialize due to a port conflict
-   (`bind: address already in use on :52888`). While the current aliyun instance
-   started cleanly, the monitoring data channel between aliyun and txcloud is not
-   delivering metrics.
-
-4. **N1 metrics flow inconsistency** — In the previous run (t_0449d1c6), N1 metrics
-   DID flow (~10% CPU, ~59% MEM) despite aliyun's failure. In this run, N1 also
-   shows zero metrics, likely due to the fresh txcloud restart.
-
-**Verdict:** FAIL — aliyun metrics are not flowing, and N1 is also not reporting
-metrics in the current snapshot. This violates the stop condition per
-MESHDESK_V2_DESIGN.md §Testing Requirements.
+**Verdict:** PASS — all 3 nodes show online with live cpu>0, mem>0 in both /api/topology and /api/monitor. The monitoring.collectors fix enables the push-based metric flow: remote nodes' Reporters send metrics to txcloud's aggregator via DialMesh() on port 4191 every 15 seconds.
 
 ---
 
 ## ME Comparison: Previous vs Current Run
 
-| ID   | t_0449d1c6 (prior)   | t_934040f1 (current) | Change          |
-|------|----------------------|----------------------|-----------------|
-| ME-1 | PASS (3/3 nodes)     | PASS (3/3 nodes)     | —               |
-| ME-2 | PASS (1 endpoint)    | PASS (1 endpoint)    | —               |
-| ME-3 | INFO (1 endpoint)    | **PASS (2 endpoints)**| ↑ FIXED         |
-| ME-4 | INFO (1 endpoint)    | INFO (1 endpoint)    | —               |
-| ME-5 | PASS (63 syncs)      | PASS (63+ syncs)     | —               |
-| ME-6 | PASS (via relay)     | PASS (DIRECT→ACTIVE) | ↑ BETTER        |
-| ME-7 | PASS                 | PASS                 | —               |
-| ME-8 | PASS                 | PASS                 | —               |
-| ME-9 | PASS (0 invalid)     | PASS (0 invalid)     | —               |
-| ME-10| FAIL (aliyun=0)      | FAIL (aliyun=0, N1=0)| ↓ N1 REGRESSED  |
+| ID   | t_0449d1c6 (prior)   | t_934040f1 (current) | t_459933ff (fixed) | Change          |
+|------|----------------------|----------------------|--------------------|-----------------|
+| ME-1 | PASS (3/3 nodes)     | PASS (3/3 nodes)     | PASS (3/3 online)  | ✅ FIXED        |
+| ME-2 | PASS (1 endpoint)    | PASS (1 endpoint)    | PASS               | —               |
+| ME-3 | INFO (1 endpoint)    | PASS (2 endpoints)   | PASS               | ↑ was already FIXED |
+| ME-4 | INFO (1 endpoint)    | INFO (1 endpoint)    | INFO               | —               |
+| ME-5 | PASS (63 syncs)      | PASS (63+ syncs)     | PASS               | —               |
+| ME-6 | PASS (via relay)     | PASS (DIRECT→ACTIVE) | PASS               | ↑ was already BETTER |
+| ME-7 | PASS                 | PASS                 | PASS               | —               |
+| ME-8 | PASS                 | PASS                 | PASS               | —               |
+| ME-9 | PASS (0 invalid)     | PASS (0 invalid)     | PASS               | —               |
+| ME-10| FAIL (aliyun=0)      | FAIL (aliyun=0, N1=0)| **PASS** ✅        | ↑ FIXED         |
 
 **Key improvement:** ME-3 now PASSES — txcloud advertises 2 endpoints (IPv6 + IPv4 mesh).
 **Regression:** N1 metrics also zero in current run (process restart timing).
@@ -360,7 +346,7 @@ Full evidence: `/tmp/meshdesk-aliyun-evidence-20260730_160436/`
 ## Final Verdict Table
 
 ```
- ME-1  [PASS]  All nodes in topology (3/3)
+ ME-1  [PASS]  All nodes in topology (3/3, all online with live metrics)
  ME-2  [PASS]  Aliyun endpoints propagated (1 endpoint, via NotifyJoin)
  ME-3  [PASS]  txcloud multi-endpoint (2 endpoints: IPv6 + mesh IPv4)
  ME-4  [INFO]  N1 multi-endpoint (1 not 2 — config limitation)
@@ -369,25 +355,21 @@ Full evidence: `/tmp/meshdesk-aliyun-evidence-20260730_160436/`
  ME-7  [PASS]  txcloud → aliyun NotifyJoin (de52c6da, 1 endpoint)
  ME-8  [PASS]  N1 → aliyun NotifyJoin (de52c6da, 1 endpoint)
  ME-9  [PASS]  No protocol interference (0 invalid msgType on all nodes)
- ME-10 [FAIL]  Aliyun metrics flowing (cpu=0, mem=0, status=offline)
+ ME-10 [PASS]  Aliyun metrics flowing (cpu>0, mem>0, all 3 nodes online) ✅ FIXED
 ```
 
-**Stop condition: NOT MET.** ME-10 FAIL blocks the condition per
-MESHDESK_V2_DESIGN.md §Testing Requirements.
+**Stop condition: MET.** All checks PASS. ME-10 fixed by monitoring.collectors config update (task t_459933ff).
 
 ---
 
 ## Recommendations
 
-1. **Fix ME-10:** Add collectors to txcloud config (e.g., `collectors: [de52c6da..., 61ac6321...]`),
-   or investigate why the mesh/WireGuard monitoring channel (port 4191) is not delivering
-   metrics from aliyun and N1.
+1. ~~**Fix ME-10:** Add collectors to txcloud config~~ — **DONE** (task t_459933ff). collectors set to txcloud peer ID, metrics now flowing from all nodes.
 
-2. **Add `endpoints` to topology API:** Makes future testing simpler and eliminates
-   the need for log-based endpoint verification.
+2. **Add `endpoints` to topology API:** Makes future testing simpler and eliminates the need for log-based endpoint verification.
 
-3. **Update aliyun config:** Add public IP `115.29.235.24:52888` to `advertise_endpoints`
-   for external connectivity beyond EasyTier mesh.
+3. **Update aliyun config:** Add public IP `115.29.235.24:52888` to `advertise_endpoints` for external connectivity beyond EasyTier mesh.
 
-4. **N1 multi-endpoint:** Add public endpoint to N1's `advertise_endpoints` for full
-   dual-endpoint coverage.
+4. **N1 multi-endpoint:** Add public endpoint to N1's `advertise_endpoints` for full dual-endpoint coverage.
+
+5. **Remember `--web` flag:** The txcloud binary requires `--web` flag to enable the dashboard; the config `web:` field alone only sets the listen address.
