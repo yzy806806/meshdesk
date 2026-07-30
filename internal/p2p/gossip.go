@@ -368,24 +368,66 @@ func (g *GossipLayer) OnEndpointDiscovered(peerKey, endpoint string) {
 }
 
 // resolveAdvertiseAddr determines the address to advertise to gossip peers.
+// hashicorp memberlist uses a TCP transport that is IPv4-native, so when
+// multiple endpoints are available (dual-stack), we prefer the first IPv4
+// endpoint.  If no IPv4 endpoint exists we fall back to the first endpoint
+// (which may be IPv6).
+//
 // Priority:
-//  1. cfg.AdvertiseEndpoints[0] (explicit, user-configured — for NAT)
-//  2. first entry in localMeta.Endpoints
-//  3. auto-detected outbound IP
+//  1. first IPv4 endpoint in cfg.AdvertiseEndpoints (explicit, user-configured)
+//  2. first endpoint in cfg.AdvertiseEndpoints (any family)
+//  3. first IPv4 endpoint in localMeta.Endpoints
+//  4. first endpoint in localMeta.Endpoints (any family)
+//  5. auto-detected outbound IP (detectOutboundIP already prefers IPv4)
 func (g *GossipLayer) resolveAdvertiseAddr() string {
-	if len(g.cfg.AdvertiseEndpoints) > 0 && g.cfg.AdvertiseEndpoints[0] != "" {
-		host, _, _ := net.SplitHostPort(g.cfg.AdvertiseEndpoints[0])
+	if host := firstIPv4HostFromEndpoints(g.cfg.AdvertiseEndpoints); host != "" {
 		return host
 	}
-	eps := g.localMeta.Endpoints
-	if len(eps) > 0 && eps[0] != "" {
-		host, _, err := net.SplitHostPort(eps[0])
-		if err == nil && host != "" {
+	if len(g.cfg.AdvertiseEndpoints) > 0 {
+		if host, _ := hostFromEndpoint(g.cfg.AdvertiseEndpoints[0]); host != "" {
+			return host
+		}
+	}
+	if host := firstIPv4HostFromEndpoints(g.localMeta.Endpoints); host != "" {
+		return host
+	}
+	if len(g.localMeta.Endpoints) > 0 {
+		if host, _ := hostFromEndpoint(g.localMeta.Endpoints[0]); host != "" {
 			return host
 		}
 	}
 	if ip := detectOutboundIP(); ip != "" {
 		return ip
+	}
+	return ""
+}
+
+// hostFromEndpoint extracts the host portion from a "host:port" endpoint
+// string.  Returns ("", error) if the string cannot be parsed.
+func hostFromEndpoint(endpoint string) (string, error) {
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return "", err
+	}
+	return host, nil
+}
+
+// firstIPv4HostFromEndpoints iterates through a list of "host:port" endpoints
+// and returns the host of the first IPv4 endpoint.  Returns "" if no IPv4
+// endpoint is found or the list is empty.
+func firstIPv4HostFromEndpoints(endpoints []string) string {
+	for _, ep := range endpoints {
+		if ep == "" {
+			continue
+		}
+		host, err := hostFromEndpoint(ep)
+		if err != nil || host == "" {
+			continue
+		}
+		ip := net.ParseIP(host)
+		if ip != nil && ip.To4() != nil {
+			return host
+		}
 	}
 	return ""
 }
