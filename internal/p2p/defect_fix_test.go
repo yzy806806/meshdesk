@@ -117,6 +117,8 @@ func TestSetLocalEndpointsEmptyEndpointsClears(t *testing.T) {
 // TestAnnounceLocalEndpointWithNilMemberlist verifies that announceLocalEndpoint
 // works correctly when memberlist is nil (the DEFECT-02 fix path where
 // SetLocalEndpoints is called but memberlist hasn't been started yet).
+// Tests single IPv4, single IPv6, and dual-stack multi-endpoint cases to
+// ensure the merge path works for all endpoint families with a nil memberlist.
 func TestAnnounceLocalEndpointWithNilMemberlist(t *testing.T) {
 	localMeta := &NodeMeta{
 		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
@@ -128,8 +130,8 @@ func TestAnnounceLocalEndpointWithNilMemberlist(t *testing.T) {
 
 	gl := &GossipLayer{
 		cfg: P2pConfig{
-			AdvertiseEndpoints: []string{"203.0.113.99:51820"},
-			WgPort:            51820,
+			AdvertiseEndpoints: []string{"203.0.113.99:51820", "[2001:db8::3]:51820"},
+			WgPort:             51820,
 		},
 		delegate: delegate,
 		// memberlist is nil — should still work, just skip UpdateNode
@@ -139,10 +141,39 @@ func TestAnnounceLocalEndpointWithNilMemberlist(t *testing.T) {
 	gl.announceLocalEndpoint()
 
 	meta := delegate.getLocalMeta()
-	if len(meta.Endpoints) != 1 {
-		t.Fatalf("expected 1 endpoint, got %d", len(meta.Endpoints))
+	if len(meta.Endpoints) != 2 {
+		t.Fatalf("expected 2 endpoints with nil memberlist, got %d: %v", len(meta.Endpoints), meta.Endpoints)
 	}
 	if meta.Endpoints[0] != "203.0.113.99:51820" {
-		t.Errorf("expected endpoint 203.0.113.99:51820, got %s", meta.Endpoints[0])
+		t.Errorf("expected first endpoint 203.0.113.99:51820, got %s", meta.Endpoints[0])
 	}
+	if meta.Endpoints[1] != "[2001:db8::3]:51820" {
+		t.Errorf("expected second endpoint [2001:db8::3]:51820, got %s", meta.Endpoints[1])
+	}
+	if meta.Seq != 2 {
+		t.Errorf("expected Seq=2, got %d", meta.Seq)
+	}
+
+	// Backward compat: single endpoint with nil memberlist still works.
+	t.Run("single endpoint backward compat", func(t *testing.T) {
+		lm := &NodeMeta{
+			PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+			Endpoints: []string{},
+			NatType:   "unknown",
+			Seq:       1,
+		}
+		d := newMeshDelegate(lm)
+		gl2 := &GossipLayer{
+			cfg: P2pConfig{
+				AdvertiseEndpoints: []string{"10.0.0.99:51820"},
+				WgPort:             51820,
+			},
+			delegate: d,
+		}
+		gl2.announceLocalEndpoint()
+		m := d.getLocalMeta()
+		if len(m.Endpoints) != 1 || m.Endpoints[0] != "10.0.0.99:51820" {
+			t.Errorf("single endpoint with nil memberlist: got %v, want [10.0.0.99:51820]", m.Endpoints)
+		}
+	})
 }

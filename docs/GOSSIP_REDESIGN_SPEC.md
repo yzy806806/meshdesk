@@ -676,11 +676,35 @@ type P2pConfig struct {
     // Set to a specific interface IP to restrict gossip to one network.
     GossipBindAddr string `yaml:"gossip_bind_addr,omitempty"`
 
-    // AdvertiseEndpoints is a list of host:port addresses that this node
-    // advertises to peers for gossip connections. When empty, auto-detected
-    // from STUN or outbound IP detection. Multiple endpoints are useful for
-    // dual-stack IPv4/IPv6 nodes.
-    // Example: ["203.0.113.10:7946", "[2001:db8::1]:7946"]
+    // AdvertiseEndpoints lists the host:port addresses this node advertises to
+    // peers for gossip connections. When empty, addresses are auto-detected.
+    //
+    // YAML configuration:
+    //   p2p:
+    //     advertise_endpoints:
+    //       - "203.0.113.99:51820"
+    //       - "[2001:db8::1]:51820"
+    //
+    // IPv6 addresses MUST be enclosed in brackets per RFC 3986.
+    //
+    // Auto-detection (when advertise_endpoints is empty):
+    //   detectOutboundIPs() probes both IPv4 (UDP dial to 8.8.8.8:80) and
+    //   IPv6 (UDP dial to [2001:4860:4860::8888]:80), collecting all routable
+    //   addresses. If neither succeeds (no default route), it falls back to
+    //   scanning network interfaces for non-loopback, non-link-local addresses
+    //   of both families.
+    //
+    // resolveAdvertiseAddr selection strategy:
+    //   hashicorp memberlist uses an IPv4-native TCP transport, so
+    //   resolveAdvertiseAddr prefers the first IPv4 endpoint. Priority:
+    //     1. First IPv4 in AdvertiseEndpoints (explicit user config)
+    //     2. First endpoint in AdvertiseEndpoints (any family)
+    //     3. First IPv4 in auto-detected endpoints (localMeta.Endpoints)
+    //     4. First endpoint in auto-detected endpoints (any family)
+    //     5. detectOutboundIP() (IPv4-preferred, single-address fallback)
+    //
+    // Legacy compatibility: AdvertiseEndpoint (singular) is auto-migrated
+    // to AdvertiseEndpoints[0] during config Load().
     AdvertiseEndpoints []string `yaml:"advertise_endpoints,omitempty"`
 
     // AdvertiseEndpoint (legacy, deprecated) — singular form for backward
