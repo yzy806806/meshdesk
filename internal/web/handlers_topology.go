@@ -186,7 +186,7 @@ func isPeerRelay(cfg *config.Config, peerID string) bool {
 type monitorTopologyMetrics struct {
 	store *monitor.Store
 	// liveness provides gossip-based peer liveness. When non-nil,
-	// NodeStatus consults gossip state as an override.
+	// NodeStatus uses it as a FALLBACK when metrics are stale or missing.
 	// nil = backward compatible (monitor-only liveness).
 	liveness PeerLiveness
 }
@@ -238,39 +238,34 @@ func (m *monitorTopologyMetrics) LatestHostname(nodeID string) string {
 }
 
 func (m *monitorTopologyMetrics) NodeStatus(nodeID string, freshnessThreshold time.Duration) string {
-	// When liveness is available, it takes precedence:
-	// - Gossip says dead → "offline" (overrides stale monitor metrics)
-	// - Gossip says alive but no/stale metrics → "online" (alive, no metrics)
-	if m.liveness != nil {
-		if !m.liveness.IsAlive(nodeID) {
-			return "offline"
-		}
-		// Peer is alive in gossip. If we also have fresh metrics, great.
-		// If not, the node is still "online" — just hasn't reported
-		// monitor data recently. CPU/mem will be zero (already handled
-		// by the freshness check in buildTopologySnapshot).
-		if m.store == nil {
-			return "online"
-		}
+	// Metrics are checked FIRST — they are authoritative when fresh.
+	// Gossip liveness is a FALLBACK, consulted only when metrics are
+	// stale or missing. This prevents false "offline" when memberlist
+	// UDP pings are unreliable (e.g., in EasyTier VPN environments)
+	// but fresh metrics are flowing via TCP push/pull sync.
+	//
+	// Priority:
+	//   1. Fresh metrics     → "online" (metrics authoritative)
+	//   2. Stale/missing + gossip alive  → "online" (alive, no metrics)
+	//   3. Stale/missing + gossip dead   → "offline"
+	//   4. Stale/missing + no liveness   → "offline"
+	if m.store != nil {
 		metrics := m.store.Latest(nodeID)
-		if metrics == nil || time.Since(metrics.Timestamp) > freshnessThreshold {
-			return "online" // alive but no fresh metrics
+		if metrics != nil && time.Since(metrics.Timestamp) <= freshnessThreshold {
+			return "online" // fresh metrics → authoritative
 		}
-		return "online"
 	}
 
-	// Fallback: liveness not available — use monitor-only logic (existing).
-	if m.store == nil {
-		return "offline"
+	// Metrics are stale or missing — consult gossip liveness as fallback.
+	if m.liveness != nil {
+		if m.liveness.IsAlive(nodeID) {
+			return "online" // alive in gossip, no fresh metrics
+		}
+		return "offline" // not alive in gossip, no fresh metrics
 	}
-	metrics := m.store.Latest(nodeID)
-	if metrics == nil {
-		return "offline"
-	}
-	if time.Since(metrics.Timestamp) > freshnessThreshold {
-		return "offline"
-	}
-	return "online"
+
+	// No liveness provider — metrics were stale or missing, so offline.
+	return "offline"
 }
 
 func (m *monitorTopologyMetrics) BestBandwidth(nodeID string) float64 {
