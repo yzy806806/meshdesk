@@ -194,26 +194,57 @@ func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 //
 // If neither is available, the reactive learning path remains the sole source.
 func (g *GossipLayer) announceLocalEndpoint() {
-	var endpoints []string
+	var announced []string
 
 	if len(g.cfg.AdvertiseEndpoints) > 0 {
 		// User provided explicit endpoints — trust them.
-		endpoints = g.cfg.AdvertiseEndpoints
+		announced = g.cfg.AdvertiseEndpoints
 	} else if g.cfg.WgPort > 0 {
 		// Auto-detect the outbound IP.
 		ip := detectOutboundIP()
 		if ip != "" {
-			endpoints = []string{net.JoinHostPort(ip, fmt.Sprintf("%d", g.cfg.WgPort))}
+			announced = []string{net.JoinHostPort(ip, fmt.Sprintf("%d", g.cfg.WgPort))}
 		}
 	}
 
-	if len(endpoints) == 0 {
+	if len(announced) == 0 {
 		log.Printf("[p2p] endpoint learning: no local endpoint to announce (reactive learning only)")
 		return
 	}
 
-	g.SetLocalEndpoints(endpoints, "unknown")
-	log.Printf("[p2p] endpoint learning: announced %d local endpoint(s): %v", len(endpoints), endpoints)
+	// Merge announced endpoints with any already-discovered endpoints (e.g.,
+	// added by OnEndpointDiscovered from the WireGuard receive path).  We must
+	// not call SetLocalEndpoints with only `announced` because that replaces
+	// m.Endpoints wholesale, erasing reactively-learned addresses.  Instead,
+	// build the full deduplicated list and pass that.
+	existing := g.delegate.getLocalMeta().Endpoints
+	merged := mergeEndpoints(announced, existing)
+
+	g.SetLocalEndpoints(merged, "unknown")
+	log.Printf("[p2p] endpoint learning: announced %d local endpoint(s): %v (merged %d existing)", len(merged), merged, len(existing))
+}
+
+// mergeEndpoints returns a new slice containing all unique entries from the
+// input slices, preserving the order of `primary` first, then any extras from
+// `extra` that are not already present.  This is used by announceLocalEndpoint
+// to ensure that endpoints discovered reactively (via OnEndpointDiscovered)
+// survive a subsequent announce cycle.
+func mergeEndpoints(primary, extra []string) []string {
+	seen := make(map[string]bool, len(primary)+len(extra))
+	result := make([]string, 0, len(primary)+len(extra))
+	for _, ep := range primary {
+		if !seen[ep] {
+			seen[ep] = true
+			result = append(result, ep)
+		}
+	}
+	for _, ep := range extra {
+		if !seen[ep] {
+			seen[ep] = true
+			result = append(result, ep)
+		}
+	}
+	return result
 }
 
 // detectOutboundIP returns the preferred non-loopback IPv4 address of this
