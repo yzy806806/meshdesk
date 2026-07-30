@@ -405,11 +405,16 @@ type P2pConfig struct {
 	// MaxPeers is the hard limit on total peers. Default: 256.
 	MaxPeers int `yaml:"max_peers,omitempty"`
 
-	// AdvertiseEndpoint is an explicit WireGuard endpoint (host:port) that
-	// this node advertises to peers via gossip. When set, it overrides the
-	// auto-detected local IP. Use this when the node is behind NAT and you
-	// know the public IP:port mapping, or when auto-detection would pick
-	// the wrong interface (e.g., Docker, multi-homed hosts).
+	// AdvertiseEndpoints is a list of explicit WireGuard endpoints (host:port)
+	// that this node advertises to peers via gossip. When set, they override
+	// the auto-detected local IP. Use this when the node is behind NAT and you
+	// know the public IP:port mapping, or when auto-detection would pick the
+	// wrong interface (e.g., Docker, multi-homed hosts, dual-stack IPv4/IPv6).
+	AdvertiseEndpoints []string `yaml:"advertise_endpoints,omitempty"`
+
+	// AdvertiseEndpoint is a legacy field for backward compatibility.
+	// If set, it is treated as a single-element AdvertiseEndpoints list
+	// during config loading. Deprecated: use advertise_endpoints instead.
 	AdvertiseEndpoint string `yaml:"advertise_endpoint,omitempty"`
 }
 
@@ -712,6 +717,11 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.P2P.MaxPeers == 0 && cfg.P2P.Enabled {
 		cfg.P2P.MaxPeers = 256
+	}
+	// Backward compatibility: if the legacy advertise_endpoint field is set
+	// and advertise_endpoints is not, migrate the single endpoint to the list.
+	if cfg.P2P.AdvertiseEndpoint != "" && len(cfg.P2P.AdvertiseEndpoints) == 0 {
+		cfg.P2P.AdvertiseEndpoints = []string{cfg.P2P.AdvertiseEndpoint}
 	}
 	if cfg.Monitoring.Interval == 0 {
 		cfg.Monitoring.Interval = 15

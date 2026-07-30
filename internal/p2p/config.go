@@ -83,11 +83,12 @@ type P2pConfig struct {
 	// try before reactive endpoint learning kicks in. Default: 51820.
 	WgPort int `yaml:"-"`
 
-	// AdvertiseEndpoint is an explicit endpoint (host:port) that this node
-	// advertises to peers via gossip. When set, it overrides auto-detection.
-	// Use this when the node is behind NAT and you know the public IP:port
-	// mapping, or when auto-detection would pick the wrong interface.
-	AdvertiseEndpoint string `yaml:"advertise_endpoint,omitempty"`
+	// AdvertiseEndpoints is a list of explicit endpoints (host:port) that
+	// this node advertises to peers via gossip. When set, they override
+	// auto-detection. Use this when the node is behind NAT and you know the
+	// public IP:port mapping, or when auto-detection would pick the wrong
+	// interface. Multiple endpoints are useful for dual-stack IPv4/IPv6 nodes.
+	AdvertiseEndpoints []string `yaml:"advertise_endpoints,omitempty"`
 }
 
 // DefaultP2pConfig returns a P2pConfig with sensible defaults.
@@ -128,7 +129,7 @@ func FromConfig(c config.P2pConfig) P2pConfig {
 		DirectReprobeInterval: c.DirectReprobeInterval,
 		MaxPeers:              c.MaxPeers,
 		GossipPort:            7946, // Default; overridden by MeshConfig.GossipPort in practice
-		AdvertiseEndpoint:     c.AdvertiseEndpoint,
+		AdvertiseEndpoints:    c.AdvertiseEndpoints,
 	}
 }
 
