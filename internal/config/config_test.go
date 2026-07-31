@@ -23,9 +23,10 @@ func TestLoadAndSave(t *testing.T) {
 	// Save a config.
 	original := &Config{
 		Node: NodeConfig{
-			Identity: "abcdef0123456789",
-			Hostname: "test-node",
-			WebAddr:  ":8080",
+			IdentityFile: "/tmp/test-identity.pem",
+			Fingerprint:  "abc123fingerprint",
+			Hostname:     "test-node",
+			WebAddr:      ":8080",
 		},
 		Mesh: MeshConfig{
 			Port: 51820,
@@ -53,8 +54,11 @@ func TestLoadAndSave(t *testing.T) {
 		t.Fatalf("Load error: %v", err)
 	}
 
-	if loaded.Node.Identity != original.Node.Identity {
-		t.Errorf("Identity = %q, want %q", loaded.Node.Identity, original.Node.Identity)
+	if loaded.Node.IdentityFile != original.Node.IdentityFile {
+		t.Errorf("IdentityFile = %q, want %q", loaded.Node.IdentityFile, original.Node.IdentityFile)
+	}
+	if loaded.Node.Fingerprint != original.Node.Fingerprint {
+		t.Errorf("Fingerprint = %q, want %q", loaded.Node.Fingerprint, original.Node.Fingerprint)
 	}
 	if loaded.Node.Hostname != original.Node.Hostname {
 		t.Errorf("Hostname = %q, want %q", loaded.Node.Hostname, original.Node.Hostname)

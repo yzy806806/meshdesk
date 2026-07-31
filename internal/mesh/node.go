@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -1060,22 +1062,87 @@ func GenerateIdentity() (*identity.Identity, error) {
 	return identity.GenerateIdentity()
 }
 
-// loadOrCreateIdentity loads an Ed25519 identity from the config, or generates
-// a new one if not configured. Updates cfg.Node.Identity with the generated key.
+// loadOrCreateIdentity loads an Ed25519 identity from the PEM identity file
+// (cfg.Node.IdentityFile), or generates a new one if the file doesn't exist.
+//
+// Identity is persisted as a PEM file with 0600 permissions, NOT as a hex
+// private key in the YAML config. Only the public key fingerprint is stored
+// in cfg.Node.Fingerprint for reference.
+//
+// Backward compatibility: if cfg.Node.Identity (deprecated hex private key)
+// is set and the PEM file doesn't exist, the key is migrated to PEM format
+// and cfg.Node.Identity is cleared.
 func loadOrCreateIdentity(cfg *config.Config) (*identity.Identity, error) {
+	identityFile := cfg.Node.IdentityFile
+	if identityFile == "" {
+		identityFile = config.DefaultIdentityFile
+	}
+
+	// Try loading from PEM file first.
+	pemData, err := os.ReadFile(identityFile)
+	if err == nil && len(pemData) > 0 {
+		// PEM file exists — load identity from it.
+		id, err := identity.IdentityFromPEM(pemData)
+		if err != nil {
+			return nil, fmt.Errorf("load identity from PEM %s: %w", identityFile, err)
+		}
+		cfg.Node.Fingerprint = id.PublicKey
+		cfg.Node.IdentityFile = identityFile
+		// Clear deprecated hex key if it's still set (migration complete).
+		cfg.Node.Identity = ""
+		return id, nil
+	}
+
+	// PEM file doesn't exist or is empty.
+	// Check for backward-compat migration from deprecated hex key.
 	if cfg.Node.Identity != "" {
 		id, err := identity.IdentityFromHex(cfg.Node.Identity)
 		if err != nil {
-			return nil, fmt.Errorf("load identity: %w", err)
+			return nil, fmt.Errorf("load identity from deprecated hex: %w", err)
 		}
+		// Migrate: write PEM file, clear hex key from config.
+		if err := saveIdentityPEM(identityFile, id); err != nil {
+			return nil, fmt.Errorf("migrate identity to PEM %s: %w", identityFile, err)
+		}
+		log.Printf("Migrated identity from config.yaml to %s", identityFile)
+		cfg.Node.Fingerprint = id.PublicKey
+		cfg.Node.IdentityFile = identityFile
+		cfg.Node.Identity = "" // Clear deprecated hex key.
 		return id, nil
 	}
+
+	// No existing identity — generate a new one.
 	id, err := identity.GenerateIdentity()
 	if err != nil {
 		return nil, fmt.Errorf("generate identity: %w", err)
 	}
-	cfg.Node.Identity = id.PrivateKey
+	// Persist to PEM file.
+	if err := saveIdentityPEM(identityFile, id); err != nil {
+		return nil, fmt.Errorf("save identity PEM %s: %w", identityFile, err)
+	}
+	log.Printf("Generated new identity, saved to %s", identityFile)
+	cfg.Node.Fingerprint = id.PublicKey
+	cfg.Node.IdentityFile = identityFile
+	cfg.Node.Identity = ""
 	return id, nil
+}
+
+// saveIdentityPEM writes the identity's private key as a PEM file with 0600
+// permissions. Creates parent directories if needed.
+func saveIdentityPEM(path string, id *identity.Identity) error {
+	pemStr, err := id.ToPEM()
+	if err != nil {
+		return fmt.Errorf("encode identity to PEM: %w", err)
+	}
+	// Create parent directory if it doesn't exist.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create identity dir %s: %w", dir, err)
+	}
+	if err := os.WriteFile(path, []byte(pemStr), 0600); err != nil {
+		return fmt.Errorf("write identity PEM: %w", err)
+	}
+	return nil
 }
 
 // buildRealityListenAddr constructs the Reality TLS listen address from config.

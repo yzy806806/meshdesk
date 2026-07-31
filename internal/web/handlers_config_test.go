@@ -27,6 +27,8 @@ func newConfigTestServer(t *testing.T) (*Server, string) {
 	cfg := config.Default()
 	cfg.Node.Hostname = "test-node"
 	cfg.Node.WebAddr = ":8080"
+	cfg.Node.Identity = "deprecated-hex-private-key-for-masking-test"
+	cfg.Node.Fingerprint = "test-fingerprint-pubkey-hex"
 	cfg.Mesh.Port = 51820
 	cfg.Proxy.SS.Password = "secret-ss-password"
 	cfg.Proxy.CFTunnel.TunnelID = "cf-tunnel-uuid-123"
@@ -872,6 +874,8 @@ func TestIsKnownField(t *testing.T) {
 		{"mesh.port", true},
 		{"peers[0].endpoint", true},
 		{"node.identity", true},
+		{"node.identity_file", true},
+		{"node.fingerprint", true},
 		{"mesh.nonexistent", false},
 		{"unknown.section.field", false},
 		{"peers", true}, // container field
@@ -944,6 +948,8 @@ func TestIsReadOnly(t *testing.T) {
 		want bool
 	}{
 		{"node.identity", true},
+		{"node.identity_file", true},
+		{"node.fingerprint", true},
 		{"node.hostname", true},
 		{"peers[0].public_key", true},
 		{"auth.totp_store_dir", true},

@@ -68,12 +68,14 @@ type fieldMeta struct {
 // and a separate masked set.
 var tierMap = map[string]fieldMeta{
 	// --- Node (§3.1) ---
-	"node.identity":   {Tier: TierMasked, Reload: ReloadRestart}, // T0+T1 composite: masked on read, read-only on write
-	"node.hostname":   {Tier: TierReadOnly, Reload: ReloadRestart},
-	"node.web":        {Tier: TierNormal, Reload: ReloadRestart},
-	"node.position.x": {Tier: TierNormal, Reload: ReloadHot},
-	"node.position.y": {Tier: TierNormal, Reload: ReloadHot},
-	"node.position.z": {Tier: TierNormal, Reload: ReloadHot},
+	"node.identity":      {Tier: TierMasked, Reload: ReloadRestart},   // DEPRECATED: hex private key; masked + read-only. Migrated to PEM file.
+	"node.identity_file": {Tier: TierReadOnly, Reload: ReloadRestart}, // Path to PEM identity file; read-only.
+	"node.fingerprint":   {Tier: TierReadOnly, Reload: ReloadRestart}, // Public key hex; read-only reference.
+	"node.hostname":      {Tier: TierReadOnly, Reload: ReloadRestart},
+	"node.web":           {Tier: TierNormal, Reload: ReloadRestart},
+	"node.position.x":    {Tier: TierNormal, Reload: ReloadHot},
+	"node.position.y":    {Tier: TierNormal, Reload: ReloadHot},
+	"node.position.z":    {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Mesh (§3.2) ---
 	"mesh.port":        {Tier: TierNormal, Reload: ReloadRestart},
@@ -217,6 +219,8 @@ var tierMap = map[string]fieldMeta{
 // node.identity is dual-tier: masked on read + read-only on write.
 var readOnlyFields = []string{
 	"node.identity",
+	"node.identity_file",
+	"node.fingerprint",
 	"node.hostname",
 	"peers[N].public_key",
 	"auth.totp_store_dir",
