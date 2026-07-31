@@ -107,6 +107,8 @@ func New(cfg *config.Config) (*MeshNode, error) {
 }
 
 // Start begins mesh operation.
+//
+// Shared node mode (reality.enabled: true):
 // It creates a Reality TLS listener, starts an accept loop in a background
 // goroutine, and for each accepted connection performs X25519 ECDH key
 // exchange, wraps the connection in AES-256-GCM, and creates an smux session.
@@ -115,7 +117,26 @@ func New(cfg *config.Config) (*MeshNode, error) {
 // that shares a single TCP listener between gossip (memberlist) and Reality
 // TLS. The MuxTransport is exposed via MuxTransport() for the caller to
 // inject into the gossip layer.
+//
+// Ordinary node mode (reality.enabled: false, p2p.enabled: true):
+// The node does NOT listen on any public port. It only creates virtual port
+// listeners for inbound smux streams (from sessions it initiated outbound).
+// Gossip binds to 127.0.0.1 so no external port is exposed. The node joins
+// the cluster via configured seeds and establishes smux sessions by dialing
+// shared nodes using the mesh-internal path (0x4D marker byte).
 func (n *MeshNode) Start() error {
+	if n.cfg.P2P.Enabled && !n.cfg.Reality.Enabled {
+		// Ordinary node mode: no listener, no exposed ports.
+		// Virtual port listeners (ListenVirtualPort) still work for
+		// inbound streams on sessions that this node dials outbound.
+		log.Printf("[mesh] ordinary node mode (no public listener, no exposed ports)")
+		n.mu.Lock()
+		n.hs = nil
+		n.listener = nil
+		n.mu.Unlock()
+		return nil
+	}
+
 	if !n.cfg.Reality.Enabled {
 		return fmt.Errorf("mesh: Reality TLS not enabled in config (set reality.enabled=true)")
 	}
@@ -710,6 +731,11 @@ func (n *MeshNode) DialPeerByEndpoint(ctx context.Context, address string) (net.
 		Endpoint: address,
 	})
 
+	// Start the session stream handler so inbound streams from the peer
+	// (e.g. reverse-pushed metrics from a shared node) are dispatched to
+	// the correct virtual port listener.
+	go n.handleSessionStreams(peerIdentityHex, smuxSession)
+
 	// Open a stream on the session.
 	stream, err := smuxSession.OpenStream(ctx)
 	if err != nil {
@@ -778,8 +804,9 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 	}
 
 	// Look up the smux session for this peer.
-	// Prefer client-mode sessions (outbound) for dialing, since server-mode
-	// sessions cannot open new streams.
+	// Prefer client-mode sessions (outbound) for dialing, but also
+	// accept server-mode sessions now that smux supports OpenStream
+	// on both sides (enables ordinary nodes without public listeners).
 	n.sessionsMu.Lock()
 	sess, ok := n.clientSessions[peerIdentityHex]
 	if !ok {
@@ -788,6 +815,17 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 	n.sessionsMu.Unlock()
 
 	if !ok {
+		// Log available sessions for debugging.
+		n.sessionsMu.Lock()
+		var keys []string
+		for k := range n.sessions {
+			keys = append(keys, k[:min(len(k), 16)]+"...")
+		}
+		for k := range n.clientSessions {
+			keys = append(keys, k[:min(len(k), 16)]+"...(client)")
+		}
+		n.sessionsMu.Unlock()
+		log.Printf("[mesh] DialVirtualPort: no session for peer %s (have: %v)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", keys)
 		return nil, fmt.Errorf("mesh: no session for peer %s", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...")
 	}
 

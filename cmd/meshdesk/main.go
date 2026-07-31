@@ -134,6 +134,13 @@ func main() {
 		p2pCfg.GossipPort = cfg.Mesh.GossipPort
 		p2pCfg.WgPort = cfg.Mesh.Port
 
+		// Ordinary nodes (no Reality listener) bind gossip to localhost
+		// so no external port is exposed. Shared nodes use MuxTransport
+		// which handles the bind.
+		if !cfg.Reality.Enabled {
+			p2pCfg.GossipBindAddr = "127.0.0.1"
+		}
+
 		// Decode the Ed25519 private key for gossip identity.
 		identityBytes, err := hex.DecodeString(node.Identity().PrivateKey)
 		if err != nil {
