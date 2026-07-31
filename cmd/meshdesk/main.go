@@ -718,8 +718,13 @@ func main() {
 	}
 
 	// Save config (in case identity was auto-generated).
+	// At startup this is fatal: if the auto-generated identity cannot be
+	// persisted, the node would get a new identity on every restart,
+	// breaking peer trust. Hot-reload saves (via HTTP handlers) remain
+	// non-fatal because the process is already running and the error is
+	// surfaced to the operator via the API response.
 	if err := config.Save(configPath, cfg); err != nil {
-		log.Printf("Warning: could not save config: %v", err)
+		log.Fatalf("Failed to save config to %s: %v", configPath, err)
 	}
 
 	// Wait for shutdown signal.
