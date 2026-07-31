@@ -403,14 +403,18 @@ func TestAC8_ServerRejectsOpenStream(t *testing.T) {
 	}
 	defer serverOnly.Close()
 
+	// In v2, server sessions CAN open streams (using even stream IDs).
+	// This enables bidirectional data flow when one side doesn't listen
+	// on a public port. Verify that OpenStream succeeds.
 	ctx := context.Background()
 	stream, err := serverOnly.OpenStream(ctx)
-	if err != ErrWrongRole {
-		t.Fatalf("expected ErrWrongRole, got: %v", err)
+	if err != nil {
+		t.Fatalf("server OpenStream should succeed in v2, got: %v", err)
 	}
-	if stream != nil {
-		t.Fatal("expected nil stream")
+	if stream == nil {
+		t.Fatal("expected non-nil stream")
 	}
+	stream.Close()
 }
 
 // ─── AC-9: Session satisfies multipath.Session interface ───────────────

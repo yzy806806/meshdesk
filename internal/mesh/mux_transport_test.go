@@ -829,6 +829,21 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 		}
 	}()
 
+	// Also accept mesh-internal connections (0x4D marker).
+	meshCh := mt.MeshListener()
+	defer meshCh.Close()
+	meshConnCh := make(chan net.Conn, 256)
+	go func() {
+		for {
+			conn, err := meshCh.Accept()
+			if err != nil {
+				close(meshConnCh)
+				return
+			}
+			meshConnCh <- conn
+		}
+	}()
+
 	for b := 0; b < 256; b++ {
 		firstByte := byte(b)
 
@@ -840,12 +855,17 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 		}(firstByte)
 
 		isTLS := firstByte == tlsHandshakeRecordType
+		isMesh := firstByte == meshInternalMarker
 
 		select {
 		case conn := <-mt.StreamCh():
 			if isTLS {
 				conn.Close()
 				t.Fatalf("byte 0x%02x (TLS) was routed to StreamCh instead of Reality", firstByte)
+			}
+			if isMesh {
+				conn.Close()
+				t.Fatalf("byte 0x%02x (mesh) was routed to StreamCh instead of MeshCh", firstByte)
 			}
 			buf := make([]byte, 2)
 			n, _ := io.ReadFull(conn, buf)
@@ -861,6 +881,20 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 			buf := make([]byte, 2)
 			n, _ := io.ReadFull(conn, buf)
 			if n != 2 || buf[0] != firstByte {
+				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
+			}
+			conn.Close()
+		case conn := <-meshConnCh:
+			if !isMesh {
+				conn.Close()
+				t.Fatalf("byte 0x%02x was routed to MeshCh instead of StreamCh", firstByte)
+			}
+			// Mesh-internal path: the 0x4D marker byte was consumed by
+			// MuxTransport peek (no connWithPrefix replay), so only the
+			// remaining data (0x01) is readable.
+			buf := make([]byte, 1)
+			n, _ := io.ReadFull(conn, buf)
+			if n != 1 || buf[0] != 0x01 {
 				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
 			}
 			conn.Close()
