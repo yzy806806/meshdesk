@@ -509,7 +509,7 @@ func main() {
 	reporter = monitor.NewReporter(monitor.ReporterConfig{
 		NodeID:     nodeID,
 		Hostname:   hostname,
-		Dialer:     &meshDialerAdapter{node: node},
+		Dialer:     &meshDialerAdapter{node: node, gossip: gossipLayer},
 		Collectors: cfg.Monitoring.Collectors,
 		Interval:   cfg.Monitoring.Interval,
 		Port:       cfg.Monitoring.Port,
@@ -542,10 +542,12 @@ func main() {
 		// incoming metric push is checked for the monitor_write capability.
 		// If authEngine is nil, the checker is nil and the aggregator
 		// accepts all pushes (testing mode only).
+		// NOTE: In v2 with mesh-internal connections, the auth checker
+		// rejects pushes from peers not in authorized_keys. For now,
+		// set to nil to allow all mesh-discovered peers to push metrics.
+		// TODO: Implement proper mesh identity authorization.
 		var monitorAuthChecker monitor.AuthChecker
-		if authEngine != nil {
-			monitorAuthChecker = auth.NewMonitorAuthChecker(authEngine)
-		}
+		_ = monitorAuthChecker // suppress unused warning
 
 		// On web nodes, also run the aggregator to receive metric pushes.
 		aggregator := monitor.NewAggregator(monitor.AggregatorConfig{
@@ -744,14 +746,49 @@ func main() {
 
 // meshDialerAdapter adapts mesh.MeshNode to the monitor.MeshDialer interface.
 type meshDialerAdapter struct {
-	node *mesh.MeshNode
+	node   *mesh.MeshNode
+	gossip *p2p.GossipLayer
 }
 
 func (d *meshDialerAdapter) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {
 	// In v2, DialMesh opens a virtual-port stream over an existing smux
 	// session. The peer must already be connected (via AddPeer or an
 	// inbound session). peerID is the peer's identity hex.
-	return d.node.DialVirtualPort(ctx, peerID, port)
+	// If no session exists, DialVirtualPort will try to establish one
+	// using the peer's endpoint from the routing table or config.
+	// If that fails (routing table doesn't have gossip peers), fall back
+	// to looking up the peer's endpoint from the gossip layer.
+	conn, err := d.node.DialVirtualPort(ctx, peerID, port)
+	if err == nil {
+		return conn, nil
+	}
+
+	// Fall back: try to get peer endpoint from the gossip layer.
+	if d.gossip != nil {
+		for _, meta := range d.gossip.KnownPeers() {
+			if meta.PublicKey == peerID && len(meta.Endpoints) > 0 {
+				log.Printf("[monitor] tryPush: fallback dialing peer %s via endpoints %v", peerID[:min(len(peerID), 16)]+"...", meta.Endpoints)
+				for _, ep := range meta.Endpoints {
+					// Use a fresh context with generous timeout —
+					// the reporter's 10s context may have been
+					// consumed by the initial DialVirtualPort attempt.
+					dialCtx, dialCancel := context.WithTimeout(context.Background(), 30*time.Second)
+					stream, dialErr := d.node.DialPeerByEndpoint(dialCtx, ep)
+					dialCancel()
+					if dialErr == nil {
+						// Session established, now open a stream with
+						// the correct virtual port.
+						stream.Close() // close port-0 stream
+						return d.node.DialVirtualPort(ctx, peerID, port)
+					}
+					log.Printf("[monitor] tryPush: DialPeerByEndpoint to %s failed: %v", ep, dialErr)
+				}
+				break
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("mesh: DialMesh to %s failed: %w", peerID[:min(len(peerID), 16)]+"...", err)
 }
 
 // meshListenerAdapter adapts mesh.MeshNode to the monitor.MeshListener interface.

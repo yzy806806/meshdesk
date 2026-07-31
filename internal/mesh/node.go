@@ -190,6 +190,13 @@ func (n *MeshNode) Start() error {
 	// Start accept loop in background.
 	go n.acceptLoop(ln)
 
+	// If MuxTransport is active, also start a mesh-internal accept loop
+	// for connections that use the mesh-internal marker byte (0x4D).
+	if n.muxTransport != nil {
+		meshLn := n.muxTransport.MeshListener()
+		go n.acceptMeshLoop(meshLn)
+	}
+
 	return nil
 }
 
@@ -222,6 +229,35 @@ func (n *MeshNode) acceptLoop(ln net.Listener) {
 		log.Printf("[mesh] accepted connection from %s", remoteAddr)
 
 		// Handle each connection in its own goroutine.
+		go n.handleConnection(conn, remoteAddr)
+	}
+}
+
+// acceptMeshLoop accepts inbound mesh-internal connections (those that
+// sent the 0x4D marker byte). These connections bypass Reality TLS and
+// go directly to the session key exchange + smux handshake.
+func (n *MeshNode) acceptMeshLoop(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			select {
+			case <-n.ctx.Done():
+				return
+			default:
+			}
+			n.mu.RLock()
+			closed := n.closed
+			n.mu.RUnlock()
+			if closed {
+				return
+			}
+			log.Printf("[mesh] mesh-internal accept error: %v", err)
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
+		remoteAddr := conn.RemoteAddr().String()
+		log.Printf("[mesh] accepted mesh-internal connection from %s", remoteAddr)
 		go n.handleConnection(conn, remoteAddr)
 	}
 }
@@ -605,6 +641,91 @@ func (n *MeshNode) findPeerConfigByAddress(address string) (*config.PeerConfig, 
 	return nil, false
 }
 
+// DialPeerByEndpoint dials a gossip-discovered peer by its endpoint address.
+// Unlike Dial(), this method does NOT require a Reality client config — it
+// sends the mesh-internal marker byte (0x4D) to tell the remote MuxTransport
+// to route the connection to the mesh-internal path (bypassing Reality TLS).
+// It then performs the v2 protocol stack: X25519 ECDH key exchange →
+// AES-256-GCM SecureConn → smux session.
+func (n *MeshNode) DialPeerByEndpoint(ctx context.Context, address string) (net.Conn, error) {
+	dialer := net.Dialer{Timeout: 30 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", address)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: dial %s: %w", address, err)
+	}
+
+	// Send the mesh-internal marker byte. The remote MuxTransport will
+	// peek this byte and route the connection to the mesh-internal path.
+	_, err = conn.Write([]byte{meshInternalMarker})
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("mesh: send marker to %s: %w", address, err)
+	}
+
+	// Set deadline for key exchange.
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+
+	// Perform client-side X25519 ECDH key exchange (Layer 2a).
+	keys, peerIdentityHex, err := session.ClientKeyExchange(conn, n.identity)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("mesh: key exchange with %s: %w", address, err)
+	}
+
+	// Clear deadline.
+	conn.SetDeadline(time.Time{})
+
+	log.Printf("[mesh] key exchange complete with %s (peer=%s)", address, peerIdentityHex[:16]+"...")
+
+	// Wrap in AES-256-GCM SecureConn (Layer 2b).
+	secureConn, err := crypto.NewSecureConn(conn, keys.SendKey[:], keys.RecvKey[:])
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("mesh: create SecureConn with %s: %w", address, err)
+	}
+
+	// Create smux client session (Layer 3).
+	smuxSession, err := smux.Client(secureConn, smux.DefaultConfig())
+	if err != nil {
+		secureConn.Close()
+		return nil, fmt.Errorf("mesh: smux handshake with %s: %w", address, err)
+	}
+
+	// Store the session.
+	n.sessionsMu.Lock()
+	oldSession, exists := n.sessions[peerIdentityHex]
+	n.sessions[peerIdentityHex] = smuxSession
+	n.clientSessions[peerIdentityHex] = smuxSession
+	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
+	n.sessionsMu.Unlock()
+
+	if exists {
+		oldSession.Close()
+	}
+
+	log.Printf("[mesh] session established with %s (peer=%s, addr=%s)", address, peerIdentityHex[:16]+"...", address)
+
+	n.routes.AddPeer(&PeerEntry{
+		ID:       peerIdentityHex,
+		Endpoint: address,
+	})
+
+	// Open a stream on the session.
+	stream, err := smuxSession.OpenStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: open stream to %s: %w", address, err)
+	}
+
+	// Write virtual port 0 (placeholder — caller will close this stream
+	// if they only needed the session).
+	if err := writePortFrame(stream, 0); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("mesh: write port frame to %s: %w", address, err)
+	}
+
+	return stream, nil
+}
+
 // isMeshAddress returns true if the address is a mesh-internal virtual
 // port address of the form "mesh:PORT" or "mesh://PORT".
 func isMeshAddress(address string) bool {
@@ -695,23 +816,49 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 		}
 		if dialAddr != "" {
 			log.Printf("[mesh] DialVirtualPort: session closed, re-dialing peer %s at %s", peerIdentityHex[:16]+"...", dialAddr)
+
+			// First try Dial (requires Reality client config).
 			newStream, dialErr := n.Dial(ctx, "tcp", dialAddr)
 			if dialErr != nil {
-				return nil, fmt.Errorf("mesh: open stream to peer %s: %w (re-dial also failed: %v)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err, dialErr)
-			}
-			// The Dial already wrote port 0. Close the initial stream
-			// and open a new one on the re-established session.
-			newStream.Close()
-			n.sessionsMu.Lock()
-			newSess, hasNew := n.clientSessions[peerIdentityHex]
-			n.sessionsMu.Unlock()
-			if hasNew {
-				stream, err = newSess.OpenStream(ctx)
-				if err != nil {
-					return nil, fmt.Errorf("mesh: open stream to peer %s after re-dial: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+				// Dial failed (likely no Reality client config for
+				// gossip-discovered peer). Fall back to
+				// dialPeerByEndpoint which uses the mesh-internal
+				// marker byte (0x4D) to bypass Reality TLS.
+				meshStream, meshErr := n.DialPeerByEndpoint(ctx, dialAddr)
+				if meshErr != nil {
+					return nil, fmt.Errorf("mesh: open stream to peer %s: %w (re-dial also failed: %v)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err, meshErr)
+				}
+				// dialPeerByEndpoint already wrote port 0.
+				// Close that stream and open a new one with the
+				// correct port.
+				meshStream.Close()
+				n.sessionsMu.Lock()
+				newSess, hasNew := n.clientSessions[peerIdentityHex]
+				n.sessionsMu.Unlock()
+				if hasNew {
+					stream, err = newSess.OpenStream(ctx)
+					if err != nil {
+						return nil, fmt.Errorf("mesh: open stream to peer %s after mesh dial: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+					}
+				} else {
+					return nil, fmt.Errorf("mesh: open stream to peer %s: mesh dial did not store session", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...")
 				}
 			} else {
-				return nil, fmt.Errorf("mesh: open stream to peer %s: %w (re-dial failed to store session)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+				// Dial succeeded — it wrote port 0. Close the
+				// initial stream and open a new one with the
+				// correct port.
+				newStream.Close()
+				n.sessionsMu.Lock()
+				newSess, hasNew := n.clientSessions[peerIdentityHex]
+				n.sessionsMu.Unlock()
+				if hasNew {
+					stream, err = newSess.OpenStream(ctx)
+					if err != nil {
+						return nil, fmt.Errorf("mesh: open stream to peer %s after re-dial: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+					}
+				} else {
+					return nil, fmt.Errorf("mesh: open stream to peer %s: %w (re-dial failed to store session)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+				}
 			}
 		} else {
 			return nil, fmt.Errorf("mesh: open stream to peer %s: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
