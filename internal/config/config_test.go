@@ -473,3 +473,56 @@ func TestAdvertiseEndpointLegacyBackwardCompat(t *testing.T) {
 		t.Errorf("AdvertiseEndpoints[0] = %q, want %q", cfg.P2P.AdvertiseEndpoints[0], "203.0.113.99:51820")
 	}
 }
+
+// TestSavePermissionDenied verifies that config.Save returns a non-nil error
+// (equivalent to a non-zero exit / fatal condition) when the config cannot be
+// written — for example, when a path component in the parent directory is a
+// file rather than a directory (ENOTDIR), or when the filesystem is read-only.
+//
+// This is a safety contract: Save must not silently succeed when it cannot
+// persist the config — a nil return would mean the caller believes the config
+// was written when it wasn't.
+func TestSavePermissionDenied(t *testing.T) {
+	// Strategy: create a regular file where a directory component is expected.
+	// os.WriteFile will fail because it cannot treat a file as a directory.
+	tmpDir := t.TempDir()
+
+	// Create a regular file named "blocker" in the temp directory.
+	blocker := filepath.Join(tmpDir, "blocker")
+	if err := os.WriteFile(blocker, []byte("block"), 0644); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg := &Config{
+		Node: NodeConfig{Hostname: "test"},
+		Mesh: MeshConfig{Port: 51820},
+	}
+
+	// Attempt to save at a path where "blocker" is treated as a directory.
+	// e.g., block/config.yaml → block is a file, not a directory → ENOTDIR.
+	savePath := filepath.Join(blocker, "config.yaml")
+	err := Save(savePath, cfg)
+
+	// The contract: Save MUST return an error when it cannot write.
+	if err == nil {
+		t.Fatalf("Save should fail (path component is a file, not a directory), but returned nil")
+	}
+
+	// Also verify: write-protect the parent directory directly.
+	// On non-root systems or inside containers without CAP_DAC_OVERRIDE,
+	// this should also fail.
+	protectedDir := filepath.Join(tmpDir, "readonly")
+	if err := os.Mkdir(protectedDir, 0000); err != nil {
+		t.Fatalf("Mkdir error: %v", err)
+	}
+	defer os.Chmod(protectedDir, 0700)
+
+	err = Save(filepath.Join(protectedDir, "config.yaml"), cfg)
+	// Root can bypass DAC permissions, so we don't strictly require failure here.
+	// The ENOTDIR case above is the reliable cross-privilege-level check.
+	if err != nil {
+		t.Logf("Save correctly failed on write-protected dir: %v", err)
+	} else {
+		t.Logf("Save succeeded on write-protected dir (expected under root with CAP_DAC_OVERRIDE)")
+	}
+}
