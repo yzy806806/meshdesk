@@ -329,9 +329,33 @@ type TransferConfig struct {
 	UploadDir string `yaml:"upload_dir"`
 }
 
+// DefaultIdentityFile is the default path for the PEM-encoded identity file.
+// The identity file contains the Ed25519 private key in PKCS#8 PEM format
+// (RFC 8410) with 0600 permissions. Only the public key fingerprint is
+// stored in config.yaml for reference.
+const DefaultIdentityFile = "/etc/meshdesk/identity.pem"
+
 // NodeConfig holds local node identity settings.
 type NodeConfig struct {
-	Identity string `yaml:"identity"` // WireGuard private key (hex); auto-generated if empty
+	// Identity is the deprecated hex-encoded Ed25519 private key.
+	// Kept for backward compatibility migration only — new configs
+	// store the private key in IdentityFile (PEM format) and only
+	// a fingerprint (public key hex) here.
+	// On load, if Identity is set and IdentityFile is not, the key
+	// is migrated to the PEM file and this field is cleared.
+	// This field is never written to YAML by new code (omitempty + cleared).
+	Identity string `yaml:"identity,omitempty"` // DEPRECATED: hex private key; migrated to IdentityFile
+
+	// IdentityFile is the path to the PEM file containing the Ed25519
+	// private key. Default: /etc/meshdesk/identity.pem (0600 perms).
+	// The file is created automatically on first run if it doesn't exist.
+	IdentityFile string `yaml:"identity_file,omitempty"`
+
+	// Fingerprint is the hex-encoded Ed25519 public key, stored in
+	// config.yaml for reference only. It is NOT used for authentication
+	// — the actual key material is read from IdentityFile.
+	Fingerprint string `yaml:"fingerprint,omitempty"`
+
 	Hostname string `yaml:"hostname"` // auto-detected if empty
 	WebAddr  string `yaml:"web"`      // e.g. ":8080"; empty = agent-only mode
 
