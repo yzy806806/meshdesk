@@ -70,6 +70,11 @@ type MeshNode struct {
 	// registered for that port via ListenVirtualPort.
 	portMux *virtualPortMux
 
+	// reconnectState tracks per-peer auto-reconnect goroutines so we
+	// don't spawn duplicate reconnect attempts for the same peer.
+	reconnectState   map[string]*reconnectTracker
+	reconnectStateMu sync.Mutex
+
 	// muxTransport is the shared TCP listener multiplexer between gossip
 	// and Reality TLS. When non-nil, Start() creates it and passes its
 	// RealityListener() to the Reality handshake layer, and the caller
@@ -101,6 +106,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		sessionEstablishedAt: make(map[string]time.Time),
 		peerManagers:         make(map[string]*PeerManager),
 		portMux:              newVirtualPortMux(),
+		reconnectState:       make(map[string]*reconnectTracker),
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
@@ -373,6 +379,11 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 	// Hand the smux session to the stream handler. This starts a goroutine
 	// that accepts inbound streams on the session.
 	go n.handleSessionStreams(peerIdentityHex, smuxSession)
+
+	// Start auto-reconnect watcher. For inbound (server-mode) sessions,
+	// we pass isClientSession=false so the reconnect logic knows to try
+	// the mesh-internal dial path. The endpoint is the remote address.
+	n.startSessionWatcher(peerIdentityHex, remoteAddr, false)
 }
 
 // handleSessionStreams runs an accept loop on an established smux session,
@@ -455,6 +466,9 @@ func (n *MeshNode) Close() error {
 	n.clientSessions = make(map[string]*smux.Session)
 	n.sessionEstablishedAt = make(map[string]time.Time)
 	n.sessionsMu.Unlock()
+
+	// Stop all auto-reconnect watchers.
+	n.stopAllReconnectWatchers()
 
 	// Stop all PeerManagers.
 	n.peerManagersMu.Lock()
@@ -650,6 +664,9 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 		return nil, fmt.Errorf("mesh: write port frame to %s: %w", address, err)
 	}
 
+	// Start auto-reconnect watcher for this outbound client session.
+	n.startSessionWatcher(peerIdentityHex, address, true)
+
 	return stream, nil
 }
 
@@ -750,6 +767,9 @@ func (n *MeshNode) DialPeerByEndpoint(ctx context.Context, address string) (net.
 		stream.Close()
 		return nil, fmt.Errorf("mesh: write port frame to %s: %w", address, err)
 	}
+
+	// Start auto-reconnect watcher for this outbound client session.
+	n.startSessionWatcher(peerIdentityHex, address, true)
 
 	return stream, nil
 }
@@ -1027,6 +1047,9 @@ func (n *MeshNode) hasPeerConfigByAddress(address string) bool {
 //
 // This is safe to call even if the peer was never fully connected.
 func (n *MeshNode) RemovePeer(peerKey string) error {
+	// 0. Stop the auto-reconnect watcher for this peer (if active).
+	n.stopReconnectWatcher(peerKey)
+
 	// 1. Close and remove the smux session.
 	n.sessionsMu.Lock()
 	sess, ok := n.sessions[peerKey]

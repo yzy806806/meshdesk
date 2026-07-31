@@ -1,11 +1,15 @@
 package mesh
 
 import (
+	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/config"
+	"github.com/yzy806806/meshdesk/internal/identity"
 	"github.com/yzy806806/meshdesk/internal/smux"
 )
 
@@ -13,13 +17,18 @@ import (
 func createTestNode(t *testing.T) *MeshNode {
 	t.Helper()
 	cfg := &config.Config{}
+	ctx, cancel := context.WithCancel(context.Background())
 	node := &MeshNode{
 		cfg:                  cfg,
 		routes:               NewRoutingTable(),
 		sessions:             make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		peerManagers:         make(map[string]*PeerManager),
+		clientSessions:       make(map[string]*smux.Session),
 		portMux:              newVirtualPortMux(),
+		reconnectState:       make(map[string]*reconnectTracker),
+		ctx:                  ctx,
+		cancel:               cancel,
 	}
 	return node
 }
@@ -193,5 +202,59 @@ func TestGetPeerHandshakeInfo_ClosedSession(t *testing.T) {
 	info := node.GetPeerHandshakeInfo(peerKey)
 	if info != nil {
 		t.Fatal("GetPeerHandshakeInfo should return nil for closed session")
+	}
+}
+
+// TestIdentityPersistenceSurvivesRestart verifies that an Ed25519 identity
+// survives a save/load round-trip through PEM encoding:
+//  1. Generate a new Ed25519 keypair.
+//  2. Write it to a PEM file via saveIdentityPEM.
+//  3. Reload it via identity.IdentityFromPEM (simulating a process restart).
+//  4. Verify the public key matches (the identity is intact).
+//
+// This is the contract that guarantees a node restarts with the same identity.
+func TestIdentityPersistenceSurvivesRestart(t *testing.T) {
+	// Generate a fresh identity.
+	id, err := GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity() error: %v", err)
+	}
+
+	// Save to a temp PEM file, simulating first-run persistence.
+	tmpDir := t.TempDir()
+	pemPath := filepath.Join(tmpDir, "identity.pem")
+	if err := saveIdentityPEM(pemPath, id); err != nil {
+		t.Fatalf("saveIdentityPEM() error: %v", err)
+	}
+
+	// Simulate restart: read the PEM file back.
+	pemData, err := os.ReadFile(pemPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error: %v", pemPath, err)
+	}
+
+	restored, err := identity.IdentityFromPEM(pemData)
+	if err != nil {
+		t.Fatalf("IdentityFromPEM() error: %v", err)
+	}
+
+	// The public key must match — this is the identity invariant.
+	if restored.PublicKey != id.PublicKey {
+		t.Errorf("PublicKey mismatch after restart: got %s, want %s", restored.PublicKey, id.PublicKey)
+	}
+
+	// The private key must also match (same key material).
+	if restored.PrivateKey != id.PrivateKey {
+		t.Errorf("PrivateKey mismatch after restart: got %s, want %s", restored.PrivateKey, id.PrivateKey)
+	}
+
+	// Verify the restored identity can still sign and verify.
+	msg := []byte("persistence test message")
+	sig, err := restored.Sign(msg)
+	if err != nil {
+		t.Fatalf("Sign() after restart error: %v", err)
+	}
+	if !identity.Verify(restored.PublicKey, msg, sig) {
+		t.Error("Verify() failed after restart — restored identity is broken")
 	}
 }
