@@ -8,10 +8,14 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/yzy806806/meshdesk/internal/config"
 )
 
 // DefaultPeerCachePath is the default file path for persisted discovered
 // peer endpoints. The file is JSON-encoded and written atomically.
+// This constant is kept for backward compatibility; new code should use
+// config.DefaultPeerCachePath() which resolves a non-root fallback path.
 const DefaultPeerCachePath = "/var/lib/meshdesk/peers.cache"
 
 // peerCacheSaveInterval is how often the background save goroutine flushes
@@ -62,9 +66,12 @@ type PeerCache struct {
 
 // NewPeerCache creates a new PeerCache backed by the given file path.
 // The file is not read or written until Load() or SaveNow() is called.
+// When path is empty, the default path is resolved via
+// config.DefaultPeerCachePath(), which picks /var/lib/meshdesk/peers.cache
+// for root or ~/.meshdesk/peers.cache for non-root users.
 func NewPeerCache(path string) *PeerCache {
 	if path == "" {
-		path = DefaultPeerCachePath
+		path = config.DefaultPeerCachePath()
 	}
 	return &PeerCache{
 		path:   path,
