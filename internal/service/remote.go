@@ -19,7 +19,7 @@ const DefaultServicePort = 4192
 // ServiceRequest is a JSON command sent from the web server to a remote node.
 type ServiceRequest struct {
 	PeerID     string `json:"peer_id"`          // caller's peer ID (for capability checks)
-	Action     string `json:"action"`           // "start", "stop", "restart", "status", "list"
+	Action     string `json:"action"`           // "start", "stop", "restart", "status", "list", "monitor"
 	Service    string `json:"service"`          // service name (empty for "list")
 	FollowLogs bool   `json:"follow,omitempty"` // for "logs" action
 }

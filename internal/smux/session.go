@@ -53,13 +53,14 @@ type Session struct {
 
 // OpenStream creates a new stream and returns it as a net.Conn.
 //
-// Only valid in client mode. In server mode, returns ErrWrongRole.
+// Valid in both client and server mode. Client uses odd stream IDs,
+// server uses even stream IDs. This allows both sides to initiate
+// streams independently — necessary when one side doesn't listen
+// on a public port and can only use the inbound session.
+//
 // Blocks if the number of active streams has reached MaxStreams.
 // Returns an error if the session is closed or the context is cancelled.
 func (s *Session) OpenStream(ctx context.Context) (net.Conn, error) {
-	if !s.clientMode {
-		return nil, ErrWrongRole
-	}
 	if s.IsClosed() {
 		return nil, ErrSessionClosed
 	}
