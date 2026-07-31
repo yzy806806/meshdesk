@@ -185,6 +185,23 @@ func (s *Session) IsClosed() bool {
 	return s.closed
 }
 
+// Done returns a channel that is closed when the session terminates —
+// either via an explicit Close() call, a GO_AWAY frame from the remote
+// peer, or an unrecoverable I/O error on the underlying connection
+// (which triggers abort).
+//
+// Callers can use this to detect session loss and trigger reconnection
+// logic:
+//
+//	<-sess.Done()
+//	// session is gone — reconnect
+//
+// The channel is never reassigned; it is safe to select on concurrently
+// from multiple goroutines.
+func (s *Session) Done() <-chan struct{} {
+	return s.doneCh
+}
+
 // ── Internal methods ──────────────────────────────────────────────────
 
 // removeStream removes a stream from the session map.
