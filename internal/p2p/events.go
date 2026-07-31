@@ -46,6 +46,10 @@ type meshEventDelegate struct {
 	leaveHandler  PeerLeaveHandler
 	updateHandler PeerUpdateHandler
 
+	// peerCache persists discovered peer endpoints to disk so they
+	// survive restarts. nil when persistence is disabled.
+	peerCache *PeerCache
+
 	// relayPathBuilder manages relay circuits for NAT peers.
 	// nil if relay path building is not enabled (no gossip layer wiring).
 	relayPathBuilder RelayPathBuilder
@@ -99,6 +103,15 @@ func (e *meshEventDelegate) SetRelayPathBuilder(rpb RelayPathBuilder) {
 	e.relayPathBuilder = rpb
 }
 
+// SetPeerCache installs a PeerCache for persisting discovered peer
+// endpoints to disk. When set, NotifyJoin/NotifyUpdate/NotifyLeave
+// events update the cache so that peer endpoints survive restarts.
+func (e *meshEventDelegate) SetPeerCache(pc *PeerCache) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.peerCache = pc
+}
+
 // NotifyJoin is called when a new node joins the memberlist cluster.
 // It parses the node's metadata and, if the peer is new, connects to it
 // via the PeerManager and adds it to the appropriate candidate pools.
@@ -126,6 +139,7 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 	e.mu.Lock()
 	isNew := e.metaCache[meta.PublicKey] == nil
 	e.metaCache[meta.PublicKey] = meta
+	pc := e.peerCache
 
 	// Add to capability pools.
 	if meta.CapRelay {
@@ -140,6 +154,11 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 
 	joinHdl := e.joinHandler
 	e.mu.Unlock()
+
+	// Persist peer endpoint to cache.
+	if pc != nil {
+		pc.OnPeerJoin(meta)
+	}
 
 	// Connect via PeerManager.
 	if isNew {
@@ -196,8 +215,14 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 		delete(e.exitPool, foundKey)
 		delete(e.entryPool, foundKey)
 	}
+	pc := e.peerCache
 	leaveHdl := e.leaveHandler
 	e.mu.Unlock()
+
+	// Remove from peer cache.
+	if pc != nil && meta != nil {
+		pc.OnPeerLeave(meta.PublicKey)
+	}
 
 	if meta == nil {
 		// We didn't have metadata for this node — nothing to remove.
@@ -256,6 +281,7 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 
 	// Update cached metadata.
 	e.metaCache[meta.PublicKey] = meta
+	pc := e.peerCache
 
 	// Update capability pools.
 	if meta.CapRelay {
@@ -284,6 +310,11 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 		}
 	} else {
 		e.mu.Unlock()
+	}
+
+	// Update peer cache with new metadata/endpoints.
+	if pc != nil {
+		pc.OnPeerUpdate(meta)
 	}
 
 	// Invoke external update handler.
