@@ -544,17 +544,22 @@ func main() {
 		defer auditLogger.Close()
 
 		authEngine := auth.NewCapabilityEngine(cfg, auditLogger)
+		_ = authEngine // used by web layer for capability checks
 
-		// Wire monitor auth checker into the aggregator so that every
-		// incoming metric push is checked for the monitor_write capability.
-		// If authEngine is nil, the checker is nil and the aggregator
-		// accepts all pushes (testing mode only).
-		// NOTE: In v2 with mesh-internal connections, the auth checker
-		// rejects pushes from peers not in authorized_keys. For now,
-		// set to nil to allow all mesh-discovered peers to push metrics.
-		// TODO: Implement proper mesh identity authorization.
-		var monitorAuthChecker monitor.AuthChecker
-		_ = monitorAuthChecker // suppress unused warning
+		// Wire mesh identity-based auth checker into the aggregator.
+		// Every incoming metric push is checked: the source peer must
+		// be a known mesh member (routing table lookup) or the local
+		// node itself. Unknown peers are rejected (fail-closed).
+		// This implements Decision E (zero-trust) at the mesh-identity
+		// level: mesh membership is the trust boundary for monitor_write.
+		monitorAuthChecker := auth.NewMeshIdentityAuthChecker(
+			nodeID,
+			func(peerID string) bool {
+				_, ok := node.RoutingTable().GetPeer(peerID)
+				return ok
+			},
+			auditLogger,
+		)
 
 		// On web nodes, also run the aggregator to receive metric pushes.
 		aggregator := monitor.NewAggregator(monitor.AggregatorConfig{
