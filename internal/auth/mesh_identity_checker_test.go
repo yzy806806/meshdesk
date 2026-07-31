@@ -128,6 +128,43 @@ func TestMeshIdentityAuthCheckerAuditLog(t *testing.T) {
 	}
 }
 
+// TestMeshIdentityAuthCheckerPeerRemovedFromRoutingTable verifies
+// dynamic tracking: a peer is authorized while present in the routing
+// table and rejected after removal. This proves the checker does not
+// cache results — every AuthorizeMonitorWrite call re-evaluates
+// routing table membership.
+func TestMeshIdentityAuthCheckerPeerRemovedFromRoutingTable(t *testing.T) {
+	// Mutable peer set simulates the routing table.
+	peers := map[string]bool{
+		"peer-alpha": true,
+		"peer-beta":  true,
+	}
+
+	checker := NewMeshIdentityAuthChecker(
+		"local-node",
+		func(peerID string) bool { return peers[peerID] },
+		nil,
+	)
+
+	// Phase 1: peer is in the routing table — should be authorized.
+	if !checker.AuthorizeMonitorWrite("peer-alpha") {
+		t.Error("peer-alpha should be authorized while present in routing table")
+	}
+
+	// Phase 2: remove peer from the routing table.
+	delete(peers, "peer-alpha")
+
+	// Phase 3: same peer, same checker, now absent — should be rejected.
+	if checker.AuthorizeMonitorWrite("peer-alpha") {
+		t.Error("peer-alpha should be rejected after removal from routing table")
+	}
+
+	// Sanity: peer-beta is still in the table and should still pass.
+	if !checker.AuthorizeMonitorWrite("peer-beta") {
+		t.Error("peer-beta should still be authorized (unaffected by peer-alpha removal)")
+	}
+}
+
 // TestMeshIdentityAuthCheckerImplementsInterface is a compile-time
 // check that MeshIdentityAuthChecker satisfies monitor.AuthChecker.
 func TestMeshIdentityAuthCheckerImplementsInterface(t *testing.T) {
