@@ -95,6 +95,7 @@ type MuxTransport struct {
 
 	streamCh   chan net.Conn           // gossip streams → memberlist
 	realityCh  chan net.Conn           // Reality TLS connections → reality listener
+	meshCh     chan net.Conn           // mesh-internal connections → mesh listener
 	packetChIn chan *memberlist.Packet // UDP packets → memberlist
 
 	shutdown   atomic.Int32
@@ -155,6 +156,7 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		logger:        logger,
 		streamCh:      make(chan net.Conn),
 		realityCh:     make(chan net.Conn, 64),
+		meshCh:        make(chan net.Conn, 64),
 		packetChIn:    make(chan *memberlist.Packet),
 		bindAddr:      bindAddr,
 		advertiseAddr: cfg.AdvertiseAddr,
@@ -379,6 +381,49 @@ func (t *MuxTransport) tcpAcceptLoop() {
 	}
 }
 
+// meshInternalMarker is the first byte sent by a mesh-internal connection
+// (mesh-internal dial → key exchange → smux). It must not collide with
+// TLS ClientHello (0x16) or memberlist message types (0–13, 244).
+// 0x4D = 'M' for Mesh.
+const meshInternalMarker = 0x4D
+
+// MeshListener returns a net.Listener that accepts mesh-internal connections
+// demuxed from the shared TCP listener. These are connections from other
+// meshdesk nodes that want to establish a smux session directly (without
+// Reality TLS). The caller (MeshNode) performs the key exchange + smux
+// handshake on each accepted connection.
+func (t *MuxTransport) MeshListener() net.Listener {
+	return &muxMeshListener{
+		transport: t,
+		doneCh:    make(chan struct{}),
+	}
+}
+
+// muxMeshListener implements net.Listener for mesh-internal connections.
+type muxMeshListener struct {
+	transport *MuxTransport
+	once      sync.Once
+	doneCh    chan struct{}
+}
+
+func (l *muxMeshListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.transport.meshCh:
+		return conn, nil
+	case <-l.doneCh:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *muxMeshListener) Close() error {
+	l.once.Do(func() { close(l.doneCh) })
+	return nil
+}
+
+func (l *muxMeshListener) Addr() net.Addr {
+	return l.transport.tcpListener.Addr()
+}
+
 // handleMuxConn peeks the first byte of the connection and routes it
 // to the appropriate channel.
 func (t *MuxTransport) handleMuxConn(conn net.Conn) {
@@ -416,6 +461,18 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 			// Reality accept queue full — apply backpressure.
 			t.logger.Printf("[WARN] mux: reality accept queue full, dropping connection from %s", conn.RemoteAddr())
 			wrapped.Close()
+		}
+	} else if peekBuf[0] == meshInternalMarker {
+		// Mesh-internal connection → mesh key exchange + smux path.
+		// Don't use connWithPrefix — the 0x4D marker byte is not
+		// part of the key exchange protocol and should not be replayed.
+		select {
+		case t.meshCh <- conn:
+		case <-t.shutdownDone():
+			conn.Close()
+		default:
+			t.logger.Printf("[WARN] mux: mesh accept queue full, dropping connection from %s", conn.RemoteAddr())
+			conn.Close()
 		}
 	} else {
 		// Memberlist gossip stream.

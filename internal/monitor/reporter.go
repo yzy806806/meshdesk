@@ -200,6 +200,7 @@ func (r *Reporter) tryPush(collectorID string, data []byte) bool {
 
 	conn, err := r.dialer.DialMesh(ctx, collectorID, r.port)
 	if err != nil {
+		log.Printf("[monitor] tryPush: DialMesh to %s failed: %v", collectorID[:min(len(collectorID), 16)], err)
 		return false
 	}
 	defer conn.Close()
