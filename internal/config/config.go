@@ -335,6 +335,21 @@ type TransferConfig struct {
 // stored in config.yaml for reference.
 const DefaultIdentityFile = "/etc/meshdesk/identity.pem"
 
+// DefaultPeerCachePath returns the default file path for the peer cache,
+// adjusted for the current user's privileges. Root uses
+// /var/lib/meshdesk/peers.cache; non-root users fall back to
+// ~/.meshdesk/peers.cache to avoid permission errors.
+func DefaultPeerCachePath() string {
+	if os.Getuid() == 0 {
+		return "/var/lib/meshdesk/peers.cache"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "/var/lib/meshdesk/peers.cache"
+	}
+	return home + "/.meshdesk/peers.cache"
+}
+
 // NodeConfig holds local node identity settings.
 type NodeConfig struct {
 	// Identity is the deprecated hex-encoded Ed25519 private key.
@@ -440,6 +455,13 @@ type P2pConfig struct {
 	// If set, it is treated as a single-element AdvertiseEndpoints list
 	// during config loading. Deprecated: use advertise_endpoints instead.
 	AdvertiseEndpoint string `yaml:"advertise_endpoint,omitempty"`
+
+	// PeerCachePath is the file path for persisting discovered peer
+	// endpoints to disk so they survive process restarts. When empty,
+	// the default is /var/lib/meshdesk/peers.cache for root, or
+	// ~/.meshdesk/peers.cache for non-root users. The file is
+	// JSON-encoded and written atomically.
+	PeerCachePath string `yaml:"peer_cache_path,omitempty"`
 }
 
 // PeerConfig describes a single mesh peer.
@@ -746,6 +768,12 @@ func Load(path string) (*Config, error) {
 	// and advertise_endpoints is not, migrate the single endpoint to the list.
 	if cfg.P2P.AdvertiseEndpoint != "" && len(cfg.P2P.AdvertiseEndpoints) == 0 {
 		cfg.P2P.AdvertiseEndpoints = []string{cfg.P2P.AdvertiseEndpoint}
+	}
+	// Peer cache path: if not set by the user, resolve a default.
+	// Root uses /var/lib/meshdesk/peers.cache; non-root falls back to
+	// ~/.meshdesk/peers.cache to avoid permission errors.
+	if cfg.P2P.PeerCachePath == "" {
+		cfg.P2P.PeerCachePath = DefaultPeerCachePath()
 	}
 	if cfg.Monitoring.Interval == 0 {
 		cfg.Monitoring.Interval = 15

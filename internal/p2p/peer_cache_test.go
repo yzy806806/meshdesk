@@ -3,8 +3,11 @@ package p2p
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/yzy806806/meshdesk/internal/config"
 )
 
 func TestPeerCache_LoadNonexistent(t *testing.T) {
@@ -264,7 +267,70 @@ func TestPeerCache_EmptySaveNow(t *testing.T) {
 
 func TestPeerCache_DefaultPath(t *testing.T) {
 	c := NewPeerCache("")
-	if c.path != DefaultPeerCachePath {
-		t.Errorf("expected default path %s, got %s", DefaultPeerCachePath, c.path)
+	// When path is empty, NewPeerCache should resolve via
+	// config.DefaultPeerCachePath(), which returns a non-empty path.
+	if c.path == "" {
+		t.Error("expected non-empty default path")
+	}
+	// The resolved path should match config.DefaultPeerCachePath().
+	expected := config.DefaultPeerCachePath()
+	if c.path != expected {
+		t.Errorf("expected default path %s, got %s", expected, c.path)
+	}
+}
+
+func TestPeerCache_ConfigurablePath(t *testing.T) {
+	// Verify that an explicitly provided path is used as-is.
+	dir := t.TempDir()
+	customPath := filepath.Join(dir, "custom", "peers.cache")
+	c := NewPeerCache(customPath)
+	if c.path != customPath {
+		t.Errorf("expected custom path %s, got %s", customPath, c.path)
+	}
+
+	// Add a peer, save, and reload to verify the custom path works end-to-end.
+	c.OnPeerJoin(&NodeMeta{
+		PublicKey: "cfg-test-1",
+		Endpoints: []string{"10.0.0.1:52888"},
+	})
+	if err := c.SaveNow(); err != nil {
+		t.Fatalf("SaveNow to custom path failed: %v", err)
+	}
+
+	c2 := NewPeerCache(customPath)
+	if err := c2.Load(); err != nil {
+		t.Fatalf("Load from custom path failed: %v", err)
+	}
+	if c2.CachedPeerCount() != 1 {
+		t.Fatalf("expected 1 peer from custom path, got %d", c2.CachedPeerCount())
+	}
+}
+
+func TestPeerCache_NonRootFallback(t *testing.T) {
+	// Test that config.DefaultPeerCachePath() returns a path under
+	// ~/.meshdesk/ for non-root users. We can't change uid in a test,
+	// but we can verify the function returns a sensible path:
+	//   - For root: /var/lib/meshdesk/peers.cache
+	//   - For non-root: ~/.meshdesk/peers.cache
+	path := config.DefaultPeerCachePath()
+	if path == "" {
+		t.Fatal("DefaultPeerCachePath() should never return empty")
+	}
+
+	if os.Getuid() == 0 {
+		// Running as root — expect the system path.
+		if path != "/var/lib/meshdesk/peers.cache" {
+			t.Errorf("root: expected /var/lib/meshdesk/peers.cache, got %s", path)
+		}
+	} else {
+		// Running as non-root — expect a path under the home directory.
+		home, err := os.UserHomeDir()
+		if err != nil {
+			t.Skipf("can't determine home dir: %v", err)
+		}
+		expectedPrefix := home + "/.meshdesk/"
+		if !strings.HasPrefix(path, expectedPrefix) {
+			t.Errorf("non-root: expected path under %s, got %s", expectedPrefix, path)
+		}
 	}
 }

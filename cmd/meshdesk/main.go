@@ -155,7 +155,7 @@ func main() {
 		// Initialize peer cache for persistence of discovered endpoints.
 		// Loaded from disk so previously discovered peers are immediately
 		// available as gossip seeds on restart.
-		peerCache := p2p.NewPeerCache(p2p.DefaultPeerCachePath)
+		peerCache := p2p.NewPeerCache(cfg.P2P.PeerCachePath)
 		if err := peerCache.Load(); err != nil {
 			log.Printf("Warning: failed to load peer cache: %v (starting fresh)", err)
 		}
