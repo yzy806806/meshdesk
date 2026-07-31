@@ -37,6 +37,10 @@ type GossipLayer struct {
 	// listener between gossip and Reality TLS).
 	transport memberlist.Transport
 
+	// peerCache persists discovered peer endpoints to disk so they
+	// survive restarts. nil when persistence is disabled.
+	peerCache *PeerCache
+
 	// relaySessionMgr manages relay circuits when this node is relay-capable.
 	// nil when relay mode is not enabled.
 	relaySessionMgr *RelaySessionManager
@@ -123,6 +127,17 @@ func (g *GossipLayer) SetTransport(t memberlist.Transport) {
 	g.mu.Lock()
 	g.transport = t
 	g.mu.Unlock()
+}
+
+// SetPeerCache installs a PeerCache for persisting discovered peer
+// endpoints to disk. When set, the gossip event delegate updates the
+// cache on peer join/update/leave events, and Start() launches a
+// background save loop. Stop() performs a final flush.
+func (g *GossipLayer) SetPeerCache(pc *PeerCache) {
+	g.mu.Lock()
+	g.peerCache = pc
+	g.mu.Unlock()
+	g.events.SetPeerCache(pc)
 }
 
 // SetLocalIdentity sets the local node's hostname and role in metadata.
@@ -531,6 +546,14 @@ func (g *GossipLayer) Start() error {
 	// Wire the join protocol (§4).
 	g.wireJoinProtocol()
 
+	// Start peer cache save loop if persistence is enabled.
+	g.mu.RLock()
+	pc := g.peerCache
+	g.mu.RUnlock()
+	if pc != nil {
+		pc.StartSaveLoop()
+	}
+
 	log.Printf("[p2p] gossip layer started (bind %s:%d, advertise %s)",
 		bindAddr, g.cfg.GossipPort, mlConfig.AdvertiseAddr)
 
@@ -557,6 +580,14 @@ func (g *GossipLayer) Stop() error {
 	// Stop the relay session manager if active.
 	if rsm != nil {
 		rsm.Stop()
+	}
+
+	// Stop the peer cache (flushes to disk).
+	g.mu.RLock()
+	pc := g.peerCache
+	g.mu.RUnlock()
+	if pc != nil {
+		pc.Stop()
 	}
 
 	// Send a graceful LeaveNotice to all peers (§4).
@@ -907,6 +938,13 @@ func (g *GossipLayer) RelaySessionManager() *RelaySessionManager {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	return g.relaySessionMgr
+}
+
+// PeerCache returns the peer cache, or nil if persistence is not enabled.
+func (g *GossipLayer) PeerCache() *PeerCache {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.peerCache
 }
 
 // EnableRelayMode initializes the relay session manager and wires it

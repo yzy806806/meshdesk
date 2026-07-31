@@ -152,6 +152,36 @@ func main() {
 		}
 		gl.SetWireGuardDelegate(wgDelegate)
 
+		// Initialize peer cache for persistence of discovered endpoints.
+		// Loaded from disk so previously discovered peers are immediately
+		// available as gossip seeds on restart.
+		peerCache := p2p.NewPeerCache(p2p.DefaultPeerCachePath)
+		if err := peerCache.Load(); err != nil {
+			log.Printf("Warning: failed to load peer cache: %v (starting fresh)", err)
+		}
+		gl.SetPeerCache(peerCache)
+
+		// Merge cached peer endpoints into the seed list so gossip
+		// can bootstrap from previously discovered peers.
+		cachedSeeds := peerCache.CachedEndpointsAsSeeds()
+		if len(cachedSeeds) > 0 {
+			existing := make(map[string]bool, len(p2pCfg.Seeds))
+			for _, s := range p2pCfg.Seeds {
+				existing[s] = true
+			}
+			added := 0
+			for _, s := range cachedSeeds {
+				if !existing[s] {
+					p2pCfg.Seeds = append(p2pCfg.Seeds, s)
+					existing[s] = true
+					added++
+				}
+			}
+			if added > 0 {
+				log.Printf("  P2P:       added %d cached peer endpoint(s) as seeds", added)
+			}
+		}
+
 		// Inject the MuxTransport from the mesh node so gossip and Reality
 		// TLS share the same TCP port.
 		if mt := node.MuxTransport(); mt != nil {
