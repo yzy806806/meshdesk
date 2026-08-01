@@ -54,7 +54,7 @@ func newTestGossipLayer(t *testing.T, name string, port int, seeds []string) *Go
 	}
 
 	gl.SetLocalIdentity(name, "agent")
-	gl.SetLocalCapabilities(false, false, false)
+	gl.SetLocalCapabilities(false, false, false, false)
 
 	// Override the announceLocalEndpoint auto-detection by setting endpoints
 	// explicitly — AdvertiseEndpoints is already set, but announceLocalEndpoint
