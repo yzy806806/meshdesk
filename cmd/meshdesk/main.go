@@ -612,6 +612,7 @@ func main() {
 		aggregator := monitor.NewAggregator(monitor.AggregatorConfig{
 			Store:       monitorStore,
 			Dialer:      &meshListenerAdapter{node: node},
+			MeshDialer:  &meshDialerAdapter{node: node, gossip: gossipLayer},
 			Port:        cfg.Monitoring.Port,
 			AuthChecker: monitorAuthChecker,
 		})
