@@ -50,7 +50,7 @@ func TestCFTunnelConfigYAMLGeneration(t *testing.T) {
 		"http_status:404":              true, // catch-all rule
 	}
 
-	for check, _ := range checks {
+	for check := range checks {
 		if !strings.Contains(yaml, check) {
 			t.Errorf("config YAML missing: %q\nFull config:\n%s", check, yaml)
 		}

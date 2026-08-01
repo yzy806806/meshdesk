@@ -1,5 +1,6 @@
 // Package mesh provides the PeerManager — a per-peer connection lifecycle
-// manager that sits above the Transport layer and below WireGuard.
+// manager that sits above the Transport layer and below the smux session
+// layer.
 //
 // PeerManager implements:
 //   - Three-state peer-level state machine (disconnected → connecting → connected)
@@ -354,7 +355,7 @@ type peerCommandMsg struct {
 // PeerManager manages a single peer's connection lifecycle with
 // auto-reconnect, multi-transport failover, latency probing, and
 // optimal path selection. It sits above the Transport layer and
-// below WireGuard.
+// below the smux session layer.
 //
 // One goroutine is spawned per PeerManager instance on Start(). The
 // goroutine runs a select-loop that manages transport dials, probes,

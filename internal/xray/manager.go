@@ -1015,11 +1015,10 @@ func (m *XrayConfigManager) captureLogs(reader io.Reader, stream string) {
 					Stream:    stream,
 					Line:      string(buf),
 				})
-				buf = buf[:0]
 			}
 			return
-		}
 	}
+}
 }
 
 // monitorProcess waits for the xray process to exit and handles
