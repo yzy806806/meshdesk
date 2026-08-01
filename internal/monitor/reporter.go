@@ -114,6 +114,26 @@ func (r *Reporter) AddCollector(peerKey string) {
 	go r.FlushBuffer()
 }
 
+// RemoveCollector removes a collector peer ID from the reporter's collector
+// list. This is called dynamically when a collector peer leaves the mesh
+// (NotifyLeave) so that stale entries don't accumulate and waste dial
+// attempts on dead peers. The removal is idempotent — removing a peer key
+// that is not present is silently ignored.
+//
+// This method is safe to call concurrently with the reporter's push loop.
+func (r *Reporter) RemoveCollector(peerKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for i, c := range r.collectors {
+		if c == peerKey {
+			r.collectors = append(r.collectors[:i], r.collectors[i+1:]...)
+			log.Printf("[monitor] collector removed: %s", peerKey[:min(len(peerKey), 16)])
+			return
+		}
+	}
+}
+
 // Collectors returns a copy of the current collector peer ID list.
 func (r *Reporter) Collectors() []string {
 	r.mu.Lock()
