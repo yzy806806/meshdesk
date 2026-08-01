@@ -155,9 +155,11 @@ func TestEventDelegateNotifyLeaveRemovesPeer(t *testing.T) {
 		t.Errorf("leave handler received wrong key: got %s, want %s", leftKey, peerMeta.PublicKey)
 	}
 
-	// Verify metadata is removed from cache.
-	if events.GetPeerMeta(peerMeta.PublicKey) != nil {
-		t.Error("peer metadata should be removed after NotifyLeave")
+	// Verify metadata is KEPT in cache after NotifyLeave (commit 65d10a1).
+	// metaCache entries are intentionally retained for fallback DialPeerByEndpoint
+	// when memberlist marks peers failed due to UDP ping timeout.
+	if events.GetPeerMeta(peerMeta.PublicKey) == nil {
+		t.Error("peer metadata should be kept after NotifyLeave (intentional retention for fallback dialing)")
 	}
 
 	// Verify relay pool no longer includes this peer.
