@@ -610,11 +610,13 @@ func main() {
 
 		// On web nodes, also run the aggregator to receive metric pushes.
 		aggregator := monitor.NewAggregator(monitor.AggregatorConfig{
-			Store:       monitorStore,
-			Dialer:      &meshListenerAdapter{node: node},
-			MeshDialer:  &meshDialerAdapter{node: node, gossip: gossipLayer},
-			Port:        cfg.Monitoring.Port,
-			AuthChecker: monitorAuthChecker,
+			Store:           monitorStore,
+			Dialer:          &meshListenerAdapter{node: node},
+			MeshDialer:      &meshDialerAdapter{node: node, gossip: gossipLayer},
+			CollectorLister: &collectorListerAdapter{gossip: gossipLayer},
+			SelfPeerID:      nodeID,
+			Port:            cfg.Monitoring.Port,
+			AuthChecker:     monitorAuthChecker,
 		})
 		if err := aggregator.Start(); err != nil {
 			log.Printf("Warning: failed to start metric aggregator: %v", err)
@@ -889,6 +891,25 @@ func main() {
 type meshDialerAdapter struct {
 	node   *mesh.MeshNode
 	gossip *p2p.GossipLayer
+}
+
+// collectorListerAdapter adapts the gossip layer to the monitor.CollectorLister
+// interface. It enumerates collector-capable peers known via gossip.
+type collectorListerAdapter struct {
+	gossip *p2p.GossipLayer
+}
+
+func (c *collectorListerAdapter) CollectorPeerIDs() []string {
+	if c.gossip == nil {
+		return nil
+	}
+	var ids []string
+	for _, meta := range c.gossip.KnownPeers() {
+		if meta.CapCollector {
+			ids = append(ids, meta.PublicKey)
+		}
+	}
+	return ids
 }
 
 func (d *meshDialerAdapter) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {

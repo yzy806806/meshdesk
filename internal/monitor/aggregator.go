@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
 
 // AuthChecker is the interface for capability-based authorization of
@@ -22,6 +23,16 @@ type AuthChecker interface {
 	AuthorizeMonitorWrite(sourcePeer string) bool
 }
 
+// CollectorLister enumerates collector-capable peers known to the mesh.
+// The aggregator uses this to forward received metric envelopes to other
+// collector nodes so that every collector has visibility into all metrics.
+// In production this is backed by the gossip layer's GetCollectorCandidates.
+type CollectorLister interface {
+	// CollectorPeerIDs returns the peer IDs of all known collector-capable
+	// nodes (excluding the local node, which the caller filters out).
+	CollectorPeerIDs() []string
+}
+
 // Aggregator runs on collector nodes (nodes with --web or designated aggregators).
 // It listens on a mesh-internal port for incoming metric pushes from agents,
 // validates them, and stores them in the local Store for dashboard consumption.
@@ -34,6 +45,15 @@ type Aggregator struct {
 	// collector nodes. If nil, forwarding is disabled (the aggregator
 	// only stores metrics locally). Set via AggregatorConfig.MeshDialer.
 	meshDialer MeshDialer
+
+	// collectorLister enumerates other collector-capable peers in the mesh.
+	// The aggregator forwards non-forwarded envelopes to these peers.
+	// If nil, forwarding is disabled even if meshDialer is set.
+	collectorLister CollectorLister
+
+	// selfPeerID is the local node's peer ID, used to skip self when
+	// forwarding envelopes to other collectors.
+	selfPeerID string
 
 	authChecker AuthChecker
 
@@ -62,6 +82,15 @@ type AggregatorConfig struct {
 	// only stores metrics locally (no forwarding).
 	MeshDialer MeshDialer
 
+	// CollectorLister, if set, provides the list of other collector peer
+	// IDs to forward envelopes to. Forwarding is enabled only when both
+	// MeshDialer and CollectorLister are non-nil.
+	CollectorLister CollectorLister
+
+	// SelfPeerID is the local node's peer ID. The aggregator skips this
+	// ID when forwarding to avoid sending envelopes back to itself.
+	SelfPeerID string
+
 	// AuthChecker, if set, requires every incoming metric push to
 	// pass a capability check (Decision E). If nil, all pushes are
 	// accepted (testing mode only).
@@ -79,12 +108,14 @@ func NewAggregator(cfg AggregatorConfig) *Aggregator {
 		store = NewStore()
 	}
 	return &Aggregator{
-		store:       store,
-		dialer:      cfg.Dialer,
-		port:        port,
-		meshDialer:  cfg.MeshDialer,
-		authChecker: cfg.AuthChecker,
-		stopCh:      make(chan struct{}),
+		store:          store,
+		dialer:         cfg.Dialer,
+		port:           port,
+		meshDialer:     cfg.MeshDialer,
+		collectorLister: cfg.CollectorLister,
+		selfPeerID:     cfg.SelfPeerID,
+		authChecker:    cfg.AuthChecker,
+		stopCh:         make(chan struct{}),
 	}
 }
 
@@ -185,6 +216,72 @@ func (a *Aggregator) handlePush(conn net.Conn) {
 	// Store the metrics. The Store handles deduplication naturally
 	// (ring buffer overwrites old data; newer timestamp wins).
 	a.store.Append(env.SourceID, env.Metrics)
+
+	// Forward the envelope to other known collectors if:
+	//   - this envelope was not already forwarded (prevents loops),
+	//   - a mesh dialer is configured,
+	//   - a collector lister is configured.
+	a.forwardToCollectors(env)
+}
+
+// forwardToCollectors forwards the given envelope to all known collector
+// peers except the local node. The envelope's Forwarded field is set to
+// true so that receiving collectors do not re-forward it (loop prevention).
+// Failures are logged but do not affect the local store; the worst case
+// is that a collector misses a metric sample, which will be refreshed on
+// the next push cycle.
+func (a *Aggregator) forwardToCollectors(env *MetricEnvelope) {
+	if env.Forwarded {
+		return // already forwarded by another collector; don't re-forward
+	}
+	if a.meshDialer == nil || a.collectorLister == nil {
+		return // forwarding not configured
+	}
+
+	peers := a.collectorLister.CollectorPeerIDs()
+	if len(peers) == 0 {
+		return
+	}
+
+	// Mark the envelope as forwarded so receivers skip it.
+	fwdEnv := &MetricEnvelope{
+		SourceID:  env.SourceID,
+		Sequence:  env.Sequence,
+		Forwarded: true,
+		Metrics:   env.Metrics,
+	}
+
+	for _, peerID := range peers {
+		// Skip self to avoid loops.
+		if peerID == a.selfPeerID {
+			continue
+		}
+		if err := a.forwardEnvelope(peerID, fwdEnv); err != nil {
+			id := peerID
+			if len(id) > 16 {
+				id = id[:16]
+			}
+			log.Printf("monitor: forward to collector %s: %v", id, err)
+		}
+	}
+}
+
+// forwardEnvelope dials a collector peer and sends the envelope using the
+// same length-prefixed JSON protocol as the reporter's pushToCollectors.
+func (a *Aggregator) forwardEnvelope(peerID string, env *MetricEnvelope) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := a.meshDialer.DialMesh(ctx, peerID, a.port)
+	if err != nil {
+		return fmt.Errorf("dial: %w", err)
+	}
+	defer conn.Close()
+
+	if err := WriteEnvelope(conn, env); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
+	return nil
 }
 
 // IsRunning returns whether the aggregator is currently accepting pushes.
