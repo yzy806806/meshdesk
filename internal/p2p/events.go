@@ -36,6 +36,13 @@ type RelayPathBuilder interface {
 // collector's Ed25519 public key (hex-encoded).
 type CollectorDiscoveredHandler func(peerKey string)
 
+// CollectorRemovedHandler is called when a collector peer leaves the mesh
+// (NotifyLeave) or loses its CapCollector capability (NotifyUpdate). The
+// peerKey is the collector's Ed25519 public key (hex-encoded). This allows
+// the reporter to clean up stale collector entries and avoid dialing dead
+// peers.
+type CollectorRemovedHandler func(peerKey string)
+
 // meshEventDelegate implements memberlist.EventDelegate to bridge gossip
 // events to the PeerManager and routing table.
 type meshEventDelegate struct {
@@ -55,6 +62,11 @@ type meshEventDelegate struct {
 	// collectorHandler is called when a collector peer is discovered
 	// or updated. nil if not wired (monitor auto-routing disabled).
 	collectorHandler CollectorDiscoveredHandler
+
+	// collectorRemovedHandler is called when a collector peer leaves the
+	// mesh (NotifyLeave) or loses CapCollector (NotifyUpdate). nil if not
+	// wired.
+	collectorRemovedHandler CollectorRemovedHandler
 
 	// peerCache persists discovered peer endpoints to disk so they
 	// survive restarts. nil when persistence is disabled.
@@ -113,6 +125,17 @@ func (e *meshEventDelegate) SetCollectorHandler(h CollectorDiscoveredHandler) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.collectorHandler = h
+}
+
+// SetCollectorRemovedHandler installs a callback for collector removal
+// events. When a collector peer leaves the mesh (NotifyLeave) or loses its
+// CapCollector capability (NotifyUpdate), this callback is invoked with the
+// collector's public key. This enables the reporter to clean up stale
+// collector entries so it doesn't waste dial attempts on dead peers.
+func (e *meshEventDelegate) SetCollectorRemovedHandler(h CollectorRemovedHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.collectorRemovedHandler = h
 }
 
 // SetRelayPathBuilder installs the relay path builder for NAT peer relay selection.
@@ -263,6 +286,7 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 	e.cooldownMu.Unlock()
 
 	e.mu.Lock()
+	var wasCollector bool
 	if meta != nil {
 		// Keep metaCache entry so fallback dialing (DialPeerByEndpoint
 		// in main.go meshDialerAdapter) can still find the peer's
@@ -272,10 +296,15 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 		delete(e.relayPool, foundKey)
 		delete(e.exitPool, foundKey)
 		delete(e.entryPool, foundKey)
+
+		// Track whether this peer was a collector before removing it,
+		// so we can fire the collectorRemovedHandler outside the lock.
+		_, wasCollector = e.collectorPool[foundKey]
 		delete(e.collectorPool, foundKey)
 	}
 	pc := e.peerCache
 	leaveHdl := e.leaveHandler
+	collectorRemovedHdl := e.collectorRemovedHandler
 	e.mu.Unlock()
 
 	// Remove from peer cache.
@@ -306,6 +335,15 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 	e.mu.RUnlock()
 	if rpb != nil {
 		rpb.OnPeerLeft(meta.PublicKey)
+	}
+
+	// Fire collector removed callback if this peer was a collector.
+	// This lets the reporter clean up stale collector entries so it
+	// doesn't waste dial attempts on dead peers.
+	if wasCollector && collectorRemovedHdl != nil {
+		log.Printf("[p2p] NotifyLeave: collector peer %s left, notifying handler",
+			meta.PublicKey[:8])
+		collectorRemovedHdl(meta.PublicKey)
 	}
 
 	if leaveHdl != nil {
@@ -361,6 +399,7 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 
 	// Track collector capability changes — fire callback on transition.
 	collectorChanged := false
+	collectorRemoved := false
 	if meta.CapCollector {
 		_, wasCollector := e.collectorPool[meta.PublicKey]
 		if !wasCollector {
@@ -368,6 +407,10 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 			collectorChanged = true
 		}
 	} else {
+		_, wasCollector := e.collectorPool[meta.PublicKey]
+		if wasCollector {
+			collectorRemoved = true
+		}
 		delete(e.collectorPool, meta.PublicKey)
 	}
 
@@ -397,6 +440,18 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 			log.Printf("[p2p] NotifyUpdate: peer %s became collector, notifying handler",
 				meta.PublicKey[:8])
 			collectorHdl(meta.PublicKey)
+		}
+	}
+
+	// Fire collector removed callback if this peer lost its collector capability.
+	if collectorRemoved {
+		e.mu.RLock()
+		collectorRemovedHdl := e.collectorRemovedHandler
+		e.mu.RUnlock()
+		if collectorRemovedHdl != nil {
+			log.Printf("[p2p] NotifyUpdate: peer %s lost collector capability, notifying handler",
+				meta.PublicKey[:8])
+			collectorRemovedHdl(meta.PublicKey)
 		}
 	}
 
