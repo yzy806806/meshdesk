@@ -159,6 +159,7 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 	}
 
 	e.mu.Lock()
+	// Peer is rejoining.
 	isNew := e.metaCache[meta.PublicKey] == nil
 	e.metaCache[meta.PublicKey] = meta
 	pc := e.peerCache
@@ -236,10 +237,6 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 // NotifyLeave is called when a node leaves the memberlist cluster.
 // It removes the peer from the PeerManager and all pools.
 func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
-	e.cooldownMu.Lock()
-	e.leaveTimes[node.Name] = time.Now()
-	e.cooldownMu.Unlock()
-
 	e.mu.Lock()
 	// Look up the full metadata. node.Name is the first 16 chars of the
 	// public key, so we need to search the cache for a matching key.
@@ -252,12 +249,25 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 			break
 		}
 	}
+	e.mu.Unlock()
+
+	// Set cooldown using the full public key (not node.Name which is only
+	// the first 16 chars). This must match the key used by inCooldown,
+	// which checks meta.PublicKey (the full 64-char key).
+	cooldownKey := foundKey
+	if cooldownKey == "" {
+		cooldownKey = node.Name // fallback: no metadata available
+	}
+	e.cooldownMu.Lock()
+	e.leaveTimes[cooldownKey] = time.Now()
+	e.cooldownMu.Unlock()
+
+	e.mu.Lock()
 	if meta != nil {
-		// Keep metaCache entry so KnownPeers() still returns the peer's
-		// endpoint for fallback dialing. memberlist may mark a peer as
-		// failed due to UDP ping timeout even though TCP push/pull works.
-		// Removing from metaCache would break the reporter's fallback
-		// DialPeerByEndpoint path.
+		// Keep metaCache entry so fallback dialing (DialPeerByEndpoint
+		// in main.go meshDialerAdapter) can still find the peer's
+		// endpoints. memberlist may mark a peer as failed due to UDP
+		// ping timeout even though TCP push/pull works.
 		// However, remove from active pools since the connection is gone.
 		delete(e.relayPool, foundKey)
 		delete(e.exitPool, foundKey)
