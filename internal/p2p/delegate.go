@@ -40,6 +40,10 @@ type NodeMeta struct {
 	// CapProxyEntry indicates the node can serve as a proxy entry point.
 	CapProxyEntry bool `msgpack:"cpe"`
 
+	// CapCollector indicates the node runs the web collector (monitor UI).
+	// Set when the node is in web mode — enables monitor auto-routing.
+	CapCollector bool `msgpack:"cc,omitempty"`
+
 	// --- Connectivity ---
 
 	// Endpoints are real IP:port pairs (not mesh IPs).
