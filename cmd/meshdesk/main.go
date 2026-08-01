@@ -586,6 +586,10 @@ func main() {
 	if gossipLayer != nil {
 		gossipLayer.SetCollectorHandler(reporter.AddCollector)
 		gossipLayer.SetCollectorRemovedHandler(reporter.RemoveCollector)
+		// Re-seed the collector list from the persisted peer cache so
+		// monitor routing is immediately available after a restart,
+		// without waiting for gossip to re-discover collector nodes.
+		gossipLayer.SeedCollectorsFromCache()
 	}
 
 	defer reporter.Stop()
