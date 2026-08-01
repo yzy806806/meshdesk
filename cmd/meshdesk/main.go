@@ -5,6 +5,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/config"
+	"github.com/yzy806806/meshdesk/internal/join"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/p2p"
@@ -30,6 +33,12 @@ import (
 )
 
 func main() {
+	// Handle "join-token" subcommand: meshdesk join-token <secret> [server-fp]
+	if len(os.Args) >= 2 && os.Args[1] == "join-token" {
+		runJoinTokenSubcommand(os.Args[2:])
+		return
+	}
+
 	// Handle "join" subcommand: meshdesk join <bootstrap-addr>
 	if len(os.Args) >= 2 && os.Args[1] == "join" {
 		runJoinSubcommand(os.Args[2:])
@@ -759,6 +768,72 @@ func main() {
 		log.Printf("  Mode:       agent-only")
 	}
 
+	// Start the auto-join server (if enabled on this shared node).
+	// The join server accepts join requests from new nodes, validates
+	// tokens (HMAC signature + expiration + replay protection), and
+	// distributes the config bundle (identity, REALITY keys, collector list).
+	// Only meaningful on shared nodes with Reality TLS enabled.
+	var joinServer *join.JoinServer
+	if cfg.Join.Enabled && cfg.Reality.Enabled {
+		joinServerCfg := join.ServerConfig{
+			Secret:            []byte(cfg.Join.Secret),
+			ServerIdentity:     node.Identity(),
+			BootstrapEndpoint:  firstAdvertiseEndpoint(cfg),
+			GossipPort:         cfg.Mesh.GossipPort,
+			RealityPublicKey:  cfg.Reality.PrivateKey, // X25519 key used for REALITY
+			RealityShortID:     firstShortID(cfg.Reality.ShortIDs),
+			RealityServerName:  firstServerName(cfg.Reality.ServerNames),
+			Collectors:         cfg.Monitoring.Collectors,
+			TokenLifetime:      time.Duration(cfg.Join.TokenLifetime) * time.Second,
+		}
+
+		// If the join secret is empty, generate a random one and log a warning.
+		if cfg.Join.Secret == "" {
+			randomSecret := make([]byte, 32)
+			if _, err := rand.Read(randomSecret); err != nil {
+				log.Printf("Warning: failed to generate random join secret: %v — join server disabled", err)
+			} else {
+				cfg.Join.Secret = hex.EncodeToString(randomSecret)
+				log.Printf("WARNING: join.secret not set — generated random secret: %s", cfg.Join.Secret)
+				log.Printf("  Use this secret with `meshdesk join-token` to generate tokens.")
+			}
+		}
+		joinServerCfg.Secret = []byte(cfg.Join.Secret)
+
+		joinServer = join.NewJoinServer(joinServerCfg)
+
+		// Wire the known-peers provider if gossip is active.
+		if gossipLayer != nil {
+			joinServer.SetKnownPeersFunc(func() []join.PeerInfo {
+				peers := gossipLayer.KnownPeers()
+				result := make([]join.PeerInfo, 0, len(peers))
+				for _, p := range peers {
+					result = append(result, join.PeerInfo{
+						PublicKey: p.PublicKey,
+						Hostname:  p.Hostname,
+						Role:      p.Role,
+					})
+				}
+				return result
+			})
+		}
+
+		if cfg.Join.TLSCertFile != "" && cfg.Join.TLSKeyFile != "" {
+			if err := joinServer.StartTLS(cfg.Join.ListenAddr, cfg.Join.TLSCertFile, cfg.Join.TLSKeyFile); err != nil {
+				log.Printf("Warning: failed to start join TLS server: %v", err)
+			} else {
+				log.Printf("  Join:       TLS server on %s", cfg.Join.ListenAddr)
+			}
+		} else {
+			if err := joinServer.Start(cfg.Join.ListenAddr); err != nil {
+				log.Printf("Warning: failed to start join server: %v", err)
+			} else {
+				log.Printf("  Join:       server on %s (WARNING: no TLS — use tls_cert_file/tls_key_file for production)", cfg.Join.ListenAddr)
+			}
+		}
+		defer joinServer.Stop()
+	}
+
 	// Save config (in case identity was auto-generated).
 	// At startup this is fatal: if the auto-generated identity cannot be
 	// persisted, the node would get a new identity on every restart,
@@ -904,6 +979,36 @@ func (g *gossipLiveness) AlivePeerIDs() []string {
 	return ids
 }
 
+// firstShortID returns the first short ID from the list, or empty string.
+func firstShortID(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
+}
+
+// firstServerName returns the first server name from the list, or empty string.
+func firstServerName(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
+}
+
+// firstAdvertiseEndpoint returns the first advertise endpoint from config,
+// or falls back to auto-detected outbound IP + mesh port.
+func firstAdvertiseEndpoint(cfg *config.Config) string {
+	if len(cfg.P2P.AdvertiseEndpoints) > 0 {
+		return cfg.P2P.AdvertiseEndpoints[0]
+	}
+	// Fallback: use the node's hostname or localhost.
+	host := cfg.Node.Hostname
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	return net.JoinHostPort(host, fmt.Sprintf("%d", cfg.Mesh.GossipPort))
+}
+
 // runJoinSubcommand implements `meshdesk join <bootstrap-addr>`.
 //
 // It creates a mesh node, configures the bootstrap as a static peer,
@@ -911,24 +1016,131 @@ func (g *gossipLiveness) AlivePeerIDs() []string {
 // on success triggers full memberlist state sync. This implements the
 // Dynamic Join Protocol from P2P_NETWORKING_SPEC.md §4.
 //
+// When --join-url and --join-token are provided, it uses the auto-join
+// protocol: the node first contacts the join server via HTTPS to obtain
+// the config bundle (identity, REALITY keys, collector list), then
+// proceeds with the normal join flow using the received config.
+//
 // Usage:
 //
 //	meshdesk join 203.0.113.5:51820            # bootstrap endpoint
 //	meshdesk join 10.10.0.5:7946                # bootstrap mesh IP:gossip port
 //	meshdesk join --config /path/to/config.yaml 203.0.113.5:51820
+//	meshdesk join --join-url https://bootstrap:8443 --join-token <token> [bootstrap-addr]
 func runJoinSubcommand(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	configPath := fs.String("config", "/etc/meshdesk/config.yaml", "path to config file")
 	bootstrapKey := fs.String("bootstrap-key", "", "bootstrap node's WireGuard public key (hex, required if not in config peers)")
+	joinURL := fs.String("join-url", "", "join server URL (e.g., https://bootstrap:8443) for auto-join protocol")
+	joinToken := fs.String("join-token", "", "join token for auto-join protocol (base64-encoded)")
+	insecureTLS := fs.Bool("insecure-tls", false, "skip TLS certificate verification (testing only)")
 	_ = fs.Parse(args)
 
-	if fs.NArg() < 1 {
-		log.Fatalf("Usage: meshdesk join <bootstrap-addr>\n\n" +
-			"bootstrap-addr is the bootstrap node's endpoint (host:port)\n" +
-			"or mesh IP:gossip port.")
+	bootstrapAddr := ""
+	if fs.NArg() >= 1 {
+		bootstrapAddr = fs.Arg(0)
 	}
 
-	bootstrapAddr := fs.Arg(0)
+	// If using auto-join protocol (token-based), fetch config bundle first.
+	if *joinURL != "" && *joinToken != "" {
+		log.Printf("[join] using auto-join protocol: server=%s", *joinURL)
+
+		// Load config to get the node's identity (or generate one).
+		cfg, err := config.Load(*configPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				cfg = config.Default()
+			} else {
+				log.Fatalf("Failed to load config: %v", err)
+			}
+		}
+
+		// Create a mesh node to get/derive the identity.
+		node, err := mesh.New(cfg)
+		if err != nil {
+			log.Fatalf("Failed to create mesh node for identity: %v", err)
+		}
+		joinerPubKey := node.Identity().PublicKey
+		hostname := cfg.Node.Hostname
+		if hostname == "" {
+			hostname, _ = os.Hostname()
+		}
+		node.Close()
+
+		// Build the join client.
+		tlsConfig := &tls.Config{}
+		if *insecureTLS {
+			tlsConfig.InsecureSkipVerify = true
+		}
+		joinClient := join.NewJoinClient(join.ClientConfig{
+			ServerURL:        *joinURL,
+			Token:            *joinToken,
+			JoinerPublicKey:  joinerPubKey,
+			JoinerHostname:   hostname,
+			JoinerEndpoint:   bootstrapAddr,
+			TLSConfig:        tlsConfig,
+		})
+
+		// Request the config bundle.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		bundle, err := joinClient.RequestJoin(ctx)
+		if err != nil {
+			log.Fatalf("Auto-join failed: %v", err)
+		}
+
+		log.Printf("[join] received config bundle:")
+		log.Printf("  Bootstrap pubkey: %s", bundle.BootstrapPublicKey[:16]+"...")
+		log.Printf("  Bootstrap endpoint: %s", bundle.BootstrapEndpoint)
+		log.Printf("  Gossip port: %d", bundle.GossipPort)
+		log.Printf("  Collectors: %d", len(bundle.Collectors))
+		log.Printf("  Known peers: %d", len(bundle.KnownPeers))
+
+		// Configure the node using the received bundle.
+		if *bootstrapKey == "" {
+			*bootstrapKey = bundle.BootstrapPublicKey
+		}
+		if bootstrapAddr == "" {
+			bootstrapAddr = bundle.BootstrapEndpoint
+		}
+		if cfg.Mesh.GossipPort == 0 {
+			cfg.Mesh.GossipPort = bundle.GossipPort
+		}
+		if len(cfg.Monitoring.Collectors) == 0 {
+			cfg.Monitoring.Collectors = bundle.Collectors
+		}
+
+		// Add the bootstrap as a peer with REALITY config.
+		if bundle.RealityPublicKey != "" {
+			peerCfg := config.PeerConfig{
+				PublicKey: bundle.BootstrapPublicKey,
+				Endpoint:  bundle.BootstrapEndpoint,
+				Reality: &config.RealityPeerConfig{
+					ServerName:    bundle.RealityServerName,
+					PublicKey:     bundle.RealityPublicKey,
+					ShortID:       bundle.RealityShortID,
+					TLSFingerprint: "chrome",
+				},
+			}
+			cfg.Peers = append(cfg.Peers, peerCfg)
+			log.Printf("[join] added bootstrap peer with REALITY config")
+		}
+
+		// Save the updated config for the normal join flow.
+		cfg.P2P.Enabled = true
+		cfg.P2P.Seeds = []string{bundle.BootstrapEndpoint}
+		// Continue with normal join flow below using the updated cfg.
+		// We skip re-loading and re-creating the node.
+		runJoinWithConfig(cfg, bootstrapAddr, *bootstrapKey, *configPath)
+		return
+	}
+
+	if bootstrapAddr == "" {
+		log.Fatalf("Usage: meshdesk join <bootstrap-addr>\n\n" +
+			"bootstrap-addr is the bootstrap node's endpoint (host:port)\n" +
+			"or mesh IP:gossip port.\n" +
+			"Alternatively, use --join-url and --join-token for auto-join.")
+	}
 
 	// Load config.
 	cfg, err := config.Load(*configPath)
@@ -940,6 +1152,12 @@ func runJoinSubcommand(args []string) {
 			log.Fatalf("Failed to load config: %v", err)
 		}
 	}
+
+	runJoinWithConfig(cfg, bootstrapAddr, *bootstrapKey, *configPath)
+}
+
+// runJoinWithConfig runs the join flow with an already-loaded config.
+func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPath string) {
 
 	// Enable P2P for join mode.
 	cfg.P2P.Enabled = true
@@ -961,7 +1179,7 @@ func runJoinSubcommand(args []string) {
 
 	// If a bootstrap public key was provided, add it as a static peer
 	// so WireGuard can establish the initial connection.
-	if *bootstrapKey != "" {
+	if bootstrapKey != "" {
 		// Parse the bootstrap address for the endpoint.
 		host, port, err := p2p.ParseBootstrapAddr(bootstrapAddr, cfg.Mesh.Port)
 		if err != nil {
@@ -971,12 +1189,12 @@ func runJoinSubcommand(args []string) {
 
 		// v2: no mesh IP derivation — peer ID is the routing key.
 		peerCfg := config.PeerConfig{
-			PublicKey: *bootstrapKey,
+			PublicKey: bootstrapKey,
 			Endpoint:  endpoint,
 		}
 		cfg.Peers = append(cfg.Peers, peerCfg)
 		log.Printf("Added bootstrap as static peer: %s@%s",
-			(*bootstrapKey)[:8], endpoint)
+			bootstrapKey[:8], endpoint)
 	}
 
 	// Create the mesh node.
@@ -1060,11 +1278,11 @@ func runJoinSubcommand(args []string) {
 
 	// If we know the bootstrap's public key, send a JoinRequest
 	// to authenticate and get the full peer list.
-	if *bootstrapKey != "" {
+	if bootstrapKey != "" {
 		joinCtx, joinCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer joinCancel()
 
-		result, err := gl.RequestJoin(joinCtx, *bootstrapKey)
+		result, err := gl.RequestJoin(joinCtx, bootstrapKey)
 		if err != nil {
 			log.Fatalf("Join request failed: %v", err)
 		}
@@ -1112,4 +1330,40 @@ func runJoinSubcommand(args []string) {
 		log.Printf("Warning: leave notice: %v", err)
 	}
 	leaveCancel()
+}
+
+// runJoinTokenSubcommand implements `meshdesk join-token <secret> [server-fp]`.
+// It generates a join token signed with the given secret. The server-fp
+// (server fingerprint = Ed25519 public key hex) is optional but recommended
+// for TLS pinning.
+//
+// Usage:
+//
+//	meshdesk join-token mysecret                     # generate token without server pin
+//	meshdesk join-token mysecret abc123...           # generate token pinned to server pubkey
+//	meshdesk join-token --lifetime 1h mysecret abc   # 1-hour token
+func runJoinTokenSubcommand(args []string) {
+	fs := flag.NewFlagSet("join-token", flag.ExitOnError)
+	lifetime := fs.Duration("lifetime", 30*time.Minute, "token lifetime")
+	_ = fs.Parse(args)
+
+	if fs.NArg() < 1 {
+		log.Fatalf("Usage: meshdesk join-token <secret> [server-fingerprint]\n\n" +
+			"Generates a join token signed with the given HMAC secret.\n" +
+			"The server fingerprint is the shared node's Ed25519 public key (hex),\n" +
+			"used for TLS pinning (recommended).")
+	}
+
+	secret := fs.Arg(0)
+	serverFP := ""
+	if fs.NArg() >= 2 {
+		serverFP = fs.Arg(1)
+	}
+
+	token, err := join.GenerateToken([]byte(secret), serverFP, *lifetime)
+	if err != nil {
+		log.Fatalf("Failed to generate token: %v", err)
+	}
+
+	fmt.Println(token)
 }
