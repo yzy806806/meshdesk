@@ -357,6 +357,288 @@ func TestAggregatorNoForwardingWithoutConfig(t *testing.T) {
 	}
 }
 
+// portMappedDialer wraps a MeshDialer and translates the port when dialing
+// specific peer IDs. Used to test end-to-end forwarding between two
+// aggregators that listen on different ports.
+type portMappedDialer struct {
+	underlying MeshDialer
+	portMap    map[string]int // peerID → actual port
+}
+
+func (d *portMappedDialer) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {
+	if actual, ok := d.portMap[peerID]; ok {
+		port = actual
+	}
+	return d.underlying.DialMesh(ctx, peerID, port)
+}
+
+// TestAggregatorForwarding_ForwardsToOtherCollectors verifies the
+// end-to-end forwarding path: aggregator A receives an envelope from
+// an agent, stores it locally, and forwards it to aggregator B.
+// B receives the forwarded envelope, stores it locally, and does NOT
+// re-forward it (because Forwarded=true).
+func TestAggregatorForwarding_ForwardsToOtherCollectors(t *testing.T) {
+	mesh := NewInProcMesh()
+
+	storeA := NewStore()
+	storeB := NewStore()
+
+	// Aggregator B listens on port 4402 — it will receive forwarded
+	// envelopes but does not forward itself.
+	aggB := NewAggregator(AggregatorConfig{
+		Store:  storeB,
+		Dialer: mesh,
+		Port:   4402,
+	})
+	if err := aggB.Start(); err != nil {
+		t.Fatalf("aggB Start: %v", err)
+	}
+	defer aggB.Stop()
+
+	// Aggregator A listens on port 4401 and forwards to collector B.
+	// We use a portMappedDialer so that A's DialMesh to port 4401
+	// is translated to B's actual port 4402.
+	pDialer := &portMappedDialer{
+		underlying: mesh,
+		portMap:    map[string]int{"collector-B": 4402},
+	}
+	lister := &mockCollectorLister{
+		peers: []string{"collector-B"},
+	}
+	aggA := NewAggregator(AggregatorConfig{
+		Store:           storeA,
+		Dialer:          mesh,
+		Port:            4401,
+		MeshDialer:      pDialer,
+		CollectorLister: lister,
+		SelfPeerID:      "collector-A",
+	})
+	if err := aggA.Start(); err != nil {
+		t.Fatalf("aggA Start: %v", err)
+	}
+	defer aggA.Stop()
+
+	// Simulate an agent pushing an envelope to aggregator A.
+	env := &MetricEnvelope{
+		SourceID: "agent-1",
+		Sequence: 100,
+		Metrics: &Metrics{
+			NodeID:    "agent-1",
+			Hostname:  "host-1",
+			Timestamp: time.Now().UTC(),
+			CPU:       CPUMetrics{UsagePercent: 80.0, CoreCount: 8},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := mesh.DialMesh(ctx, "agent-1", 4401)
+	if err != nil {
+		t.Fatalf("DialMesh to aggA: %v", err)
+	}
+	defer conn.Close()
+
+	if err := WriteEnvelope(conn, env); err != nil {
+		t.Fatalf("WriteEnvelope to aggA: %v", err)
+	}
+
+	// Wait for forwarding to complete.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if storeB.NodeCount() >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Verify A stored the metric locally.
+	samplesA := storeA.Range("agent-1", time.Time{}, time.Time{})
+	if len(samplesA) == 0 {
+		t.Error("aggA should have stored the metric locally")
+	}
+
+	// Verify B received the forwarded envelope.
+	samplesB := storeB.Range("agent-1", time.Time{}, time.Time{})
+	if len(samplesB) == 0 {
+		t.Fatal("aggB should have received the forwarded metric from aggA")
+	}
+	if got := samplesB[0].CPU.UsagePercent; got != 80.0 {
+		t.Errorf("aggB CPU usage: got %.1f, want 80.0", got)
+	}
+	if got := samplesB[0].Hostname; got != "host-1" {
+		t.Errorf("aggB Hostname: got %s, want host-1", got)
+	}
+
+	// Verify B has exactly one sample (no duplicates).
+	if len(samplesB) != 1 {
+		t.Errorf("aggB should have exactly 1 sample, got %d", len(samplesB))
+	}
+}
+
+// TestAggregatorForwarding_ForwardedEnvelopeNotReForwarded verifies that
+// an envelope with Forwarded=true is stored locally but NOT forwarded
+// to other collectors (loop prevention at the receiving side).
+func TestAggregatorForwarding_ForwardedEnvelopeNotReForwarded(t *testing.T) {
+	mesh := NewInProcMesh()
+	store := NewStore()
+
+	dialer := &captureDialer{}
+	lister := &mockCollectorLister{
+		peers: []string{"collector-C"},
+	}
+	agg := NewAggregator(AggregatorConfig{
+		Store:           store,
+		Dialer:          mesh,
+		Port:            4410,
+		MeshDialer:      dialer,
+		CollectorLister: lister,
+		SelfPeerID:      "collector-B",
+	})
+	if err := agg.Start(); err != nil {
+		t.Fatalf("agg Start: %v", err)
+	}
+	defer agg.Stop()
+
+	// Push an envelope that was already forwarded by another collector.
+	env := &MetricEnvelope{
+		SourceID:  "agent-2",
+		Sequence:  200,
+		Forwarded: true,
+		Metrics: &Metrics{
+			NodeID:    "agent-2",
+			Hostname:  "host-2",
+			Timestamp: time.Now().UTC(),
+			CPU:       CPUMetrics{UsagePercent: 55.0, CoreCount: 4},
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	conn, err := mesh.DialMesh(ctx, "forwarder", 4410)
+	if err != nil {
+		t.Fatalf("DialMesh: %v", err)
+	}
+	defer conn.Close()
+
+	if err := WriteEnvelope(conn, env); err != nil {
+		t.Fatalf("WriteEnvelope: %v", err)
+	}
+
+	// Wait a bit for processing.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if store.NodeCount() >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// Verify local storage: the envelope was stored despite being Forwarded=true.
+	samples := store.Range("agent-2", time.Time{}, time.Time{})
+	if len(samples) == 0 {
+		t.Fatal("should have stored the forwarded metric locally")
+	}
+	if got := samples[0].CPU.UsagePercent; got != 55.0 {
+		t.Errorf("CPU usage: got %.1f, want 55.0", got)
+	}
+
+	// Verify no forwarding: Forwarded=true must NOT be re-forwarded.
+	if len(dialer.getForwarded()) != 0 {
+		t.Errorf("should NOT re-forward a Forwarded envelope, got %d forwards", len(dialer.getForwarded()))
+	}
+	if len(dialer.getDialed()) != 0 {
+		t.Errorf("should NOT have dialed any peer, got %d dials", len(dialer.getDialed()))
+	}
+}
+
+// TestAggregatorForwarding_DedupBySourceIDSequence verifies that the
+// aggregator deduplicates envelopes by (SourceID, Sequence): when the
+// same agent pushes an envelope directly and another collector forwards
+// the same envelope, the receiving aggregator stores it only once.
+func TestAggregatorForwarding_DedupBySourceIDSequence(t *testing.T) {
+	mesh := NewInProcMesh()
+	store := NewStore()
+
+	agg := NewAggregator(AggregatorConfig{
+		Store:  store,
+		Dialer: mesh,
+		Port:   4420,
+	})
+	if err := agg.Start(); err != nil {
+		t.Fatalf("agg Start: %v", err)
+	}
+	defer agg.Stop()
+
+	// Push the SAME envelope twice — simulating an agent that pushes
+	// to two collectors, and one collector forwards to this one, so
+	// the same (SourceID, Sequence) arrives twice.
+	env1 := &MetricEnvelope{
+		SourceID: "agent-3",
+		Sequence: 42,
+		Metrics: &Metrics{
+			NodeID:    "agent-3",
+			Hostname:  "host-3",
+			Timestamp: time.Now().UTC(),
+			CPU:       CPUMetrics{UsagePercent: 33.0, CoreCount: 2},
+		},
+	}
+
+	// Second push: same SourceID + Sequence but Forwarded=true
+	// (simulates the copy forwarded by another collector).
+	env2 := &MetricEnvelope{
+		SourceID:  "agent-3",
+		Sequence:  42,
+		Forwarded: true,
+		Metrics: &Metrics{
+			NodeID:    "agent-3",
+			Hostname:  "host-3",
+			Timestamp: time.Now().UTC(),
+			CPU:       CPUMetrics{UsagePercent: 33.0, CoreCount: 2},
+		},
+	}
+
+	for i, env := range []*MetricEnvelope{env1, env2} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn, err := mesh.DialMesh(ctx, "sender", 4420)
+		if err != nil {
+			cancel()
+			t.Fatalf("push %d DialMesh: %v", i+1, err)
+		}
+		if err := WriteEnvelope(conn, env); err != nil {
+			conn.Close()
+			cancel()
+			t.Fatalf("push %d WriteEnvelope: %v", i+1, err)
+		}
+		conn.Close()
+		cancel()
+		// Small delay to let the aggregator process each push.
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Wait for processing to settle.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if store.NodeCount() >= 1 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// The store should have exactly ONE entry for agent-3 (dedup).
+	samples := store.Range("agent-3", time.Time{}, time.Time{})
+	if len(samples) == 0 {
+		t.Fatal("should have stored agent-3 metrics at least once")
+	}
+	if len(samples) != 1 {
+		t.Errorf("dedup failed: expected 1 sample for agent-3, got %d (duplicate was stored)", len(samples))
+	}
+	if got := samples[0].CPU.UsagePercent; got != 33.0 {
+		t.Errorf("CPU usage: got %.1f, want 33.0", got)
+	}
+}
+
 // Ensure unused imports are referenced (json, io used indirectly via ReadEnvelope).
 var _ = json.Marshal
 var _ io.Reader
