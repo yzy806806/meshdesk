@@ -11,6 +11,7 @@ import (
 type mockLiveness struct {
 	alive     map[string]bool // peerID → alive
 	aliveIDs  []string        // ordered list for AlivePeerIDs
+	hostnames map[string]string // peerID → hostname (for PeerHostname)
 }
 
 func (m *mockLiveness) IsAlive(peerID string) bool {
@@ -19,6 +20,10 @@ func (m *mockLiveness) IsAlive(peerID string) bool {
 
 func (m *mockLiveness) AlivePeerIDs() []string {
 	return m.aliveIDs
+}
+
+func (m *mockLiveness) PeerHostname(peerID string) string {
+	return m.hostnames[peerID]
 }
 
 // --- Test 1: AllPeerIDs includes gossip-discovered peers not in routing table ---
@@ -352,4 +357,172 @@ func TestLiveness_TopologySnapshotWithLiveness(t *testing.T) {
 type TopologyNodeSnapshotHelper struct {
 	Status   string
 	Hostname string
+}
+
+// --- Test 9: LatestHostname falls back to gossip when monitor store has no hostname ---
+
+func TestLiveness_LatestHostnameGossipFallback(t *testing.T) {
+	store := monitor.NewStore()
+
+	// "gossip-only" has no metrics but gossip has its hostname.
+	m := &monitorTopologyMetrics{
+		store: store,
+		liveness: &mockLiveness{
+			alive:     map[string]bool{"gossip-only": true},
+			hostnames: map[string]string{"gossip-only": "gossip-host"},
+		},
+	}
+
+	h := m.LatestHostname("gossip-only")
+	if h != "gossip-host" {
+		t.Errorf("Expected 'gossip-host' from gossip fallback, got %q", h)
+	}
+}
+
+// --- Test 10: LatestHostname uses monitor store when available (no fallback) ---
+
+func TestLiveness_LatestHostnameMonitorPreferred(t *testing.T) {
+	store := monitor.NewStore()
+	now := time.Now().UTC()
+	store.Append("node1", &monitor.Metrics{
+		Timestamp: now,
+		NodeID:    "node1",
+		Hostname:  "monitor-host",
+	})
+
+	m := &monitorTopologyMetrics{
+		store: store,
+		liveness: &mockLiveness{
+			alive:     map[string]bool{"node1": true},
+			hostnames: map[string]string{"node1": "gossip-host-different"},
+		},
+	}
+
+	h := m.LatestHostname("node1")
+	if h != "monitor-host" {
+		t.Errorf("Expected 'monitor-host' (monitor preferred), got %q", h)
+	}
+}
+
+// --- Test 11: LatestHostname returns empty when neither source has it ---
+
+func TestLiveness_LatestHostnameEmptyWhenNoSource(t *testing.T) {
+	store := monitor.NewStore()
+
+	m := &monitorTopologyMetrics{
+		store: store,
+		liveness: &mockLiveness{
+			alive:     map[string]bool{"unknown": true},
+			hostnames: map[string]string{},
+		},
+	}
+
+	h := m.LatestHostname("unknown")
+	if h != "" {
+		t.Errorf("Expected empty string, got %q", h)
+	}
+}
+
+// --- Test 12: LatestHostname returns empty when monitor has empty hostname, falls back to gossip ---
+
+func TestLiveness_LatestHostnameFallsBackWhenMonitorEmpty(t *testing.T) {
+	store := monitor.NewStore()
+	now := time.Now().UTC()
+	// Metrics exist but hostname is empty.
+	store.Append("node2", &monitor.Metrics{
+		Timestamp: now,
+		NodeID:    "node2",
+		Hostname:  "",
+	})
+
+	m := &monitorTopologyMetrics{
+		store: store,
+		liveness: &mockLiveness{
+			alive:     map[string]bool{"node2": true},
+			hostnames: map[string]string{"node2": "gossip-name"},
+		},
+	}
+
+	h := m.LatestHostname("node2")
+	if h != "gossip-name" {
+		t.Errorf("Expected 'gossip-name' from fallback (monitor hostname empty), got %q", h)
+	}
+}
+
+// --- Test 13: LatestHostname with nil liveness — no fallback, backward compatible ---
+
+func TestLiveness_LatestHostnameNilLiveness(t *testing.T) {
+	store := monitor.NewStore()
+	now := time.Now().UTC()
+	store.Append("node3", &monitor.Metrics{
+		Timestamp: now,
+		NodeID:    "node3",
+		Hostname:  "store-host",
+	})
+
+	m := &monitorTopologyMetrics{
+		store:    store,
+		liveness: nil,
+	}
+
+	h := m.LatestHostname("node3")
+	if h != "store-host" {
+		t.Errorf("Expected 'store-host' (nil liveness), got %q", h)
+	}
+
+	// No metrics + nil liveness → empty.
+	h = m.LatestHostname("nonexistent")
+	if h != "" {
+		t.Errorf("Expected empty for nonexistent with nil liveness, got %q", h)
+	}
+}
+
+// --- Test 14: Full topology snapshot shows gossip hostname for node without metrics ---
+
+func TestLiveness_TopologySnapshotGossipHostname(t *testing.T) {
+	store := monitor.NewStore()
+	now := time.Now().UTC()
+
+	// "aaa1" has fresh metrics with hostname.
+	store.Append("aaa1", &monitor.Metrics{
+		Timestamp: now,
+		NodeID:    "aaa1",
+		Hostname:  "node-alpha",
+	})
+	// "bbb2" has NO metrics — hostname must come from gossip.
+
+	peers := &testPeers{
+		ids: []string{"aaa1", "bbb2"},
+		roles: map[string]string{
+			"aaa1": "entry",
+			"bbb2": "exit",
+		},
+	}
+	liveness := &mockLiveness{
+		alive: map[string]bool{
+			"aaa1": true,
+			"bbb2": true,
+		},
+		hostnames: map[string]string{
+			"bbb2": "node-beta-gossip",
+		},
+	}
+	metrics := &monitorTopologyMetrics{
+		store:    store,
+		liveness: liveness,
+	}
+
+	snap := buildTopologySnapshot(peers, metrics, nil)
+
+	nodeMap := make(map[string]string) // id → hostname
+	for _, n := range snap.Nodes {
+		nodeMap[n.ID] = n.Hostname
+	}
+
+	if nodeMap["aaa1"] != "node-alpha" {
+		t.Errorf("aaa1: expected 'node-alpha' from monitor, got %q", nodeMap["aaa1"])
+	}
+	if nodeMap["bbb2"] != "node-beta-gossip" {
+		t.Errorf("bbb2: expected 'node-beta-gossip' from gossip fallback, got %q", nodeMap["bbb2"])
+	}
 }
