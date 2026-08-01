@@ -405,6 +405,40 @@ func (g *GossipLayer) SetCollectorRemovedHandler(hdl CollectorRemovedHandler) {
 	g.events.SetCollectorRemovedHandler(hdl)
 }
 
+// SeedCollectorsFromCache re-fires the collector discovery callback for
+// every collector peer persisted in the peer cache. Call this at startup
+// after SetCollectorHandler has been wired, so that the reporter's collector
+// list is immediately populated from persisted state — without waiting for
+// gossip to re-discover collector nodes.
+//
+// This is safe to call even if gossip hasn't started yet: it reads the
+// PeerCache directly and invokes the callback synchronously. Peers that
+// are no longer reachable will be cleaned up by the collector removed
+// handler when gossip detects their departure.
+func (g *GossipLayer) SeedCollectorsFromCache() {
+	if g.peerCache == nil {
+		return
+	}
+
+	collectorKeys := g.peerCache.CachedCollectors()
+	if len(collectorKeys) == 0 {
+		return
+	}
+
+	g.events.mu.RLock()
+	hdl := g.events.collectorHandler
+	g.events.mu.RUnlock()
+
+	if hdl == nil {
+		return
+	}
+
+	for _, key := range collectorKeys {
+		log.Printf("[p2p] SeedCollectorsFromCache: re-seeding collector %s from cache", shortKey(key))
+		hdl(key)
+	}
+}
+
 // OnEndpointDiscovered implements mesh.EndpointNotifier.
 // Non-blocking: delegates to updateLocalMeta which holds the delegate
 // mutex briefly. Called from WireGuard receive goroutines.

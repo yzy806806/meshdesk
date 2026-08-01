@@ -27,12 +27,13 @@ const peerCacheSaveInterval = 30 * time.Second
 // endpoints are not persisted because their relay circuits are rebuilt
 // dynamically on each startup.
 type CachedPeer struct {
-	PublicKey string   `json:"pk"`
-	Hostname  string   `json:"hn,omitempty"`
-	Role      string   `json:"role,omitempty"`
-	Endpoints []string `json:"eps"`
-	FirstSeen int64    `json:"fs"` // Unix timestamp
-	LastSeen  int64    `json:"ls"` // Unix timestamp
+	PublicKey   string   `json:"pk"`
+	Hostname    string   `json:"hn,omitempty"`
+	Role        string   `json:"role,omitempty"`
+	Endpoints   []string `json:"eps"`
+	FirstSeen   int64    `json:"fs"` // Unix timestamp
+	LastSeen    int64    `json:"ls"` // Unix timestamp
+	CapCollector bool    `json:"cc,omitempty"` // persisted collector capability
 }
 
 // peerCacheFile is the JSON representation of the on-disk cache file.
@@ -182,14 +183,16 @@ func (c *PeerCache) OnPeerJoin(meta *NodeMeta) {
 		existing.Role = meta.Role
 		existing.Endpoints = meta.Endpoints
 		existing.LastSeen = now
+		existing.CapCollector = meta.CapCollector
 	} else {
 		c.peers[meta.PublicKey] = &CachedPeer{
-			PublicKey: meta.PublicKey,
-			Hostname:  meta.Hostname,
-			Role:      meta.Role,
-			Endpoints: meta.Endpoints,
-			FirstSeen: now,
-			LastSeen:  now,
+			PublicKey:   meta.PublicKey,
+			Hostname:    meta.Hostname,
+			Role:        meta.Role,
+			Endpoints:   meta.Endpoints,
+			FirstSeen:   now,
+			LastSeen:    now,
+			CapCollector: meta.CapCollector,
 		}
 	}
 	c.dirty = true
@@ -220,20 +223,30 @@ func (c *PeerCache) OnPeerUpdate(meta *NodeMeta) {
 		existing.Role = meta.Role
 		existing.Endpoints = meta.Endpoints
 		existing.LastSeen = now
+		existing.CapCollector = meta.CapCollector
 	} else {
 		c.peers[meta.PublicKey] = &CachedPeer{
-			PublicKey: meta.PublicKey,
-			Hostname:  meta.Hostname,
-			Role:      meta.Role,
-			Endpoints: meta.Endpoints,
-			FirstSeen: now,
-			LastSeen:  now,
+			PublicKey:   meta.PublicKey,
+			Hostname:    meta.Hostname,
+			Role:        meta.Role,
+			Endpoints:   meta.Endpoints,
+			FirstSeen:   now,
+			LastSeen:    now,
+			CapCollector: meta.CapCollector,
 		}
 	}
 	c.dirty = true
 }
 
-// OnPeerLeave removes a peer from the cache. Called from NotifyLeave.
+// OnPeerLeave marks a peer as stale in the cache but does NOT delete it.
+// Called from NotifyLeave. The peer entry is retained so that on restart
+// the node can still use the cached endpoint as a gossip seed and collector
+// candidates survive transient UDP failures. Stale entries are overwritten
+// when gossip re-discovers the peer via OnPeerJoin/OnPeerUpdate.
+//
+// This matches the metaCache retention behavior in NotifyLeave (events.go):
+// the metaCache entry is kept for fallback dialing, and the peer cache
+// follows the same strategy for endpoint and collector persistence.
 func (c *PeerCache) OnPeerLeave(peerKey string) {
 	if peerKey == "" {
 		return
@@ -242,8 +255,8 @@ func (c *PeerCache) OnPeerLeave(peerKey string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, ok := c.peers[peerKey]; ok {
-		delete(c.peers, peerKey)
+	if existing, ok := c.peers[peerKey]; ok {
+		existing.LastSeen = time.Now().Unix()
 		c.dirty = true
 	}
 }
@@ -326,4 +339,22 @@ func (c *PeerCache) CachedEndpointsAsSeeds() []string {
 		}
 	}
 	return seeds
+}
+
+// CachedCollectors returns the public keys of all cached peers that have
+// CapCollector=true. This is used at startup to seed the reporter's
+// collector list from persisted state, so that monitor routing is
+// immediately available after a restart — without waiting for gossip
+// to re-discover collector nodes.
+func (c *PeerCache) CachedCollectors() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	var keys []string
+	for _, p := range c.peers {
+		if p.CapCollector {
+			keys = append(keys, p.PublicKey)
+		}
+	}
+	return keys
 }

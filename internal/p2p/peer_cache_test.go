@@ -160,9 +160,14 @@ func TestPeerCache_OnPeerLeave(t *testing.T) {
 		t.Fatalf("expected 1 peer, got %d", c.CachedPeerCount())
 	}
 
+	// OnPeerLeave should mark stale but NOT delete (retention for restart resilience).
 	c.OnPeerLeave("leave1234")
-	if c.CachedPeerCount() != 0 {
-		t.Fatalf("expected 0 peers after leave, got %d", c.CachedPeerCount())
+	if c.CachedPeerCount() != 1 {
+		t.Fatalf("expected 1 peer after leave (retention), got %d", c.CachedPeerCount())
+	}
+	peers := c.AllCachedPeers()
+	if len(peers) != 1 || peers[0].PublicKey != "leave1234" {
+		t.Fatalf("expected leave1234 to still be cached, got %v", peers)
 	}
 }
 
@@ -332,5 +337,131 @@ func TestPeerCache_NonRootFallback(t *testing.T) {
 		if !strings.HasPrefix(path, expectedPrefix) {
 			t.Errorf("non-root: expected path under %s, got %s", expectedPrefix, path)
 		}
+	}
+}
+
+func TestPeerCache_CapCollectorPersistence(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers-collector.cache")
+	c := NewPeerCache(path)
+
+	// Add a collector peer and a non-collector peer.
+	c.OnPeerJoin(&NodeMeta{
+		PublicKey:   "collector-key-1",
+		Hostname:    "dashboard-1",
+		Role:        "web",
+		CapCollector: true,
+		Endpoints:   []string{"203.0.113.5:52888"},
+	})
+	c.OnPeerJoin(&NodeMeta{
+		PublicKey:   "agent-key-2",
+		Hostname:    "agent-1",
+		Role:        "agent",
+		CapCollector: false,
+		Endpoints:   []string{"10.0.0.2:52888"},
+	})
+
+	// Verify CachedCollectors returns only the collector.
+	collectors := c.CachedCollectors()
+	if len(collectors) != 1 || collectors[0] != "collector-key-1" {
+		t.Fatalf("expected 1 collector [collector-key-1], got %v", collectors)
+	}
+
+	// Save and reload.
+	if err := c.SaveNow(); err != nil {
+		t.Fatalf("SaveNow failed: %v", err)
+	}
+
+	c2 := NewPeerCache(path)
+	if err := c2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	// Verify CapCollector survived the round-trip.
+	collectors2 := c2.CachedCollectors()
+	if len(collectors2) != 1 || collectors2[0] != "collector-key-1" {
+		t.Fatalf("expected 1 collector after reload [collector-key-1], got %v", collectors2)
+	}
+
+	// Verify the non-collector peer is still there but not in collectors.
+	if c2.CachedPeerCount() != 2 {
+		t.Fatalf("expected 2 peers after reload, got %d", c2.CachedPeerCount())
+	}
+}
+
+func TestPeerCache_CapCollectorUpdateTransition(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers-transition.cache")
+	c := NewPeerCache(path)
+
+	// Add a non-collector peer.
+	c.OnPeerJoin(&NodeMeta{
+		PublicKey:   "transition-key",
+		Hostname:    "node-t",
+		CapCollector: false,
+		Endpoints:   []string{"10.0.0.1:52888"},
+	})
+	if len(c.CachedCollectors()) != 0 {
+		t.Fatalf("expected 0 collectors initially, got %v", c.CachedCollectors())
+	}
+
+	// Update to collector.
+	c.OnPeerUpdate(&NodeMeta{
+		PublicKey:   "transition-key",
+		Hostname:    "node-t",
+		CapCollector: true,
+		Endpoints:   []string{"10.0.0.1:52888"},
+	})
+	if len(c.CachedCollectors()) != 1 {
+		t.Fatalf("expected 1 collector after update, got %v", c.CachedCollectors())
+	}
+
+	// Update back to non-collector.
+	c.OnPeerUpdate(&NodeMeta{
+		PublicKey:   "transition-key",
+		Hostname:    "node-t",
+		CapCollector: false,
+		Endpoints:   []string{"10.0.0.1:52888"},
+	})
+	if len(c.CachedCollectors()) != 0 {
+		t.Fatalf("expected 0 collectors after losing capability, got %v", c.CachedCollectors())
+	}
+}
+
+func TestPeerCache_OnPeerLeaveRetainsCollector(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers-leave-collector.cache")
+	c := NewPeerCache(path)
+
+	// Add a collector peer.
+	c.OnPeerJoin(&NodeMeta{
+		PublicKey:   "leave-collector",
+		Hostname:    "dashboard-leave",
+		CapCollector: true,
+		Endpoints:   []string{"203.0.113.5:52888"},
+	})
+	if len(c.CachedCollectors()) != 1 {
+		t.Fatalf("expected 1 collector before leave, got %d", len(c.CachedCollectors()))
+	}
+
+	// OnPeerLeave should retain the peer (including collector flag).
+	c.OnPeerLeave("leave-collector")
+	if c.CachedPeerCount() != 1 {
+		t.Fatalf("expected 1 peer after leave (retention), got %d", c.CachedPeerCount())
+	}
+	if len(c.CachedCollectors()) != 1 {
+		t.Fatalf("expected 1 collector after leave (retention), got %d", len(c.CachedCollectors()))
+	}
+
+	// Save and reload — collector should survive.
+	if err := c.SaveNow(); err != nil {
+		t.Fatalf("SaveNow failed: %v", err)
+	}
+	c2 := NewPeerCache(path)
+	if err := c2.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(c2.CachedCollectors()) != 1 {
+		t.Fatalf("expected 1 collector after reload, got %d", len(c2.CachedCollectors()))
 	}
 }
