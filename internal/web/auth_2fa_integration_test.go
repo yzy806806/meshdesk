@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -35,123 +34,14 @@ import (
 //   6. Rate limiting: 5 failed TOTP attempts → 30s lockout
 //   7. Security alerts generated for all suspicious activity
 
-// ---------------------------------------------------------------------------
-// TOTP test helpers (store-level)
-// ---------------------------------------------------------------------------
-
-// totpTestState simulates the server-side 2FA state for a user.
-type totpTestState struct {
-	Secret         string   // base32-encoded TOTP secret
-	RecoveryCodes  []string // one-time-use recovery codes
-	Enrolled       bool
-	FailedAttempts int
-	LockedUntil    time.Time
-}
-
-// totpStore is a test double for the TOTP enrollment store.
-type totpTestStore struct {
-	mu    sync.Mutex
-	users map[string]*totpTestState // username → state
-}
-
-func newTOTPTestStore() *totpTestStore {
-	return &totpTestStore{users: make(map[string]*totpTestState)}
-}
-
-func (s *totpTestStore) Enroll(username string) (*totpTestState, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state := &totpTestState{
-		Secret:        generateTestSecret(),
-		RecoveryCodes: generateTestRecoveryCodes(),
-		Enrolled:      true,
-	}
-	s.users[username] = state
-	return state, nil
-}
-
-func (s *totpTestStore) Get(username string) *totpTestState {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.users[username]
-}
-
-func (s *totpTestStore) IsEnrolled(username string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.users[username]
-	return ok && st.Enrolled
-}
-
-func (s *totpTestStore) RecordFailedAttempt(username string) (locked bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.users[username]
-	if !ok {
-		return false
-	}
-	st.FailedAttempts++
-	if st.FailedAttempts >= 5 {
-		st.LockedUntil = time.Now().Add(30 * time.Second)
-		return true
-	}
-	return false
-}
-
-func (s *totpTestStore) ClearFailedAttempts(username string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.users[username]
-	if !ok {
-		return
-	}
-	st.FailedAttempts = 0
-	st.LockedUntil = time.Time{}
-}
-
-func (s *totpTestStore) ConsumeRecoveryCode(username, code string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	st, ok := s.users[username]
-	if !ok {
-		return false
-	}
-	for i, rc := range st.RecoveryCodes {
-		if rc == code {
-			// Remove the used code (one-time use)
-			st.RecoveryCodes = append(st.RecoveryCodes[:i], st.RecoveryCodes[i+1:]...)
-			return true
-		}
-	}
-	return false
-}
-
 func generateTestSecret() string {
 	// 32 random bytes → base32 (no padding) = 52 chars
 	secret := make([]byte, 32)
 	// Use deterministic "random" for test predictability.
-	// In production, use crypto/rand.
 	for i := range secret {
 		secret[i] = byte(i + 1)
 	}
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)
-}
-
-func generateTestRecoveryCodes() []string {
-	// 10 unique recovery codes using deterministic but distinct suffixes
-	codes := []string{
-		"RC-0001-ABCDEFGH",
-		"RC-0002-JKLMNPQR",
-		"RC-0003-STUVWXYZ",
-		"RC-0004-23456789",
-		"RC-0005-BCDEFGHI",
-		"RC-0006-KLMNPQRS",
-		"RC-0007-TUVWXYZA",
-		"RC-0008-34567892",
-		"RC-0009-CDEFGHIJ",
-		"RC-0010-LMNPQRST",
-	}
-	return codes
 }
 
 // computeTOTP computes a valid TOTP code for a given secret and time step.

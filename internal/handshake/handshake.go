@@ -11,7 +11,6 @@ package handshake
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"time"
 )
@@ -140,37 +139,17 @@ func isTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		if netErr.Timeout() {
-			return true
-		}
-		if netErr.Temporary() {
-			return true
-		}
-	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
+	}
+	// DNS "no such host" is a permanent failure; everything else is transient.
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return dnsErr.IsTemporary || dnsErr.IsNotFound == false
+		return !dnsErr.IsNotFound
 	}
 	return true
-}
-
-// fmtAddr ensures an address always has a host:port format.
-func fmtAddr(addr string) string {
-	if addr == "" {
-		return "(unknown)"
-	}
-	return addr
-}
-
-// ensureErr wraps a nil error as nil (no-op) to avoid wrapping nils.
-func ensureErr(err error) error {
-	if err == nil {
-		return fmt.Errorf("unknown error")
-	}
-	return err
 }

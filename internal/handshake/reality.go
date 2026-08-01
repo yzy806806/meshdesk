@@ -470,7 +470,6 @@ type realityListener struct {
 	listener net.Listener
 	hs       *RealityHandshake
 
-	mu       sync.Mutex
 	acceptCh chan net.Conn
 	closeCh  chan struct{}
 	closed   atomic.Bool

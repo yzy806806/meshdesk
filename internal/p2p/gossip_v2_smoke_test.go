@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // testGossipPortBase is the starting port for gossip smoke tests.
@@ -247,4 +249,109 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestGossipV2_NodeMetaCapCollectorCompat verifies cross-version msgpack
+// compatibility for the CapCollector field. When an older node serializes
+// NodeMeta without the "cc" (CapCollector) field, the current code must:
+//   1. Successfully unmarshal the payload (no parse errors).
+//   2. Default CapCollector to false (zero value).
+//   3. Correctly parse all other fields.
+//
+// When a newer node sends "cc":true, the current code must:
+//   1. Correctly set CapCollector to true.
+//
+// This test extends TestGossipV2_NodeMetaNoMeshIP by adding cross-version
+// compatibility coverage for the CapCollector field added in commit d489512.
+func TestGossipV2_NodeMetaCapCollectorCompat(t *testing.T) {
+	// Case 1: Old format — msgpack WITHOUT the "cc" field.
+	// This simulates a node running code before commit d489512 that did not
+	// include the CapCollector flag.
+	oldFormat := map[string]interface{}{
+		"pk":   "oldnode000000000000000000000000000000000000000000000000000000",
+		"hn":   "old-agent",
+		"role": "agent",
+		"cr":   false,
+		"ce":   false,
+		"cpe":  false,
+		"eps":  []string{"10.0.0.5:51820"},
+		"nt":   "full_cone",
+		"lcpu": 0.3,
+		"lmem": 0.5,
+		"ver":  "1.0.0",
+		"seq":  uint64(1),
+		// NOTE: No "cc" field — old version did not have CapCollector.
+	}
+
+	data, err := msgpack.Marshal(oldFormat)
+	if err != nil {
+		t.Fatalf("msgpack marshal old format: %v", err)
+	}
+
+	// Verify the raw msgpack bytes do NOT contain "cc" key.
+	rawStr := string(data)
+	if contains(rawStr, "\x02\xa2\x63\x63") || contains(rawStr, "cc") {
+		t.Error("old format msgpack contains 'cc' key — should not for cross-version test")
+	}
+
+	// Unmarshal with current code — must succeed and default CapCollector to false.
+	meta, err := UnmarshalMeta(data)
+	if err != nil {
+		t.Fatalf("UnmarshalMeta old format (no cc field): %v", err)
+	}
+	if meta.CapCollector != false {
+		t.Error("CapCollector should default to false when 'cc' field is absent in msgpack")
+	}
+	if meta.PublicKey != "oldnode000000000000000000000000000000000000000000000000000000" {
+		t.Errorf("PublicKey mismatch: got %q", meta.PublicKey)
+	}
+	if meta.Hostname != "old-agent" {
+		t.Errorf("Hostname mismatch: got %q, want 'old-agent'", meta.Hostname)
+	}
+	if meta.Role != "agent" {
+		t.Errorf("Role mismatch: got %q, want 'agent'", meta.Role)
+	}
+	if len(data) > 512 {
+		t.Errorf("old format serialized size %d exceeds 512-byte memberlist limit", len(data))
+	}
+
+	// Case 2: New format — msgpack WITH "cc" field set to true.
+	// This simulates a node running the latest code with CapCollector=true.
+	newFormat := map[string]interface{}{
+		"pk":   "newnode000000000000000000000000000000000000000000000000000000",
+		"hn":   "new-dashboard",
+		"role": "web",
+		"cc":   true,
+		"eps":  []string{"10.0.0.6:51820"},
+		"nt":   "full_cone",
+		"ver":  "1.1.0",
+		"seq":  uint64(2),
+	}
+
+	data2, err := msgpack.Marshal(newFormat)
+	if err != nil {
+		t.Fatalf("msgpack marshal new format: %v", err)
+	}
+
+	meta2, err := UnmarshalMeta(data2)
+	if err != nil {
+		t.Fatalf("UnmarshalMeta new format (cc=true): %v", err)
+	}
+	if meta2.CapCollector != true {
+		t.Error("CapCollector should be true when 'cc' field is present and true in msgpack")
+	}
+	if meta2.PublicKey != "newnode000000000000000000000000000000000000000000000000000000" {
+		t.Errorf("PublicKey mismatch: got %q", meta2.PublicKey)
+	}
+	if meta2.Hostname != "new-dashboard" {
+		t.Errorf("Hostname mismatch: got %q, want 'new-dashboard'", meta2.Hostname)
+	}
+	if meta2.Role != "web" {
+		t.Errorf("Role mismatch: got %q, want 'web'", meta2.Role)
+	}
+	if len(data2) > 512 {
+		t.Errorf("new format serialized size %d exceeds 512-byte memberlist limit", len(data2))
+	}
+
+	t.Logf("Cross-version compat OK: old format %d bytes (no cc → CapCollector=false), new format %d bytes (cc=true → CapCollector=true)", len(data), len(data2))
 }

@@ -1,6 +1,6 @@
 // Package mesh provides the transport-layer abstraction contract.
 //
-// The transport layer sits between the WireGuard mesh core and the physical
+// The transport layer sits between the smux session layer and the physical
 // network, providing pluggable transport strategies (UDP, WebSocket, Reality TLS)
 // with per-peer configuration, graceful shutdown, health monitoring, latency
 // probing, and failover testing support.

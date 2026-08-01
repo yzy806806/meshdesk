@@ -6,7 +6,8 @@ import (
 )
 
 // PeerHandshakeInfo holds parsed handshake status for a single peer.
-// In v2, this will be populated by the HandshakeLayer, not WireGuard IpcGet.
+// Populated from the smux session map — session establishment time is
+// the handshake completion time.
 type PeerHandshakeInfo struct {
 	PublicKey           string
 	LastHandshakeNano   int64
@@ -43,7 +44,7 @@ func (n *MeshNode) GetPeerHandshakeInfo(publicKey string) *PeerHandshakeInfo {
 		// TxBytes/RxBytes: smux does not expose per-session byte counters
 		// in the current API. These remain zero until byte accounting is
 		// added to the smux Session.
-		// PersistentKeepalive: not applicable in v2 (no WireGuard keepalive).
+		// PersistentKeepalive: not applicable (no WireGuard keepalive).
 	}
 }
 

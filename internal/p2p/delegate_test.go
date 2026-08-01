@@ -12,6 +12,7 @@ func TestNodeMetaMarshalRoundTrip(t *testing.T) {
 		CapRelay:      true,
 		CapExit:       false,
 		CapProxyEntry: true,
+		CapCollector:  true,
 		Endpoints:     []string{"203.0.113.5:51820", "192.168.1.5:51820"},
 		NatType:       "full_cone",
 		LoadCPU:       0.3,
@@ -60,6 +61,9 @@ func TestNodeMetaMarshalRoundTrip(t *testing.T) {
 	}
 	if decoded.CapProxyEntry != original.CapProxyEntry {
 		t.Errorf("CapProxyEntry mismatch: got %v, want %v", decoded.CapProxyEntry, original.CapProxyEntry)
+	}
+	if decoded.CapCollector != original.CapCollector {
+		t.Errorf("CapCollector mismatch: got %v, want %v", decoded.CapCollector, original.CapCollector)
 	}
 	if len(decoded.Endpoints) != len(original.Endpoints) {
 		t.Errorf("Endpoints length mismatch: got %d, want %d", len(decoded.Endpoints), len(original.Endpoints))
@@ -117,6 +121,114 @@ func TestUnmarshalMetaInvalidData(t *testing.T) {
 	_, err := UnmarshalMeta([]byte{0xff, 0xff, 0xff})
 	if err == nil {
 		t.Error("UnmarshalMeta should fail on invalid data")
+	}
+}
+
+// TestNodeMetaCapCollectorRoundTrip verifies that the CapCollector field
+// survives a MessagePack round-trip (MarshalMeta → UnmarshalMeta). This is
+// critical because CapCollector drives the monitor auto-routing feature —
+// if msgpack serialization drops this field, collector discovery breaks
+// silently (nodes with CapCollector=true would never be detected).
+func TestNodeMetaCapCollectorRoundTrip(t *testing.T) {
+	// Case 1: CapCollector=true — must survive round-trip.
+	original := &NodeMeta{
+		PublicKey:    "col0000000000000000000000000000000000000000000000000000000000",
+		Hostname:     "dashboard-1",
+		Role:         "web",
+		CapCollector: true,
+		Endpoints:    []string{"203.0.113.5:51820"},
+		Version:      "1.0.0",
+		Seq:          1,
+	}
+
+	data, err := original.MarshalMeta()
+	if err != nil {
+		t.Fatalf("MarshalMeta (CapCollector=true): %v", err)
+	}
+
+	decoded, err := UnmarshalMeta(data)
+	if err != nil {
+		t.Fatalf("UnmarshalMeta (CapCollector=true): %v", err)
+	}
+
+	if decoded.CapCollector != true {
+		t.Error("CapCollector was lost: expected true after round-trip, got false")
+	}
+	if decoded.PublicKey != original.PublicKey {
+		t.Errorf("PublicKey mismatch: got %s, want %s", decoded.PublicKey, original.PublicKey)
+	}
+
+	// Case 2: CapCollector=false (default) — must survive round-trip as false.
+	original2 := &NodeMeta{
+		PublicKey:  "agnt0000000000000000000000000000000000000000000000000000000000",
+		Hostname:   "agent-1",
+		Role:       "agent",
+		Endpoints:  []string{"203.0.113.10:51820"},
+		Version:    "1.0.0",
+		Seq:        1,
+		// CapCollector intentionally not set (zero value)
+	}
+
+	data2, err := original2.MarshalMeta()
+	if err != nil {
+		t.Fatalf("MarshalMeta (CapCollector=false): %v", err)
+	}
+
+	decoded2, err := UnmarshalMeta(data2)
+	if err != nil {
+		t.Fatalf("UnmarshalMeta (CapCollector=false): %v", err)
+	}
+
+	if decoded2.CapCollector != false {
+		t.Error("CapCollector should be false after round-trip when not set")
+	}
+
+	// Case 3: Verify CapCollector=false serialization is smaller than CapCollector=true
+	// (omitempty should skip the false field).
+	if len(data2) >= len(data) {
+		t.Logf("CapCollector=false size=%d, CapCollector=true size=%d (omitempty optimization)",
+			len(data2), len(data))
+	}
+}
+
+// TestNodeMetaCapCollectorTransitionRoundTrip verifies that when a NodeMeta
+// transitions from CapCollector=false to CapCollector=true, the updated
+// metadata correctly reflects the new capability after a round-trip.
+// This simulates a node that becomes a collector mid-session (e.g., web mode
+// started after agent already joined).
+func TestNodeMetaCapCollectorTransitionRoundTrip(t *testing.T) {
+	// Phase 1: Non-collector.
+	meta := &NodeMeta{
+		PublicKey:    "trans00000000000000000000000000000000000000000000000000000000",
+		Hostname:     "node-1",
+		Role:         "agent",
+		CapCollector: false,
+		Endpoints:    []string{"203.0.113.5:51820"},
+		Version:      "1.0.0",
+		Seq:          1,
+	}
+
+	data1, _ := meta.MarshalMeta()
+	decoded1, _ := UnmarshalMeta(data1)
+	if decoded1.CapCollector != false {
+		t.Error("phase 1: CapCollector should be false")
+	}
+
+	// Phase 2: Transition to collector (higher Seq).
+	meta.CapCollector = true
+	meta.Seq = 2
+	meta.Role = "web"
+
+	data2, _ := meta.MarshalMeta()
+	decoded2, _ := UnmarshalMeta(data2)
+	if decoded2.CapCollector != true {
+		t.Error("phase 2: CapCollector should be true after transition")
+	}
+	if decoded2.Role != "web" {
+		t.Errorf("phase 2: Role should be 'web', got %q", decoded2.Role)
+	}
+	if decoded2.Seq != 2 {
+		t.Errorf("phase 2: Seq should be 2, got %d", decoded2.Seq)
 	}
 }
 

@@ -387,12 +387,12 @@ func TestConnWithPrefix_DoubleReadAfterPrefixExhausted(t *testing.T) {
 	}
 
 	buf1 := make([]byte, 3)
-	n, err = io.ReadFull(wrapped, buf1)
+	_, err = io.ReadFull(wrapped, buf1)
 	if err != nil {
 		t.Fatalf("first underlying read: %v", err)
 	}
 	buf2 := make([]byte, 3)
-	n, err = io.ReadFull(wrapped, buf2)
+	_, err = io.ReadFull(wrapped, buf2)
 	if err != nil {
 		t.Fatalf("second underlying read: %v", err)
 	}

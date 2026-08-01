@@ -45,10 +45,6 @@ type Stream struct {
 	localClosed  atomic.Bool // local Write side closed (FIN sent)
 	remoteClosed atomic.Bool // remote FIN received
 	resetErr     error       // set when RST received (protected by readMu)
-
-	// Deadlines
-	readDeadline  *time.Timer
-	writeDeadline *time.Timer
 }
 
 // newStream creates a new Stream within the given session.

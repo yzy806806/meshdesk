@@ -11,8 +11,9 @@
 //   - Server-side: uses github.com/xtls/reality to hijack the incoming TLS
 //     handshake, authenticating clients via the ECDH-derived auth key and
 //     forwarding non-mesh traffic to the camouflage destination.
-//   - The resulting connection is a standard net.Conn carrying WireGuard
-//     packets inside the encrypted TLS channel.
+//   - The resulting connection is a standard net.Conn carrying the v2
+//     protocol stack (X25519 ECDH key exchange → AES-256-GCM SecureConn
+//     → smux multiplexed streams) inside the encrypted TLS channel.
 //
 // Protocol summary (from xray-core transport/internet/reality/reality.go):
 //
@@ -687,10 +688,7 @@ func (t *RealityTransport) LatencyProbe(ctx context.Context, addr string) (time.
 // IsHealthy returns true if the transport is operational and can accept
 // new connections. After Shutdown, returns false.
 func (t *RealityTransport) IsHealthy() bool {
-	if t.closed.Load() {
-		return false
-	}
-	return true
+	return !t.closed.Load()
 }
 
 // markClosed is called when the factory shuts down this transport.
@@ -766,7 +764,6 @@ type realityListener struct {
 	listener  net.Listener
 	transport *RealityTransport
 
-	mu       sync.Mutex
 	acceptCh chan net.Conn
 	closeCh  chan struct{}
 	closed   atomic.Bool
@@ -901,21 +898,17 @@ func isTransientError(err error) bool {
 	if err == nil {
 		return false
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) {
-		if netErr.Timeout() {
-			return true
-		}
-		if netErr.Temporary() {
-			return true
-		}
-	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) {
+		return netErr.Timeout()
+	}
+	// DNS "no such host" is a permanent failure; everything else is transient.
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
-		return dnsErr.IsTemporary || dnsErr.IsNotFound == false
+		return !dnsErr.IsNotFound
 	}
 	return true
 }

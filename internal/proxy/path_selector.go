@@ -29,7 +29,7 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"math/rand"
+	"crypto/rand"
 	"net"
 	"sort"
 	"sync"

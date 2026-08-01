@@ -39,7 +39,6 @@ type mockTransport struct {
 	pipeAddr  net.Addr // reported as the remote address for connections
 	mu        sync.Mutex
 	closed    bool
-	connCount int
 }
 
 // mockAddr implements net.Addr for in-memory pipe connections.
@@ -146,7 +145,6 @@ type mockListener struct {
 	addr      net.Addr
 	mu        sync.Mutex
 	closed    bool
-	acceptCh  chan net.Conn
 }
 
 func (l *mockListener) Accept() (net.Conn, error) {

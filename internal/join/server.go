@@ -54,12 +54,20 @@ type ConfigBundle struct {
 // PeerInfo is a lightweight peer descriptor for the known-peers list.
 type PeerInfo struct {
 	PublicKey string `json:"pubkey"`
-	Hostname string `json:"hostname"`
-	Role     string `json:"role"`
-	Endpoint string `json:"endpoint,omitempty"`
+	Hostname  string `json:"hostname"`
+	Role      string `json:"role"`
+	Endpoint  string `json:"endpoint,omitempty"`
 }
 
 // JoinRequest is the request body sent by the joining node.
+//
+// The join protocol is a two-step challenge-response flow:
+//   1. Initial request (ChallengeResponse empty): server validates the
+//      token, generates a random challenge, and returns it.
+//   2. Challenge response (ChallengeResponse set): the joiner signs the
+//      challenge with its Ed25519 private key and sends it back. The
+//      server verifies the signature against the joiner's claimed public
+//      key before distributing the config bundle.
 type JoinRequest struct {
 	// Token is the base64-encoded join token (HMAC-signed, with nonce + expiry).
 	Token string `json:"token"`
@@ -72,22 +80,32 @@ type JoinRequest struct {
 
 	// JoinerEndpoint is the joining node's reachable endpoint (if any).
 	JoinerEndpoint string `json:"joiner_endpoint,omitempty"`
+
+	// Challenge is the hex-encoded challenge the server sent in step 1.
+	// Empty on the initial request (step 1).
+	Challenge string `json:"challenge,omitempty"`
+
+	// ChallengeResponse is the hex-encoded Ed25519 signature of the challenge,
+	// signed by the joiner's private key. Present only in step 2.
+	// Empty on the initial request (step 1).
+	ChallengeResponse string `json:"challenge_response,omitempty"`
 }
 
 // JoinResponse is the response sent back to the joining node.
 type JoinResponse struct {
-	// Success indicates whether the join was accepted.
+	// Success indicates whether the join step was accepted.
 	Success bool `json:"success"`
 
 	// Error is a human-readable error message (when Success is false).
 	Error string `json:"error,omitempty"`
 
-	// Bundle is the config bundle (when Success is true).
+	// Bundle is the config bundle (when Success is true AND the challenge
+	// has been verified). Nil during step 1 (challenge issued).
 	Bundle *ConfigBundle `json:"bundle,omitempty"`
 
 	// Challenge is a random hex challenge for joiner identity verification.
 	// The joiner must sign this with its Ed25519 private key to prove
-	// ownership of the public key it claims.
+	// ownership of the public key it claims. Present in step 1 only.
 	Challenge string `json:"challenge,omitempty"`
 }
 
@@ -137,15 +155,29 @@ type JoinServer struct {
 	listener   net.Listener
 
 	// rateLimiter tracks join requests per client IP.
-	mu         sync.Mutex
-	rateLimit  map[string]*rateBucket
+	mu        sync.Mutex
+	rateLimit map[string]*rateBucket
 
 	// knownPeersFunc returns the current known-peers list for the bundle.
 	knownPeersFunc func() []PeerInfo
+
+	// challengeCache stores issued challenges pending response.
+	// challenge hex → joiner public key (hex).
+	// Entries expire after challengeTTL.
+	challengeCache map[string]challengeEntry
 }
 
+type challengeEntry struct {
+	joinerPubKey string
+	expiresAt   time.Time
+}
+
+// challengeTTL is how long an issued challenge remains valid for
+// the joiner to respond. Short window to prevent replay.
+const challengeTTL = 60 * time.Second
+
 type rateBucket struct {
-	count    int
+	count       int
 	windowStart time.Time
 }
 
@@ -158,9 +190,10 @@ func NewJoinServer(cfg ServerConfig) *JoinServer {
 		cfg.MaxJoinRequests = 10
 	}
 	return &JoinServer{
-		cfg:       cfg,
-		replay:    NewReplayCache(cfg.TokenLifetime * 2),
-		rateLimit: make(map[string]*rateBucket),
+		cfg:            cfg,
+		replay:         NewReplayCache(cfg.TokenLifetime * 2),
+		rateLimit:      make(map[string]*rateBucket),
+		challengeCache: make(map[string]challengeEntry),
 	}
 }
 
@@ -227,6 +260,23 @@ func (s *JoinServer) Stop() {
 }
 
 // handleJoin is the HTTP handler for POST /api/join.
+//
+// The protocol is a two-step challenge-response flow:
+//
+//  Step 1 (challenge issuance): The joiner sends a JoinRequest with token
+//  + joiner pubkey but NO ChallengeResponse. The server validates the
+//  token, generates a random 32-byte challenge, caches it, and returns
+//  it in the JoinResponse. No bundle is returned yet.
+//
+//  Step 2 (challenge verification): The joiner signs the challenge with
+//  its Ed25519 private key and sends a second JoinRequest with the same
+//  token + the Challenge and ChallengeResponse fields set. The server
+//  verifies the signature against the joiner's claimed public key. If
+//  valid, the config bundle is returned. If invalid, an error is returned.
+//
+// This proves the joiner actually possesses the private key
+// corresponding to the public key it claims — preventing impersonation
+// even if an attacker intercepts a valid token.
 func (s *JoinServer) handleJoin(w http.ResponseWriter, r *http.Request) {
 	// Only accept POST.
 	if r.Method != http.MethodPost {
@@ -287,17 +337,35 @@ func (s *JoinServer) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Replay protection: check and mark the nonce.
-	if err := s.replay.CheckAndMark(token.Nonce, token.ExpiresAt); err != nil {
-		log.Printf("[join] replay detected from %s: %v", clientIP, err)
-		writeJSON(w, http.StatusUnauthorized, JoinResponse{
-			Success: false,
-			Error:   "token already used",
-		})
+	// NOTE: The token nonce is marked on the FIRST request (step 1).
+	// The second request (step 2) reuses the same token. To allow this,
+	// we only check replay on the first step (when ChallengeResponse is
+	// empty). On the second step, the challenge cache serves as the
+	// replay guard.
+	if req.ChallengeResponse == "" {
+		if err := s.replay.CheckAndMark(token.Nonce, token.ExpiresAt); err != nil {
+			log.Printf("[join] replay detected from %s: %v", clientIP, err)
+			writeJSON(w, http.StatusUnauthorized, JoinResponse{
+				Success: false,
+				Error:   "token already used",
+			})
+			return
+		}
+	}
+
+	// Step dispatch: if no ChallengeResponse, this is step 1 (issue challenge).
+	if req.ChallengeResponse == "" {
+		s.handleChallengeStep(w, req, clientIP)
 		return
 	}
 
-	// Verify joiner identity: generate a challenge, sign it, embed in response.
-	// The joiner must prove it owns the claimed Ed25519 public key.
+	// Step 2: verify challenge response and return bundle.
+	s.handleChallengeResponseStep(w, req, clientIP, token)
+}
+
+// handleChallengeStep generates a random challenge, caches it, and returns
+// it to the joiner. No config bundle is returned in this step.
+func (s *JoinServer) handleChallengeStep(w http.ResponseWriter, req JoinRequest, clientIP string) {
 	challenge := make([]byte, 32)
 	if _, err := readRandom(challenge); err != nil {
 		writeJSON(w, http.StatusInternalServerError, JoinResponse{
@@ -308,23 +376,96 @@ func (s *JoinServer) handleJoin(w http.ResponseWriter, r *http.Request) {
 	}
 	challengeHex := hex.EncodeToString(challenge)
 
-	// For now, we trust the joiner's claimed public key. In a stricter
-	// mode, the joiner would sign the challenge and the server would
-	// verify before responding. This is a two-step flow that can be
-	// added later. The token already authenticates the joiner.
+	// Cache the challenge with the joiner's claimed public key.
+	// The challenge must be redeemed by this specific joiner within
+	// challengeTTL.
+	s.mu.Lock()
+	s.challengeCache[challengeHex] = challengeEntry{
+		joinerPubKey: req.JoinerPublicKey,
+		expiresAt:   time.Now().Add(challengeTTL),
+	}
+	// GC expired challenges.
+	now := time.Now()
+	for k, v := range s.challengeCache {
+		if v.expiresAt.Before(now) {
+			delete(s.challengeCache, k)
+		}
+	}
+	s.mu.Unlock()
 
-	// Build the config bundle.
-	bundle := s.buildBundle(req)
-
-	log.Printf("[join] accepted join from %s (pubkey=%s, hostname=%s)",
-		clientIP,
-		shortHex(req.JoinerPublicKey),
-		req.JoinerHostname)
+	log.Printf("[join] challenge issued to %s (pubkey=%s, hostname=%s)",
+		clientIP, shortHex(req.JoinerPublicKey), req.JoinerHostname)
 
 	writeJSON(w, http.StatusOK, JoinResponse{
 		Success:   true,
-		Bundle:     bundle,
 		Challenge: challengeHex,
+	})
+}
+
+// handleChallengeResponseStep verifies the joiner's Ed25519 signature
+// over the challenge and, if valid, returns the config bundle.
+func (s *JoinServer) handleChallengeResponseStep(w http.ResponseWriter, req JoinRequest, clientIP string, token *Token) {
+	// Look up the cached challenge.
+	s.mu.Lock()
+	entry, exists := s.challengeCache[req.Challenge]
+	if exists {
+		// Challenge is single-use: remove it regardless of outcome.
+		delete(s.challengeCache, req.Challenge)
+	}
+	s.mu.Unlock()
+
+	if !exists {
+		log.Printf("[join] challenge not found or expired from %s", clientIP)
+		writeJSON(w, http.StatusUnauthorized, JoinResponse{
+			Success: false,
+			Error:   "challenge not found or expired",
+		})
+		return
+	}
+
+	// Check challenge TTL.
+	if time.Now().After(entry.expiresAt) {
+		log.Printf("[join] challenge expired from %s", clientIP)
+		writeJSON(w, http.StatusUnauthorized, JoinResponse{
+			Success: false,
+			Error:   "challenge expired",
+		})
+		return
+	}
+
+	// Verify the joiner's public key matches the one from step 1.
+	if req.JoinerPublicKey != entry.joinerPubKey {
+		log.Printf("[join] public key mismatch on challenge from %s: step1=%s step2=%s",
+			clientIP, shortHex(entry.joinerPubKey), shortHex(req.JoinerPublicKey))
+		writeJSON(w, http.StatusUnauthorized, JoinResponse{
+			Success: false,
+			Error:   "public key mismatch",
+		})
+		return
+	}
+
+	// Verify the Ed25519 signature.
+	// The joiner signed the challenge hex string bytes.
+	challengeBytes := []byte(req.Challenge)
+	if !identity.Verify(req.JoinerPublicKey, challengeBytes, req.ChallengeResponse) {
+		log.Printf("[join] challenge signature verification failed from %s (pubkey=%s)",
+			clientIP, shortHex(req.JoinerPublicKey))
+		writeJSON(w, http.StatusUnauthorized, JoinResponse{
+			Success: false,
+			Error:   "challenge signature verification failed",
+		})
+		return
+	}
+
+	// Challenge verified! Build and return the config bundle.
+	bundle := s.buildBundle(req)
+
+	log.Printf("[join] accepted join from %s (pubkey=%s, hostname=%s) — challenge verified",
+		clientIP, shortHex(req.JoinerPublicKey), req.JoinerHostname)
+
+	writeJSON(w, http.StatusOK, JoinResponse{
+		Success: true,
+		Bundle:  bundle,
 	})
 }
 
