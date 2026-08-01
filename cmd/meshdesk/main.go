@@ -199,6 +199,7 @@ func main() {
 			cfg.Proxy.Relay.Enabled,
 			len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
 			cfg.Proxy.SS.Port != 0,
+			webMode,
 		)
 
 		if err := gl.Start(); err != nil {
@@ -1024,6 +1025,7 @@ func runJoinSubcommand(args []string) {
 		cfg.Proxy.Relay.Enabled,
 		len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
 		cfg.Proxy.SS.Port != 0,
+		false,
 	)
 
 	if err := gl.Start(); err != nil {

@@ -150,11 +150,12 @@ func (g *GossipLayer) SetLocalIdentity(hostname, role string) {
 }
 
 // SetLocalCapabilities sets the local node's capability flags.
-func (g *GossipLayer) SetLocalCapabilities(capRelay, capExit, capProxyEntry bool) {
+func (g *GossipLayer) SetLocalCapabilities(capRelay, capExit, capProxyEntry, capCollector bool) {
 	g.delegate.updateLocalMeta(func(m *NodeMeta) {
 		m.CapRelay = capRelay
 		m.CapExit = capExit
 		m.CapProxyEntry = capProxyEntry
+		m.CapCollector = capCollector
 		m.Seq++
 	})
 }
@@ -986,7 +987,7 @@ func (g *GossipLayer) EnableRelayMode(maxCircuits int) error {
 	g.mu.Unlock()
 
 	// Update local capabilities: CapRelay = true.
-	g.SetLocalCapabilities(true, g.delegate.getLocalMeta().CapExit, g.delegate.getLocalMeta().CapProxyEntry)
+	g.SetLocalCapabilities(true, g.delegate.getLocalMeta().CapExit, g.delegate.getLocalMeta().CapProxyEntry, g.delegate.getLocalMeta().CapCollector)
 
 	// Set MaxCircuits in metadata.
 	g.delegate.updateLocalMeta(func(m *NodeMeta) {
@@ -1015,7 +1016,7 @@ func (g *GossipLayer) DisableRelayMode() error {
 	}
 
 	// Clear CapRelay.
-	g.SetLocalCapabilities(false, g.delegate.getLocalMeta().CapExit, g.delegate.getLocalMeta().CapProxyEntry)
+	g.SetLocalCapabilities(false, g.delegate.getLocalMeta().CapExit, g.delegate.getLocalMeta().CapProxyEntry, g.delegate.getLocalMeta().CapCollector)
 
 	log.Printf("[p2p] relay mode disabled")
 	return nil
