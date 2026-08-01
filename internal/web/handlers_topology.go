@@ -27,6 +27,11 @@ type PeerLiveness interface {
 	// to the gossip cluster. This includes peers not in the routing table
 	// (gossip-discovered only).
 	AlivePeerIDs() []string
+
+	// PeerHostname returns the hostname for a peer from gossip NodeMeta,
+	// or empty string if the peer is unknown or has no hostname.
+	// Used as a fallback when monitor metrics are not yet available.
+	PeerHostname(peerID string) string
 }
 
 // --- Adapters: bridge existing types to topology interfaces ---
@@ -227,14 +232,24 @@ func (m *monitorTopologyMetrics) LatestMem(nodeID string, freshnessThreshold tim
 }
 
 func (m *monitorTopologyMetrics) LatestHostname(nodeID string) string {
-	if m.store == nil {
-		return ""
+	// Try monitor store first — it has the most up-to-date hostname
+	// (pushed by the node with its metrics).
+	if m.store != nil {
+		metrics := m.store.Latest(nodeID)
+		if metrics != nil && metrics.Hostname != "" {
+			return metrics.Hostname
+		}
 	}
-	metrics := m.store.Latest(nodeID)
-	if metrics == nil {
-		return ""
+
+	// Fallback: consult gossip liveness for hostname from NodeMeta.
+	// This covers the window between gossip join and first metrics push.
+	if m.liveness != nil {
+		if h := m.liveness.PeerHostname(nodeID); h != "" {
+			return h
+		}
 	}
-	return metrics.Hostname
+
+	return ""
 }
 
 func (m *monitorTopologyMetrics) NodeStatus(nodeID string, freshnessThreshold time.Duration) string {

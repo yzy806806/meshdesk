@@ -979,6 +979,21 @@ func (g *gossipLiveness) AlivePeerIDs() []string {
 	return ids
 }
 
+func (g *gossipLiveness) PeerHostname(peerID string) string {
+	if peerID == g.localKey {
+		// Return local node's hostname from gossip meta.
+		if meta := g.gl.LocalMeta(); meta != nil {
+			return meta.Hostname
+		}
+		return ""
+	}
+	meta := g.gl.Events().GetPeerMeta(peerID)
+	if meta == nil {
+		return ""
+	}
+	return meta.Hostname
+}
+
 // firstShortID returns the first short ID from the list, or empty string.
 func firstShortID(ids []string) string {
 	if len(ids) == 0 {
