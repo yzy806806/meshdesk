@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/hex"
@@ -775,63 +776,75 @@ func main() {
 	// Only meaningful on shared nodes with Reality TLS enabled.
 	var joinServer *join.JoinServer
 	if cfg.Join.Enabled && cfg.Reality.Enabled {
-		joinServerCfg := join.ServerConfig{
-			Secret:            []byte(cfg.Join.Secret),
-			ServerIdentity:     node.Identity(),
-			BootstrapEndpoint:  firstAdvertiseEndpoint(cfg),
-			GossipPort:         cfg.Mesh.GossipPort,
-			RealityPublicKey:  cfg.Reality.PrivateKey, // X25519 key used for REALITY
-			RealityShortID:     firstShortID(cfg.Reality.ShortIDs),
-			RealityServerName:  firstServerName(cfg.Reality.ServerNames),
-			Collectors:         cfg.Monitoring.Collectors,
-			TokenLifetime:      time.Duration(cfg.Join.TokenLifetime) * time.Second,
-		}
-
-		// If the join secret is empty, generate a random one and log a warning.
-		if cfg.Join.Secret == "" {
-			randomSecret := make([]byte, 32)
-			if _, err := rand.Read(randomSecret); err != nil {
-				log.Printf("Warning: failed to generate random join secret: %v — join server disabled", err)
-			} else {
-				cfg.Join.Secret = hex.EncodeToString(randomSecret)
-				log.Printf("WARNING: join.secret not set — generated random secret: %s", cfg.Join.Secret)
-				log.Printf("  Use this secret with `meshdesk join-token` to generate tokens.")
+		// Derive the X25519 public key from the server's private key.
+		// The joiner needs the PUBLIC key to connect via Reality TLS.
+		realityPubHex := ""
+		if privBytes, err := hex.DecodeString(cfg.Reality.PrivateKey); err == nil && len(privBytes) == 32 {
+			if realityPriv, err := ecdh.X25519().NewPrivateKey(privBytes); err == nil {
+				realityPubHex = hex.EncodeToString(realityPriv.PublicKey().Bytes())
 			}
 		}
-		joinServerCfg.Secret = []byte(cfg.Join.Secret)
-
-		joinServer = join.NewJoinServer(joinServerCfg)
-
-		// Wire the known-peers provider if gossip is active.
-		if gossipLayer != nil {
-			joinServer.SetKnownPeersFunc(func() []join.PeerInfo {
-				peers := gossipLayer.KnownPeers()
-				result := make([]join.PeerInfo, 0, len(peers))
-				for _, p := range peers {
-					result = append(result, join.PeerInfo{
-						PublicKey: p.PublicKey,
-						Hostname:  p.Hostname,
-						Role:      p.Role,
-					})
-				}
-				return result
-			})
-		}
-
-		if cfg.Join.TLSCertFile != "" && cfg.Join.TLSKeyFile != "" {
-			if err := joinServer.StartTLS(cfg.Join.ListenAddr, cfg.Join.TLSCertFile, cfg.Join.TLSKeyFile); err != nil {
-				log.Printf("Warning: failed to start join TLS server: %v", err)
-			} else {
-				log.Printf("  Join:       TLS server on %s", cfg.Join.ListenAddr)
-			}
+		if realityPubHex == "" {
+			log.Printf("Warning: invalid reality.private_key — join server disabled")
 		} else {
-			if err := joinServer.Start(cfg.Join.ListenAddr); err != nil {
-				log.Printf("Warning: failed to start join server: %v", err)
-			} else {
-				log.Printf("  Join:       server on %s (WARNING: no TLS — use tls_cert_file/tls_key_file for production)", cfg.Join.ListenAddr)
+			joinServerCfg := join.ServerConfig{
+				Secret:            []byte(cfg.Join.Secret),
+				ServerIdentity:     node.Identity(),
+				BootstrapEndpoint:  firstAdvertiseEndpoint(cfg),
+				GossipPort:         cfg.Mesh.GossipPort,
+				RealityPublicKey:  realityPubHex, // Derived X25519 public key
+				RealityShortID:     firstShortID(cfg.Reality.ShortIDs),
+				RealityServerName:  firstServerName(cfg.Reality.ServerNames),
+				Collectors:         cfg.Monitoring.Collectors,
+				TokenLifetime:      time.Duration(cfg.Join.TokenLifetime) * time.Second,
 			}
+
+			// If the join secret is empty, generate a random one and log a warning.
+			if cfg.Join.Secret == "" {
+				randomSecret := make([]byte, 32)
+				if _, err := rand.Read(randomSecret); err != nil {
+					log.Printf("Warning: failed to generate random join secret: %v — join server disabled", err)
+				} else {
+					cfg.Join.Secret = hex.EncodeToString(randomSecret)
+					log.Printf("WARNING: join.secret not set — generated random secret: %s", cfg.Join.Secret)
+					log.Printf("  Use this secret with `meshdesk join-token` to generate tokens.")
+				}
+			}
+			joinServerCfg.Secret = []byte(cfg.Join.Secret)
+
+			joinServer = join.NewJoinServer(joinServerCfg)
+
+			// Wire the known-peers provider if gossip is active.
+			if gossipLayer != nil {
+				joinServer.SetKnownPeersFunc(func() []join.PeerInfo {
+					peers := gossipLayer.KnownPeers()
+					result := make([]join.PeerInfo, 0, len(peers))
+					for _, p := range peers {
+						result = append(result, join.PeerInfo{
+							PublicKey: p.PublicKey,
+							Hostname:  p.Hostname,
+							Role:      p.Role,
+						})
+					}
+					return result
+				})
+			}
+
+			if cfg.Join.TLSCertFile != "" && cfg.Join.TLSKeyFile != "" {
+				if err := joinServer.StartTLS(cfg.Join.ListenAddr, cfg.Join.TLSCertFile, cfg.Join.TLSKeyFile); err != nil {
+					log.Printf("Warning: failed to start join TLS server: %v", err)
+				} else {
+					log.Printf("  Join:       TLS server on %s", cfg.Join.ListenAddr)
+				}
+			} else {
+				if err := joinServer.Start(cfg.Join.ListenAddr); err != nil {
+					log.Printf("Warning: failed to start join server: %v", err)
+				} else {
+					log.Printf("  Join:       server on %s (WARNING: no TLS — use tls_cert_file/tls_key_file for production)", cfg.Join.ListenAddr)
+				}
+			}
+			defer joinServer.Stop()
 		}
-		defer joinServer.Stop()
 	}
 
 	// Save config (in case identity was auto-generated).
@@ -1299,21 +1312,19 @@ func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPa
 
 		result, err := gl.RequestJoin(joinCtx, bootstrapKey)
 		if err != nil {
-			log.Fatalf("Join request failed: %v", err)
-		}
-
-		if !result.Accepted {
-			log.Fatalf("Join rejected: %s", result.RejectReason)
-		}
-
-		log.Printf("Join accepted by bootstrap")
-		if result.Bootstrap != nil {
-			log.Printf("  Bootstrap public key: %s", result.Bootstrap.PublicKey[:8])
-		}
-		log.Printf("  Known peers from bootstrap: %d", len(result.KnownPeers))
-		for _, peer := range result.KnownPeers {
-			log.Printf("    - %s (role %s)",
-				peer.PublicKey[:8], peer.Role)
+			log.Printf("Warning: join request to bootstrap failed: %v (continuing — gossip push/pull will sync peers)", err)
+		} else if !result.Accepted {
+			log.Printf("Warning: join rejected by bootstrap: %s (continuing — gossip push/pull will sync peers)", result.RejectReason)
+		} else {
+			log.Printf("Join accepted by bootstrap")
+			if result.Bootstrap != nil {
+				log.Printf("  Bootstrap public key: %s", result.Bootstrap.PublicKey[:8])
+			}
+			log.Printf("  Known peers from bootstrap: %d", len(result.KnownPeers))
+			for _, peer := range result.KnownPeers {
+				log.Printf("    - %s (role %s)",
+					peer.PublicKey[:8], peer.Role)
+			}
 		}
 	} else {
 		log.Printf("No bootstrap key provided — relying on memberlist push/pull for peer discovery")
