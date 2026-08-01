@@ -57,6 +57,12 @@ type Aggregator struct {
 
 	authChecker AuthChecker
 
+	// Dedup: track highest sequence seen per source to avoid storing
+	// the same (SourceID, Sequence) pair twice (e.g., direct push +
+	// forwarded copy from another collector).
+	dedup   map[string]uint64 // sourceID → last sequence
+	dedupMu sync.Mutex
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -115,6 +121,7 @@ func NewAggregator(cfg AggregatorConfig) *Aggregator {
 		collectorLister: cfg.CollectorLister,
 		selfPeerID:     cfg.SelfPeerID,
 		authChecker:    cfg.AuthChecker,
+		dedup:          make(map[string]uint64),
 		stopCh:         make(chan struct{}),
 	}
 }
@@ -212,6 +219,20 @@ func (a *Aggregator) handlePush(conn net.Conn) {
 			return
 		}
 	}
+
+	// Dedup by SourceID+Sequence: skip envelopes with sequences we've
+	// already seen (e.g., direct push + forwarded copy from another
+	// collector). The Sequence field is monotonically increasing per
+	// source; a sequence <= the last seen sequence is a duplicate.
+	// First-time sources (not in the map) are always accepted.
+	a.dedupMu.Lock()
+	lastSeq, seen := a.dedup[env.SourceID]
+	if seen && env.Sequence <= lastSeq {
+		a.dedupMu.Unlock()
+		return
+	}
+	a.dedup[env.SourceID] = env.Sequence
+	a.dedupMu.Unlock()
 
 	// Store the metrics. The Store handles deduplication naturally
 	// (ring buffer overwrites old data; newer timestamp wins).
