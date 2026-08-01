@@ -4,15 +4,27 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
 )
 
-// testGossipPortBase is the starting port for gossip smoke tests.
-// Tests use consecutive ports from this base to avoid collisions.
-const testGossipPortBase = 17946
+// freePort returns an available TCP port on 127.0.0.1.
+// It binds to port 0, gets the assigned port, closes the listener,
+// and returns the port number. The TOCTOU race between close and
+// rebind is acceptable because newTestGossipLayer retries on bind
+// failure with a fresh port.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("freePort: %v", err)
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
 
 // newTestIdentity generates an Ed25519 key pair and returns the private key
 // bytes (for GossipLayer identity) and the hex-encoded public key.
@@ -28,46 +40,62 @@ func newTestIdentity(t *testing.T) ([]byte, string) {
 // newTestGossipLayer creates a GossipLayer bound to 127.0.0.1 on the given
 // port, with the given seeds. The layer is started and returned; the caller
 // must call Stop() to clean up.
+//
+// If the given port is already in use (TOCTOU race from freePort), the
+// function retries with a fresh port up to 3 times before giving up.
 func newTestGossipLayer(t *testing.T, name string, port int, seeds []string) *GossipLayer {
 	t.Helper()
 
-	identity, pubKey := newTestIdentity(t)
+	const maxRetries = 3
+	var lastErr error
 
-	cfg := P2pConfig{
-		Enabled:             true,
-		Seeds:               seeds,
-		GossipBindAddr:      "127.0.0.1",
-		GossipPort:          port,
-		GossipInterval:      1, // fast state sync for tests
-		GossipProbeInterval: 1,
-		MaxPeers:            256,
-		JoinApproval:        "auto",
-		AuthorizedKeys:      []string{pubKey},
-		AdvertiseEndpoints: []string{
-			fmt.Sprintf("127.0.0.1:%d", port),
-			fmt.Sprintf("[::1]:%d", port),
-		},
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// On retries, get a fresh port to avoid the same conflict.
+		// Note: we must NOT rewrite seeds — they point to the remote
+		// peer's port, not our own. Only our bind port changes.
+		if attempt > 0 {
+			port = freePort(t)
+		}
+
+		identity, pubKey := newTestIdentity(t)
+
+		cfg := P2pConfig{
+			Enabled:             true,
+			Seeds:               seeds,
+			GossipBindAddr:      "127.0.0.1",
+			GossipPort:          port,
+			GossipInterval:      1, // fast state sync for tests
+			GossipProbeInterval: 1,
+			MaxPeers:            256,
+			JoinApproval:        "auto",
+			AuthorizedKeys:      []string{pubKey},
+			AdvertiseEndpoints: []string{
+				fmt.Sprintf("127.0.0.1:%d", port),
+				fmt.Sprintf("[::1]:%d", port),
+			},
+		}
+
+		pm := newMockPeerManager()
+		gl, err := NewGossipLayer(cfg, identity, pm)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		gl.SetLocalIdentity(name, "agent")
+		gl.SetLocalCapabilities(false, false, false, false)
+
+		if err := gl.Start(); err != nil {
+			lastErr = err
+			gl = nil
+			continue // port conflict — retry with a fresh port
+		}
+
+		return gl
 	}
 
-	pm := newMockPeerManager()
-	gl, err := NewGossipLayer(cfg, identity, pm)
-	if err != nil {
-		t.Fatalf("[%s] NewGossipLayer: %v", name, err)
-	}
-
-	gl.SetLocalIdentity(name, "agent")
-	gl.SetLocalCapabilities(false, false, false, false)
-
-	// Override the announceLocalEndpoint auto-detection by setting endpoints
-	// explicitly — AdvertiseEndpoints is already set, but announceLocalEndpoint
-	// uses detectOutboundIP which may return a non-loopback address in CI.
-	// We rely on AdvertiseEndpoint in the config instead.
-
-	if err := gl.Start(); err != nil {
-		t.Fatalf("[%s] Start: %v", name, err)
-	}
-
-	return gl
+	t.Fatalf("[%s] newTestGossipLayer failed after %d retries: %v", name, maxRetries, lastErr)
+	return nil
 }
 
 // waitForMemberCount polls MemberCount on the given layer until it reaches
@@ -89,8 +117,8 @@ func waitForMemberCount(t *testing.T, gl *GossipLayer, target int, timeout time.
 // localhost. This corresponds to acceptance criteria AC-2 from the
 // GOSSIP_REDESIGN_SPEC.md.
 func TestGossipV2_TwoNodeDiscovery(t *testing.T) {
-	portA := testGossipPortBase     // 17946
-	portB := testGossipPortBase + 1 // 17947
+	portA := freePort(t)
+	portB := freePort(t)
 
 	nodeA := newTestGossipLayer(t, "nodeA", portA, nil)
 	defer nodeA.Stop()
@@ -138,8 +166,8 @@ func TestGossipV2_TwoNodeDiscovery(t *testing.T) {
 // within a reasonable timeout. This corresponds to acceptance criteria AC-3
 // from the GOSSIP_REDESIGN_SPEC.md.
 func TestGossipV2_EndpointPropagation(t *testing.T) {
-	portA := testGossipPortBase + 2 // 17948
-	portB := testGossipPortBase + 3 // 17949
+	portA := freePort(t)
+	portB := freePort(t)
 
 	nodeA := newTestGossipLayer(t, "nodeA-ep", portA, nil)
 	defer nodeA.Stop()
