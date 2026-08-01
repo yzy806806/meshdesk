@@ -415,12 +415,11 @@ func main() {
 
 	var proxyEntryNode *proxy.EntryNode
 	var proxyExitNode *proxy.ExitNode
-	var proxySecSink *proxy.SecurityEventSink
 
 	// Create a shared security event sink for all proxy subsystems.
 	// When a web server is running, its AlertStore callback is wired
 	// after the web server is created (see alert wiring below).
-	proxySecSink = proxy.NewSecurityEventSink()
+	proxySecSink := proxy.NewSecurityEventSink()
 
 	// ── Entry Node ──
 	// The entry node accepts Shadowsocks connections and dispatches
@@ -555,6 +554,16 @@ func main() {
 		monitorStore = reporter.LocalStore()
 		log.Printf("  Monitor:   reporter active (interval=%ds)", cfg.Monitoring.Interval)
 	}
+
+	// Wire collector auto-discovery: when a peer with CapCollector=true is
+	// discovered via gossip, automatically add it to the reporter's collector
+	// list. This enables monitor auto-routing without static configuration —
+	// the Dashboard's public key propagates through gossip and every agent's
+	// reporter learns where to push metrics.
+	if gossipLayer != nil {
+		gossipLayer.SetCollectorHandler(reporter.AddCollector)
+	}
+
 	defer reporter.Stop()
 
 	var webServer *web.Server

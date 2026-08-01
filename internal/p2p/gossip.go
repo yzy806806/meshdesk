@@ -359,6 +359,39 @@ func detectOutboundIPFromInterfaces() string {
 	return ""
 }
 
+// OnCollectorDiscovered is called when a peer with CapCollector=true is
+// detected via gossip (NotifyJoin or NotifyUpdate). It dispatches to the
+// registered collector handler (if any), which typically adds the peer's
+// public key to the monitor reporter's collector list.
+//
+// This method is the GossipLayer's public entry point for collector
+// auto-discovery. The actual callback wiring is done via
+// SetCollectorHandler, which installs a handler on the event delegate.
+// This method is provided for manual/explicit collector discovery
+// (e.g., from startup bootstrap code).
+func (g *GossipLayer) OnCollectorDiscovered(peerKey string) {
+	g.events.mu.RLock()
+	hdl := g.events.collectorHandler
+	g.events.mu.RUnlock()
+
+	if hdl != nil {
+		log.Printf("[p2p] OnCollectorDiscovered: %s", shortKey(peerKey))
+		hdl(peerKey)
+	}
+}
+
+// SetCollectorHandler wires a callback that is invoked when a collector
+// peer (CapCollector=true) is discovered via gossip. The callback receives
+// the collector's Ed25519 public key (hex-encoded).
+//
+// In production, this is called from main.go to connect the gossip layer
+// to the monitor reporter:
+//
+//	gossipLayer.SetCollectorHandler(reporter.AddCollector)
+func (g *GossipLayer) SetCollectorHandler(hdl CollectorDiscoveredHandler) {
+	g.events.SetCollectorHandler(hdl)
+}
+
 // OnEndpointDiscovered implements mesh.EndpointNotifier.
 // Non-blocking: delegates to updateLocalMeta which holds the delegate
 // mutex briefly. Called from WireGuard receive goroutines.

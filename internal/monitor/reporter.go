@@ -88,6 +88,41 @@ func NewReporter(cfg ReporterConfig) *Reporter {
 // DefaultMonitorPort is the mesh-internal port for the monitoring protocol.
 const DefaultMonitorPort = 4191
 
+// AddCollector adds a collector peer ID to the reporter's collector list.
+// This is called dynamically when a collector peer is discovered via gossip
+// (CapCollector=true in NodeMeta). The addition is idempotent — duplicate
+// peer keys are silently ignored.
+//
+// This method is safe to call concurrently with the reporter's push loop.
+func (r *Reporter) AddCollector(peerKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Dedup: check if already present.
+	for _, c := range r.collectors {
+		if c == peerKey {
+			return
+		}
+	}
+
+	r.collectors = append(r.collectors, peerKey)
+	log.Printf("[monitor] collector added via gossip discovery: %s",
+		peerKey[:min(len(peerKey), 16)])
+
+	// Trigger an immediate flush in case metrics were buffered during
+	// the period when no collectors were known.
+	go r.FlushBuffer()
+}
+
+// Collectors returns a copy of the current collector peer ID list.
+func (r *Reporter) Collectors() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make([]string, len(r.collectors))
+	copy(result, r.collectors)
+	return result
+}
+
 // LocalStore returns the reporter's local store (for self-metrics access).
 func (r *Reporter) LocalStore() *Store {
 	return r.store
@@ -156,7 +191,12 @@ func (r *Reporter) collectAndPush() {
 	r.sequence++
 	r.store.Append(r.collector.nodeID, m)
 
-	if len(r.collectors) == 0 {
+	// Check if we have any collectors (snapshot under lock).
+	r.mu.Lock()
+	hasCollectors := len(r.collectors) > 0
+	r.mu.Unlock()
+
+	if !hasCollectors {
 		return
 	}
 
@@ -185,7 +225,14 @@ func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 		return false
 	}
 
-	for _, collectorID := range r.collectors {
+	// Snapshot the collector list under the lock to avoid races with
+	// concurrent AddCollector calls.
+	r.mu.Lock()
+	collectors := make([]string, len(r.collectors))
+	copy(collectors, r.collectors)
+	r.mu.Unlock()
+
+	for _, collectorID := range collectors {
 		if r.tryPush(collectorID, data) {
 			return true
 		}
@@ -228,7 +275,13 @@ func (r *Reporter) tryPush(collectorID string, data []byte) bool {
 // This should be called periodically (or on collector discovery) to
 // ensure data from a collector outage period is not lost.
 func (r *Reporter) FlushBuffer() int {
-	if r.dialer == nil || len(r.collectors) == 0 {
+	// Snapshot the collector list under the lock.
+	r.mu.Lock()
+	collectors := make([]string, len(r.collectors))
+	copy(collectors, r.collectors)
+	r.mu.Unlock()
+
+	if r.dialer == nil || len(collectors) == 0 {
 		return 0
 	}
 
@@ -249,7 +302,7 @@ func (r *Reporter) FlushBuffer() int {
 			Metrics:  m,
 		}
 		data, _ := json.Marshal(env)
-		for _, collectorID := range r.collectors {
+		for _, collectorID := range collectors {
 			if r.tryPush(collectorID, data) {
 				flushed++
 				break
