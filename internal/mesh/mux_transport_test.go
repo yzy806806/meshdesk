@@ -46,10 +46,55 @@ func newTestMuxTransport(t *testing.T) (*MuxTransport, net.Listener, string) {
 // Construction tests
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestNewMuxTransport_RequiresTCPListener(t *testing.T) {
-	_, err := NewMuxTransport(MuxTransportConfig{})
-	if err == nil {
-		t.Fatal("expected error for nil TCPListener")
+func TestNewMuxTransport_NilTCPListenerOK(t *testing.T) {
+	// Without a TCP listener, the transport should still be created
+	// successfully — it operates in UDP-only mode. The OS picks a free
+	// UDP port when UDPPort is 0.
+	mt, err := NewMuxTransport(MuxTransportConfig{})
+	if err != nil {
+		t.Fatalf("NewMuxTransport with nil TCPListener: %v", err)
+	}
+	defer mt.Shutdown()
+}
+
+func TestNewMuxTransport_UDPOnlyMode(t *testing.T) {
+	// A MuxTransport created without a TCP listener should work in
+	// UDP-only mode: PacketCh and WriteTo are functional, StreamCh
+	// returns a valid (but never-delivering) channel, and Shutdown
+	// is clean.
+	mt, err := NewMuxTransport(MuxTransportConfig{
+		BindAddr: "127.0.0.1",
+		UDPPort:  0, // let OS pick a free port
+	})
+	if err != nil {
+		t.Fatalf("NewMuxTransport UDP-only: %v", err)
+	}
+	defer mt.Shutdown()
+
+	// StreamCh should return a non-nil channel (no panics).
+	if mt.StreamCh() == nil {
+		t.Fatal("StreamCh is nil in UDP-only mode")
+	}
+	// PacketCh should return a non-nil channel.
+	if mt.PacketCh() == nil {
+		t.Fatal("PacketCh is nil in UDP-only mode")
+	}
+	// RealityListener should not panic.
+	rl := mt.RealityListener()
+	if rl == nil {
+		t.Fatal("RealityListener is nil")
+	}
+	// MeshListener should not panic.
+	ml := mt.MeshListener()
+	if ml == nil {
+		t.Fatal("MeshListener is nil")
+	}
+	// Addr() on listeners should return nil, not panic.
+	if rl.Addr() != nil {
+		t.Fatalf("expected nil Addr in UDP-only mode, got %v", rl.Addr())
+	}
+	if ml.Addr() != nil {
+		t.Fatalf("expected nil Addr in UDP-only mode, got %v", ml.Addr())
 	}
 }
 

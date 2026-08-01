@@ -118,9 +118,13 @@ var _ memberlist.Transport = (*MuxTransport)(nil)
 // On success, the transport is ready to be assigned to
 // memberlist.Config.Transport. The accept loop is started automatically.
 func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
-	if cfg.TCPListener == nil {
-		return nil, fmt.Errorf("mux: TCPListener is required")
-	}
+	// TCPListener is optional. Ordinary nodes (reality.enabled=false,
+	// p2p.enabled=true) do not expose a public TCP port but still need
+	// a UDP PacketConn for memberlist gossip. When TCPListener is nil,
+	// the transport operates in UDP-only mode: no TCP accept loop is
+	// started, StreamCh()/RealityListener()/MeshListener() never deliver
+	// connections, but PacketCh()/WriteTo()/FinalAdvertiseAddr() work
+	// normally.
 
 	bindAddr := cfg.BindAddr
 	if bindAddr == "" {
@@ -133,12 +137,19 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 	}
 
 	// Determine the UDP port: use UDPPort if set, otherwise mirror the
-	// TCP listener's port.
-	tcpPort := tcpPortFromListener(cfg.TCPListener)
+	// TCP listener's port (0 if no TCP listener).
+	tcpPort := 0
+	if cfg.TCPListener != nil {
+		tcpPort = tcpPortFromListener(cfg.TCPListener)
+	}
 	udpPort := cfg.UDPPort
 	if udpPort == 0 {
 		udpPort = tcpPort
 	}
+	// When both TCPListener and UDPPort are unset, udpPort is 0.
+	// net.ListenUDP with port 0 lets the OS pick a free port — valid
+	// for testing, though production deployments should set UDPPort
+	// explicitly so the advertised port is stable across restarts.
 
 	// Create the UDP listener.
 	udpAddr := &net.UDPAddr{IP: net.ParseIP(bindAddr), Port: udpPort}
@@ -167,10 +178,15 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		t.advertisePort = tcpPort
 	}
 
-	// Start the accept and UDP listen loops.
-	t.wg.Add(2)
-	go t.tcpAcceptLoop()
+	// Start the UDP listen loop (always needed for gossip).
+	t.wg.Add(1)
 	go t.udpListenLoop()
+
+	// Start the TCP accept loop only if we have a TCP listener.
+	if t.tcpListener != nil {
+		t.wg.Add(1)
+		go t.tcpAcceptLoop()
+	}
 
 	return t, nil
 }
@@ -281,7 +297,9 @@ func (t *MuxTransport) Shutdown() error {
 	close(t.shutdownCh)
 	t.shutdownMu.Unlock()
 
-	_ = t.tcpListener.Close()
+	if t.tcpListener != nil {
+		_ = t.tcpListener.Close()
+	}
 	_ = t.udpConn.Close()
 
 	t.wg.Wait()
@@ -338,7 +356,10 @@ func (l *muxRealityListener) Close() error {
 
 // Addr returns the address of the shared TCP listener.
 func (l *muxRealityListener) Addr() net.Addr {
-	return l.transport.tcpListener.Addr()
+	if l.transport.tcpListener != nil {
+		return l.transport.tcpListener.Addr()
+	}
+	return nil
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -421,7 +442,10 @@ func (l *muxMeshListener) Close() error {
 }
 
 func (l *muxMeshListener) Addr() net.Addr {
-	return l.transport.tcpListener.Addr()
+	if l.transport.tcpListener != nil {
+		return l.transport.tcpListener.Addr()
+	}
+	return nil
 }
 
 // handleMuxConn peeks the first byte of the connection and routes it
