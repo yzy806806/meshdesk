@@ -80,6 +80,11 @@ type MeshNode struct {
 	// nil when port multiplexing is not used (P2P disabled).
 	muxTransport *MuxTransport
 
+	// relayHandler, when non-nil, is the active mesh-internal smux
+	// stream relay handler registered on virtual port 0x524C. It is
+	// created by RegisterRelayHandler and closed by Close().
+	relayHandler *RelayHandler
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -504,6 +509,14 @@ func (n *MeshNode) Close() error {
 		n.portMux.mu.Unlock()
 	}
 
+	// Close the relay handler if active.
+	n.mu.Lock()
+	if n.relayHandler != nil {
+		n.relayHandler.Close()
+		n.relayHandler = nil
+	}
+	n.mu.Unlock()
+
 	// Shut down transports.
 	if n.registry != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -852,6 +865,17 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 	n.sessionsMu.Unlock()
 
 	if !ok {
+		// No direct session — try relay fallback if relay-capable
+		// peers are known. This enables cross-network-family
+		// communication (e.g. IPv4-only → IPv6-only) through a
+		// dual-stack relay node.
+		if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex); relayErr == nil {
+			return conn, nil
+		} else {
+			log.Printf("[mesh] DialVirtualPort: relay fallback for peer %s failed: %v",
+				peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", relayErr)
+		}
+
 		// Log available sessions for debugging.
 		n.sessionsMu.Lock()
 		var keys []string
