@@ -101,6 +101,19 @@ func main() {
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 	log.Printf("  Peers:      %d", node.RoutingTable().PeerCount())
 
+	// Register the smux stream relay handler if relay mode is enabled.
+	// This allows the node to accept relay requests on virtual port 0x524C
+	// and bridge smux streams between peers that cannot directly connect
+	// (e.g. cross-network-family: IPv4-only ↔ IPv6-only through a
+	// dual-stack relay node). The handler is cleaned up by node.Close().
+	if relayMode || cfg.Proxy.Relay.Enabled {
+		if _, err := node.RegisterRelayHandler(); err != nil {
+			log.Printf("Warning: failed to register smux relay handler: %v", err)
+		} else {
+			log.Printf("  Smux relay: listening on virtual port 0x524C (maxTunnels=%d)", mesh.DefaultMaxRelayTunnels)
+		}
+	}
+
 	// Attempt to connect statically configured peers with Reality TLS.
 	// This establishes v2 mesh sessions (Reality TLS + smux). If the
 	// REALITY TLS handshake fails (library compatibility), peers are
