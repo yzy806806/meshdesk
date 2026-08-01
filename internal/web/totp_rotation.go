@@ -13,7 +13,6 @@ import (
 )
 
 // masterKeyFileName is the file name for the current master secret.
-const masterKeyFileName = "master.key"
 
 // masterKeyNewSuffix is the suffix for the new master key during rotation.
 const masterKeyNewSuffix = ".new"

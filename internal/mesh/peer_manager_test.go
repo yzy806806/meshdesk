@@ -422,27 +422,11 @@ func TestQuarantineExponentialBackoff(t *testing.T) {
 		backoffs = append(backoffs, d)
 	}
 
+	// expected is a correction: the first calculation was wrong.
+	// i=0: 30 * 1 = 30s; i=1: 30 * 2 = 60s; i=2: 30 * 4 = 120s
+	// i=3: 30 * 8 = 240s (not capped, 240 < 300)
+	// i=4: 30 * 16 = 480s → capped to 300s
 	expected := []time.Duration{
-		30 * time.Second,
-		60 * time.Second,
-		120 * time.Second,
-		300 * time.Second, // 240 would be 4th, but cap is 300... wait no:
-		// 1 << 0 = 1 → 30s
-		// 1 << 1 = 2 → 60s
-		// 1 << 2 = 4 → 120s
-		// 1 << 3 = 8 → 240s → capped to 300s
-		// 1 << 4 = 16 → 480s → capped to 300s
-		300 * time.Second,
-	}
-
-	// Correction: 1<<3 = 8, so 240s which is > 300? No, 240 < 300.
-	// Let me recalculate:
-	// i=0: 30 * 1 = 30
-	// i=1: 30 * 2 = 60
-	// i=2: 30 * 4 = 120
-	// i=3: 30 * 8 = 240  (capped? No, 240 < 300)
-	// i=4: 30 * 16 = 480 → capped to 300
-	expected = []time.Duration{
 		30 * time.Second,
 		60 * time.Second,
 		120 * time.Second,

@@ -70,19 +70,7 @@ func (m *virtualPortMux) register(port uint16) (*VirtualListener, error) {
 	return vl, nil
 }
 
-// unregister removes a listener for the given port. No-op if none registered.
-func (m *virtualPortMux) unregister(port uint16) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if vl, exists := m.listeners[port]; exists {
-		delete(m.listeners, port)
-		vl.Close()
-	}
-}
-
-// dispatch delivers a stream to the listener registered for the given port.
-// If no listener is registered, the stream is closed.
+// Close unregisters the listener. Future streams for this port are dropped.
 func (m *virtualPortMux) dispatch(port uint16, conn net.Conn) {
 	m.mu.RLock()
 	vl, exists := m.listeners[port]

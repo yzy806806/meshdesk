@@ -150,6 +150,7 @@ func TestReplayCache_ExpiredEntries(t *testing.T) {
 
 // --- Server Tests ---
 
+// newTestServer creates a JoinServer with a real identity for signing/verifying.
 func newTestServer(t *testing.T) (*JoinServer, []byte, *identity.Identity) {
 	t.Helper()
 	id, err := identity.GenerateIdentity()
@@ -158,17 +159,65 @@ func newTestServer(t *testing.T) (*JoinServer, []byte, *identity.Identity) {
 	}
 	secret := []byte("test-hmac-secret")
 	cfg := ServerConfig{
-		Secret:            secret,
-		ServerIdentity:     id,
-		BootstrapEndpoint:  "127.0.0.1:52888",
-		GossipPort:         7946,
+		Secret:           secret,
+		ServerIdentity:    id,
+		BootstrapEndpoint: "127.0.0.1:52888",
+		GossipPort:        7946,
 		RealityPublicKey:  "deadbeef",
-		RealityShortID:     "0123456789abcdef",
+		RealityShortID:    "0123456789abcdef",
 		RealityServerName:  "www.example.com",
-		Collectors:         []string{"collector1", "collector2"},
+		Collectors:        []string{"collector1", "collector2"},
 		TokenLifetime:      30 * time.Minute,
 	}
 	return NewJoinServer(cfg), secret, id
+}
+
+// newTestJoiner creates a fresh identity for a joining node.
+func newTestJoiner(t *testing.T) *identity.Identity {
+	t.Helper()
+	id, err := identity.GenerateIdentity()
+	if err != nil {
+		t.Fatalf("GenerateIdentity: %v", err)
+	}
+	return id
+}
+
+// doJoinRequest performs a raw HTTP POST to the join server.
+// Returns the parsed JoinResponse and HTTP status code.
+func doJoinRequest(t *testing.T, ts *httptest.Server, req JoinRequest) (JoinResponse, int) {
+	t.Helper()
+	bodyBytes, _ := json.Marshal(req)
+	resp, err := http.Post(ts.URL+"/api/join", "application/json", strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	var jr JoinResponse
+	if err := json.Unmarshal(body, &jr); err != nil {
+		t.Fatalf("decode response (status=%d): %v: %s", resp.StatusCode, err, body)
+	}
+	return jr, resp.StatusCode
+}
+
+// doFullJoin performs the two-step challenge-response join flow using
+// the JoinClient and returns the config bundle.
+func doFullJoin(t *testing.T, ts *httptest.Server, token string, joiner *identity.Identity, hostname string) *ConfigBundle {
+	t.Helper()
+	client := NewJoinClient(ClientConfig{
+		ServerURL:       ts.URL,
+		Token:           token,
+		JoinerPublicKey: joiner.PublicKey,
+		JoinerHostname:  hostname,
+		JoinerSigner:    joiner,
+		Timeout:         5 * time.Second,
+		AllowPlainHTTP:  true, // test servers use plain HTTP
+	})
+	bundle, err := client.RequestJoin(context.Background())
+	if err != nil {
+		t.Fatalf("RequestJoin failed: %v", err)
+	}
+	return bundle
 }
 
 func TestJoinServer_ValidToken(t *testing.T) {
@@ -185,48 +234,18 @@ func TestJoinServer_ValidToken(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// Build the join request.
-	reqBody := JoinRequest{
-		Token:           token,
-		JoinerPublicKey: "joiner-pubkey-hex",
-		JoinerHostname:  "test-joiner",
-	}
-	bodyBytes, _ := json.Marshal(reqBody)
+	joiner := newTestJoiner(t)
+	bundle := doFullJoin(t, ts, token, joiner, "test-joiner")
 
-	resp, err := http.Post(ts.URL+"/api/join", "application/json", strings.NewReader(string(bodyBytes)))
-	if err != nil {
-		t.Fatalf("HTTP request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
-	}
-
-	var joinResp JoinResponse
-	if err := json.NewDecoder(resp.Body).Decode(&joinResp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-
-	if !joinResp.Success {
-		t.Errorf("join not successful: %s", joinResp.Error)
-	}
-	if joinResp.Bundle == nil {
-		t.Fatal("bundle is nil")
-	}
-	if joinResp.Bundle.BootstrapPublicKey != id.PublicKey {
+	if bundle.BootstrapPublicKey != id.PublicKey {
 		t.Errorf("BootstrapPublicKey = %s, want %s",
-			joinResp.Bundle.BootstrapPublicKey, id.PublicKey)
+			bundle.BootstrapPublicKey, id.PublicKey)
 	}
-	if len(joinResp.Bundle.Collectors) != 2 {
-		t.Errorf("Collectors len = %d, want 2", len(joinResp.Bundle.Collectors))
+	if len(bundle.Collectors) != 2 {
+		t.Errorf("Collectors len = %d, want 2", len(bundle.Collectors))
 	}
-	if joinResp.Bundle.RealityPublicKey != "deadbeef" {
-		t.Errorf("RealityPublicKey = %s, want deadbeef", joinResp.Bundle.RealityPublicKey)
-	}
-	if joinResp.Challenge == "" {
-		t.Error("Challenge is empty")
+	if bundle.RealityPublicKey != "deadbeef" {
+		t.Errorf("RealityPublicKey = %s, want deadbeef", bundle.RealityPublicKey)
 	}
 }
 
@@ -239,31 +258,43 @@ func TestJoinServer_ReplayedToken(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	reqBody := JoinRequest{
+	joiner := newTestJoiner(t)
+
+	// First request: step 1 (challenge).
+	jr1, _ := doJoinRequest(t, ts, JoinRequest{
 		Token:           token,
-		JoinerPublicKey: "joiner-pubkey",
+		JoinerPublicKey: joiner.PublicKey,
 		JoinerHostname:  "test-replay",
-	}
-	bodyBytes, _ := json.Marshal(reqBody)
-
-	// First request: should succeed.
-	resp1, err := http.Post(ts.URL+"/api/join", "application/json", strings.NewReader(string(bodyBytes)))
-	if err != nil {
-		t.Fatalf("first request failed: %v", err)
-	}
-	resp1.Body.Close()
-	if resp1.StatusCode != http.StatusOK {
-		t.Fatalf("first request: expected 200, got %d", resp1.StatusCode)
+	})
+	if !jr1.Success || jr1.Challenge == "" {
+		t.Fatalf("first request: expected challenge, got: %+v", jr1)
 	}
 
-	// Second request with same token: should be rejected (replay).
-	resp2, err := http.Post(ts.URL+"/api/join", "application/json", strings.NewReader(string(bodyBytes)))
+	// Sign the challenge and complete step 2.
+	sig, err := joiner.Sign([]byte(jr1.Challenge))
 	if err != nil {
-		t.Fatalf("second request failed: %v", err)
+		t.Fatalf("sign challenge: %v", err)
 	}
-	defer resp2.Body.Close()
-	if resp2.StatusCode != http.StatusUnauthorized {
-		t.Errorf("second request: expected 401, got %d", resp2.StatusCode)
+	jr2, _ := doJoinRequest(t, ts, JoinRequest{
+		Token:             token,
+		JoinerPublicKey:   joiner.PublicKey,
+		JoinerHostname:    "test-replay",
+		Challenge:         jr1.Challenge,
+		ChallengeResponse: sig,
+	})
+	if !jr2.Success || jr2.Bundle == nil {
+		t.Fatalf("second request: expected bundle, got: %+v", jr2)
+	}
+
+	// Third request with same token: should be rejected (replay).
+	// The token nonce was already marked in step 1.
+	_, status3 := doJoinRequest(t, ts, JoinRequest{
+		Token:           token,
+		JoinerPublicKey: joiner.PublicKey,
+		JoinerHostname:  "test-replay-3",
+	})
+	if status3 != http.StatusUnauthorized {
+		t.Errorf("third request: expected 401, got %d", status3)
 	}
 }
 
@@ -276,8 +307,8 @@ func TestJoinServer_InvalidToken(t *testing.T) {
 
 	reqBody := JoinRequest{
 		Token:           "invalid-token-data",
-		JoinerPublicKey:  "joiner-pubkey",
-		JoinerHostname:   "test-invalid",
+		JoinerPublicKey: "joiner-pubkey",
+		JoinerHostname:  "test-invalid",
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
@@ -303,8 +334,8 @@ func TestJoinServer_WrongServerFP(t *testing.T) {
 
 	reqBody := JoinRequest{
 		Token:           token,
-		JoinerPublicKey:  "joiner-pubkey",
-		JoinerHostname:   "test-wrong-fp",
+		JoinerPublicKey: "joiner-pubkey",
+		JoinerHostname:  "test-wrong-fp",
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
@@ -344,11 +375,13 @@ func TestJoinServer_RateLimit(t *testing.T) {
 	defer ts.Close()
 
 	// Make 3 requests with different tokens (to avoid replay rejection).
+	// Only step 1 (challenge) is sent — each uses 1 rate-limit slot.
+	// With MaxJoinRequests=2, the 3rd should be rate-limited.
 	for i := 0; i < 3; i++ {
 		token, _ := GenerateToken(secret, id.PublicKey, 5*time.Minute)
 		reqBody := JoinRequest{
 			Token:           token,
-			JoinerPublicKey: fmt.Sprintf("joiner-%d", i),
+			JoinerPublicKey: fmt.Sprintf("joiner-%d-pubkey", i),
 			JoinerHostname:  "test-rate-limit",
 		}
 		bodyBytes, _ := json.Marshal(reqBody)
@@ -388,27 +421,14 @@ func TestJoinServer_KnownPeersFunc(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	reqBody := JoinRequest{
-		Token:           token,
-		JoinerPublicKey: "joiner-pubkey",
-		JoinerHostname:  "test-peers",
-	}
-	bodyBytes, _ := json.Marshal(reqBody)
+	joiner := newTestJoiner(t)
+	bundle := doFullJoin(t, ts, token, joiner, "test-peers")
 
-	resp, err := http.Post(ts.URL+"/api/join", "application/json", strings.NewReader(string(bodyBytes)))
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
+	if len(bundle.KnownPeers) != 2 {
+		t.Errorf("KnownPeers len = %d, want 2", len(bundle.KnownPeers))
 	}
-	defer resp.Body.Close()
-
-	var joinResp JoinResponse
-	json.NewDecoder(resp.Body).Decode(&joinResp)
-
-	if len(joinResp.Bundle.KnownPeers) != 2 {
-		t.Errorf("KnownPeers len = %d, want 2", len(joinResp.Bundle.KnownPeers))
-	}
-	if joinResp.Bundle.KnownPeers[0].PublicKey != "peer1" {
-		t.Errorf("KnownPeers[0].PublicKey = %s, want peer1", joinResp.Bundle.KnownPeers[0].PublicKey)
+	if bundle.KnownPeers[0].PublicKey != "peer1" {
+		t.Errorf("KnownPeers[0].PublicKey = %s, want peer1", bundle.KnownPeers[0].PublicKey)
 	}
 }
 
@@ -448,16 +468,19 @@ func TestJoinClient_RequestJoin(t *testing.T) {
 
 	token, _ := GenerateToken(secret, id.PublicKey, 5*time.Minute)
 
+	joiner := newTestJoiner(t)
+
 	client := NewJoinClient(ClientConfig{
 		ServerURL:       ts.URL,
 		Token:           token,
-		JoinerPublicKey: "client-pubkey",
+		JoinerPublicKey: joiner.PublicKey,
 		JoinerHostname:  "client-host",
+		JoinerSigner:    joiner,
 		Timeout:         5 * time.Second,
+		AllowPlainHTTP:  true,
 	})
 
-	ctx := context.Background()
-	bundle, err := client.RequestJoin(ctx)
+	bundle, err := client.RequestJoin(context.Background())
 	if err != nil {
 		t.Fatalf("RequestJoin failed: %v", err)
 	}
@@ -475,12 +498,16 @@ func TestJoinClient_RejectedToken(t *testing.T) {
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
+	joiner := newTestJoiner(t)
+
 	client := NewJoinClient(ClientConfig{
 		ServerURL:       ts.URL,
 		Token:           "invalid-token",
-		JoinerPublicKey: "client-pubkey",
+		JoinerPublicKey: joiner.PublicKey,
 		JoinerHostname:  "client-host",
+		JoinerSigner:    joiner,
 		Timeout:         5 * time.Second,
+		AllowPlainHTTP:  true,
 	})
 
 	_, err := client.RequestJoin(context.Background())
@@ -515,12 +542,15 @@ func TestFullJoinFlow(t *testing.T) {
 	}
 
 	// Step 2: Client requests join.
+	joiner := newTestJoiner(t)
 	client := NewJoinClient(ClientConfig{
 		ServerURL:       ts.URL,
 		Token:           token,
-		JoinerPublicKey: "new-node-pubkey",
+		JoinerPublicKey: joiner.PublicKey,
 		JoinerHostname:  "new-node",
+		JoinerSigner:    joiner,
 		Timeout:         5 * time.Second,
+		AllowPlainHTTP:  true,
 	})
 
 	bundle, err := client.RequestJoin(context.Background())

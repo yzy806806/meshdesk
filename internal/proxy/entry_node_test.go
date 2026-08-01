@@ -41,8 +41,6 @@ type exitCircuitState struct {
 	e2eKey      []byte
 	targetConn  net.Conn
 	reassembler *ExitReassembler
-	pathConns   [2]net.Conn
-	pathConnIdx int
 }
 
 func newMockExitServer(target net.Listener) *mockExitServer {

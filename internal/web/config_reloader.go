@@ -33,9 +33,6 @@ type ReloaderRegistry struct {
 	// dirtyRestart tracks restart-required fields that have been written
 	// but not yet applied (pending process restart).
 	dirtyRestart map[string]bool
-
-	// lastReloadTime is when the last successful reload ran.
-	lastReloadTime int64
 }
 
 // NewReloaderRegistry creates a new reloader registry.

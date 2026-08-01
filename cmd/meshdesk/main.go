@@ -54,7 +54,7 @@ func main() {
 	)
 	flag.StringVar(&configPath, "config", "/etc/meshdesk/config.yaml", "path to config file")
 	flag.BoolVar(&webMode, "web", false, "enable web UI mode")
-	flag.BoolVar(&genKey, "gen-key", false, "generate a new WireGuard keypair and exit")
+	flag.BoolVar(&genKey, "gen-key", false, "generate a new Ed25519 identity keypair and exit")
 	flag.BoolVar(&relayMode, "relay", false, "enable relay mode (accept relay circuits from peers)")
 	flag.Parse()
 
@@ -882,8 +882,6 @@ func main() {
 	if xrayMgr != nil {
 		_ = xrayMgr.Stop()
 	}
-	_ = gossipLayer  // silence unused warning if P2P disabled
-	_ = natTraversal // silence unused warning if NAT traversal disabled
 }
 
 // meshDialerAdapter adapts mesh.MeshNode to the monitor.MeshDialer interface.
@@ -1058,7 +1056,7 @@ func firstAdvertiseEndpoint(cfg *config.Config) string {
 func runJoinSubcommand(args []string) {
 	fs := flag.NewFlagSet("join", flag.ExitOnError)
 	configPath := fs.String("config", "/etc/meshdesk/config.yaml", "path to config file")
-	bootstrapKey := fs.String("bootstrap-key", "", "bootstrap node's WireGuard public key (hex, required if not in config peers)")
+	bootstrapKey := fs.String("bootstrap-key", "", "bootstrap node's Ed25519 public key (hex, required if not in config peers)")
 	joinURL := fs.String("join-url", "", "join server URL (e.g., https://bootstrap:8443) for auto-join protocol")
 	joinToken := fs.String("join-token", "", "join token for auto-join protocol (base64-encoded)")
 	insecureTLS := fs.Bool("insecure-tls", false, "skip TLS certificate verification (testing only)")
@@ -1088,7 +1086,8 @@ func runJoinSubcommand(args []string) {
 		if err != nil {
 			log.Fatalf("Failed to create mesh node for identity: %v", err)
 		}
-		joinerPubKey := node.Identity().PublicKey
+		joinerIdentity := node.Identity()
+		joinerPubKey := joinerIdentity.PublicKey
 		hostname := cfg.Node.Hostname
 		if hostname == "" {
 			hostname, _ = os.Hostname()
@@ -1101,12 +1100,14 @@ func runJoinSubcommand(args []string) {
 			tlsConfig.InsecureSkipVerify = true
 		}
 		joinClient := join.NewJoinClient(join.ClientConfig{
-			ServerURL:        *joinURL,
-			Token:            *joinToken,
-			JoinerPublicKey:  joinerPubKey,
-			JoinerHostname:   hostname,
-			JoinerEndpoint:   bootstrapAddr,
-			TLSConfig:        tlsConfig,
+			ServerURL:       *joinURL,
+			Token:           *joinToken,
+			JoinerPublicKey: joinerPubKey,
+			JoinerHostname:  hostname,
+			JoinerEndpoint:  bootstrapAddr,
+			JoinerSigner:    joinerIdentity,
+			TLSConfig:       tlsConfig,
+			AllowPlainHTTP:  *insecureTLS, // Allow plain HTTP only when insecure mode is explicitly requested
 		})
 
 		// Request the config bundle.

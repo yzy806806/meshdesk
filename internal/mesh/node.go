@@ -1,15 +1,15 @@
 // Package mesh provides the core mesh node abstraction.
 //
-// In v2, the MeshNode is being rewritten to use a self-developed protocol
-// stack instead of WireGuard/gVisor. This file is a transitional stub:
-// the v1 WireGuard/gVisor/obfuscation code has been removed, and the
-// methods are stubbed with panic("v2: not implemented") until the new
-// protocol layers (HandshakeLayer, AELayer, etc.) are implemented.
+// The MeshNode implements a self-developed protocol stack:
+//   - Layer 0: Ed25519 identity (identity.Identity)
+//   - Layer 1: Reality TLS transport or mesh-internal transport (transport.go)
+//   - Layer 2a: X25519 ECDH key exchange (handshake package)
+//   - Layer 2b: AES-256-GCM SecureConn (crypto.NewSecureConn)
+//   - Layer 3: smux multiplexed streams (smux package)
+//   - Layer 4: virtual port dispatch (DialVirtualPort / ListenVirtualPort)
 //
-// The RoutingTable and PeerEntry types are kept because they are used
-// widely across the web dashboard, p2p, and security alerting packages.
-// In v2, the RoutingTable will be repurposed to map peer IDs (not mesh IPs)
-// to connections.
+// The RoutingTable and PeerEntry types map peer IDs to connections and
+// are used across the web dashboard, p2p, and security alerting packages.
 package mesh
 
 import (
@@ -31,15 +31,13 @@ import (
 	"github.com/yzy806806/meshdesk/internal/smux"
 )
 
-// MeshNode is the core mesh node. In v2, it will manage:
+// MeshNode is the core mesh node. It manages:
 //   - An Ed25519 identity (Layer 0)
-//   - A Reality TLS transport (Layer 1)
-//   - A HandshakeLayer for authenticated key exchange (Layer 2)
-//   - An AELayer for authenticated encryption (Layer 3)
-//   - A smux-based multiplexed stream layer (Layer 4)
-//
-// Currently a stub — the WireGuard/gVisor/obfuscation v1 code has been
-// removed and methods panic until the new layers are implemented.
+//   - A Reality TLS transport or mesh-internal transport (Layer 1)
+//   - X25519 ECDH key exchange (Layer 2a)
+//   - AES-256-GCM SecureConn authenticated encryption (Layer 2b)
+//   - A smux-based multiplexed stream layer (Layer 3)
+//   - Virtual port dispatch (Layer 4)
 type MeshNode struct {
 	identity *identity.Identity
 	routes   *RoutingTable
@@ -366,11 +364,6 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
-	// If the old session is a client session, keep it in clientSessions.
-	// If not a client session (or no client session exists), don't touch clientSessions.
-	if _, hasClient := n.clientSessions[peerIdentityHex]; !hasClient {
-		// No client session to preserve.
-	}
 	n.sessionsMu.Unlock()
 
 	// If the same peer reconnected via an inbound connection, close the old
@@ -993,16 +986,17 @@ func (n *MeshNode) dialVirtualPort(ctx context.Context, address string) (net.Con
 // smux session), stores the resulting session in the node's session map,
 // and registers the peer in the routing table.
 //
-// When Reality is not configured (the v1 backward-compatible path), the
-// peer is registered in the routing table only. This preserves compatibility
-// with v1 peers discovered via gossip that lack Reality TLS configuration.
+// When Reality is not configured (routing-table-only mode), the
+// peer is registered in the routing table only. This is a valid
+// operational mode for gossip-discovered peers that don't need
+// Reality TLS (e.g., same-LAN peers).
 func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 	// v2 path: Reality TLS enabled — establish a persistent secure connection.
 	if cfg.Reality != nil && cfg.Endpoint != "" {
 		return n.addPeerWithConnection(cfg)
 	}
 
-	// v1 backward-compatible path: routing table only.
+	// Non-TLS path: routing table only.
 	entry := &PeerEntry{
 		ID:         cfg.PublicKey,
 		Endpoint:   cfg.Endpoint,

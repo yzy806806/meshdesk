@@ -50,12 +50,6 @@ func hasIPv6Public() bool {
 }
 
 // pickLoopback returns "127.0.0.1" or "[::1]" based on the network parameter.
-func pickLoopback(network string) string {
-	if network == "tcp6" || network == "ip6" {
-		return "[::1]"
-	}
-	return "127.0.0.1"
-}
 
 // TestIPv6_MuxTransportBindLoopback verifies that MuxTransport can bind to
 // an IPv6 loopback address (::1) and correctly route TLS and gossip traffic.

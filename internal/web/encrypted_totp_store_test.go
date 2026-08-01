@@ -22,14 +22,6 @@ func testKeyManager(t *testing.T) *TOTPKeyManager {
 	return km
 }
 
-func decodeBase32OrPanic(s string) []byte {
-	b, err := decodeBase32(s)
-	if err != nil {
-		panic(err)
-	}
-	return b
-}
-
 // =============================================================================
 // 9.1 Cryptographic Correctness
 // =============================================================================

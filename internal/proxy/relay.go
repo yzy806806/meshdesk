@@ -122,7 +122,6 @@ type Relay struct {
 	cfg       RelayConfig
 	mu        sync.RWMutex
 	circuits  map[string]*circuitEntry // circuit ID (hex) → state
-	nextHopMu sync.Mutex
 
 	// secSink receives suspicious-activity events for alerting.
 	// Accessed atomically — set via SetSecurityEventSink, read by secReport

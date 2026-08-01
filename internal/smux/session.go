@@ -32,8 +32,6 @@ type Session struct {
 	nextStreamID uint32
 
 	// Stream count (for MaxStreams backpressure)
-	streamCountMu sync.Mutex
-	streamCount   int
 	streamSlotCh  chan struct{} // semaphore for MaxStreams
 
 	// Accept queue

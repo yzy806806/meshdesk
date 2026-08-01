@@ -2,8 +2,6 @@ package p2p
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"log"
 	"net"
@@ -685,14 +683,6 @@ func (jp *JoinProtocol) RequestJoin(ctx context.Context, bootstrapKey string) (*
 }
 
 // --- Utility ---
-
-// generateJoinNonce generates a random 16-byte hex nonce.
-// (Kept for potential future use in join-protocol session tracking.)
-func generateJoinNonce() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
-}
 
 // Stop shuts down the join protocol, cleaning up pending joins and
 // signaling any waiting joiners.

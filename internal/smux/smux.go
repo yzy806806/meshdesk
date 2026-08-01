@@ -23,7 +23,6 @@ package smux
 import (
 	"bufio"
 	"context"
-	"errors"
 	"io"
 	"net"
 	"time"
@@ -202,4 +201,3 @@ var _ multipathSession = (*Session)(nil)
 var _ net.Conn = (*Stream)(nil)
 
 // errClosed is a convenience for internal use.
-var errClosed = errors.New("smux: closed")
