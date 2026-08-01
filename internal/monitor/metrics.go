@@ -91,7 +91,8 @@ func DecodeMetrics(data []byte) (*Metrics, error) {
 // The SourceID identifies the originating node; the Sequence is a
 // monotonically increasing counter per source for deduplication.
 type MetricEnvelope struct {
-	SourceID string   `json:"source_id"`
-	Sequence uint64   `json:"sequence"`
-	Metrics  *Metrics `json:"metrics"`
+	SourceID  string   `json:"source_id"`
+	Sequence  uint64   `json:"sequence"`
+	Forwarded bool     `json:"forwarded,omitempty"`
+	Metrics   *Metrics `json:"metrics"`
 }
