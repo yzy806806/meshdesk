@@ -134,14 +134,36 @@ func New(cfg *config.Config) (*MeshNode, error) {
 // shared nodes using the mesh-internal path (0x4D marker byte).
 func (n *MeshNode) Start() error {
 	if n.cfg.P2P.Enabled && !n.cfg.Reality.Enabled {
-		// Ordinary node mode: no listener, no exposed ports.
-		// Virtual port listeners (ListenVirtualPort) still work for
-		// inbound streams on sessions that this node dials outbound.
-		log.Printf("[mesh] ordinary node mode (no public listener, no exposed ports)")
+		// Ordinary node mode: no TCP listener, no exposed ports.
+		// But create a UDP-only MuxTransport so memberlist uses it
+		// for UDP gossip instead of binding its own socket on 127.0.0.1
+		// (which fails with "sendto: invalid argument" when sending to
+		// public addresses).
+		udpAddr := "0.0.0.0"
+		// For ordinary nodes, bind UDP to 0.0.0.0 so it can send to
+		// public addresses. The port mirrors the mesh port.
+		udpPort := n.cfg.Mesh.GossipPort
+		if udpPort == 0 {
+			udpPort = n.cfg.Mesh.Port
+		}
+		muxCfg := MuxTransportConfig{
+			TCPListener: nil, // UDP-only mode
+			BindAddr:    udpAddr,
+			UDPPort:     udpPort,
+		}
+		mt, err := NewMuxTransport(muxCfg)
+		if err != nil {
+			return fmt.Errorf("mesh: create UDP-only mux transport: %w", err)
+		}
 		n.mu.Lock()
+		n.muxTransport = mt
 		n.hs = nil
 		n.listener = nil
 		n.mu.Unlock()
+
+		// Virtual port listeners (ListenVirtualPort) still work for
+		// inbound streams on sessions that this node dials outbound.
+		log.Printf("[mesh] ordinary node mode (no public TCP listener, UDP gossip on %s:%d)", udpAddr, udpPort)
 		return nil
 	}
 
