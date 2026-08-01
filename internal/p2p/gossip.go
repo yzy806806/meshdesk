@@ -392,6 +392,19 @@ func (g *GossipLayer) SetCollectorHandler(hdl CollectorDiscoveredHandler) {
 	g.events.SetCollectorHandler(hdl)
 }
 
+// SetCollectorRemovedHandler wires a callback that is invoked when a
+// collector peer leaves the mesh (NotifyLeave) or loses its CapCollector
+// capability (NotifyUpdate). The callback receives the collector's
+// Ed25519 public key (hex-encoded).
+//
+// In production, this is called from main.go to connect the gossip layer
+// to the monitor reporter:
+//
+//	gossipLayer.SetCollectorRemovedHandler(reporter.RemoveCollector)
+func (g *GossipLayer) SetCollectorRemovedHandler(hdl CollectorRemovedHandler) {
+	g.events.SetCollectorRemovedHandler(hdl)
+}
+
 // OnEndpointDiscovered implements mesh.EndpointNotifier.
 // Non-blocking: delegates to updateLocalMeta which holds the delegate
 // mutex briefly. Called from WireGuard receive goroutines.

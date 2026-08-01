@@ -572,6 +572,7 @@ func main() {
 	// reporter learns where to push metrics.
 	if gossipLayer != nil {
 		gossipLayer.SetCollectorHandler(reporter.AddCollector)
+		gossipLayer.SetCollectorRemovedHandler(reporter.RemoveCollector)
 	}
 
 	defer reporter.Stop()
