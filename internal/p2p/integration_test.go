@@ -1142,10 +1142,10 @@ func TestIntegration_WireGuardPeerSyncOnLeave(t *testing.T) {
 		t.Errorf("expected removed key %s, got %s", shortKey(peerKey), shortKey(removed[0]))
 	}
 
-	// Peer should be removed from cache.
+	// Peer metadata should be KEPT in cache after NotifyLeave (commit 65d10a1).
 	cachedMeta := vn.events.GetPeerMeta(peerKey)
-	if cachedMeta != nil {
-		t.Error("expected peer removed from metadata cache")
+	if cachedMeta == nil {
+		t.Error("expected peer metadata kept in cache after NotifyLeave (intentional retention for fallback dialing)")
 	}
 }
 
@@ -1290,29 +1290,15 @@ func TestIntegration_WireGuardFlappingPrevention(t *testing.T) {
 	}
 	vn.events.NotifyJoin(mlJoin)
 
-	// NOTE: The flapping prevention has a key mismatch defect:
-	// NotifyLeave stores cooldown keyed by node.Name (first 16 chars),
-	// but inCooldown checks the full 64-char peerKey. They never match.
-	// See events.go: leaveTimes[node.Name] vs inCooldown(meta.PublicKey).
-	//
-	// Because of this, the peer IS added despite recent leave.
-	// We document current behavior here; the fix should resolve the key mismatch.
-	t.Log("NOTE: flapping prevention has a key mismatch defect — NotifyLeave\n" +
-		"keys cooldown by node.Name (16 chars) but inCooldown checks the\n" +
-		"full 64-char peerKey. Flapping prevention currently does not work.\n" +
-		"See events.go:145 vs events.go:352.")
-
-	// Current behavior: peer is added (cooldown key mismatch prevents detection).
+	// Flapping prevention: the cooldown key mismatch is fixed —
+	// NotifyLeave now keys by the full publicKey and inCooldown
+	// checks the same key. The peer should be in cooldown and NOT
+	// connected via WireGuard.
 	added := vn.wgMgr.GetConnectedPeers()
-	found := false
 	for _, ap := range added {
 		if ap == flapKey {
-			found = true
-			break
+			t.Error("peer should NOT be added — it is in cooldown after recent leave")
 		}
-	}
-	if !found {
-		t.Error("peer should be added (pre-existing key-mismatch defect)")
 	}
 }
 
@@ -1366,8 +1352,8 @@ func TestIntegration_WireGuardMultiPeerSync(t *testing.T) {
 		t.Errorf("expected 1 removed peer, got %d", len(removed))
 	}
 
-	if vn.events.KnownPeerCount() != 4 {
-		t.Errorf("expected 4 known peers after removal, got %d", vn.events.KnownPeerCount())
+	if vn.events.KnownPeerCount() != 5 {
+		t.Errorf("expected 5 known peers after removal (metaCache retention), got %d", vn.events.KnownPeerCount())
 	}
 }
 
