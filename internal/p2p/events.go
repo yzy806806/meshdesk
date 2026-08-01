@@ -253,7 +253,12 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 		}
 	}
 	if meta != nil {
-		delete(e.metaCache, foundKey)
+		// Keep metaCache entry so KnownPeers() still returns the peer's
+		// endpoint for fallback dialing. memberlist may mark a peer as
+		// failed due to UDP ping timeout even though TCP push/pull works.
+		// Removing from metaCache would break the reporter's fallback
+		// DialPeerByEndpoint path.
+		// However, remove from active pools since the connection is gone.
 		delete(e.relayPool, foundKey)
 		delete(e.exitPool, foundKey)
 		delete(e.entryPool, foundKey)
