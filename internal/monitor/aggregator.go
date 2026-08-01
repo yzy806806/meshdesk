@@ -30,6 +30,11 @@ type Aggregator struct {
 	dialer MeshListener // listens for mesh-internal connections
 	port   int
 
+	// meshDialer is used to forward received metric envelopes to other
+	// collector nodes. If nil, forwarding is disabled (the aggregator
+	// only stores metrics locally). Set via AggregatorConfig.MeshDialer.
+	meshDialer MeshDialer
+
 	authChecker AuthChecker
 
 	mu      sync.Mutex
@@ -52,6 +57,11 @@ type AggregatorConfig struct {
 	Dialer MeshListener
 	Port   int
 
+	// MeshDialer, if set, enables the aggregator to forward received
+	// metric envelopes to other collector nodes. If nil, the aggregator
+	// only stores metrics locally (no forwarding).
+	MeshDialer MeshDialer
+
 	// AuthChecker, if set, requires every incoming metric push to
 	// pass a capability check (Decision E). If nil, all pushes are
 	// accepted (testing mode only).
@@ -72,6 +82,7 @@ func NewAggregator(cfg AggregatorConfig) *Aggregator {
 		store:       store,
 		dialer:      cfg.Dialer,
 		port:        port,
+		meshDialer:  cfg.MeshDialer,
 		authChecker: cfg.AuthChecker,
 		stopCh:      make(chan struct{}),
 	}
