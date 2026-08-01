@@ -31,6 +31,11 @@ type RelayPathBuilder interface {
 	OnPeerLeft(peerKey string)
 }
 
+// CollectorDiscoveredHandler is called when a peer with CapCollector=true
+// is discovered via gossip (NotifyJoin or NotifyUpdate). The peerKey is the
+// collector's Ed25519 public key (hex-encoded).
+type CollectorDiscoveredHandler func(peerKey string)
+
 // meshEventDelegate implements memberlist.EventDelegate to bridge gossip
 // events to the PeerManager and routing table.
 type meshEventDelegate struct {
@@ -41,10 +46,15 @@ type meshEventDelegate struct {
 	relayPool map[string]*NodeMeta // publicKey → relay candidates (CapRelay)
 	exitPool  map[string]*NodeMeta // publicKey → exit candidates (CapExit)
 	entryPool map[string]*NodeMeta // publicKey → entry candidates (CapProxyEntry)
+	collectorPool map[string]*NodeMeta // publicKey → collector candidates (CapCollector)
 
 	joinHandler   PeerJoinHandler
 	leaveHandler  PeerLeaveHandler
 	updateHandler PeerUpdateHandler
+
+	// collectorHandler is called when a collector peer is discovered
+	// or updated. nil if not wired (monitor auto-routing disabled).
+	collectorHandler CollectorDiscoveredHandler
 
 	// peerCache persists discovered peer endpoints to disk so they
 	// survive restarts. nil when persistence is disabled.
@@ -62,13 +72,14 @@ type meshEventDelegate struct {
 // newMeshEventDelegate creates a new event delegate.
 func newMeshEventDelegate(delegate *meshDelegate, wg PeerManager) *meshEventDelegate {
 	return &meshEventDelegate{
-		delegate:   delegate,
-		wg:         wg,
-		metaCache:  make(map[string]*NodeMeta),
-		relayPool:  make(map[string]*NodeMeta),
-		exitPool:   make(map[string]*NodeMeta),
-		entryPool:  make(map[string]*NodeMeta),
-		leaveTimes: make(map[string]time.Time),
+		delegate:      delegate,
+		wg:            wg,
+		metaCache:     make(map[string]*NodeMeta),
+		relayPool:     make(map[string]*NodeMeta),
+		exitPool:      make(map[string]*NodeMeta),
+		entryPool:     make(map[string]*NodeMeta),
+		collectorPool: make(map[string]*NodeMeta),
+		leaveTimes:    make(map[string]time.Time),
 	}
 }
 
@@ -91,6 +102,17 @@ func (e *meshEventDelegate) SetUpdateHandler(h PeerUpdateHandler) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.updateHandler = h
+}
+
+// SetCollectorHandler installs a callback for collector discovery events.
+// When a peer with CapCollector=true is discovered via gossip (NotifyJoin or
+// NotifyUpdate), this callback is invoked with the collector's public key.
+// This enables automatic monitor routing: the reporter learns about collector
+// nodes without static configuration.
+func (e *meshEventDelegate) SetCollectorHandler(h CollectorDiscoveredHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.collectorHandler = h
 }
 
 // SetRelayPathBuilder installs the relay path builder for NAT peer relay selection.
@@ -152,12 +174,33 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 		e.entryPool[meta.PublicKey] = meta
 	}
 
+	// Track collector peers and fire the discovery callback if this is
+	// a new collector or a transition to collector capability.
+	collectorChanged := false
+	if meta.CapCollector {
+		_, wasCollector := e.collectorPool[meta.PublicKey]
+		if !wasCollector {
+			e.collectorPool[meta.PublicKey] = meta
+			collectorChanged = true
+		}
+	} else {
+		delete(e.collectorPool, meta.PublicKey)
+	}
+
 	joinHdl := e.joinHandler
+	collectorHdl := e.collectorHandler
 	e.mu.Unlock()
 
 	// Persist peer endpoint to cache.
 	if pc != nil {
 		pc.OnPeerJoin(meta)
+	}
+
+	// Fire collector discovery callback (outside the lock).
+	if collectorChanged && collectorHdl != nil {
+		log.Printf("[p2p] NotifyJoin: collector peer %s discovered, notifying handler",
+			meta.PublicKey[:8])
+		collectorHdl(meta.PublicKey)
 	}
 
 	// Connect via PeerManager.
@@ -214,6 +257,7 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 		delete(e.relayPool, foundKey)
 		delete(e.exitPool, foundKey)
 		delete(e.entryPool, foundKey)
+		delete(e.collectorPool, foundKey)
 	}
 	pc := e.peerCache
 	leaveHdl := e.leaveHandler
@@ -300,6 +344,18 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 		delete(e.entryPool, meta.PublicKey)
 	}
 
+	// Track collector capability changes — fire callback on transition.
+	collectorChanged := false
+	if meta.CapCollector {
+		_, wasCollector := e.collectorPool[meta.PublicKey]
+		if !wasCollector {
+			e.collectorPool[meta.PublicKey] = meta
+			collectorChanged = true
+		}
+	} else {
+		delete(e.collectorPool, meta.PublicKey)
+	}
+
 	// Endpoint change detection — compares captured old endpoints.
 	newEndpoints := meta.Endpoints
 	if !endpointsEqual(newEndpoints, oldEndpoints) {
@@ -315,6 +371,18 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 	// Update peer cache with new metadata/endpoints.
 	if pc != nil {
 		pc.OnPeerUpdate(meta)
+	}
+
+	// Fire collector discovery callback if this peer transitioned to collector.
+	if collectorChanged {
+		e.mu.RLock()
+		collectorHdl := e.collectorHandler
+		e.mu.RUnlock()
+		if collectorHdl != nil {
+			log.Printf("[p2p] NotifyUpdate: peer %s became collector, notifying handler",
+				meta.PublicKey[:8])
+			collectorHdl(meta.PublicKey)
+		}
 	}
 
 	// Invoke external update handler.
@@ -379,6 +447,18 @@ func (e *meshEventDelegate) GetEntryCandidates() []*NodeMeta {
 	return result
 }
 
+// GetCollectorCandidates returns all collector-capable peers (CapCollector=true).
+func (e *meshEventDelegate) GetCollectorCandidates() []*NodeMeta {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	result := make([]*NodeMeta, 0, len(e.collectorPool))
+	for _, m := range e.collectorPool {
+		copy := *m
+		result = append(result, &copy)
+	}
+	return result
+}
+
 // GetPeerMeta returns cached metadata for a peer, or nil if unknown.
 func (e *meshEventDelegate) GetPeerMeta(publicKey string) *NodeMeta {
 	e.mu.RLock()
@@ -429,6 +509,9 @@ func (e *meshEventDelegate) cacheMeta(meta *NodeMeta) {
 	if meta.CapProxyEntry {
 		e.entryPool[meta.PublicKey] = meta
 	}
+	if meta.CapCollector {
+		e.collectorPool[meta.PublicKey] = meta
+	}
 }
 
 // inCooldown checks flapping prevention: if the peer left within the last
@@ -474,6 +557,9 @@ func capabilitiesFromMeta(m *NodeMeta) []string {
 	}
 	if m.CapProxyEntry {
 		caps = append(caps, "proxy_entry")
+	}
+	if m.CapCollector {
+		caps = append(caps, "collector")
 	}
 	return caps
 }
