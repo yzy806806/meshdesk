@@ -512,7 +512,7 @@ func (n *MeshNode) RegisterSOCKS5ExitHandler(cfg SOCKS5Config) (*SOCKS5Handler, 
 
 	// Store the handler so Close() can clean it up.
 	n.mu.Lock()
-	n.socks5Handler = handler
+	n.socks5ExitHandler = handler
 	n.mu.Unlock()
 
 	return handler, nil

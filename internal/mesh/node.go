@@ -92,6 +92,13 @@ type MeshNode struct {
 	// Close().
 	socks5Handler socks5Closer
 
+	// socks5ExitHandler, when non-nil, is the active SOCKS5 exit handler
+	// registered on virtual port 0x4558 (ExitVirtualPort). It is created by
+	// RegisterSOCKS5ExitHandler and closed by Close(). This is separate from
+	// socks5Handler because a node may register both a forward handler
+	// (0x5350) and an exit handler (0x4558) simultaneously.
+	socks5ExitHandler socks5Closer
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -522,10 +529,14 @@ func (n *MeshNode) Close() error {
 		n.relayHandler.Close()
 		n.relayHandler = nil
 	}
-	// Close the SOCKS5 handler if active.
+	// Close the SOCKS5 handlers if active.
 	if n.socks5Handler != nil {
 		n.socks5Handler.Close()
 		n.socks5Handler = nil
+	}
+	if n.socks5ExitHandler != nil {
+		n.socks5ExitHandler.Close()
+		n.socks5ExitHandler = nil
 	}
 	n.mu.Unlock()
 
