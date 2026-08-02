@@ -114,6 +114,10 @@ type ProxyConfig struct {
 	// Exit holds exit-node-specific configuration.
 	// Only needed on nodes that serve as exit nodes.
 	Exit ExitConfig `yaml:"exit,omitempty"`
+
+	// SOCKS5 holds SOCKS5 proxy exit configuration.
+	// Only needed on nodes that serve as SOCKS5 proxy exits for mesh peers.
+	SOCKS5 SOCKS5YAMLConfig `yaml:"socks5,omitempty"`
 }
 
 // PathSelectionConfig holds settings for dynamic path selection
@@ -315,6 +319,42 @@ type ExitConfig struct {
 
 	// AuditRetentionDays is how long to keep audit logs. Default: 7.
 	AuditRetentionDays int `yaml:"audit_retention_days,omitempty"`
+}
+
+// SOCKS5YAMLConfig holds SOCKS5 proxy exit configuration.
+// When Enabled is true, the node registers a SOCKS5 handler on virtual
+// port 0x5350, allowing mesh peers to route SOCKS5 CONNECT requests
+// through this node to reach arbitrary internet destinations.
+type SOCKS5YAMLConfig struct {
+	// Enabled controls whether the SOCKS5 handler is started.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// AllowedPorts restricts which destination ports the handler will
+	// connect to. Default: [80, 443]. Use AllowAllPorts to remove the
+	// restriction.
+	AllowedPorts []int `yaml:"allowed_ports,omitempty"`
+
+	// AllowAllPorts removes the port restriction entirely.
+	// WARNING: full legal exposure. Not recommended.
+	AllowAllPorts bool `yaml:"allow_all_ports,omitempty"`
+
+	// DestinationFilter is a list of CIDR prefixes that the handler is
+	// allowed to connect to. When non-empty, the handler refuses
+	// connections to destinations that don't match at least one entry.
+	// Empty (default) allows all destinations subject to AllowedPorts.
+	DestinationFilter []string `yaml:"destination_filter,omitempty"`
+
+	// DialTimeoutSec is the timeout for dialing target addresses (seconds).
+	// Default: 30.
+	DialTimeoutSec int `yaml:"dial_timeout_sec,omitempty"`
+
+	// IdleTimeoutSec is the idle timeout for established connections
+	// (seconds). Connections with no data flow for this duration are
+	// closed. Default: 300 (5 minutes).
+	IdleTimeoutSec int `yaml:"idle_timeout_sec,omitempty"`
+
+	// MaxConnections limits concurrent SOCKS5 connections. Default: 256.
+	MaxConnections int `yaml:"max_connections,omitempty"`
 }
 
 // TransferConfig holds file transfer settings.
@@ -855,6 +895,21 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Proxy.Exit.AuditRetentionDays == 0 {
 		cfg.Proxy.Exit.AuditRetentionDays = 7
+	}
+	// SOCKS5 config defaults.
+	if cfg.Proxy.SOCKS5.Enabled {
+		if len(cfg.Proxy.SOCKS5.AllowedPorts) == 0 && !cfg.Proxy.SOCKS5.AllowAllPorts {
+			cfg.Proxy.SOCKS5.AllowedPorts = []int{80, 443}
+		}
+		if cfg.Proxy.SOCKS5.DialTimeoutSec == 0 {
+			cfg.Proxy.SOCKS5.DialTimeoutSec = 30
+		}
+		if cfg.Proxy.SOCKS5.IdleTimeoutSec == 0 {
+			cfg.Proxy.SOCKS5.IdleTimeoutSec = 300
+		}
+		if cfg.Proxy.SOCKS5.MaxConnections == 0 {
+			cfg.Proxy.SOCKS5.MaxConnections = 256
+		}
 	}
 	// Relay config defaults.
 	if cfg.Proxy.Relay.JitterMinMs == 0 {

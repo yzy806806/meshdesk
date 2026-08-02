@@ -85,6 +85,11 @@ type MeshNode struct {
 	// created by RegisterRelayHandler and closed by Close().
 	relayHandler *RelayHandler
 
+	// socks5Handler, when non-nil, is the active SOCKS5 proxy handler
+	// registered on virtual port 0x5350. It is created by
+	// RegisterSOCKS5Handler and closed by Close().
+	socks5Handler *SOCKS5Handler
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -514,6 +519,11 @@ func (n *MeshNode) Close() error {
 	if n.relayHandler != nil {
 		n.relayHandler.Close()
 		n.relayHandler = nil
+	}
+	// Close the SOCKS5 handler if active.
+	if n.socks5Handler != nil {
+		n.socks5Handler.Close()
+		n.socks5Handler = nil
 	}
 	n.mu.Unlock()
 

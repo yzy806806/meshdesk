@@ -112,6 +112,32 @@ func main() {
 		}
 	}
 
+	// Register the SOCKS5 proxy handler if SOCKS5 is enabled in config.
+	// This allows mesh peers to route SOCKS5 CONNECT requests through
+	// this node to reach arbitrary internet destinations. The handler
+	// listens on virtual port 0x5350 and reuses the existing smux virtual
+	// port dispatch mechanism (no new MuxTransport marker needed).
+	if cfg.Proxy.SOCKS5.Enabled {
+		socks5Cfg := mesh.SOCKS5Config{
+			DialTimeout:    time.Duration(cfg.Proxy.SOCKS5.DialTimeoutSec) * time.Second,
+			IdleTimeout:    time.Duration(cfg.Proxy.SOCKS5.IdleTimeoutSec) * time.Second,
+			AllowAllPorts:  cfg.Proxy.SOCKS5.AllowAllPorts,
+			DestinationFilter: cfg.Proxy.SOCKS5.DestinationFilter,
+			MaxConnections: cfg.Proxy.SOCKS5.MaxConnections,
+		}
+		if !socks5Cfg.AllowAllPorts && len(cfg.Proxy.SOCKS5.AllowedPorts) > 0 {
+			socks5Cfg.AllowedPorts = make(map[int]bool, len(cfg.Proxy.SOCKS5.AllowedPorts))
+			for _, p := range cfg.Proxy.SOCKS5.AllowedPorts {
+				socks5Cfg.AllowedPorts[p] = true
+			}
+		}
+		if _, err := node.RegisterSOCKS5Handler(socks5Cfg); err != nil {
+			log.Printf("Warning: failed to register SOCKS5 handler: %v", err)
+		} else {
+			log.Printf("  SOCKS5 proxy: listening on virtual port 0x5350 (maxConns=%d)", socks5Cfg.MaxConnections)
+		}
+	}
+
 	// Attempt to connect statically configured peers with Reality TLS.
 	// This establishes v2 mesh sessions (Reality TLS + smux). If the
 	// REALITY TLS handshake fails (library compatibility), peers are
