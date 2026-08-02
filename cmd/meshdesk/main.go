@@ -1265,9 +1265,16 @@ func runJoinSubcommand(args []string) {
 			log.Printf("[join] added bootstrap peer with REALITY config")
 		}
 
-		// Save the updated config for the normal join flow.
+		// Persist the updated config so the node can restart without
+		// re-joining. This saves the REALITY keys, peer config, collectors,
+		// and gossip seeds received from the join server.
 		cfg.P2P.Enabled = true
 		cfg.P2P.Seeds = []string{bundle.BootstrapEndpoint}
+		if err := config.Save(*configPath, cfg); err != nil {
+			log.Printf("[join] warning: failed to save config to %s: %v (continuing with in-memory config)", *configPath, err)
+		} else {
+			log.Printf("[join] config saved to %s", *configPath)
+		}
 		// Continue with normal join flow below using the updated cfg.
 		// We skip re-loading and re-creating the node.
 		runJoinWithConfig(cfg, bootstrapAddr, *bootstrapKey, *configPath)
