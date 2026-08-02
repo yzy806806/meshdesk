@@ -302,10 +302,4 @@ func TestOnEndpointDiscoveredConcurrent(t *testing.T) {
 	}
 }
 
-// TestInferNAT tests the inferNAT helper returns "restricted_cone".
-func TestInferNAT(t *testing.T) {
-	result := inferNAT("203.0.113.5:51820")
-	if result != "restricted_cone" {
-		t.Errorf("inferNAT should return 'restricted_cone', got '%s'", result)
-	}
-}
+// inferNAT is tested in nat_test.go (TestInferNAT covers both valid and empty endpoints).
