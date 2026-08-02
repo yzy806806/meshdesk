@@ -4,9 +4,6 @@ import "errors"
 
 // Sentinel errors returned by smux operations.
 var (
-	// ErrWrongRole is returned by OpenStream when called on a server-mode Session.
-	ErrWrongRole = errors.New("smux: OpenStream not available in server mode")
-
 	// ErrSessionClosed is returned by OpenStream, AcceptStream, and Write
 	// when the session has been closed.
 	ErrSessionClosed = errors.New("smux: session closed")
@@ -21,10 +18,6 @@ var (
 	// ErrStreamClosed is returned by Write when the local side has closed
 	// the stream (Close() was called).
 	ErrStreamClosed = errors.New("smux: stream closed")
-
-	// ErrBacklogFull is returned internally when the accept backlog is full.
-	// The remote peer receives RST(REFUSED).
-	ErrBacklogFull = errors.New("smux: accept backlog full")
 
 	// ErrMaxStreams is returned by OpenStream when MaxStreams is reached
 	// and the context is cancelled before a slot opens.
