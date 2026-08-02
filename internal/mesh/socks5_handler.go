@@ -16,6 +16,13 @@ import (
 // 0x5350 = 'S' (0x53) 'P' (0x50) — mnemonic for "SOCKS5 Proxy".
 const SOCKS5VirtualPort = 0x5350 // 21328
 
+// socks5Closer is the common interface for SOCKS5 handlers (both direct-dial
+// and forward modes) used by MeshNode for lifecycle management.
+type socks5Closer interface {
+	Close() error
+	ActiveConnections() int64
+}
+
 // SOCKS5 protocol constants (RFC 1928).
 const (
 	socks5Version  = 0x05
@@ -474,6 +481,42 @@ func (h *SOCKS5Handler) ActiveConnections() int64 {
 }
 
 // closeWriter is defined in conn_prefix.go and re-used here.
+
+// RegisterSOCKS5ExitHandler registers a SOCKS5Handler on virtual port
+// 0x4558 (ExitVirtualPort), enabling this node to act as a SOCKS5 exit
+// for forwarded requests from shared nodes. This is the exit-side
+// counterpart to RegisterSOCKS5ForwardHandler: shared nodes forward
+// SOCKS5 traffic via DialVirtualPort(ctx, exitPeerID, 0x4558), and this
+// handler receives it, performs the actual target dial, and bridges data.
+//
+// The returned handler should be Closed when no longer needed. It is also
+// closed automatically when the node's Close() is called.
+func (n *MeshNode) RegisterSOCKS5ExitHandler(cfg SOCKS5Config) (*SOCKS5Handler, error) {
+	// Wire CheckMeshPeer from routing table if needed.
+	if cfg.RequireMeshPeer && cfg.CheckMeshPeer == nil {
+		cfg.CheckMeshPeer = func(peerID string) bool {
+			_, ok := n.routes.GetPeer(peerID)
+			return ok
+		}
+	}
+	handler := NewSOCKS5Handler(cfg)
+
+	// Register a virtual port listener for 0x4558.
+	ln, err := n.ListenVirtualPort(int(ExitVirtualPort))
+	if err != nil {
+		return nil, fmt.Errorf("socks5-exit: register port 0x%x: %w", ExitVirtualPort, err)
+	}
+
+	// Start the accept loop in a background goroutine.
+	go n.serveSOCKS5(handler, ln)
+
+	// Store the handler so Close() can clean it up.
+	n.mu.Lock()
+	n.socks5Handler = handler
+	n.mu.Unlock()
+
+	return handler, nil
+}
 
 // RegisterSOCKS5Handler registers a SOCKS5Handler on virtual port 0x5350,
 // enabling this node to act as a SOCKS5 proxy exit for mesh peers.

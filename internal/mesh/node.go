@@ -87,8 +87,10 @@ type MeshNode struct {
 
 	// socks5Handler, when non-nil, is the active SOCKS5 proxy handler
 	// registered on virtual port 0x5350. It is created by
-	// RegisterSOCKS5Handler and closed by Close().
-	socks5Handler *SOCKS5Handler
+	// RegisterSOCKS5Handler (direct-dial exit mode) or
+	// RegisterSOCKS5ForwardHandler (forward-to-exit mode) and closed by
+	// Close().
+	socks5Handler socks5Closer
 
 	mu     sync.RWMutex
 	closed bool
