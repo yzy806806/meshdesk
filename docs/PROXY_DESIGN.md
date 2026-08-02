@@ -233,14 +233,28 @@ This is how Tor's relay cells work.
 
 ---
 
-## 2. User Entry: CF Tunnel + Shadowsocks
+## 2. User Entry: SOCKS5 over Reality TLS (Default) / CF Tunnel + Shadowsocks (Legacy)
 
 ### Protocol Selection
 
-User device → CF Tunnel → Entry node, using **Shadowsocks over WebSocket**.
+**Default: SOCKS5 over Reality TLS.** User device → shared node port 52888 →
+Reality TLS handshake → smux session → SOCKS5 stream on virtual port 0x5350.
+The shared node forwards the SOCKS5 request to an exit node via mesh virtual
+port 0x4558.
 
 Rationale:
-- CF's TLS provides protocol camouflage layer (GFW sees access to CF website), no Reality needed
+- Single port (52888) for all services — no separate attack surface
+- Reality TLS provides protocol camouflage; GFW sees normal TLS traffic
+- Standard SOCKS5 client support — no special client needed
+- End-to-end encryption via Reality TLS + smux; no additional crypto layer needed
+
+**Legacy: CF Tunnel + Shadowsocks.** User device → CF Tunnel → Entry node,
+using Shadowsocks over WebSocket. This path is retained for backward
+compatibility but disabled by default. Enable via `proxy.ss.enabled: true`
+in config.
+
+Rationale (legacy path):
+- CF's TLS provides protocol camouflage layer (GFW sees access to CF website)
 - SS is lightweight, good performance
 - CF IP space is vast; GFW cannot block all CF IPs
 
@@ -447,9 +461,9 @@ meshdesk/
 │   │   ├── reassembler.go        — exit-side reassembly + NACK retransmission
 │   │   └── protocol.go           — forwarding header, chunk format, onion encryption
 │   ├── proxy/                    — new
-│   │   ├── socks5.go             — SOCKS5 entry (optional)
-│   │   ├── shadowsocks.go        — SS protocol entry
-│   │   └── tunnel.go             — CF Tunnel adapter
+│   │   ├── shadowsocks.go        — SS protocol entry (legacy, disabled by default)
+│   │   ├── entry_node.go         — SS entry node orchestrator (legacy)
+│   │   ├── tunnel.go             — CF Tunnel adapter
 │   ├── mesh/
 │   │   ├── latency.go            — new: latency probing + path discovery
 │   │   └── loadbalance.go        — new: load-aware path selection
@@ -539,6 +553,6 @@ These questions were in the v1.0 "Open Questions" section; team discussion (moti
 | 3 | Circuit lifecycle | **Per-session** (one circuit per TCP connection). Per-user circuits enable long-term correlation; per-session follows Tor's model. |
 | 4 | Path count | **Fixed 2 paths for v1.** Configurable later. Two disjoint paths balance dispersion gain against reassembly complexity. |
 | 5 | Forwarding header obfuscation | **Onion-style per-hop encryption.** Fixed 64-byte encrypted header. Each relay decrypts, reads next hop, re-encrypts with next relay's key. Ephemeral circuit IDs as fallback if onion routing adds unacceptable latency. |
-| 6 | SS implementation | **Use existing shadowsocks-go library.** Do not reimplement — SS protocol has too many edge cases. |
+| 6 | SS implementation | **SOCKS5 over Reality TLS is the default entry.** SS listener retained for backward compatibility (`proxy.ss.enabled: true`), disabled by default. |
 | 7 | Path overlap detection | **Hard requirement.** Path selection rejects any circuit where two candidate paths share a relay node. Tag each path with relay node set; reject if intersection is non-empty. |
 | 8 | Exit node legal risk | **Default allowlist (80/443 only).** Per-node config flag with warning. Audit log records circuit_id→dest_ip:port→timestamp (no payload). CONNECT-style proxy command for port validation. |

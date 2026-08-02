@@ -483,10 +483,15 @@ func main() {
 	// after the web server is created (see alert wiring below).
 	proxySecSink := proxy.NewSecurityEventSink()
 
-	// ── Entry Node ──
-	// The entry node accepts Shadowsocks connections and dispatches
+	// ── Entry Node (Legacy SS) ──
+	// The SS-based entry node accepts Shadowsocks connections and dispatches
 	// them through multi-path circuits to the exit node.
-	if cfg.Proxy.SS.Port != 0 && cfg.Proxy.ExitAddr != "" {
+	//
+	// DEPRECATED: SOCKS5 over Reality TLS (virtual port 0x5350) is the
+	// default proxy entry. The SS entry node is only started when
+	// proxy.ss.enabled is explicitly set to true. The SOCKS5 handler
+	// is registered separately via RegisterSOCKS5ForwardHandler/ExitHandler.
+	if cfg.Proxy.SS.Enabled && cfg.Proxy.SS.Port != 0 && cfg.Proxy.ExitAddr != "" {
 		ssListenAddr := cfg.Proxy.SS.ListenAddr
 		if ssListenAddr == "" {
 			ssListenAddr = fmt.Sprintf(":%d", cfg.Proxy.SS.Port)

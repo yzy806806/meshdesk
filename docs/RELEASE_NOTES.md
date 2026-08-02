@@ -141,7 +141,11 @@ PeerManager is the connection lifecycle manager for every mesh peer:
 
 ### Multi-path Anonymous Proxy
 
-- **Shadowsocks entry** — SS AEAD (chacha20-ietf-poly1305) over WebSocket
+- **SOCKS5 over Reality TLS (default)** — phone clients connect to port 52888,
+  Reality TLS handshake → smux session → SOCKS5 stream on virtual port 0x5350;
+  shared nodes forward to exit nodes on virtual port 0x4558
+- **Shadowsocks entry (legacy)** — SS AEAD (chacha20-ietf-poly1305) over
+  WebSocket; disabled by default, enable via `proxy.ss.enabled: true`
 - **Cloudflare Tunnel camouflage** — entry listener exposed via `cloudflared`,
   appears as HTTPS traffic
 - **ECDH circuit setup** — per-connection end-to-end encryption between entry

@@ -139,7 +139,8 @@ var tierMap = map[string]fieldMeta{
 	"transfer.max_file_size": {Tier: TierNormal, Reload: ReloadHot},
 	"transfer.upload_dir":    {Tier: TierNormal, Reload: ReloadHot},
 
-	// --- Proxy: SS (§3.9) ---
+	// --- Proxy: SS (§3.9) — DEPRECATED, SOCKS5 is default ---
+	"proxy.ss.enabled":     {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.ss.password":    {Tier: TierMasked, Reload: ReloadHot},
 	"proxy.ss.cipher":      {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.ss.listen_addr": {Tier: TierNormal, Reload: ReloadHot},

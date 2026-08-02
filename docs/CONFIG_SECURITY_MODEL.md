@@ -138,14 +138,18 @@ not as inline config fields. The per-user fields are:
 | 53 | `reality.private_key` | `reality.private_key` | string | **masked** | **SECRET.** X25519 private key (hex). Exposure allows an attacker to authenticate as the Reality server and decrypt TLS traffic. |
 | 54 | `reality.short_ids` | `reality.short_ids` | []string | **masked** | **SENSITIVE.** Accepted client short IDs (hex). If leaked, an attacker can authenticate as a valid Reality client. |
 
-### 2.10 Proxy — Shadowsocks Entry Point — `proxy.ss.*`
+### 2.10 Proxy — Shadowsocks Entry Point (Legacy) — `proxy.ss.*`
+
+> **DEPRECATED:** SOCKS5 over Reality TLS (virtual port 0x5350) is the default
+> proxy entry. The SS listener is only started when `proxy.ss.enabled: true`.
 
 | # | Field path | YAML key | Go type | Tier | Rationale |
 |---|-----------|----------|---------|------|-----------|
-| 55 | `proxy.ss.password` | `proxy.ss.password` | string | **masked** | **SECRET.** Shadowsocks pre-shared password for AEAD key derivation. Exposure allows decryption of all SS traffic on this entry node. |
-| 56 | `proxy.ss.cipher` | `proxy.ss.cipher` | string | **require-step-up** | AEAD cipher name (currently `chacha20-ietf-poly1305`). Changing the cipher breaks compatibility with existing clients. |
-| 57 | `proxy.ss.listen_addr` | `proxy.ss.listen_addr` | string | **require-step-up** | SS listen address. Changing disrupts the proxy entry point. |
-| 58 | `proxy.ss.port` | `proxy.ss.port` | int | **require-step-up** | SS listen port (default 8388). Same disruption as above. |
+| 55 | `proxy.ss.enabled` | `proxy.ss.enabled` | bool | **normal** | Controls whether the legacy SS listener starts. Default: false. |
+| 56 | `proxy.ss.password` | `proxy.ss.password` | string | **masked** | **SECRET.** Shadowsocks pre-shared password for AEAD key derivation. Exposure allows decryption of all SS traffic on this entry node. |
+| 57 | `proxy.ss.cipher` | `proxy.ss.cipher` | string | **require-step-up** | AEAD cipher name (currently `chacha20-ietf-poly1305`). Changing the cipher breaks compatibility with existing clients. |
+| 58 | `proxy.ss.listen_addr` | `proxy.ss.listen_addr` | string | **require-step-up** | SS listen address. Changing disrupts the proxy entry point. |
+| 59 | `proxy.ss.port` | `proxy.ss.port` | int | **require-step-up** | SS listen port (default 8388). Same disruption as above. |
 
 ### 2.11 Proxy — Circuit Lifecycle — `proxy.circuit.*`
 
