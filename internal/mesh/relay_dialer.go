@@ -263,31 +263,46 @@ func (n *MeshNode) DialViaRelay(
 //
 // This is a best-effort fallback — if no relay candidate succeeds, the
 // original "no session" error is returned by the caller.
+//
+// Filtering:
+//   - The target peer is excluded (relaying to itself is nonsensical).
+//   - Closed sessions are skipped (a dead session in the map cannot relay).
+//   - The local node's own key is excluded.
 func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string) (net.Conn, error) {
+	localKey := ""
+	if n.identity != nil {
+		localKey = n.identity.PublicKey
+	}
+
 	// Collect all peers we have sessions with — they are potential
 	// relay candidates. In a production system, we would filter by
 	// CapMeshRelay capability from gossip NodeMeta, but for now we
-	// try all connected peers.
+	// try all connected peers with active (non-closed) sessions.
 	n.sessionsMu.Lock()
 	candidates := make([]string, 0, len(n.sessions)+len(n.clientSessions))
 	seen := make(map[string]bool)
-	for k := range n.sessions {
-		if !seen[k] {
-			candidates = append(candidates, k)
-			seen[k] = true
+	for k, sess := range n.sessions {
+		if k == targetKey || k == localKey || seen[k] || sess.IsClosed() {
+			continue
 		}
+		candidates = append(candidates, k)
+		seen[k] = true
 	}
-	for k := range n.clientSessions {
-		if !seen[k] {
-			candidates = append(candidates, k)
-			seen[k] = true
+	for k, sess := range n.clientSessions {
+		if k == targetKey || k == localKey || seen[k] || sess.IsClosed() {
+			continue
 		}
+		candidates = append(candidates, k)
+		seen[k] = true
 	}
 	n.sessionsMu.Unlock()
 
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no relay candidates (no active sessions)")
 	}
+
+	log.Printf("[mesh] tryRelayFallback: %d candidate(s) for target %s",
+		len(candidates), targetKey[:min(len(targetKey), 16)]+"...")
 
 	return n.DialViaRelay(ctx, targetKey, candidates)
 }
