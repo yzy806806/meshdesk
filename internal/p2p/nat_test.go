@@ -688,6 +688,332 @@ func TestNatTraversal_ConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+// === Edge Case Tests (added by tester strategy) ===
+
+// TestGenerateCircuitID verifies circuit ID format, length, and uniqueness.
+func TestGenerateCircuitID(t *testing.T) {
+	// Format: hex string.
+	id1 := generateCircuitID()
+	if len(id1) != 32 {
+		t.Errorf("generateCircuitID length = %d, want 32 (16 bytes hex-encoded)", len(id1))
+	}
+	// Should be lowercase hex.
+	for _, c := range id1 {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			t.Errorf("generateCircuitID contains non-hex character: %c", c)
+		}
+	}
+
+	// Uniqueness across multiple calls.
+	ids := make(map[string]bool)
+	for i := 0; i < 100; i++ {
+		id := generateCircuitID()
+		if ids[id] {
+			t.Errorf("generateCircuitID collision: %s", id)
+		}
+		ids[id] = true
+	}
+}
+
+// TestInferNAT verifies inferNAT returns the conservative "restricted_cone".
+func TestInferNAT(t *testing.T) {
+	result := inferNAT("203.0.113.5:51820")
+	if result != "restricted_cone" {
+		t.Errorf("inferNAT = %s, want restricted_cone", result)
+	}
+
+	// Empty endpoint should still return restricted_cone.
+	result = inferNAT("")
+	if result != "restricted_cone" {
+		t.Errorf("inferNAT(\"\") = %s, want restricted_cone", result)
+	}
+}
+
+// TestSafeShortKey verifies safeShortKey handles all boundary cases.
+func TestSafeShortKey(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"a", "a"},
+		{"abcdefg", "abcdefg"},
+		{"abcdefgh", "abcdefgh"},
+		{"abcdefghi", "abcdefgh"},
+		{"aaaabbbbccccddddeeeeffffgggghhhhiiiijjjj", "aaaabbbb"},
+	}
+
+	for _, tt := range tests {
+		got := safeShortKey(tt.input)
+		if got != tt.want {
+			t.Errorf("safeShortKey(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+// TestCanHolePunch_FullMatrix tests all 36 NAT type combinations.
+func TestCanHolePunch_FullMatrix(t *testing.T) {
+	allTypes := []NatType{
+		NatTypeNone,
+		NatTypeFullCone,
+		NatTypeRestricted,
+		NatTypePortRestricted,
+		NatTypeSymmetric,
+		NatTypeUnknown,
+	}
+
+	// Expected rule: only false when BOTH are symmetric.
+	// Everything else should return true.
+	for _, local := range allTypes {
+		for _, remote := range allTypes {
+			got := CanHolePunch(local, remote)
+			want := !(local == NatTypeSymmetric && remote == NatTypeSymmetric)
+			if got != want {
+				t.Errorf("CanHolePunch(%s, %s) = %v, want %v", local, remote, got, want)
+			}
+		}
+	}
+}
+
+// TestNatType_StringValues verifies all NatType constants return expected values.
+func TestNatType_StringValues(t *testing.T) {
+	tests := []struct {
+		nt   NatType
+		want string
+	}{
+		{NatTypeNone, "none"},
+		{NatTypeFullCone, "full_cone"},
+		{NatTypeRestricted, "restricted"},
+		{NatTypePortRestricted, "port_restricted"},
+		{NatTypeSymmetric, "symmetric"},
+		{NatTypeUnknown, "unknown"},
+	}
+
+	for _, tt := range tests {
+		if string(tt.nt) != tt.want {
+			t.Errorf("NatType %s string value = %q, want %q", tt.want, string(tt.nt), tt.want)
+		}
+	}
+}
+
+// TestStunClient_Discover_NoServers verifies that Discover with explicitly
+// empty servers (forced to empty after construction) returns an error.
+func TestStunClient_Discover_NoServers(t *testing.T) {
+	// NewStunClient auto-fills defaults when given empty server list,
+	// so we must explicitly set servers to empty after construction.
+	sc := NewStunClient([]string{"stun.l.google.com:19302"}, 5*time.Second)
+	sc.servers = []string{}
+	_, err := sc.Discover()
+	if err == nil {
+		t.Error("Discover() with empty servers should return error")
+	}
+}
+
+// TestNatTraversal_DoubleStart verifies Start() twice returns error.
+func TestNatTraversal_DoubleStart(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+
+	// Disable direct reprobe to prevent ticker goroutine from interfering.
+	nt.cfg.DirectReprobeInterval = 0
+
+	// First start should succeed.
+	err := nt.Start()
+	if err != nil {
+		t.Fatalf("first Start() failed: %v", err)
+	}
+
+	// Second start should fail.
+	err = nt.Start()
+	if err == nil {
+		t.Error("second Start() should return error")
+	}
+
+	// Clean up.
+	nt.Stop()
+}
+
+// TestNatTraversal_StopNotStarted verifies Stop() when not started is a no-op.
+func TestNatTraversal_StopNotStarted(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+
+	// Stop without Start should not panic or error.
+	err := nt.Stop()
+	if err != nil {
+		t.Errorf("Stop() on unstarted traversal returned error: %v", err)
+	}
+}
+
+// TestNatTraversal_InitiateConnection_Deduplicate verifies that calling
+// InitiateConnection twice for the same peer does not create duplicate sessions.
+func TestNatTraversal_InitiateConnection_Deduplicate(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peerKey := "aaaabbbbccccdddd"
+
+	// First call creates a session.
+	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeFullCone)
+
+	// Second call for same peer should be a no-op.
+	nt.InitiateConnection(peerKey, []string{"203.0.113.20:51820"}, NatTypeSymmetric)
+
+	// Wait for state machine.
+	time.Sleep(100 * time.Millisecond)
+
+	// Only one session should exist.
+	sessions := nt.AllSessions()
+	if len(sessions) != 1 {
+		t.Errorf("expected 1 session after duplicate InitiateConnection, got %d", len(sessions))
+	}
+
+	// The session should still use the original endpoints (first call wins).
+	if len(sessions) > 0 && len(sessions[0].Endpoints) > 0 {
+		if sessions[0].Endpoints[0] != "203.0.113.10:51820" {
+			t.Errorf("session endpoints changed after duplicate call: got %v, want [203.0.113.10:51820]",
+				sessions[0].Endpoints)
+		}
+	}
+}
+
+// TestNatTraversal_HandleRetry_TransitionsToFailed verifies that RETRY
+// transitions to FAILED when MaxRetries is exceeded. With MaxRetries=0,
+// the first RETRY check immediately transitions to FAILED (no backoff wait).
+func TestNatTraversal_HandleRetry_TransitionsToFailed(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	// MaxRetries=0 means the first RETRY immediately transitions to FAILED.
+	nt.cfg.MaxRetries = 0
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+	// Disable relay so we always go to RETRY.
+	nt.cfg.RelayMode = "disabled"
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peerKey := "aaaabbbbccccdddd"
+	// No endpoints + relay disabled → DIRECT_PROBE fails → RETRY → FAILED (MaxRetries=0).
+	nt.InitiateConnection(peerKey, []string{}, NatTypeFullCone)
+
+	// Wait for state machine to process through: STUN_DISCOVERY → DIRECT_PROBE → RETRY → FAILED
+	time.Sleep(200 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatFailed {
+		t.Errorf("expected FAILED after MaxRetries=0, got %s", state)
+	}
+}
+
+// TestNatTraversal_TransitionToRelay_NilRelay verifies that when relay selector
+// is nil, transitionToRelay sets state to FAILED.
+func TestNatTraversal_TransitionToRelay_NilRelay(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	nt := newTestNatTraversal(pm, nil, events) // nil relay
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51821", NatTypeSymmetric)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeSymmetric)
+
+	// Wait for state machine — both symmetric → tries relay → nil relay → FAILED.
+	time.Sleep(200 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatFailed {
+		t.Errorf("expected FAILED when relay is nil, got %s", state)
+	}
+}
+
+// TestNatSessionSnapshot_Immutability verifies that modifying the original
+// NatSession does not affect an already-taken snapshot.
+func TestNatSessionSnapshot_Immutability(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{"198.51.100.1:51820"}, NatTypeFullCone)
+
+	time.Sleep(50 * time.Millisecond)
+
+	// Take snapshot.
+	sessions := nt.AllSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session for snapshot, got %d", len(sessions))
+	}
+	snap := sessions[0]
+
+	// Verify snapshot has the original endpoints.
+	if len(snap.Endpoints) != 1 || snap.Endpoints[0] != "198.51.100.1:51820" {
+		t.Fatalf("snapshot endpoints = %v, want [198.51.100.1:51820]", snap.Endpoints)
+	}
+
+	// Modify the session's endpoints through the state machine (removing it
+	// would clear the session entirely, but we verify the snapshot copy holds).
+	nt.RemoveConnection(peerKey)
+
+	// Snapshot must be unchanged.
+	if len(snap.Endpoints) != 1 || snap.Endpoints[0] != "198.51.100.1:51820" {
+		t.Errorf("snapshot mutated after RemoveConnection: endpoints = %v", snap.Endpoints)
+	}
+	if snap.PeerKey != peerKey {
+		t.Errorf("snapshot PeerKey mutated: got %s, want %s", snap.PeerKey, peerKey)
+	}
+}
+
+// TestHolePunchCoordinator_ConcurrentRegister verifies thread-safe concurrent
+// register/unregister operations.
+func TestHolePunchCoordinator_ConcurrentRegister(t *testing.T) {
+	hc := NewHolePunchCoordinator()
+	var wg sync.WaitGroup
+
+	// Concurrent registration.
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			peerKey := "peer" + string(rune('A'+idx))
+			hc.RegisterPeer(peerKey, "203.0.113.5:51820", 51820)
+			if !hc.IsRegistered(peerKey) {
+				t.Errorf("peer %s should be registered", peerKey)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Concurrent unregistration.
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			peerKey := "peer" + string(rune('A'+idx))
+			hc.UnregisterPeer(peerKey)
+		}(i)
+	}
+	wg.Wait()
+
+	// All should be unregistered.
+	for i := 0; i < 20; i++ {
+		peerKey := "peer" + string(rune('A'+i))
+		if hc.IsRegistered(peerKey) {
+			t.Errorf("peer %s should be unregistered", peerKey)
+		}
+	}
+}
+
 // === STUN Server Test (Integration, may be skipped) ===
 
 func TestStunClient_Discover_RealServer(t *testing.T) {
@@ -715,4 +1041,539 @@ func TestStunClient_Discover_RealServer(t *testing.T) {
 
 	t.Logf("STUN discovery: endpoint=%s, NAT=%s, server=%s",
 		discovery.MappedAddress, discovery.NatType, discovery.Server)
+}
+
+// === Comprehensive NAT Traversal Test Strategy Coverage ===
+//
+// The following tests fill gaps identified by the tester strategy:
+// 1. State machine paths: DIRECT_PROBE with no endpoints, reprobe with no endpoints
+// 2. Retry backoff behavior: RETRY stays in retry with active backoff
+// 3. FAILED terminal state: no further transitions from FAILED
+// 4. Relay messaging: nil gossip layer for SETUP/TEARDOWN
+// 5. No relay candidates → RETRY path
+// 6. Gossip layer wiring verification
+// 7. Concurrent InitiateConnection + RemoveConnection safety
+// 8. Session field consistency after transitions
+// 9. AllSessions snapshot under concurrent modification
+// 10. StunClient error handling (bad server address)
+
+// TestNatTraversal_DirectProbe_NoEndpoints_ToRelay verifies that DIRECT_PROBE
+// with no known peer endpoints falls back to relay when relay mode is auto.
+func TestNatTraversal_DirectProbe_NoEndpoints_ToRelay(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	// Set up relay candidate.
+	relayKey := "eeeeffff00001111"
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
+
+	peerKey := "aaaabbbbccccdddd"
+	// Initiate with empty endpoints — DIRECT_PROBE will see no endpoints.
+	nt.InitiateConnection(peerKey, []string{}, NatTypeFullCone)
+
+	time.Sleep(200 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatRelayFallback {
+		t.Errorf("expected RELAY_FALLBACK when no peer endpoints, got %s", state)
+	}
+
+	updatedEP, ok := pm.GetUpdatedEndpoints(peerKey)
+	if !ok || len(updatedEP) == 0 || updatedEP[0] != relayIP+":51820" {
+		t.Errorf("expected endpoint updated to relay %s:51820, got %v", relayIP, updatedEP)
+	}
+}
+
+// TestNatTraversal_DirectProbe_NoEndpoints_RelayDisabled verifies that
+// DIRECT_PROBE with no endpoints and relay=disabled transitions to RETRY.
+func TestNatTraversal_DirectProbe_NoEndpoints_RelayDisabled(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.RelayMode = "disabled"
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{}, NatTypeFullCone)
+
+	time.Sleep(200 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatRetry {
+		t.Errorf("expected RETRY with no endpoints + relay disabled, got %s", state)
+	}
+}
+
+// TestNatTraversal_Reprobe_NoEndpoints_BackToRelay verifies that
+// DIRECT_REPROBE with no peer endpoints goes back to RELAY_FALLBACK.
+func TestNatTraversal_Reprobe_NoEndpoints_BackToRelay(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.DirectReprobeInterval = 30 * time.Millisecond
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+
+	// Place session in RELAY_FALLBACK state.
+	nt.SetLocalDiscovery("203.0.113.5:51821", NatTypeSymmetric)
+
+	relayKey := "eeeeffff00001111"
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeSymmetric)
+
+	// Wait for relay fallback.
+	time.Sleep(150 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatRelayFallback {
+		t.Fatalf("expected RELAY_FALLBACK before reprobe, got %s", state)
+	}
+
+	// Clear endpoints to simulate peer losing STUN endpoints.
+	session := nt.GetSession(peerKey)
+	if session == nil {
+		t.Fatal("session should exist")
+	}
+	session.mu.Lock()
+	session.Endpoints = []string{}
+	session.mu.Unlock()
+
+	// Start reprobe loop.
+	nt.reprobeTC = time.NewTicker(nt.cfg.DirectReprobeInterval)
+	go nt.reprobeLoop()
+	defer nt.reprobeTC.Stop()
+
+	time.Sleep(200 * time.Millisecond)
+
+	state = nt.SessionState(peerKey)
+	if state != NatRelayFallback {
+		t.Errorf("expected RELAY_FALLBACK after reprobe with no endpoints, got %s", state)
+	}
+
+	// Verify relay endpoint is restored.
+	updatedEP, ok := pm.GetUpdatedEndpoints(peerKey)
+	if !ok || len(updatedEP) == 0 || updatedEP[0] != relayIP+":51820" {
+		t.Errorf("expected relay endpoint %s:51820 after reprobe, got %v", relayIP, updatedEP)
+	}
+}
+
+// TestNatTraversal_Retry_BackoffActive verifies that the RETRY state applies
+// exponential backoff before transitioning to STUN_DISCOVERY.
+func TestNatTraversal_Retry_BackoffActive(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.MaxRetries = 2
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+	nt.cfg.RelayMode = "disabled"
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{}, NatTypeFullCone)
+
+	// Wait for STUN_DISCOVERY → DIRECT_PROBE → RETRY.
+	time.Sleep(100 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatRetry {
+		t.Fatalf("expected RETRY, got %s", state)
+	}
+
+	// Verify retry count was incremented.
+	session := nt.GetSession(peerKey)
+	session.mu.Lock()
+	retries := session.Retries
+	session.mu.Unlock()
+	if retries != 1 {
+		t.Errorf("expected Retries=1 after first retry, got %d", retries)
+	}
+
+	// The backoff for retry 1 should be 10 seconds (2^1 * 5s).
+	// After 500ms, the state should still be RETRY (backoff hasn't elapsed).
+	time.Sleep(500 * time.Millisecond)
+	state = nt.SessionState(peerKey)
+	if state != NatRetry {
+		t.Errorf("expected RETRY state during backoff, got %s", state)
+	}
+}
+
+// TestNatTraversal_Failed_TerminalState verifies that FAILED is a terminal state:
+// once a session reaches FAILED, no further state transitions can occur.
+func TestNatTraversal_Failed_TerminalState(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.MaxRetries = 0
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+	nt.cfg.RelayMode = "disabled"
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{}, NatTypeFullCone)
+
+	time.Sleep(200 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatFailed {
+		t.Fatalf("expected FAILED, got %s", state)
+	}
+
+	// Verify the runStateMachine goroutine exited — the session state
+	// should stay FAILED regardless of how long we wait.
+	session := nt.GetSession(peerKey)
+	if session == nil {
+		t.Fatal("session should exist")
+	}
+	session.mu.Lock()
+	state = session.State
+	session.mu.Unlock()
+	if state != NatFailed {
+		t.Errorf("session.State changed from FAILED to %s after goroutine exit", state)
+	}
+
+	// After an additional wait, still FAILED.
+	time.Sleep(100 * time.Millisecond)
+	state = nt.SessionState(peerKey)
+	if state != NatFailed {
+		t.Errorf("expected FAILED terminal, got %s", state)
+	}
+}
+
+// TestNatTraversal_SetGossipLayer verifies SetGossipLayer wires the gossip
+// layer's LocalMeta public key to localKey.
+func TestNatTraversal_SetGossipLayer(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+
+	// Before SetGossipLayer, localKey should be empty.
+	nt.mu.RLock()
+	key := nt.localKey
+	nt.mu.RUnlock()
+	if key != "" {
+		t.Errorf("expected empty localKey before SetGossipLayer, got %s", key)
+	}
+
+	// Create a GossipLayer with a delegate that has localMeta set.
+	localKey := "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+	md := newMeshDelegate(&NodeMeta{PublicKey: localKey})
+	gl := &GossipLayer{
+		delegate:  md,
+		localMeta: &NodeMeta{PublicKey: localKey},
+	}
+
+	nt.SetGossipLayer(gl)
+
+	// After SetGossipLayer, localKey should be set from delegate.
+	nt.mu.RLock()
+	key = nt.localKey
+	nt.mu.RUnlock()
+	if key != localKey {
+		t.Errorf("expected localKey=%s after SetGossipLayer, got %s", localKey, key)
+	}
+
+	// Setting nil should NOT clear the local key (only gossip layer is nil'd).
+	nt.SetGossipLayer(nil)
+	nt.mu.RLock()
+	key = nt.localKey
+	gossipNil := nt.gossipLayer == nil
+	nt.mu.RUnlock()
+	if !gossipNil {
+		t.Error("expected gossipLayer to be nil after SetGossipLayer(nil)")
+	}
+	// localKey is not cleared on SetGossipLayer(nil) — that's intentional.
+	if key == "" {
+		t.Error("expected localKey to persist after SetGossipLayer(nil)")
+	}
+}
+
+// TestNatTraversal_SendRelaySetup_NilGossip verifies sendRelaySetup returns
+// empty circuit ID when gossip layer is nil.
+func TestNatTraversal_SendRelaySetup_NilGossip(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+
+	circuitID := nt.sendRelaySetup("relaykey123", "targetkey456", []string{"203.0.113.10:51820"})
+	if circuitID != "" {
+		t.Errorf("expected empty circuit ID with nil gossip layer, got %s", circuitID)
+	}
+}
+
+// TestNatTraversal_SendRelayTeardown_NilGossip verifies sendRelayTeardown is
+// a no-op when gossip layer is nil.
+func TestNatTraversal_SendRelayTeardown_NilGossip(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+
+	// This should not panic — just a no-op.
+	nt.sendRelayTeardown("relaykey123", "circuit-abc123")
+}
+
+// TestNatTraversal_NoRelayCandidates_Retry verifies that transitionToRelay
+// falls back to RETRY when relay selector has no candidates.
+func TestNatTraversal_NoRelayCandidates_Retry(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events) // empty relay pool
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeSymmetric)
+
+	time.Sleep(200 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatRetry {
+		t.Errorf("expected RETRY when no relay candidates, got %s", state)
+	}
+
+	session := nt.GetSession(peerKey)
+	if session == nil {
+		t.Fatal("session should exist")
+	}
+	session.mu.Lock()
+	retries := session.Retries
+	session.mu.Unlock()
+	if retries != 1 {
+		t.Errorf("expected Retries incremented to 1, got %d", retries)
+	}
+}
+
+// TestNatTraversal_ConcurrentInitiateRemove verifies thread safety of
+// concurrent InitiateConnection and RemoveConnection.
+func TestNatTraversal_ConcurrentInitiateRemove(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.ProbeTimeout = 10 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	peers := []string{"peerA", "peerB", "peerC", "peerD", "peerE"}
+	var wg sync.WaitGroup
+
+	// Concurrently initiate connections.
+	for _, pk := range peers {
+		wg.Add(1)
+		go func(peerKey string) {
+			defer wg.Done()
+			nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeFullCone)
+		}(pk)
+	}
+
+	// Concurrently remove some.
+	for _, pk := range peers {
+		wg.Add(1)
+		go func(peerKey string) {
+			defer wg.Done()
+			time.Sleep(20 * time.Millisecond) // slight delay to let init run
+			nt.RemoveConnection(peerKey)
+		}(pk)
+	}
+
+	wg.Wait()
+
+	// After all operations, sessions map should be empty.
+	sessions := nt.AllSessions()
+	if len(sessions) != 0 {
+		t.Errorf("expected 0 sessions after concurrent init+remove, got %d", len(sessions))
+	}
+}
+
+// TestNatTraversal_SessionFieldsAfterRelayFallback verifies session fields
+// are correctly populated after relay fallback transition.
+func TestNatTraversal_SessionFieldsAfterRelayFallback(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51821", NatTypeSymmetric)
+
+	relayKey := "eeeeffff00001111"
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeSymmetric)
+
+	time.Sleep(200 * time.Millisecond)
+
+	session := nt.GetSession(peerKey)
+	if session == nil {
+		t.Fatal("session should exist")
+	}
+
+	session.mu.Lock()
+	state := session.State
+	endpoints := session.Endpoints
+	remoteNat := session.RemoteNatType
+	relayVia := session.RelayVia
+	circuitID := session.CircuitID
+	session.mu.Unlock()
+
+	if state != NatRelayFallback {
+		t.Errorf("expected RELAY_FALLBACK, got %s", state)
+	}
+	if len(endpoints) != 1 || endpoints[0] != "203.0.113.10:51820" {
+		t.Errorf("expected endpoints preserved as [203.0.113.10:51820], got %v", endpoints)
+	}
+	if remoteNat != NatTypeSymmetric {
+		t.Errorf("expected RemoteNatType=symmetric, got %s", remoteNat)
+	}
+	if relayVia != relayKey {
+		t.Errorf("expected RelayVia=%s, got %s", relayKey, relayVia)
+	}
+	// CircuitID may be empty when gossip layer is not wired.
+	// This is correct: sendRelaySetup returns "" when gossipLayer is nil.
+	if circuitID != "" {
+		t.Logf("CircuitID=%s (gossip layer is nil — empty is expected)", circuitID)
+	}
+}
+
+// TestNatTraversal_AllSessions_ConcurrentModification verifies AllSessions
+// snapshot is thread-safe during concurrent state changes.
+func TestNatTraversal_AllSessions_ConcurrentModification(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.ProbeTimeout = 10 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51820", NatTypeFullCone)
+
+	// Add several sessions.
+	for i := 0; i < 20; i++ {
+		peerKey := "peer" + string(rune('A'+i))
+		nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeFullCone)
+	}
+
+	done := make(chan struct{})
+
+	// Concurrent reader goroutine.
+	go func() {
+		for i := 0; i < 100; i++ {
+			sessions := nt.AllSessions()
+			if len(sessions) < 0 {
+				t.Error("AllSessions returned negative length") // should never happen
+			}
+		}
+		done <- struct{}{}
+	}()
+
+	// Concurrent mutator goroutine.
+	go func() {
+		for i := 0; i < 20; i++ {
+			peerKey := "peer" + string(rune('A'+i))
+			nt.RemoveConnection(peerKey)
+		}
+		done <- struct{}{}
+	}()
+
+	<-done
+	<-done
+}
+
+// TestStunClient_Discover_BadServer verifies StunClient.Discover handles
+// unresolvable server addresses gracefully.
+func TestStunClient_Discover_BadServer(t *testing.T) {
+	sc := NewStunClient([]string{"bad-server.invalid:9999"}, 2*time.Second)
+	_, err := sc.Discover()
+	if err == nil {
+		t.Error("expected error from bad server address")
+	}
+}
+
+// TestStunClient_Discover_ServerFailover verifies StunClient.Discover
+// fails over to the second server when the first is unreachable.
+func TestStunClient_Discover_ServerFailover(t *testing.T) {
+	// This test queries the real Google STUN server, so skip if offline.
+	conn, err := net.DialTimeout("udp", "stun.l.google.com:19302", 2*time.Second)
+	if err != nil {
+		t.Skip("STUN server not reachable, skipping failover test")
+	}
+	conn.Close()
+
+	sc := NewStunClient([]string{"unreachable.stun.server:3478", "stun.l.google.com:19302"}, 5*time.Second)
+	discovery, err := sc.Discover()
+	if err != nil {
+		t.Fatalf("Discover should succeed via second server: %v", err)
+	}
+	if discovery.MappedAddress == "" {
+		t.Error("expected non-empty mapped address")
+	}
+	t.Logf("STUN failover: endpoint=%s via %s", discovery.MappedAddress, discovery.Server)
+}
+
+// TestNatTraversal_Reprobe_MultipleCycles verifies that multiple re-probe
+// cycles work correctly for sessions in RELAY_FALLBACK.
+func TestNatTraversal_Reprobe_MultipleCycles(t *testing.T) {
+	pm := newMockPeerManager()
+	events := newMeshEventDelegate(newMeshDelegate(&NodeMeta{}), pm)
+	relay := NewRelaySelector(events)
+	nt := newTestNatTraversal(pm, relay, events)
+	nt.cfg.DirectReprobeInterval = 30 * time.Millisecond
+	nt.cfg.ProbeTimeout = 20 * time.Millisecond
+
+	nt.SetLocalDiscovery("203.0.113.5:51821", NatTypeSymmetric)
+
+	relayKey := "eeeeffff00001111"
+	relayIP := "10.10.5.6"
+	setupTestRelay(t, events, relayKey, relayIP)
+
+	peerKey := "aaaabbbbccccdddd"
+	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeSymmetric)
+
+	time.Sleep(150 * time.Millisecond)
+
+	state := nt.SessionState(peerKey)
+	if state != NatRelayFallback {
+		t.Fatalf("expected RELAY_FALLBACK, got %s", state)
+	}
+
+	// Start re-probe loop.
+	nt.reprobeTC = time.NewTicker(nt.cfg.DirectReprobeInterval)
+	go nt.reprobeLoop()
+	defer nt.reprobeTC.Stop()
+
+	// Wait for 3+ re-probe cycles.
+	time.Sleep(200 * time.Millisecond)
+
+	// State should still be RELAY_FALLBACK (direct probes fail).
+	state = nt.SessionState(peerKey)
+	if state != NatRelayFallback {
+		t.Errorf("expected RELAY_FALLBACK after multiple reprobes, got %s", state)
+	}
+
+	// Verify endpoint was updated (should still be relay endpoint).
+	updatedEP, ok := pm.GetUpdatedEndpoints(peerKey)
+	if !ok || len(updatedEP) == 0 || updatedEP[0] != relayIP+":51820" {
+		t.Errorf("expected relay endpoint %s:51820, got %v", relayIP, updatedEP)
+	}
 }
