@@ -237,7 +237,9 @@ func (r *Reporter) collectAndPush() {
 }
 
 // pushToCollectors attempts to push the envelope to at least one collector.
-// Returns true if at least one push succeeded.
+// Returns true if at least one push succeeded. It tries each collector in
+// order; if one fails, it falls through to the next — this provides
+// automatic failover when a collector's mesh session is dead.
 func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 	data, err := json.Marshal(env)
 	if err != nil {
@@ -246,16 +248,23 @@ func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 	}
 
 	// Snapshot the collector list under the lock to avoid races with
-	// concurrent AddCollector calls.
+	// concurrent AddCollector/RemoveCollector calls.
 	r.mu.Lock()
 	collectors := make([]string, len(r.collectors))
 	copy(collectors, r.collectors)
 	r.mu.Unlock()
 
+	var lastErr error
 	for _, collectorID := range collectors {
 		if r.tryPush(collectorID, data) {
 			return true
 		}
+		// tryPush already logged the error; track for summary.
+		lastErr = fmt.Errorf("collector %s unreachable", collectorID[:min(len(collectorID), 16)])
+	}
+	if lastErr != nil {
+		log.Printf("[monitor] pushToCollectors: all %d collectors failed (last: %v)",
+			len(collectors), lastErr)
 	}
 	return false
 }
