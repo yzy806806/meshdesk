@@ -1550,11 +1550,23 @@ func TestNatTraversal_Reprobe_MultipleCycles(t *testing.T) {
 	peerKey := "aaaabbbbccccdddd"
 	nt.InitiateConnection(peerKey, []string{"203.0.113.10:51820"}, NatTypeSymmetric)
 
-	time.Sleep(150 * time.Millisecond)
-
-	state := nt.SessionState(peerKey)
-	if state != NatRelayFallback {
-		t.Fatalf("expected RELAY_FALLBACK, got %s", state)
+	// Poll until the state settles to RELAY_FALLBACK (both-symmetric → forced relay).
+	// Using a polling loop instead of fixed sleep to avoid timing-dependent flakes.
+	var state NatState
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		state = nt.SessionState(peerKey)
+		if state == NatRelayFallback {
+			break
+		}
+		if state == NatFailed {
+			t.Fatalf("unexpected FAILED before reaching RELAY_FALLBACK")
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("state did not reach RELAY_FALLBACK after timeout, got %s", state)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 
 	// Start re-probe loop.
@@ -1565,7 +1577,7 @@ func TestNatTraversal_Reprobe_MultipleCycles(t *testing.T) {
 	// Wait for multiple re-probe cycles to complete and state to settle.
 	// Each cycle: RELAY_FALLBACK → DIRECT_REPROBE → (probe fails) → RELAY_FALLBACK.
 	// Poll until state is RELAY_FALLBACK (not caught mid-transition).
-	deadline := time.After(500 * time.Millisecond)
+	deadline = time.After(500 * time.Millisecond)
 	for {
 		state = nt.SessionState(peerKey)
 		if state == NatRelayFallback {
