@@ -9,7 +9,7 @@ MeshDesk is a single-binary decentralized server mesh network combining:
 - Server monitoring (CPU/memory/disk/services)
 - WebSSH terminal
 - File transfer
-- Anonymous proxy (VLESS + Reality)
+- Anonymous proxy (SOCKS5 + Reality)
 - 3D topology visualization
 
 Every node runs the same binary. Any node can become the Dashboard with `--web`.
@@ -138,7 +138,7 @@ Features:
 - Service management (list/start/stop/restart systemd services)
 - File upload to remote nodes
 - WebSSH terminal (WebSocket)
-- Proxy status (VLESS/Reality inbound)
+- Proxy status (SOCKS5/Reality inbound)
 - Configuration management (view/reload/restart with step-up auth)
 - 2FA (TOTP) support
 
@@ -171,12 +171,13 @@ internal/session/              — X25519 ECDH key exchange
 internal/crypto/               — AES-256-GCM SecureConn
 internal/smux/                 — Stream multiplexer
 internal/identity/             — Ed25519 identity
+internal/join/                 — Auto-join protocol (HMAC+Ed25519 challenge-response)
 internal/monitor/              — Reporter, Aggregator, Store
 internal/web/                  — Dashboard web server
 internal/webssh/               — WebSocket terminal
 internal/transfer/             — File transfer
-internal/proxy/                — Exit/entry node, VLESS
-internal/xray/                 — Xray core integration
+internal/proxy/                — Exit/entry node, multi-path proxy
+internal/service/              — Systemd service management
 internal/config/               — Config parsing/validation
 internal/auth/                 — Capability engine, TOTP
 internal/topology/             — 3D graph layout

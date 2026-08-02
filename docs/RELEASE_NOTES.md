@@ -1,13 +1,13 @@
-# MeshDesk v1.0.0-beta.1 — Initial Public Beta
+# MeshDesk v2.0.0-beta.1 — Architecture Refactor
 
-**Release date: 2026-07-26**
-**Tag: `v1.0.0`**
-**Status: Beta — real-machine acceptance testing pending**
+**Release date: 2026-08-02**
+**Tag: `v2.0.0`**
+**Status: Beta — real-machine acceptance testing in progress**
 
-MeshDesk v1.0.0-beta.1 is the first public release. It combines mesh VPN, server
-monitoring, web terminal, file transfer, service management, multi-path anonymous
-proxy, dashboard security (TOTP 2FA), dashboard config management, x-ui panel
-integration, and 3D topology visualization into a single binary.
+MeshDesk v2.0.0-beta.1 is a major architecture refactor. It replaces external Reality
+dependencies with a native Go Reality TLS transport (meshdesk native Reality), consolidates all
+proxy and mesh traffic onto a single multiplexed port (MuxTransport), and adds
+one-click join and SOCKS5 proxy management via the Dashboard.
 
 **Important:** This release is functionally complete and all unit tests pass, but
 it has NOT been validated on physical multi-node hardware. See [Validation
@@ -21,9 +21,9 @@ Features carry an explicit maturity label so you know what to expect:
 
 | Feature | Maturity | Notes |
 |---|---|---|
-| Mesh VPN & P2P Dynamic Networking | **Stable** | WireGuard mesh, gossip discovery, NAT traversal, dynamic join — all unit-tested |
-| Transport Layer | **Beta** | Pluggable transports: UDP, Reality (xray-core embedded), WebSocket; automatic fallback |
-| PeerManager | **Beta** | Auto-reconnect, multi-transport fallback, EWMA latency probing, optimal path selection |
+| Mesh VPN & P2P Dynamic Networking | **Stable** | Gossip discovery, NAT traversal, dynamic join — real-device verified |
+| Transport Layer | **Stable** | MuxTransport (single-port multiplexing): UDP, Reality TLS (native Go), WebSocket; automatic fallback |
+| PeerManager | **Stable** | Auto-reconnect, multi-transport fallback, EWMA latency probing, optimal path selection |
 | Monitoring | **Stable** | Real-time metrics, push collectors, SSE dashboard updates |
 | Web Terminal | **Stable** | xterm.js + WebSocket, multi-tab, SIGWINCH support |
 | File Transfer | **Stable** | Upload/download via web UI, capability-scoped paths |
@@ -32,7 +32,8 @@ Features carry an explicit maturity label so you know what to expect:
 | Multi-path Anonymous Proxy | **Beta** | Circuit routing functional; chunker/reassembly needs real-hardware validation |
 | Endpoint Learning & Shared Relay | **Beta** | Endpoint learning + NAT-type inference + relay circuits with failover; gossip integration tested |
 | Dashboard Config Management | **Beta** | Tiered config API, PATCH merge-patch, hot reload, diff viewer — integration tested |
-| x-ui Panel Integration | **Beta** | Inbound/outbound configuration, user management, Reality config generation via Dashboard |
+| SOCKS5 Proxy Management | **Beta** | Dashboard-configured SOCKS5 proxy via Reality TLS + smux relay to exit nodes |
+| One-Click Join | **Beta** | HMAC+Ed25519 challenge-response auto-join protocol with one-line install command |
 | 3D Topology Visualization | **Beta** | Node graph + latency edges complete; circuit particles use mock data |
 
 **Maturity definitions:**
@@ -51,22 +52,21 @@ hardware — not when a commit lands.
 
 ### Mesh VPN & P2P Dynamic Networking
 
-- **WireGuard mesh** via wireguard-go + gVisor netstack — every node gets a mesh
-  IP derived from its public key
 - **Gossip discovery** (hashicorp/memberlist) — automatic peer discovery with
-  epidemic-style propagation; no manual peer config needed
+  epidemic-style propagation via TCP push/pull; no manual peer config needed
 - **NAT traversal** — STUN-based public endpoint discovery + UDP hole-punching
   with automatic relay fallback through mesh peers
-- **Dynamic join protocol** — `meshdesk join <bootstrap-addr>` subcommand;
-  bootstrap authenticates via authorized_keys, then gossips the new member to
-  the cluster
-- **Transport obfuscation** — AmneziaWG-style padded mode (H1-H4 headers, S1-S4
-  padding, junk train, anti-probe PSK), WebSocket+TLS mode with uTLS
-  fingerprint mimicry (Chrome, Firefox, Safari, Edge, iOS, Android), or
-  Reality TLS mode with xray-core handshake hijack (embedded, no subprocess)
+- **Dynamic join protocol** — `meshdesk join <bootstrap-addr> --token <token>` subcommand;
+  HMAC-Ed25519 challenge-response authentication; bootstrap returns full config
+  bundle (identity, peers, collectors, reality keys); node joins cluster automatically
+- **One-click join** — Dashboard generates a one-line install command with embedded
+  join token; copy-paste to new node SSH and execute
+- **MuxTransport** — single TCP port (default 52888) multiplexes gossip,
+  Reality TLS (mesh links), and smux streams (WebSSH, file transfer, monitoring,
+  SOCKS5 proxy) — no separate ports needed
 - **Endpoint learning** — when a NAT node connects to a seed, the seed reflects
   its public endpoint and gossips it cluster-wide, enabling direct connections
-  to NAT nodes without manual endpoint configuration (EasyTier-style)
+  to NAT nodes without manual endpoint configuration
 - **Shared node relay** — when direct connection fails (e.g. symmetric NAT),
   traffic routes through mesh peers via relay circuits with automatic failover:
   top-2 relay candidates, 30s health checks, 3-missed-pong failover
@@ -74,26 +74,24 @@ hardware — not when a commit lands.
   SSH, file transfer, and service management
 
 **Mesh routing model:** The `RoutingTable` is a local, gossip-populated
-mesh-IP-to-peer mapping — a simple in-memory hash-map lookup, not an OSPF
+endpoint-to-peer mapping — a simple in-memory hash-map lookup, not an OSPF
 link-state protocol. It is populated by static peer config at startup and by
-gossip events (memberlist join/leave) at runtime. `ResolveRoute(meshIP)` does
+gossip events (memberlist join/leave) at runtime. `ResolveRoute(endpoint)` does
 a direct lookup to find the owning peer; there is no next-hop computation, no
-SPF calculation, and no latency-aware route selection. The original design
-docs referenced EasyTier's OSPF-based `PeerRoute` as inspiration for a future
-"Phase 4" feature, but the full link-state algorithm was explicitly deferred
-in favor of a simpler gossip-populated table. Multi-transport path selection
-is handled separately by PeerManager at the connection level.
+SPF calculation, and no latency-aware route selection. Multi-transport path
+selection is handled separately by PeerManager at the connection level.
 
 ### Transport Layer
 
 The transport layer abstracts how MeshDesk nodes communicate, with PeerManager
-handling automatic fallback between transports:
+handling automatic fallback between transports. All transports share a single TCP
+port (MuxTransport, default 52888):
 
-- **UDP Transport** — raw WireGuard UDP for LAN peers and direct connections
-- **Reality Transport** — xray-core Reality TLS handshake hijack, embedded
-  directly in MeshDesk (no subprocess). uTLS ClientHello fingerprint mimicry
-  makes connections indistinguishable from a real browser visiting a major
-  website (e.g. apple.com). The strongest GFW-resistant transport available.
+- **UDP Transport** — raw UDP for LAN peers and direct connections
+- **Reality Transport** — meshdesk native Reality TLS, implemented in Go without
+  external dependencies. uTLS ClientHello with browser fingerprint mimicry makes
+  connections indistinguishable from a real browser visiting a major website
+  (e.g. apple.com). The strongest GFW-resistant transport available.
 - **WebSocket Transport** — WebSocket + TLS with uTLS fingerprint mimicry,
   retained as a fallback
 - **Automatic Fallback** — transports tried in priority order (UDP → Reality →
@@ -179,8 +177,8 @@ PeerManager is the connection lifecycle manager for every mesh peer:
 Full configuration management via the `/config` page, eliminating the need to
 SSH in and edit YAML by hand:
 
-- **All 11 config sections** rendered on a single dashboard page (node, mesh,
-  peers, p2p, monitoring, webssh, auth, transfer, proxy, xray, reality)
+- **All config sections** rendered on a single dashboard page (node, mesh,
+  peers, p2p, monitoring, webssh, auth, transfer, proxy, reality)
 - **Tiered field display** — four access tiers control visibility and writability:
   T0 (read-only), T1 (masked secrets), T2 (step-up 2FA required), T3 (normal)
 - **PATCH /api/config** — partial save via JSON merge-patch (RFC 7396). Only
@@ -192,17 +190,41 @@ SSH in and edit YAML by hand:
 - **Diff viewer** — `GET /api/config/diff` compares running in-memory config
   against on-disk saved config, showing pending changes
 
-### x-ui Panel Integration
+### SOCKS5 Proxy Management
 
-A MeshDesk-native equivalent of the x-ui panel, accessible at `/xui`:
+MeshDesk provides a dashboard-configured SOCKS5 proxy that routes traffic from
+client devices through the mesh network to exit nodes:
 
-- **Inbound/outbound configuration** — manage xray-core inbounds (VLESS, VMess,
-  Trojan, Shadowsocks) and outbounds via the Dashboard
-- **Traffic statistics** — per-inbound traffic counters and uptime
-- **Client management** — add/remove clients with per-client traffic limits
-- **Share links** — generate shareable `vless://` / `vmess://` URIs
-- **Reality config generation** — generate Reality server/client keys and
-  short IDs from the Dashboard UI
+- **SOCKS5 entry point** — phone/PC SOCKS5 clients connect to any mesh node's
+  MuxTransport port (default 52888). After Reality TLS handshake, the SOCKS5
+  stream is multiplexed via smux.
+- **Mesh relay** — traffic routes through mesh peers to a configured exit node.
+  The relay path is transparent to the SOCKS5 client — it only sees a standard
+  SOCKS5 proxy.
+- **Dashboard management** — configure entry nodes, exit nodes, and relay paths
+  from the Dashboard UI. No manual YAML editing required.
+- **Exit node selection** — choose exit nodes by hostname or let the system
+  auto-select based on latency.
+- **Client compatibility** — any standard SOCKS5 client works (browser proxy
+  settings, proxychains, Telegram proxy, etc.). No special client software needed.
+
+See [SOCKS5_PROXY_GUIDE.md](./docs/SOCKS5_PROXY_GUIDE.md) for setup instructions.
+
+### One-Click Join
+
+New nodes join the mesh with a single command — no manual config file editing:
+
+- **Token generation** — Dashboard generates a time-limited join token (HMAC
+  Ed25519 signed) with optional configuration presets
+- **One-line command** — Dashboard displays a `curl | sh` command with the
+  token embedded; copy-paste to the new node's SSH
+- **Challenge-response** — the new node proves ownership of its Ed25519 key
+  via signature challenge; no pre-shared keys or manual approval needed
+- **Auto-configuration** — the bootstrap node returns a full config bundle
+  (identity, peers, collectors, reality keys); the new node writes it to
+  disk and joins the cluster automatically
+
+See [JOIN_GUIDE.md](./docs/JOIN_GUIDE.md) for the full setup walkthrough.
 
 ### 3D Topology Visualization
 
@@ -284,12 +306,12 @@ already-delivered positions.
 
 | Validation | Status | Notes |
 |---|---|---|
-| Real-hardware multi-node deployment | **Pending** | Has not been run on physical machines with heterogeneous network conditions. This is the single most important validation step. |
-| WireGuard handshake over real NAT/firewall | **Pending** | Unit tests simulate interfaces; actual NAT traversal (UDP hole-punching, relay fallback) must be verified in the wild. |
+| Real-hardware multi-node deployment | **In progress** | Real-device verification rounds on Aliyun + N1 nodes have been conducted. Results documented in `docs/real-device-verification-round*.md`. |
+| Reality TLS handshake over real NAT/firewall | **Pending** | Unit tests pass; actual NAT traversal with Reality TLS must be verified in the wild. |
 | Multi-path proxy with 3+ physical nodes | **Pending** | Circuit setup, chunk dispersion, reassembly, and path failover have only been tested in simulated environments. |
-| WebSocket+TLS obfuscation against real DPI | **Pending** | uTLS fingerprint mimicry is implemented but not tested against live GFW. |
+| SOCKS5 proxy over Reality TLS + smux relay | **Pending** | Code path exists; end-to-end test with real SOCKS5 client on phone pending. |
 | High-load stress testing | **Pending** | No sustained throughput benchmarks or memory-leak profiling under prolonged load. |
-| Cross-platform builds | **Pending** | Only tested on Linux/amd64. |
+| Cross-platform builds | **Pending** | Only tested on Linux/amd64 and Linux/arm64. |
 
 **Bottom line:** This release passes every automated test in the suite, but
 automated tests cannot replace real-hardware validation for a distributed
@@ -308,8 +330,8 @@ is IPv4-only.
 
 ### Windows support
 
-No Windows binary is provided. The codebase uses Linux-specific APIs (TUN
-interface, systemd integration). Windows is planned but not scheduled.
+No Windows binary is provided. The codebase uses Linux-specific APIs (systemd
+integration). Windows is planned but not scheduled.
 
 ### No bandwidth accounting or rate limiting
 
@@ -336,8 +358,8 @@ performance improvements in future releases.
 ```
 meshdesk --config /etc/meshdesk/config.yaml --web          # agent + dashboard
 meshdesk --config /etc/meshdesk/config.yaml --relay        # agent + relay mode
-meshdesk --gen-key                                          # generate WireGuard keypair
-meshdesk join <bootstrap-addr> --bootstrap-key <hex>        # join existing mesh
+meshdesk --gen-key                                          # generate Ed25519 keypair
+meshdesk join <bootstrap-addr> --token <token>              # join existing mesh (one-click)
 ```
 
 ---
@@ -354,6 +376,9 @@ go build -o meshdesk ./cmd/meshdesk/
 
 ## Documentation
 
+- [RELEASE_NOTES.md](./docs/RELEASE_NOTES.md) — Full release notes with feature maturity table
+- [SOCKS5_PROXY_GUIDE.md](./docs/SOCKS5_PROXY_GUIDE.md) — SOCKS5 proxy setup for phones and desktops
+- [JOIN_GUIDE.md](./docs/JOIN_GUIDE.md) — One-click node join walkthrough
 - [README.md](./README.md) — Project overview and getting started
 - [README_CN.md](./README_CN.md) — 中文项目概述
 - [ARCHITECTURE.md](./docs/ARCHITECTURE.md) — System architecture overview

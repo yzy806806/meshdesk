@@ -107,6 +107,8 @@ var tierMap = map[string]fieldMeta{
 	"p2p.gossip_probe_interval":   {Tier: TierNormal, Reload: ReloadHot},
 	"p2p.direct_reprobe_interval": {Tier: TierNormal, Reload: ReloadHot},
 	"p2p.max_peers":               {Tier: TierNormal, Reload: ReloadHot},
+	"p2p.advertise_endpoints":     {Tier: TierNormal, Reload: ReloadRestart},
+	"p2p.peer_cache_path":         {Tier: TierReadOnly, Reload: ReloadRestart},
 
 	// --- Monitoring (§3.5) ---
 	"monitoring.collectors": {Tier: TierNormal, Reload: ReloadHot},
@@ -187,6 +189,15 @@ var tierMap = map[string]fieldMeta{
 	"proxy.relay.max_circuits":    {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.relay.max_queue_depth": {Tier: TierNormal, Reload: ReloadHot},
 
+	// --- Proxy: SOCKS5 ---
+	"proxy.socks5.enabled":            {Tier: TierNormal, Reload: ReloadRestart},
+	"proxy.socks5.allowed_ports":      {Tier: TierStepUp, Reload: ReloadHot},
+	"proxy.socks5.allow_all_ports":    {Tier: TierStepUp, Reload: ReloadHot},
+	"proxy.socks5.destination_filter": {Tier: TierStepUp, Reload: ReloadHot},
+	"proxy.socks5.dial_timeout_sec":   {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.socks5.idle_timeout_sec":   {Tier: TierNormal, Reload: ReloadHot},
+	"proxy.socks5.max_connections":    {Tier: TierNormal, Reload: ReloadHot},
+
 	// --- Proxy: Exit ---
 	"proxy.exit.allowed_ports":        {Tier: TierStepUp, Reload: ReloadHot},
 	"proxy.exit.allow_all_ports":      {Tier: TierStepUp, Reload: ReloadHot},
@@ -202,6 +213,17 @@ var tierMap = map[string]fieldMeta{
 	"reality.server_names": {Tier: TierNormal, Reload: ReloadHot},
 	"reality.private_key":  {Tier: TierMasked, Reload: ReloadRestart},
 	"reality.short_ids":    {Tier: TierNormal, Reload: ReloadHot},
+
+	// --- Join (§3.12) ---
+	"join.enabled":                  {Tier: TierNormal, Reload: ReloadRestart},
+	"join.listen_addr":              {Tier: TierNormal, Reload: ReloadRestart},
+	"join.secret":                   {Tier: TierMasked, Reload: ReloadRestart},
+	"join.tls_cert_file":            {Tier: TierNormal, Reload: ReloadRestart},
+	"join.tls_key_file":             {Tier: TierMasked, Reload: ReloadRestart},
+	"join.token_lifetime":           {Tier: TierNormal, Reload: ReloadHot},
+	"join.server_url":               {Tier: TierNormal, Reload: ReloadHot},
+	"join.token":                    {Tier: TierMasked, Reload: ReloadHot},
+	"join.insecure_skip_tls_verify": {Tier: TierNormal, Reload: ReloadHot},
 }
 
 // readOnlyFields is the set of fields that are read-only on write.
@@ -214,6 +236,7 @@ var readOnlyFields = []string{
 	"peers[N].public_key",
 	"auth.totp_store_dir",
 	"proxy.path_selection.exit_latency_matrix",
+	"p2p.peer_cache_path",
 }
 
 // maskedFields is the set of fields serialized as "***" in GET responses.
@@ -227,6 +250,9 @@ var maskedFields = []string{
 	"proxy.cf_tunnel.tunnel_id",
 	"proxy.cf_tunnel.credentials_file",
 	"reality.private_key",
+	"join.secret",
+	"join.tls_key_file",
+	"join.token",
 }
 
 // stepUpFields is the set of fields that require step-up auth to write.
@@ -245,6 +271,9 @@ var stepUpFields = []string{
 	"proxy.exit.allowed_ports",
 	"proxy.exit.allow_all_ports",
 	"proxy.exit.destination_filter",
+	"proxy.socks5.allowed_ports",
+	"proxy.socks5.allow_all_ports",
+	"proxy.socks5.destination_filter",
 }
 
 // isReadOnly checks if a field path is in the read-only set.
@@ -469,7 +498,7 @@ func joinPath(parts []string) string {
 var validSections = map[string]bool{
 	"node": true, "mesh": true, "peers": true, "p2p": true,
 	"monitoring": true, "webssh": true, "auth": true, "transfer": true,
-	"proxy": true, "reality": true,
+	"proxy": true, "reality": true, "join": true,
 }
 
 // maskSentinel is the placeholder string for masked fields.

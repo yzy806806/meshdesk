@@ -8,9 +8,11 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -45,15 +47,19 @@ func main() {
 	}
 
 	var (
-		configPath string
-		webMode    bool
-		genKey     bool
-		relayMode  bool
+		configPath     string
+		webMode        bool
+		genKey         bool
+		relayMode      bool
+		socks5Listen   string
+		socks5ExitNode string
 	)
 	flag.StringVar(&configPath, "config", "/etc/meshdesk/config.yaml", "path to config file")
 	flag.BoolVar(&webMode, "web", false, "enable web UI mode")
 	flag.BoolVar(&genKey, "gen-key", false, "generate a new Ed25519 identity keypair and exit")
 	flag.BoolVar(&relayMode, "relay", false, "enable relay mode (accept relay circuits from peers)")
+	flag.StringVar(&socks5Listen, "socks5-listen", "", "SOCKS5 client listen address (e.g. 127.0.0.1:1080)")
+	flag.StringVar(&socks5ExitNode, "socks5-exit-node", "", "exit node public key for SOCKS5 client mode")
 	flag.Parse()
 
 	if genKey {
@@ -136,6 +142,11 @@ func main() {
 		} else {
 			log.Printf("  SOCKS5 proxy: listening on virtual port 0x5350 (maxConns=%d)", socks5Cfg.MaxConnections)
 		}
+	}
+
+	// Start SOCKS5 client listener (bridges local SOCKS5 to mesh exit node).
+	if socks5Listen != "" && socks5ExitNode != "" {
+		go runSOCKS5Client(node, socks5Listen, socks5ExitNode)
 	}
 
 	// Attempt to connect statically configured peers with Reality TLS.
@@ -716,6 +727,7 @@ func main() {
 			MeshDialer:          web.NewPeerMeshDialer(node),
 			ProxyStatusProvider: &entryNodeStatusAdapter{entryNode: proxyEntryNode},
 			Liveness:            webLiveness,
+			ConfigPath:          configPath,
 		})
 		if err != nil {
 			log.Fatalf("Failed to create web server: %v", err)
@@ -755,6 +767,17 @@ func main() {
 				})
 			}
 		}
+
+		// Register production hot-reloaders for subsystems that support
+		// dynamic config updates. When a user changes a hot-reload field
+		// via the Dashboard and clicks "Hot Reload", each registered
+		// reloader is called with the new config to apply changes at runtime
+		// without requiring a process restart.
+		webServer.RegisterReloader(web.NewMonitorReloader(reporter))
+		if sshHub != nil {
+			webServer.RegisterReloader(web.NewWebSSHReloader(sshHub))
+		}
+		webServer.RegisterReloader(web.NewLoggingReloader())
 
 		if err := webServer.Start(cfg.Node.WebAddr); err != nil {
 			log.Fatalf("Failed to start web server: %v", err)
@@ -1369,6 +1392,164 @@ func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPa
 		log.Printf("Warning: leave notice: %v", err)
 	}
 	leaveCancel()
+}
+
+// runSOCKS5Client starts a local SOCKS5 TCP listener that bridges
+// connections through the mesh to a remote SOCKS5 exit handler.
+// Each SOCKS5 CONNECT from a local client (e.g., curl) is forwarded
+// via DialVirtualPort to the exit node's virtual port 0x5350.
+func runSOCKS5Client(node *mesh.MeshNode, listenAddr, exitNodeID string) {
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Printf("SOCKS5 client: failed to listen on %s: %v", listenAddr, err)
+		return
+	}
+	defer ln.Close()
+	log.Printf("SOCKS5 client: listening on %s, exit node %s...", listenAddr, exitNodeID[:16])
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Printf("SOCKS5 client: accept error: %v", err)
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+
+			// Phase 1: SOCKS5 greeting from local client.
+			buf := make([]byte, 2)
+			if _, err := io.ReadFull(c, buf); err != nil {
+				return
+			}
+			if buf[0] != 0x05 {
+				return
+			}
+			nMethods := int(buf[1])
+			methods := make([]byte, nMethods)
+			io.ReadFull(c, methods)
+			c.Write([]byte{0x05, 0x00}) // no-auth
+
+			// Phase 2: Read CONNECT request.
+			header := make([]byte, 4)
+			if _, err := io.ReadFull(c, header); err != nil {
+				return
+			}
+			if header[1] != 0x01 { // CONNECT only
+				socks5Reply(c, 0x07)
+				return
+			}
+
+			var targetHost string
+			origATyp := header[3]
+			switch origATyp {
+			case 0x01: // IPv4
+				addr := make([]byte, 4)
+				io.ReadFull(c, addr)
+				targetHost = net.IP(addr).String()
+			case 0x03: // FQDN
+				lb := make([]byte, 1)
+				io.ReadFull(c, lb)
+				fb := make([]byte, int(lb[0]))
+				io.ReadFull(c, fb)
+				targetHost = string(fb)
+			case 0x04: // IPv6
+				addr := make([]byte, 16)
+				io.ReadFull(c, addr)
+				targetHost = net.IP(addr).String()
+			default:
+				socks5Reply(c, 0x08)
+				return
+			}
+			portBuf := make([]byte, 2)
+			io.ReadFull(c, portBuf)
+			targetPort := binary.BigEndian.Uint16(portBuf)
+			targetAddr := net.JoinHostPort(targetHost, fmt.Sprintf("%d", targetPort))
+
+			log.Printf("SOCKS5 client: CONNECT %s via exit %s...", targetAddr, exitNodeID[:16])
+
+			// Phase 3: Dial the exit node's SOCKS5 virtual port.
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			meshConn, err := node.DialVirtualPort(ctx, exitNodeID, int(mesh.SOCKS5VirtualPort))
+			if err != nil {
+				log.Printf("SOCKS5 client: DialVirtualPort: %v", err)
+				socks5Reply(c, 0x04)
+				return
+			}
+			defer meshConn.Close()
+
+			// Phase 4: SOCKS5 handshake with exit node.
+			meshConn.Write([]byte{0x05, 0x01, 0x00})
+			authReply := make([]byte, 2)
+			if _, err := io.ReadFull(meshConn, authReply); err != nil {
+				socks5Reply(c, 0x01)
+				return
+			}
+			// Send CONNECT to exit.
+			sendMeshSocks5Connect(meshConn, origATyp, targetHost, targetPort)
+			exitRep := make([]byte, 4)
+			if _, err := io.ReadFull(meshConn, exitRep); err != nil {
+				socks5Reply(c, 0x01)
+				return
+			}
+			rep := exitRep[1]
+			if rep != 0x00 {
+				log.Printf("SOCKS5 client: exit replied error 0x%02x for %s", rep, targetAddr)
+				socks5Reply(c, rep)
+				return
+			}
+			// Skip BND.ADDR and BND.PORT from exit reply.
+			skipBindAddr(meshConn, exitRep[3])
+
+			// Phase 5: Success reply to local client.
+			socks5Reply(c, 0x00)
+
+			// Phase 6: Bidirectional relay.
+			done := make(chan struct{}, 2)
+			go func() { io.Copy(meshConn, c); done <- struct{}{} }()
+			go func() { io.Copy(c, meshConn); done <- struct{}{} }()
+			<-done
+			meshConn.Close()
+			c.Close()
+			<-done
+		}(conn)
+	}
+}
+
+func socks5Reply(conn net.Conn, rep byte) {
+	conn.Write([]byte{0x05, rep, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+}
+
+func sendMeshSocks5Connect(conn net.Conn, atyp byte, host string, port uint16) {
+	var msg []byte
+	msg = append(msg, 0x05, 0x01, 0x00, atyp)
+	switch atyp {
+	case 0x01:
+		msg = append(msg, net.ParseIP(host).To4()...)
+	case 0x03:
+		msg = append(msg, byte(len(host)))
+		msg = append(msg, []byte(host)...)
+	case 0x04:
+		msg = append(msg, net.ParseIP(host).To16()...)
+	}
+	var pb [2]byte
+	binary.BigEndian.PutUint16(pb[:], port)
+	msg = append(msg, pb[:]...)
+	conn.Write(msg)
+}
+
+func skipBindAddr(conn net.Conn, atyp byte) {
+	switch atyp {
+	case 0x01:
+		io.ReadFull(conn, make([]byte, 4))
+	case 0x03:
+		lb := make([]byte, 1)
+		io.ReadFull(conn, lb)
+		io.ReadFull(conn, make([]byte, int(lb[0])))
+	case 0x04:
+		io.ReadFull(conn, make([]byte, 16))
+	}
+	io.ReadFull(conn, make([]byte, 2)) // port
 }
 
 // runJoinTokenSubcommand implements `meshdesk join-token <secret> [server-fp]`.
