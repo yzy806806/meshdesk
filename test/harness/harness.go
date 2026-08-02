@@ -509,11 +509,6 @@ func (h *Harness) isNodeHealthy(node *Node) bool {
 				return true
 			}
 		}
-		// If web not yet up, check if the log shows startup complete.
-		log := node.logString()
-		if strings.Contains(log, "MeshDesk node started") || strings.Contains(log, "Web UI:") {
-			return true
-		}
 		return false
 	}
 
