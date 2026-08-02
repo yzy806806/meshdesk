@@ -19,7 +19,7 @@ All from `internal/config/config.go`. Defaults from `config.Default()` (line 629
 | 7 | Auth | AuthConfig | `auth` | totp_issuer="MeshDesk" | :19 |
 | 8 | Transfer | TransferConfig | `transfer` | max_file_size=1GB, upload_dir=/tmp/meshdesk-uploads/ | :20 |
 | 9 | Proxy | ProxyConfig | `proxy` | chunker_strategy="bounded-4k-64k" | :21 |
-| 10 | Xray | XrayYAMLConfig | `xray` | enabled=false | :22 |
+| 10 | Proxy | ProxyYAMLConfig | `proxy` | entry.socks5.enabled=false | :22 |
 | 11 | Reality | RealityServerConfig | `reality` | enabled=false | :23 |
 
 Total: 11 sections, ~90 unique leaf fields.
@@ -138,19 +138,15 @@ Relay          RelayNodeConfig
 Exit           ExitConfig
 ```
 
-### 1l. XrayYAMLConfig (:30-69)
+### 1l. ProxyYAMLConfig (SOCKS5 Entry) (:30-69)
 ```
 Enabled            bool   // default false
-BinaryPath         string // auto-detect from PATH
-ConfigDir          string // default /var/lib/meshdesk/xray
-LogLines           int    // ring buffer cap; default 1000
-ApiPort            int    // gRPC port; default 8421
-ApiListen          string // default 127.0.0.1
-HealthCheckInterval int   // sec; default 10
-ReadinessTimeout   int    // sec; default 15
-DrainTimeout       int    // sec; default 10
+Port               int    // SOCKS5 virtual port; default 77
+AuthMethod         string // default "none"
+ExitNodes          []string // configured exit node hostnames
+RelayEnabled       bool   // default false
+MaxCircuits        int    // default 50
 ```
-
 ### 1m. RealityServerConfig (:463-488)
 ```
 Enabled     bool     // default false
@@ -206,7 +202,6 @@ GET  /services        → handleServicesPage
 GET  /peers           → handlePeersPage
 GET  /topology        → handleTopologyPage
 GET  /proxy-nodes     → handleProxyNodesPage
-GET  /xui             → handleXuiPage
 ```
 
 ### 3b. Public (no auth)
@@ -235,18 +230,8 @@ All require auth. **ZERO config fields are editable via UI.**
 | `/api/stepup/verify` | POST | Verify step-up token | Auth only |
 | `/api/alerts` | GET | List security alerts | No |
 | `/api/alerts/dismiss` | POST | Dismiss alerts | No |
-| `/api/proxy/status` | GET | Proxy subsystem status | No |
-| `/api/xray/inbound` | GET/POST/DELETE | Manage xray inbounds | Yes — xray sub-config |
-| `/api/xray/status` | GET | Xray process status | No |
-| `/api/xray/logs` | GET | Captured stdout | No |
-| `/api/xray/start` | POST | Start xray subprocess | No |
-| `/api/xray/stop` | POST | Stop xray subprocess | No |
-| `/api/xray/reload` | POST | SIGHUP hot-reload | No |
-| `/api/xray/health` | POST | Trigger health check | No |
-| `/api/xray/selftest` | GET | Comprehensive diagnostic | No |
-| `/api/xray/inbound/client` | POST/GET/DELETE | Manage VLESS clients | Yes — x-ui |
-| `/api/xray/stats` | GET | Traffic statistics | No |
-| `/api/xray/share` | POST | Generate share link | No |
+|| `/api/proxy/status` | GET | Proxy subsystem status | No |
+| `/api/proxy/socks5/config` | GET/POST | Manage SOCKS5 proxy configuration | Yes |
 | `/api/files/upload` | POST | File upload (step-up) | No |
 | `/api/files/list` | GET | File listing | No |
 | `/api/services/list` | GET | Service inventory | No |
@@ -254,9 +239,7 @@ All require auth. **ZERO config fields are editable via UI.**
 | `/ws/terminal` | WebSocket | Interactive PTY | No |
 
 ### 3d. Already semi-editable config via UI:
-- **xray inbounds** (`/api/xray/inbound`) — create/delete VLESS/VMess/Trojan inbounds
-- **x-ui clients** (`/api/xray/inbound/client`) — manage clients and traffic stats
-- **xray share links** (`/api/xray/share`) — generate VLESS+REALITY share URLs
+- **SOCKS5 proxy** (`/api/proxy/socks5/config`) — configure SOCKS5 entry listener, exit nodes, relay paths
 
 Everything else is read-only or not exposed at all.
 
@@ -300,7 +283,7 @@ Everything else is read-only or not exposed at all.
 - `webssh.*` (all fields are tuning parameters)
 - `transfer.*`
 - `proxy.circuit.*`, `proxy.path_selection.*` (tuning)
-- `xray.*` (already UI-editable)
+- `proxy.*` (already UI-editable via /api/proxy/socks5/config)
 - `reality.dest`, `reality.server_names`, `reality.listen_addr` (non-secret fields)
 
 ---
@@ -318,7 +301,6 @@ Everything else is read-only or not exposed at all.
 | auth | 7 (excluding legacy) | TOTP lifecycle only | GET/PUT /api/config/auth |
 | transfer | 2 | No | GET/PUT /api/config/transfer |
 | proxy | 20+ nested | No | GET/PUT /api/config/proxy |
-| xray | 9 | 3 sub-APIs already exist | Extend existing |
 | reality | 6 | No | GET/PUT /api/config/reality |
 
 ### Hot-reload integration

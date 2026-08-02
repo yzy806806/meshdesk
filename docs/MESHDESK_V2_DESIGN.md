@@ -179,10 +179,10 @@ Dashboard
 │   └── 连接状态查看
 │
 ├── 代理管理 (Proxy)
-│   ├── 远程配置入口节点 (VLESS/Reality)
+│   ├── 远程配置入口节点 (SOCKS5/Reality)
 │   ├── 分流规则
 │   ├── 选路策略 (自动/手动)
-│   ├── 分享链接生成
+│   ├── SOCKS5 客户端配置
 │   └── 流量统计
 │
 ├── 配置 (Config)
@@ -220,7 +220,7 @@ Dashboard
 
 ```
 Dashboard(AMD1) → smux stream("rpc") → N1
-RPC: { cmd: "add_inbound", protocol: "vless", port: 443, reality: {...} }
+RPC: { cmd: "enable_socks5", port: 77, exit: "exit-node-hostname" }
 N1 执行 → 返回结果 → Dashboard 更新 UI
 ```
 
@@ -265,7 +265,7 @@ web:
 | Reality TLS Transport | 841 行 | 直接复用 (cert fix 已提交) |
 | PeerManager | 1273 行 | 简化：去掉 WG 依赖，只管 TLS/UDP 连接 |
 | Dashboard config API | ~3000 行 | 复用 + 扩展 RPC |
-| x-ui 面板 | 2935 行 | 修 panic 后复用 |
+| SOCKS5 代理管理 | ~800 行 | 新增 Dashboard UI + smux 虚拟端口监听 |
 | anime.js + anim.js | ✅ | 直接复用 |
 | gossip 发现 | ~800 行 | 简化：去掉 mesh IP 依赖 |
 
@@ -299,7 +299,7 @@ web:
 | 6 | PeerManager (选路+多路径) | Phase 3+5 |
 | 7 | WebSSH + 文件管理 (smux) | Phase 3+6 |
 | 8 | Dashboard 重构 (远程配置+RPC) | Phase 6+7 |
-| 9 | x-ui 代理管理 (远程配置入口) | Phase 8 |
+| 9 | SOCKS5 代理管理 (远程配置入口) | Phase 8 |
 | 10 | 实机测试 (全功能覆盖) | 全部 |
 
 ## 测试要求
@@ -315,7 +315,7 @@ web:
    - WebSSH (从 Dashboard 远程连任意节点)
    - 文件管理 (上传/下载/浏览)
    - Dashboard 配置管理 + 热重载
-   - 代理入口 (VLESS + Reality)
+   - 代理入口 (SOCKS5 + Reality)
    - 智能选路 (多路径分散)
    - anime.js 动画
    - 监控数据上报

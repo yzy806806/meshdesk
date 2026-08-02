@@ -53,7 +53,7 @@ Tester's four failure-mode tests (out-of-order reassembly, path death recovery, 
 ```
 用户设备          CF边缘        入口节点              mesh中段              exit节点
 ┌────────┐      ┌────────┐    ┌──────────┐    ┌──────────────────┐    ┌──────────┐
-│ SS/xray│─TLS─→│ CF IP  │──→│ mesh节点 │    │ 多路径分散传输    │    │ mesh节点 │──→ 目标
+│ SS/SOCKS5│─TLS─→│ CF IP  │──→│ mesh节点 │    │ 多路径分散传输    │    │ mesh节点 │──→ 目标
 │ client │      │ (不可封)│   │ 终结代理 │───→│ path1: A→B→exit   │───→│ 重组+发起 │    网站
 │        │      └────────┘    │ 协议     │    │ path2: A→C→D→exit │    │ TCP连接   │
 └────────┘                    └──────────┘    └──────────────────┘    └──────────┘
@@ -241,7 +241,7 @@ User device → CF Tunnel → Entry node, using **Shadowsocks over WebSocket**.
 
 Rationale:
 - CF's TLS provides protocol camouflage layer (GFW sees access to CF website), no Reality needed
-- SS is lighter than xray, better performance
+- SS is lightweight, good performance
 - CF IP space is vast; GFW cannot block all CF IPs
 
 ### Implementation

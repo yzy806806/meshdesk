@@ -143,6 +143,57 @@ func (r *Reporter) Collectors() []string {
 	return result
 }
 
+// SetInterval updates the collection/push interval. The new interval
+// takes effect on the next tick cycle. If the reporter is running, the
+// ticker is reset to the new interval.
+func (r *Reporter) SetInterval(seconds int) {
+	interval := time.Duration(seconds) * time.Second
+	if interval < 10*time.Second {
+		interval = 15 * time.Second
+	}
+	if interval > 5*time.Minute {
+		interval = 5 * time.Minute
+	}
+	r.mu.Lock()
+	r.interval = interval
+	r.mu.Unlock()
+}
+
+// SetPort updates the mesh-internal port used to push metrics to collectors.
+// Takes effect on the next push attempt.
+func (r *Reporter) SetPort(port int) {
+	if port == 0 {
+		port = DefaultMonitorPort
+	}
+	r.mu.Lock()
+	r.port = port
+	r.mu.Unlock()
+}
+
+// SetCollectors replaces the entire collector list. This is used by the
+// hot-reload mechanism when the monitoring.collectors config field is
+// updated from the Dashboard.
+func (r *Reporter) SetCollectors(peerIDs []string) {
+	r.mu.Lock()
+	r.collectors = make([]string, len(peerIDs))
+	copy(r.collectors, peerIDs)
+	r.mu.Unlock()
+}
+
+// Interval returns the current collection interval in seconds.
+func (r *Reporter) Interval() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return int(r.interval.Seconds())
+}
+
+// Port returns the current collector push port.
+func (r *Reporter) Port() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.port
+}
+
 // LocalStore returns the reporter's local store (for self-metrics access).
 func (r *Reporter) LocalStore() *Store {
 	return r.store
@@ -193,6 +244,11 @@ func (r *Reporter) run() {
 		case <-r.stopCh:
 			return
 		case <-ticker.C:
+			// Check if the interval was updated via SetInterval.
+			r.mu.Lock()
+			currentInterval := r.interval
+			r.mu.Unlock()
+			ticker.Reset(currentInterval)
 			r.collectAndPush()
 		}
 	}

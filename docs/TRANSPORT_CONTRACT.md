@@ -10,7 +10,7 @@
 ## 1. Overview
 
 This document defines the three-layer Transport interface contract for MeshDesk's
-pluggable transport system. The transport layer sits between the WireGuard mesh
+pluggable transport system. The transport layer sits between the mesh protocol
 core and the physical network, providing pluggable transport strategies (UDP,
 WebSocket, Reality TLS) with per-peer configuration, graceful shutdown, health
 monitoring, latency probing, and failover testing support.
@@ -18,9 +18,9 @@ monitoring, latency probing, and failover testing support.
 The contract was extracted from the existing obfuscation layer
 (`internal/mesh/obfuscation.go`) and generalized to support:
 
-- **UDP Transport** — raw WireGuard UDP (LAN, lowest latency)
+- **UDP Transport** — raw UDP (LAN, lowest latency)
 - **WebSocket Transport** — WebSocket + uTLS over TCP (existing, fallback)
-- **Reality Transport** — Reality TLS via xray-core (new, primary GFW path)
+- **Reality Transport** — Reality TLS natively implemented in Go (new, primary GFW path)
 
 New transports can be added by implementing the interfaces and registering with
 `TransportRegistry` — no core changes required.

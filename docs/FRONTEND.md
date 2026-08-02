@@ -16,7 +16,7 @@ The MeshDesk frontend combines **server-rendered Go templates**, **htmx** for pa
 | Design tokens | 65 CSS custom properties in app.css |
 | app.css size | 1,244 lines |
 | terminal.css size | 113 lines |
-| JS files | 15 (htmx.min.js, anime.min.js, xterm.js + 3 addons, terminal.js, dashboard.js, topology.js, config.js, proxy-nodes.js, xui.js, anim.js, three.min.js, OrbitControls.js) |
+| JS files | 14 (htmx.min.js, anime.min.js, xterm.js + 3 addons, terminal.js, dashboard.js, topology.js, config.js, proxy-nodes.js, anim.js, three.min.js, OrbitControls.js) |
 | HTTP routes | 19 |
 
 ## Architecture
@@ -69,7 +69,6 @@ web/
 │   │   ├── OrbitControls.js          # Three.js camera orbit controls
 │   │   ├── config.js                 # Dashboard config pages + toast animations
 │   │   ├── proxy-nodes.js            # Proxy node management UI
-│   │   └── xui.js                    # x-ui panel configuration UI
 │   └── img/                          # Static images (reserved)
 └── templates/
     ├── layout.html                   # Base template: nav, head, skip-link
