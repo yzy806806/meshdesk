@@ -531,3 +531,79 @@ func TestJoinRoute_Dispatch(t *testing.T) {
 		t.Errorf("Status = %d, want 200 or 400", rr.Code)
 	}
 }
+
+// TestJoinInstallScript_HTTPAddsInsecureTLS verifies that when the join URL
+// uses HTTP (not HTTPS), the install script passes --insecure-tls to the
+// meshdesk join command.
+func TestJoinInstallScript_HTTPAddsInsecureTLS(t *testing.T) {
+	joinURL := "http://bootstrap:8443"
+	token := "test-token-abc123"
+
+	script := buildInstallScript(joinURL, token, "")
+
+	if !strings.Contains(script, "--insecure-tls") {
+		t.Error("Install script for HTTP join URL should contain --insecure-tls")
+	}
+}
+
+// TestJoinInstallScript_HTTPSNoInsecureTLS verifies that when the join URL
+// uses HTTPS, the install script does NOT pass --insecure-tls.
+func TestJoinInstallScript_HTTPSNoInsecureTLS(t *testing.T) {
+	joinURL := "https://bootstrap:8443"
+	token := "test-token-abc123"
+
+	script := buildInstallScript(joinURL, token, "")
+
+	if strings.Contains(script, "--insecure-tls") {
+		t.Error("Install script for HTTPS join URL should NOT contain --insecure-tls")
+	}
+}
+
+// TestJoinInstallScript_ContainsSystemdService verifies that the install
+// script includes systemd service setup for auto-restart on boot.
+func TestJoinInstallScript_ContainsSystemdService(t *testing.T) {
+	joinURL := "http://bootstrap:8443"
+	token := "test-token-abc123"
+
+	script := buildInstallScript(joinURL, token, "")
+
+	// Should contain systemd unit file creation.
+	if !strings.Contains(script, "meshdesk.service") {
+		t.Error("Install script should create meshdesk.service unit file")
+	}
+	if !strings.Contains(script, "systemctl") {
+		t.Error("Install script should use systemctl commands")
+	}
+	if !strings.Contains(script, "systemctl enable meshdesk") {
+		t.Error("Install script should enable meshdesk service")
+	}
+	if !strings.Contains(script, "Restart=on-failure") {
+		t.Error("Install script should set Restart=on-failure in unit file")
+	}
+	if !strings.Contains(script, "ExecStart=/usr/local/bin/meshdesk") {
+		t.Error("Install script should have ExecStart pointing to meshdesk binary")
+	}
+}
+
+// TestJoinInstallScript_SystemdBeforeJoin verifies that the systemd service
+// setup appears before the exec join command in the script. This is critical
+// because exec replaces the shell process — anything after it never runs.
+func TestJoinInstallScript_SystemdBeforeJoin(t *testing.T) {
+	joinURL := "http://bootstrap:8443"
+	token := "test-token-abc123"
+
+	script := buildInstallScript(joinURL, token, "")
+
+	systemdIdx := strings.Index(script, "systemctl enable meshdesk")
+	joinIdx := strings.Index(script, "exec \"$INSTALL_DIR/meshdesk\" join")
+
+	if systemdIdx < 0 {
+		t.Fatal("Script doesn't contain systemd enable command")
+	}
+	if joinIdx < 0 {
+		t.Fatal("Script doesn't contain exec join command")
+	}
+	if systemdIdx > joinIdx {
+		t.Errorf("Systemd setup (idx=%d) should appear before join exec (idx=%d)", systemdIdx, joinIdx)
+	}
+}
