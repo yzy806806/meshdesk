@@ -448,7 +448,7 @@ func (n *MeshNode) handleSessionStreams(peerIdentityHex string, sess *smux.Sessi
 		log.Printf("[mesh] inbound stream from peer %s on virtual port %d", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", port)
 
 		// Dispatch the stream to the virtual listener registered for this port.
-		n.portMux.dispatch(port, stream)
+		n.portMux.dispatch(port, stream, peerIdentityHex)
 	}
 }
 

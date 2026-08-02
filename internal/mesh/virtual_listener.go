@@ -11,6 +11,21 @@ import (
 // virtualPortFrameLen is the size of the port prefix frame in bytes.
 const virtualPortFrameLen = 2
 
+// connWithPeer wraps a net.Conn with the identity of the mesh peer that
+// opened it. It is used to thread peer identity through the virtual port
+// dispatch so that handlers can make per-peer authorization decisions.
+type connWithPeer struct {
+	net.Conn
+	peerID string
+}
+
+// PeerID returns the mesh identity of the peer that opened this stream.
+// Returns an empty string if the connection was not wrapped (e.g. from a
+// non-mesh source such as a unit test).
+func (c *connWithPeer) PeerID() string {
+	return c.peerID
+}
+
 // writePortFrame writes a 2-byte big-endian port number to w.
 func writePortFrame(w io.Writer, port uint16) error {
 	var buf [virtualPortFrameLen]byte
@@ -71,7 +86,9 @@ func (m *virtualPortMux) register(port uint16) (*VirtualListener, error) {
 }
 
 // Close unregisters the listener. Future streams for this port are dropped.
-func (m *virtualPortMux) dispatch(port uint16, conn net.Conn) {
+// peerID is the mesh identity hex string of the peer that opened the stream,
+// or empty if the source is not a mesh peer.
+func (m *virtualPortMux) dispatch(port uint16, conn net.Conn, peerID string) {
 	m.mu.RLock()
 	vl, exists := m.listeners[port]
 	m.mu.RUnlock()
@@ -82,8 +99,11 @@ func (m *virtualPortMux) dispatch(port uint16, conn net.Conn) {
 		return
 	}
 
+	// Wrap with peer identity so handlers can make auth decisions.
+	wrapped := &connWithPeer{Conn: conn, peerID: peerID}
+
 	select {
-	case vl.acceptCh <- conn:
+	case vl.acceptCh <- wrapped:
 		// Delivered.
 	case <-vl.doneCh:
 		// Listener closed — close the stream.

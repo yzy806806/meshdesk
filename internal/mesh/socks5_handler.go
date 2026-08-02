@@ -60,6 +60,32 @@ type SOCKS5Config struct {
 	// MaxConnections limits concurrent SOCKS5 connections.
 	// Default: 256.
 	MaxConnections int
+
+	// AllowedPeers restricts which mesh peers can use this SOCKS5
+	// proxy. If empty, all authenticated mesh peers are permitted.
+	// Each entry is a mesh identity hex string (64 hex chars for
+	// Ed25519 public key).
+	// Phone clients that connect via Reality TLS (non-mesh peers)
+	// are NOT restricted by this list — their authorization is
+	// determined by SOCKS5 authentication at the protocol level.
+	// To allow only mesh peers, set RequireMeshPeer = true.
+	AllowedPeers []string
+
+	// RequireMeshPeer, when true, requires that every connection to
+	// this SOCKS5 handler comes from a mesh peer (i.e. a peer whose
+	// identity was authenticated via the join protocol). Phone clients
+	// connecting through Reality TLS without a mesh identity will be
+	// rejected. Default: false (permissive, for backward compatibility).
+	RequireMeshPeer bool
+
+	// CheckMeshPeer, when non-nil, is called to verify that a peerID
+	// represents a valid mesh peer. When RequireMeshPeer is true and
+	// this function returns false, the connection is rejected.
+	// If nil and RequireMeshPeer is true, the handler falls back to
+	// checking that peerID is non-empty (legacy behavior — insufficient
+	// for true mesh membership verification).
+	// Wire this to RoutingTable.GetPeer in production; leave nil in tests.
+	CheckMeshPeer func(peerID string) bool
 }
 
 // DefaultSOCKS5Config returns a SOCKS5Config with sensible defaults.
@@ -96,7 +122,10 @@ type SOCKS5Handler struct {
 	dialer       *net.Dialer
 	activeConns  int64
 	closed       atomic.Bool
-	allowedNets  []*net.IPNet // parsed DestinationFilter
+	allowedNets  []*net.IPNet      // parsed DestinationFilter
+	allowedPeers map[string]bool   // set of peerIDs permitted to connect
+	checkMeshPeer func(string) bool // routing table check (nil = fallback to non-empty check)
+	requireMesh  bool              // true if non-mesh connections are rejected
 	mu           sync.Mutex
 	connWG       sync.WaitGroup
 }
@@ -117,6 +146,16 @@ func NewSOCKS5Handler(cfg SOCKS5Config) *SOCKS5Handler {
 		config: cfg,
 		dialer: &net.Dialer{Timeout: cfg.DialTimeout},
 	}
+
+	// Build allowed peers set.
+	if len(cfg.AllowedPeers) > 0 {
+		h.allowedPeers = make(map[string]bool, len(cfg.AllowedPeers))
+		for _, peerID := range cfg.AllowedPeers {
+			h.allowedPeers[peerID] = true
+		}
+	}
+	h.checkMeshPeer = cfg.CheckMeshPeer
+	h.requireMesh = cfg.RequireMeshPeer
 
 	// Parse destination filter CIDRs.
 	for _, cidr := range cfg.DestinationFilter {
@@ -144,6 +183,45 @@ func (h *SOCKS5Handler) HandleStream(conn net.Conn) {
 		log.Printf("[socks5] connection limit reached (%d), rejecting", h.config.MaxConnections)
 		conn.Close()
 		return
+	}
+
+	// Peer authorization — thread peer identity was added by the virtual
+	// port dispatch layer. A conn without a peerID is from a test or a
+	// legacy path; we default to permitted unless RequireMeshPeer is set.
+	peerID := ""
+	if cwp, ok := conn.(*connWithPeer); ok {
+		peerID = cwp.peerID
+	}
+
+	// If RequireMeshPeer is set, verify mesh membership through the
+	// configured CheckMeshPeer callback. When wired to the routing table,
+	// this rejects phone clients with locally-generated Ed25519 keys
+	// that have not completed the mesh join protocol.
+	if h.requireMesh {
+		if h.checkMeshPeer != nil {
+			if !h.checkMeshPeer(peerID) {
+				log.Printf("[socks5] rejecting non-mesh peer %s (RequireMeshPeer=true)", peerID[:min(len(peerID), 16)])
+				conn.Close()
+				return
+			}
+		} else if peerID == "" {
+			// Legacy fallback: without a CheckMeshPeer callback, at
+			// minimum require a non-empty peerID. Note: this does NOT
+			// verify mesh membership — it only checks that the peer
+			// presented some Ed25519 identity during key exchange.
+			log.Printf("[socks5] rejecting non-mesh connection (RequireMeshPeer=true, no peerID)")
+			conn.Close()
+			return
+		}
+	}
+
+	// If AllowedPeers is configured, check the peer is in the list.
+	if len(h.allowedPeers) > 0 {
+		if peerID == "" || !h.allowedPeers[peerID] {
+			log.Printf("[socks5] rejecting peer %s (not in AllowedPeers)", peerID)
+			conn.Close()
+			return
+		}
 	}
 
 	atomic.AddInt64(&h.activeConns, 1)
@@ -410,6 +488,19 @@ func (h *SOCKS5Handler) ActiveConnections() int64 {
 // to accept SOCKS5 connections. It is also closed automatically when
 // the node's Close() is called if it was registered via this method.
 func (n *MeshNode) RegisterSOCKS5Handler(cfg SOCKS5Config) (*SOCKS5Handler, error) {
+	// If RequireMeshPeer is set and no custom CheckMeshPeer is provided,
+	// wire the routing table as the mesh membership verifier. This ensures
+	// that only peers who completed the join protocol (present in the
+	// routing table) can use the SOCKS5 proxy. Phone clients with
+	// locally-generated Ed25519 keys are rejected because their key is
+	// not in the routing table — only join-protocol-authenticated peers
+	// are present there.
+	if cfg.RequireMeshPeer && cfg.CheckMeshPeer == nil {
+		cfg.CheckMeshPeer = func(peerID string) bool {
+			_, ok := n.routes.GetPeer(peerID)
+			return ok
+		}
+	}
 	handler := NewSOCKS5Handler(cfg)
 
 	// Register a virtual port listener for 0x5350.

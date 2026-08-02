@@ -1,0 +1,84 @@
+{{define "content"}}
+<div class="join-view">
+  <header>
+    <h2>One-Click Join</h2>
+    <p class="muted">Generate an install command for a new node. Copy it, SSH to the new machine, paste and run.</p>
+  </header>
+
+  <!-- Join status check -->
+  <div id="join-status-check" class="join-status-check">
+    <p class="placeholder">Checking join server status...</p>
+  </div>
+
+  <!-- Token generation form -->
+  <div id="join-form-section" style="display:none;">
+    <section class="join-form-card">
+      <h3>Generate Install Command</h3>
+      <form id="join-token-form" onsubmit="joinGenerate(event)">
+        <div class="grid">
+          <label>
+            Token Lifetime (minutes)
+            <input type="number" id="join-lifetime" value="30" min="1" max="1440" required>
+          </label>
+          <label>
+            Target Architecture
+            <select id="join-arch">
+              <option value="">Auto-detect</option>
+              <option value="amd64">amd64 (x86_64)</option>
+              <option value="arm64">arm64 (aarch64)</option>
+            </select>
+          </label>
+        </div>
+        <button type="submit" class="primary" id="join-generate-btn">Generate Install Command</button>
+      </form>
+    </section>
+  </div>
+
+  <!-- Result section -->
+  <div id="join-result-section" style="display:none;">
+    <section class="join-result-card">
+      <h3>Install Command</h3>
+      <p class="muted">Run this command on the new node via SSH:</p>
+      <div class="join-command-box">
+        <code id="join-install-command"></code>
+        <button type="button" class="small" id="join-copy-btn" onclick="joinCopyCommand()">Copy</button>
+      </div>
+
+      <details class="join-details">
+        <summary>Details</summary>
+        <dl>
+          <dt>Join URL</dt>
+          <dd><code id="join-url-display"></code></dd>
+          <dt>Token</dt>
+          <dd><code id="join-token-display"></code></dd>
+          <dt>Expires in</dt>
+          <dd id="join-expires-display"></dd>
+        </dl>
+      </details>
+
+      <div class="join-what-happens">
+        <h4>What this command does:</h4>
+        <ol>
+          <li>Downloads the meshdesk binary for the detected OS/architecture</li>
+          <li>Creates config directory at <code>/etc/meshdesk/</code></li>
+          <li>Writes a minimal config file</li>
+          <li>Runs <code>meshdesk join</code> with the embedded token</li>
+          <li>The node contacts the join server, verifies identity, receives config bundle (REALITY keys, collector list, peer info), and joins the mesh</li>
+        </ol>
+      </div>
+    </section>
+  </div>
+
+  <!-- Error display -->
+  <div id="join-error-section" style="display:none;">
+    <article class="join-error-card">
+      <h3>Error</h3>
+      <p id="join-error-message" class="error"></p>
+    </article>
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/join.js"></script>
+{{end}}
