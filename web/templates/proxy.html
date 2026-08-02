@@ -1,0 +1,236 @@
+{{define "content"}}
+<div class="proxy-view">
+  <header>
+    <h2>Proxy Management</h2>
+    <p class="muted">Configure SOCKS5 proxy entry/exit nodes, relay paths, and phone client connection settings.</p>
+  </header>
+
+  <!-- Status feedback banner -->
+  <div id="proxy-feedback" class="cfg-feedback" style="display:none;"></div>
+
+  <!-- Loading placeholder -->
+  <div id="proxy-loading">
+    <p class="placeholder">Loading proxy status...</p>
+  </div>
+
+  <!-- Main content (hidden until loaded) -->
+  <div id="proxy-content" style="display:none;">
+
+    <!-- Phone Client Connection Card -->
+    <section class="proxy-card proxy-connection-card">
+      <h3>Phone Client Connection</h3>
+      <p class="muted">Configure a SOCKS5 client on your phone using these settings:</p>
+      <div class="proxy-connection-info">
+        <div class="proxy-conn-field">
+          <label>Server Address</label>
+          <code id="proxy-server-addr">—</code>
+        </div>
+        <div class="proxy-conn-field">
+          <label>Port</label>
+          <code id="proxy-port">—</code>
+        </div>
+        <div class="proxy-conn-field">
+          <label>Protocol</label>
+          <code>SOCKS5 over Reality TLS</code>
+        </div>
+        <div class="proxy-conn-field">
+          <label>Auth</label>
+          <code id="proxy-auth">No auth (mesh-encrypted)</code>
+        </div>
+      </div>
+      <div class="proxy-conn-note">
+        <details>
+          <summary>How phone clients connect</summary>
+          <ol>
+            <li>Phone connects to the <strong>shared/entry node</strong> on the proxy port (default 52888)</li>
+            <li>Reality TLS handshake authenticates and encrypts the connection</li>
+            <li>SOCKS5 protocol runs over the encrypted smux session</li>
+            <li>Traffic is forwarded through the mesh to an exit node, then to the internet</li>
+          </ol>
+        </details>
+      </div>
+    </section>
+
+    <!-- Local Node Status -->
+    <section class="proxy-card">
+      <h3>Local Node Status</h3>
+      <div class="proxy-status-grid">
+        <div class="proxy-status-item">
+          <span class="proxy-status-label">Node</span>
+          <span class="proxy-status-value" id="proxy-local-node">—</span>
+        </div>
+        <div class="proxy-status-item">
+          <span class="proxy-status-label">Role</span>
+          <span class="proxy-status-value" id="proxy-local-role">—</span>
+        </div>
+        <div class="proxy-status-item">
+          <span class="proxy-status-label">Reality TLS</span>
+          <span class="proxy-status-badge" id="proxy-reality-status">—</span>
+        </div>
+        <div class="proxy-status-item">
+          <span class="proxy-status-label">SOCKS5 Handler</span>
+          <span class="proxy-status-badge" id="proxy-socks5-status">—</span>
+        </div>
+        <div class="proxy-status-item">
+          <span class="proxy-status-label">Exit Handler</span>
+          <span class="proxy-status-badge" id="proxy-exit-status">—</span>
+        </div>
+        <div class="proxy-status-item">
+          <span class="proxy-status-label">Active Connections</span>
+          <span class="proxy-status-value" id="proxy-active-conns">0</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SOCKS5 Configuration -->
+    <section class="proxy-card">
+      <h3>SOCKS5 Configuration</h3>
+      <div class="proxy-config-grid">
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-enabled">SOCKS5 Enabled</label>
+          <div class="proxy-toggle">
+            <input type="checkbox" id="cfg-socks5-enabled" data-config-path="proxy.socks5.enabled">
+            <span class="proxy-toggle-label">Enable SOCKS5 handler on this node</span>
+          </div>
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-require-mesh">Require Mesh Peer</label>
+          <div class="proxy-toggle">
+            <input type="checkbox" id="cfg-socks5-require-mesh" data-config-path="proxy.socks5.require_mesh_peer">
+            <span class="proxy-toggle-label">Only allow mesh-authenticated peers</span>
+          </div>
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-allow-all-ports">Allow All Ports</label>
+          <div class="proxy-toggle">
+            <input type="checkbox" id="cfg-socks5-allow-all-ports" data-config-path="proxy.socks5.allow_all_ports">
+            <span class="proxy-toggle-label">⚠ Removes port restrictions (legal risk)</span>
+          </div>
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-max-conns">Max Connections</label>
+          <input type="number" id="cfg-socks5-max-conns" min="1" max="65535" data-config-path="proxy.socks5.max_connections">
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-dial-timeout">Dial Timeout (sec)</label>
+          <input type="number" id="cfg-socks5-dial-timeout" min="1" max="300" data-config-path="proxy.socks5.dial_timeout_sec">
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-idle-timeout">Idle Timeout (sec)</label>
+          <input type="number" id="cfg-socks5-idle-timeout" min="10" max="3600" data-config-path="proxy.socks5.idle_timeout_sec">
+        </div>
+        <div class="proxy-config-field proxy-config-full">
+          <label for="cfg-socks5-allowed-ports">Allowed Ports (comma-separated)</label>
+          <input type="text" id="cfg-socks5-allowed-ports" placeholder="80, 443" data-config-path="proxy.socks5.allowed_ports">
+          <small>Ports the SOCKS5 handler will connect to. Default: 80, 443.</small>
+        </div>
+        <div class="proxy-config-field proxy-config-full">
+          <label for="cfg-socks5-dest-filter">Destination Filter (CIDRs, comma-separated)</label>
+          <input type="text" id="cfg-socks5-dest-filter" placeholder="10.0.0.0/8, 203.0.113.0/24" data-config-path="proxy.socks5.destination_filter">
+          <small>Restrict destinations to these CIDR ranges. Empty = all destinations.</small>
+        </div>
+      </div>
+      <div class="proxy-config-actions">
+        <button type="button" class="primary" id="proxy-save-socks5" onclick="proxySaveSOCKS5()">Save SOCKS5 Config</button>
+      </div>
+    </section>
+
+    <!-- Exit Node Configuration -->
+    <section class="proxy-card">
+      <h3>Exit Node Configuration</h3>
+      <p class="muted">Settings for when this node acts as a proxy exit point to the internet.</p>
+      <div class="proxy-config-grid">
+        <div class="proxy-config-field">
+          <label for="cfg-exit-allow-all-ports">Allow All Ports</label>
+          <div class="proxy-toggle">
+            <input type="checkbox" id="cfg-exit-allow-all-ports" data-config-path="proxy.exit.allow_all_ports">
+            <span class="proxy-toggle-label">⚠ Removes port restrictions (legal risk)</span>
+          </div>
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-exit-audit-retention">Audit Log Retention (days)</label>
+          <input type="number" id="cfg-exit-audit-retention" min="1" max="365" data-config-path="proxy.exit.audit_retention_days">
+        </div>
+        <div class="proxy-config-field proxy-config-full">
+          <label for="cfg-exit-allowed-ports">Exit Allowed Ports (comma-separated)</label>
+          <input type="text" id="cfg-exit-allowed-ports" placeholder="80, 443" data-config-path="proxy.exit.allowed_ports">
+          <small>Ports the exit will connect to on the public internet.</small>
+        </div>
+        <div class="proxy-config-field proxy-config-full">
+          <label for="cfg-exit-dest-filter">Exit Destination Filter (CIDRs, comma-separated)</label>
+          <input type="text" id="cfg-exit-dest-filter" placeholder="0.0.0.0/0" data-config-path="proxy.exit.destination_filter">
+          <small>Restrict exit destinations. Empty = all destinations subject to port rules.</small>
+        </div>
+      </div>
+      <div class="proxy-config-actions">
+        <button type="button" class="primary" id="proxy-save-exit" onclick="proxySaveExit()">Save Exit Config</button>
+      </div>
+    </section>
+
+    <!-- Path Selection -->
+    <section class="proxy-card">
+      <h3>Relay Path Selection</h3>
+      <div class="proxy-config-grid">
+        <div class="proxy-config-field">
+          <label for="cfg-path-mode">Path Selection Mode</label>
+          <select id="cfg-path-mode" data-config-path="proxy.path_selection.mode">
+            <option value="manual">Manual</option>
+            <option value="auto">Auto (probe-based)</option>
+          </select>
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-path-strategy">Selection Strategy</label>
+          <select id="cfg-path-strategy" data-config-path="proxy.path_selection.strategy">
+            <option value="latency">Latency (lowest RTT)</option>
+            <option value="random">Random</option>
+            <option value="round-robin">Round Robin</option>
+          </select>
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-path-max-relays">Max Relays Per Path</label>
+          <input type="number" id="cfg-path-max-relays" min="1" max="5" data-config-path="proxy.path_selection.max_relays_per_path">
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-exit-addr">Exit Node Address</label>
+          <input type="text" id="cfg-exit-addr" placeholder="10.10.0.5:8388" data-config-path="proxy.exit_addr">
+          <small>Mesh address of the exit node (entry nodes only).</small>
+        </div>
+      </div>
+      <div class="proxy-config-actions">
+        <button type="button" class="primary" id="proxy-save-paths" onclick="proxySavePaths()">Save Path Config</button>
+      </div>
+    </section>
+
+    <!-- Exit Nodes in Mesh -->
+    <section class="proxy-card" id="proxy-exit-nodes-card" style="display:none;">
+      <h3>Exit Nodes in Mesh</h3>
+      <p class="muted">Mesh peers advertising exit capability.</p>
+      <div id="proxy-exit-nodes-list" class="proxy-node-list">
+      </div>
+    </section>
+
+    <!-- Entry Nodes in Mesh -->
+    <section class="proxy-card" id="proxy-entry-nodes-card" style="display:none;">
+      <h3>Entry Nodes in Mesh</h3>
+      <p class="muted">Mesh peers advertising proxy entry capability.</p>
+      <div id="proxy-entry-nodes-list" class="proxy-node-list">
+      </div>
+    </section>
+
+    <!-- Quick Actions -->
+    <section class="proxy-card">
+      <h3>Quick Actions</h3>
+      <div class="proxy-actions">
+        <button type="button" class="secondary" onclick="proxyRefresh()">↻ Refresh Status</button>
+        <button type="button" class="secondary" onclick="proxyHotReload()">↻ Hot Reload Config</button>
+        <a href="/config" role="button" class="small">Full Config Page</a>
+      </div>
+    </section>
+
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/proxy.js"></script>
+{{end}}
