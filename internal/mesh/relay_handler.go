@@ -68,6 +68,15 @@ type RelayHandler struct {
 	idleTimeout time.Duration
 	heartbeatInterval time.Duration
 
+	// OnRelayDial is called when a MeshRelayDial is received from a relay
+	// node. The callback receives the dial message and the stream conn
+	// (after the accept response has been sent). The callback takes
+	// ownership of conn and is responsible for closing it.
+	// If nil, the dial is accepted and the stream is echoed back via
+	// io.Copy (useful for testing). In production, set this to forward
+	// the stream to a local virtual port listener or application handler.
+	OnRelayDial func(dial *MeshRelayDial, conn net.Conn)
+
 	closed atomic.Bool
 }
 
@@ -111,6 +120,8 @@ func (h *RelayHandler) HandleStream(conn net.Conn) {
 		// This is a dial-back response from the target — it accepted
 		// our RelayDial and is now ready to be bridged.
 		h.handleDialBack(conn, m)
+	case *MeshRelayDial:
+		h.handleDial(conn, m)
 	case *MeshRelayTeardown:
 		h.handleTeardown(conn, m)
 	default:
@@ -298,6 +309,41 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	h.mu.Unlock()
 
 	close(tunnel.ready)
+}
+
+// handleDial processes a MeshRelayDial received from a relay node.
+// The relay has opened a stream to us (the target) and asks us to
+// participate in a relay tunnel. We send back a MeshRelayResponse
+// (accept) on the same stream, then hand the stream to the OnRelayDial
+// callback for data forwarding. If no callback is set, we echo data
+// back via io.Copy (useful for testing).
+func (h *RelayHandler) handleDial(conn net.Conn, dial *MeshRelayDial) {
+	tunnelIDShort := dial.TunnelID
+	if len(tunnelIDShort) > 16 {
+		tunnelIDShort = tunnelIDShort[:16]
+	}
+	initiatorShort := dial.InitiatorKey
+	if len(initiatorShort) > 16 {
+		initiatorShort = initiatorShort[:16]
+	}
+	log.Printf("[mesh-relay] relay dial: tunnel=%s initiator=%s", tunnelIDShort, initiatorShort)
+
+	// Send accept response on the same stream.
+	h.sendResponse(conn, dial.TunnelID, true, "")
+
+	if h.OnRelayDial != nil {
+		// Hand off the stream to the callback — it takes ownership.
+		go h.OnRelayDial(dial, conn)
+		return
+	}
+
+	// No callback set — default behavior: echo data back via io.Copy.
+	// This keeps the stream alive and is useful for testing. The stream
+	// is closed when either side finishes.
+	go func() {
+		io.Copy(conn, conn)
+		conn.Close()
+	}()
 }
 
 // handleTeardown processes a MeshRelayTeardown message.
