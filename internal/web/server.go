@@ -132,10 +132,6 @@ type Deps struct {
 // New creates a new web server from the given dependencies.
 // It parses all embedded templates and registers template helper functions.
 func New(deps Deps) (*Server, error) {
-	// Parse all templates with helper functions.
-	// Each page template defines a "content" block, so we can't parse them
-	// all into one template tree — the last one would shadow the rest.
-	// Instead, we parse the layout separately and clone it per page.
 	funcMap := template.FuncMap{
 		"humanBytes":    humanBytes,
 		"humanDuration": humanDuration,
@@ -411,6 +407,15 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/peers", s.requireAuth(s.handlePeersPage))
 	mux.HandleFunc("/topology", s.requireAuth(s.handleTopologyPage))
 	mux.HandleFunc("/config", s.requireAuth(s.handleConfigPage))
+}
+
+// RegisterReloader adds a subsystem reloader to the config API's reloader
+// registry. This should be called after New() and before Start() to wire
+// production reloaders for hot-reloadable subsystems.
+func (s *Server) RegisterReloader(reloader ConfigReloader) {
+	if s.configAPI != nil {
+		s.configAPI.reloaderRegistry.Register(reloader)
+	}
 }
 
 // --- Middleware ---

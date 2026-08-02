@@ -88,6 +88,35 @@ func (h *Hub) SessionCount() int {
 	return len(h.sessions)
 }
 
+// SetMaxSessions updates the maximum concurrent session limit.
+// Takes effect for new sessions; existing sessions are not terminated.
+func (h *Hub) SetMaxSessions(n int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.maxSessions = n
+}
+
+// SetReadDeadline updates the WebSocket read deadline for new sessions.
+func (h *Hub) SetReadDeadline(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.readDeadline = d
+}
+
+// SetWriteDeadline updates the WebSocket write deadline for new sessions.
+func (h *Hub) SetWriteDeadline(d time.Duration) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.writeDeadline = d
+}
+
+// SetSSHPort updates the mesh-internal SSH port used for new connections.
+func (h *Hub) SetSSHPort(port int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sshPort = port
+}
+
 // Session represents a single WebSSH terminal session.
 type Session struct {
 	ID        string

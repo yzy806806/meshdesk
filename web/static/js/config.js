@@ -80,14 +80,14 @@
   // --- 11 config sections ---
   var sections = [
     'node', 'mesh', 'peers', 'p2p', 'monitoring',
-    'webssh', 'auth', 'transfer', 'proxy', 'xray', 'reality'
+    'webssh', 'auth', 'transfer', 'proxy', 'reality', 'join'
   ];
 
   // --- Section display names ---
   var sectionNames = {
     node: 'Node', mesh: 'Mesh', peers: 'Peers', p2p: 'P2P',
     monitoring: 'Monitoring', webssh: 'WebSSH', auth: 'Auth',
-    transfer: 'Transfer', proxy: 'Proxy', xray: 'Xray', reality: 'Reality'
+    transfer: 'Transfer', proxy: 'Proxy', reality: 'Reality', join: 'Join'
   };
 
   // --- Tier icons/badges ---

@@ -11,7 +11,7 @@
 
 | Feature | UDP | WebSocket | Reality |
 |---|---|---|---|
-| **Status** | Existing (v1) | Existing (v1) | In-progress |
+| **Status** | Existing (v1) | Existing (v1) | Stable (native Go) |
 | **Transport** | UDP | TCP + WebSocket | TCP + TLS 1.3 |
 | **TLS** | None | uTLS (optional) | Reality TLS |
 | **GFW Resistance** | Low | Medium | High |
@@ -32,10 +32,10 @@
 
 | Capability | UDP | WebSocket | Reality |
 |---|---|---|---|
-| Outbound Connect | ✓ | ✓ | ✓ (via xray-core) |
-| Inbound Listen | ✓ | ✓ | ✓ (via xray-core) |
-| Multi-peer support | ✓ (per-endpoint) | ✓ (connection pool) | ✓ (xray manages) |
-| Connection pooling | N/A (connectionless) | ✓ (wsBind pool) | ✓ (xray manages) |
+| Outbound Connect | ✓ | ✓ | ✓ (native Go) |
+| Inbound Listen | ✓ | ✓ | ✓ (native Go) |
+| Multi-peer support | ✓ (per-endpoint) | ✓ (connection pool) | ✓ (MuxTransport) |
+| Connection pooling | N/A (connectionless) | ✓ (wsBind pool) | ✓ (MuxTransport) |
 | Idle timeout | N/A | Configurable | Configurable |
 | Connection limits | N/A | Configurable | Configurable |
 | Context-aware dial | ✓ | ✓ | ✓ (delegated) |
@@ -45,9 +45,9 @@
 | Capability | UDP | WebSocket | Reality |
 |---|---|---|---|
 | TLS encryption | None | uTLS (optional) | TLS 1.3 (always) |
-| TLS fingerprint mimic | N/A | ✓ (6 profiles) | ✓ (via xray) |
+| TLS fingerprint mimic | N/A | ✓ (6 profiles) | ✓ (native uTLS) |
 | SNI camouflage | N/A | ✓ (custom SNI) | ✓ (camouflage target) |
-| Anti-probe (server) | None | None | Full (xray auth gate) |
+| Anti-probe (server) | None | None | Full (Reality auth gate) |
 | Anti-probe (client) | None | None | Full (shortId + key) |
 | Certificate auth | N/A | Optional (TLS cert) | X25519 + shortId |
 | fallback (camouflage) | N/A | N/A | ✓ (forward to real site) |
@@ -60,18 +60,18 @@
 | Message-type hiding | ✓ (H-ranges) | Via WS opcode | TLS record type |
 | Per-message padding | ✓ (S1-S4) | Via WS frame | Via TLS record |
 | Junk train (Jc) | ✓ | N/A | N/A |
-| Anti-probe PSK | ✓ (HMAC tag) | N/A | ✓ (xray auth) |
+| Anti-probe PSK | ✓ (HMAC tag) | N/A | ✓ (Reality auth) |
 | Timing jitter | ✓ (JitterMaxMs) | N/A | N/A |
 | WireGuard type hiding | ✓ | ✓ (via WS framing) | ✓ (via TLS stream) |
-| DPI fingerprint diversity | Medium | High (uTLS profiles) | Maximum (xray) |
+| DPI fingerprint diversity | Medium | High (uTLS profiles) | Maximum (uTLS + Reality) |
 
 ### 2.4 Operational
 
 | Capability | UDP | WebSocket | Reality |
 |---|---|---|---|
-| Graceful shutdown | ✓ (close UDP socket) | ✓ (drain WS pool) | ✓ (kill xray process) |
-| Health check | ✓ (ICMP/TCP) | ✓ (connection alive) | ✓ (process status) |
-| Latency probing | ✓ (ICMP/timing) | ✓ (SYN-ACK timing) | ✓ (xray ping) |
+| Graceful shutdown | ✓ (close UDP socket) | ✓ (drain WS pool) | ✓ (close TLS listener) |
+| Health check | ✓ (ICMP/TCP) | ✓ (connection alive) | ✓ (Reality session alive) |
+| Latency probing | ✓ (ICMP/timing) | ✓ (SYN-ACK timing) | ✓ (Reality conn probe) |
 | Auto-restart | N/A | N/A | ✓ (circuit breaker) |
 | Log capture | Via stderr | Via stderr | ✓ (ring buffer) |
 | Config hot-reload | N/A | N/A | ✓ (SIGHUP) |
@@ -86,8 +86,8 @@
 | Latency injection | ✓ | ✓ | ✓ |
 | Failover simulation | ✓ | ✓ | ✓ |
 | Error classification | ✓ | ✓ | ✓ |
-| Zero-config test mode | ✓ (port 0) | ✓ (port 0) | Limited (xray dep) |
-| In-memory testing | ✓ | ✓ | Requires xray binary |
+| Zero-config test mode | ✓ (port 0) | ✓ (port 0) | ✓ (Go interface) |
+| In-memory testing | ✓ | ✓ | ✓ (pure Go) |
 
 ---
 
@@ -138,7 +138,7 @@ reality:
   listen_port: 443
   target: "www.apple.com:443"
   server_names: ["www.apple.com"]
-  private_key: "..."       # xray x25519 generate
+  private_key: "..."       # X25519 key (hex)
   short_ids: ["0123456789abcdef"]
 
 # Client-side (connect to shared node)
@@ -220,38 +220,35 @@ WireGuard Device
 
 ### 4.3 Reality Transport
 
-**Package:** `internal/xray/`
-**Key types:** `XrayConfigManager`, `InboundConfig`, `RealitySettings`
-**WireGuard integration:** Via `TransportFactory` interface — calls into xray-core subprocess.
+**Package:** `internal/mesh/` (`reality_transport.go`)
+**Key types:** `RealityTransportFactory`, `RealityConn`
+**Integration:** Native Go implementation — no external binary dependency.
 
 **Architecture:**
 ```
 MeshDesk Go Binary
-  ├── WireGuard + gVisor netstack
-  ├── TransportFactory (reality)
-  │   └── XrayConfigManager
-  │       ├── GenerateJSONConfig() → /var/lib/meshdesk/xray/config.json
-  │       ├── Start()              → exec xray run -config <path>
-  │       ├── Reload()             → SIGHUP
-  │       └── Log ring buffer (1000 lines)
+  ├── MuxTransport (single TCP port)
+  ├── RealityTransportFactory
+  │   ├── Connect() → uTLS ClientHello → Reality TLS handshake
+  │   ├── Listen() → reality.Server() → accept authenticated connections
+  │   └── Non-mesh traffic → forward to camouflage destination
   │
-  └── xray-core (external binary)
-      └── VLESS + REALITY + XTLS Vision
+  └── Pure Go Reality (github.com/xtls/reality + utls)
+      └── TLS 1.3 + REALITY + uTLS fingerprint mimicry
 ```
 
 **Strengths:**
 - Maximum GFW resistance — Reality TLS 1.3 with SNI camouflage
+- Native Go, single binary — no xray-core subprocess or external dependency
 - Server-side: authenticates mesh peers silently, forwards non-mesh to real site
-- Client-side: mimics real Chrome TLS fingerprint, valid SNI to real domain
-- Circuit breaker with exponential backoff (max 3 restarts/60s window)
-- Log capture ring buffer for Dashboard viewer
-- xray-core hot-reload (SIGHUP) without restarting MeshDesk
+- Client-side: mimics real browser TLS fingerprint, valid SNI to real domain
+- Zero subprocess boundary — lower latency than subprocess-based approaches
+- Full Go testability — in-memory testing with net.Pipe(), no binary dependency
 
 **Limitations:**
-- External binary dependency (xray-core must be installed separately)
-- Higher latency (subprocess boundary + xray TLS handshake)
-- In-memory testing limited (requires xray binary on test host)
-- Startup latency (subprocess launch time)
+- TLS handshake adds connection setup latency (~100ms)
+- Higher CPU cost than raw UDP (TLS 1.3 encryption)
+- Requires valid camouflage destination (e.g., apple.com:443)
 
 ---
 
@@ -294,7 +291,7 @@ Per-contract AC-6 (godoc comments), each transport implementation must document:
 | AC | UDP | WebSocket | Reality |
 |---|---|---|---|
 | Interface compliance | ✓ (conn.Bind wrapper) | ✓ (conn.Bind wrapper) | TBD (TransportFactory) |
-| godoc comments | ✓ (obfuscation.go) | ✓ (obfuscation.go) | ✓ (xray/config.go, xray/manager.go) |
+| godoc comments | ✓ (obfuscation.go) | ✓ (obfuscation.go) | ✓ (reality_transport.go) |
 | Error classification | Implicit | Implicit | Explicit (CircuitState) |
 | Health reporting | ICMP-based | Connection-alive | Process status |
 
@@ -304,7 +301,7 @@ Per-contract AC-6 (godoc comments), each transport implementation must document:
 
 | Feature | Priority | Notes |
 |---|---|---|
-| Reality native Go (no xray dep) | P2 | Port xray Reality TLS to Go for single-binary deploy |
+| Reality native Go (no xray dep) | ✅ DONE | Native Go Reality TLS in `internal/mesh/reality_transport.go` |
 | gRPC transport | P3 | HTTP/2-based, multiplexed streams |
 | QUIC transport | P3 | Lower latency than TCP, resistant to head-of-line blocking |
 | QUIC+Reality | P3 | Combine QUIC performance with Reality GFW resistance |

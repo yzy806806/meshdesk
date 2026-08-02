@@ -113,19 +113,18 @@ not as inline config fields. The per-user fields are:
 | 37 | `transfer.max_file_size` | `transfer.max_file_size` | int64 | **normal** | Max single file size in bytes (default 1 GB). Resource tuning. |
 | 38 | `transfer.upload_dir` | `transfer.upload_dir` | string | **normal** | Incoming file destination directory. Path config. |
 
-### 2.8 Xray-Core Subprocess — `xray.*`
+### 2.8 SOCKS5 Proxy Configuration — `proxy.entry.socks5`
 
 | # | Field path | YAML key | Go type | Tier | Rationale |
 |---|-----------|----------|---------|------|-----------|
-| 39 | `xray.enabled` | `xray.enabled` | bool | **require-step-up** | Starts/stops the xray-core subprocess. Disabling drops all VLESS inbound connections. Enabling requires a valid xray binary at `binary_path`. |
-| 40 | `xray.binary_path` | `xray.binary_path` | string | **require-step-up** | Path to xray-core binary. Could be pointed to a malicious or backdoored binary. Auto-detected from PATH if empty. |
-| 41 | `xray.config_dir` | `xray.config_dir` | string | **normal** | Directory for generated xray JSON configs. Path config. |
-| 42 | `xray.log_lines` | `xray.log_lines` | int | **normal** | Ring buffer capacity for dashboard log viewer. Tuning. |
-| 43 | `xray.api_port` | `xray.api_port` | int | **normal** | gRPC API port (default 8421). Bound to `api_listen` (default `127.0.0.1`). Localhost-only by default, so low risk. |
-| 44 | `xray.api_listen` | `xray.api_listen` | string | **require-step-up** | gRPC API listen address. Changing from `127.0.0.1` to `0.0.0.0` exposes the xray management API to the network. |
-| 45 | `xray.health_check_interval` | `xray.health_check_interval` | int | **normal** | Health check poll interval. Tuning. |
-| 46 | `xray.readiness_timeout` | `xray.readiness_timeout` | int | **normal** | Startup readiness timeout. Tuning. |
-| 47 | `xray.drain_timeout` | `xray.drain_timeout` | int | **normal** | Graceful shutdown drain timeout. Tuning. |
+| 39 | `proxy.entry.socks5.enabled` | `proxy.entry.socks5.enabled` | bool | **require-step-up** | Enables the SOCKS5 proxy entry listener on the MuxTransport port. When enabled, SOCKS5 clients can connect after Reality TLS handshake. |
+| 40 | `proxy.entry.socks5.port` | `proxy.entry.socks5.port` | int | **normal** | SOCKS5 virtual port (default 0x4D=77). Demultiplexed from MuxTransport via 2-byte virtual port frame. Tuning. |
+| 41 | `proxy.entry.socks5.auth` | `proxy.entry.socks5.auth` | string | **require-step-up** | SOCKS5 authentication method. Options: `none`, `password`. Password mode requires client credentials. |
+| 42 | `proxy.exit.enabled` | `proxy.exit.enabled` | bool | **require-step-up** | Enables exit node functionality. Exit nodes forward traffic to the internet — legal liability for the operator. |
+| 43 | `proxy.exit.allowed_ports` | `proxy.exit.allowed_ports` | []int | **require-step-up** | Port allowlist for exit traffic. Default: [80, 443]. Expanding this list increases legal exposure. |
+| 44 | `proxy.exit.allow_all_ports` | `proxy.exit.allow_all_ports` | bool | **require-step-up** | If true, bypasses allowed_ports and forwards to any port. Maximum legal risk — enable only if you understand your jurisdiction. |
+| 45 | `proxy.relay.enabled` | `proxy.relay.enabled` | bool | **normal** | Enables relay forwarding. Relay nodes carry other users' encrypted traffic. |
+| 46 | `proxy.relay.max_circuits` | `proxy.relay.max_circuits` | int | **normal** | Max concurrent relay circuits. Resource limit. |
 
 ### 2.9 Reality TLS Server — `reality.*`
 
@@ -192,7 +191,7 @@ not as inline config fields. The per-user fields are:
 | 81 | `proxy.cf_tunnel.region` | `proxy.cf_tunnel.region` | string | **normal** | CF edge region preference. |
 | 82 | `proxy.cf_tunnel.log_level` | `proxy.cf_tunnel.log_level` | string | **normal** | cloudflared logging verbosity. |
 | 83 | `proxy.cf_tunnel.metrics_addr` | `proxy.cf_tunnel.metrics_addr` | string | **normal** | cloudflared metrics server address. |
-| 84 | `proxy.cf_tunnel.binary_path` | `proxy.cf_tunnel.binary_path` | string | **require-step-up** | Path to cloudflared binary. Same risk as `xray.binary_path` — could point to a malicious binary. |
+| 84 | `proxy.cf_tunnel.binary_path` | `proxy.cf_tunnel.binary_path` | string | **require-step-up** | Path to cloudflared binary. Could point to a malicious binary. |
 | 85 | `proxy.cf_tunnel.reconnect_retries` | `proxy.cf_tunnel.reconnect_retries` | int | **normal** | Connection retry count. Tuning. |
 | 86 | `proxy.cf_tunnel.grace_period_sec` | `proxy.cf_tunnel.grace_period_sec` | int | **normal** | Shutdown drain time. Tuning. |
 
@@ -296,7 +295,7 @@ The following operations require a confirmation dialog BEFORE the step-up challe
 | `proxy.exit.allow_all_ports` → `true` | "⚠️ CRITICAL: Removing all port restrictions exposes this exit node to full legal liability. This includes SMTP (port 25), SSH (port 22), and other ports commonly used for abuse. This is NOT recommended. Are you sure?" | **Double confirmation required.** |
 | `proxy.debug_fixed_chunks` → `true` | "⚠️ Enabling fixed-size chunks makes proxy traffic trivially fingerprintable by DPI. This MUST only be used for testing. Are you sure?" | Red warning banner. |
 | `proxy.relay.disable_jitter` → `true` | "⚠️ Disabling jitter creates a timing side-channel exploitable by traffic analysis. This MUST only be used for testing. Are you sure?" | Red warning banner. |
-| `xray.api_listen` → non-localhost | "Changing the API listen address from 127.0.0.1 exposes the xray management API to the network. Anyone who can reach this port can manage xray inbounds. Continue?" | |
+| `proxy.entry.socks5.enabled` → true | "Enabling the SOCKS5 proxy entry allows SOCKS5 clients to connect after Reality TLS handshake. Any standard SOCKS5 client can then route traffic through the mesh. Continue?" | |
 | Delete last web user | Blocked entirely — "Cannot delete the last web user." | |
 | Delete peer | "Delete peer `<public_key_fingerprint>`? All active WireGuard sessions with this peer will be terminated." | Show key fingerprint. |
 
@@ -323,7 +322,7 @@ Some field changes cannot take effect without a process restart. The Dashboard M
 | `p2p.enabled` | P2P gossip layer start/stop. |
 | `proxy.cf_tunnel.enabled` | cloudflared subprocess start/stop. |
 | `proxy.relay.enabled` | Relay module lifecycle. |
-| `xray.enabled` | xray-core subprocess start/stop. |
+| `proxy.entry.socks5.enabled` | SOCKS5 proxy entry listener enable/disable. |
 
 **Hot-reloadable (takes effect immediately):**
 
