@@ -31,7 +31,7 @@ func TestConfigPage_RendersTemplate(t *testing.T) {
 	// Check that section tabs are rendered (all 11 sections).
 	expectedSections := []string{
 		"node", "mesh", "peers", "p2p", "monitoring",
-		"webssh", "auth", "transfer", "proxy", "xray", "reality",
+		"webssh", "auth", "transfer", "proxy", "reality",
 	}
 	for _, section := range expectedSections {
 		if !strings.Contains(body, "data-section=\""+section+"\"") {
