@@ -259,7 +259,7 @@ Everything else is read-only or not exposed at all.
 |---|---|
 | `node.identity` | WireGuard private key. Exposure = impersonate node, decrypt all mesh traffic |
 | `reality.private_key` | X25519 server key. Exposure = attacker authenticates as Reality server |
-| `proxy.ss.password` | Shadowsocks PSK. Exposure = decrypt SS traffic |
+| `proxy.ss.password` | Shadowsocks PSK (legacy, disabled by default). Exposure = decrypt SS traffic |
 | `peers[].preshared_key` | WG PSK per peer. Exposure = break Noise IKpsk2 post-quantum resistance |
 | `peers[].obf_config.psk` | Anti-probe PSK. Exposure = attacker can craft valid handshake initiations |
 | `reality.short_ids` | If leaked, attacker can authenticate as a valid Reality client |
