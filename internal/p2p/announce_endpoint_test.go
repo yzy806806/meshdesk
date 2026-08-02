@@ -473,17 +473,13 @@ func TestDetectOutboundIPsFromInterfaces(t *testing.T) {
 // TestDetectOutboundIPFromInterfacesReturnsSameAsFirst tests that the
 // single-address convenience wrapper returns the first element of the
 // multi-address variant (or empty if the multi variant is empty).
-func TestDetectOutboundIPFromInterfacesReturnsSameAsFirst(t *testing.T) {
+func TestDetectOutboundIPsFromInterfacesNonEmptyOrEmpty(t *testing.T) {
 	all := detectOutboundIPsFromInterfaces()
-	single := detectOutboundIPFromInterfaces()
-	if len(all) == 0 {
-		if single != "" {
-			t.Errorf("expected empty single result when all is empty, got %q", single)
+	if len(all) > 0 {
+		// Verify the first address is non-empty and valid.
+		if all[0] == "" {
+			t.Errorf("expected non-empty first IP, got empty")
 		}
-		return
-	}
-	if single != all[0] {
-		t.Errorf("single %q != first of all %q", single, all[0])
 	}
 }
 

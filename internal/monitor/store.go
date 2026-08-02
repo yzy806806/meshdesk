@@ -10,14 +10,16 @@ import (
 // agent node, it holds the local replica (self-metrics + buffered
 // metrics during collector outage).
 type Store struct {
-	mu      sync.RWMutex
-	buffers map[string]*RingBuffer // nodeID → ring buffer
+	mu        sync.RWMutex
+	buffers   map[string]*RingBuffer // nodeID → ring buffer
+	lastSeen  map[string]time.Time   // nodeID → last update time
 }
 
 // NewStore creates an empty multi-node metrics store.
 func NewStore() *Store {
 	return &Store{
-		buffers: make(map[string]*RingBuffer),
+		buffers:  make(map[string]*RingBuffer),
+		lastSeen: make(map[string]time.Time),
 	}
 }
 
@@ -29,6 +31,7 @@ func (s *Store) Append(nodeID string, m *Metrics) {
 		buf = NewRingBuffer()
 		s.buffers[nodeID] = buf
 	}
+	s.lastSeen[nodeID] = time.Now()
 	s.mu.Unlock()
 	buf.Append(m)
 }
@@ -117,7 +120,26 @@ func (s *Store) LowRes(nodeID string) []*Metrics {
 func (s *Store) RemoveNode(nodeID string) {
 	s.mu.Lock()
 	delete(s.buffers, nodeID)
+	delete(s.lastSeen, nodeID)
 	s.mu.Unlock()
+}
+
+// RemoveStaleNodes removes all nodes whose last update is older than
+// the given threshold. This prevents unbounded growth when nodes leave
+// the mesh permanently. Returns the number of nodes removed.
+func (s *Store) RemoveStaleNodes(threshold time.Duration) int {
+	cutoff := time.Now().Add(-threshold)
+	s.mu.Lock()
+	removed := 0
+	for id, seen := range s.lastSeen {
+		if seen.Before(cutoff) {
+			delete(s.buffers, id)
+			delete(s.lastSeen, id)
+			removed++
+		}
+	}
+	s.mu.Unlock()
+	return removed
 }
 
 // NodeCount returns the number of nodes with stored metrics.

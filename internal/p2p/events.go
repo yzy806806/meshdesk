@@ -79,6 +79,10 @@ type meshEventDelegate struct {
 	// Flapping prevention (§1.7)
 	leaveTimes map[string]time.Time // publicKey → last leave time
 	cooldownMu sync.Mutex
+
+	// metaLeaveTimes tracks when each peer was marked as left in metaCache.
+	// Used by cleanupStaleMetaCache to remove entries that haven't rejoined.
+	metaLeaveTimes map[string]time.Time
 }
 
 // newMeshEventDelegate creates a new event delegate.
@@ -86,12 +90,13 @@ func newMeshEventDelegate(delegate *meshDelegate, wg PeerManager) *meshEventDele
 	return &meshEventDelegate{
 		delegate:      delegate,
 		wg:            wg,
-		metaCache:     make(map[string]*NodeMeta),
-		relayPool:     make(map[string]*NodeMeta),
-		exitPool:      make(map[string]*NodeMeta),
-		entryPool:     make(map[string]*NodeMeta),
-		collectorPool: make(map[string]*NodeMeta),
-		leaveTimes:    make(map[string]time.Time),
+		metaCache:       make(map[string]*NodeMeta),
+		relayPool:       make(map[string]*NodeMeta),
+		exitPool:        make(map[string]*NodeMeta),
+		entryPool:       make(map[string]*NodeMeta),
+		collectorPool:   make(map[string]*NodeMeta),
+		leaveTimes:      make(map[string]time.Time),
+		metaLeaveTimes:  make(map[string]time.Time),
 	}
 }
 
@@ -292,6 +297,8 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 		// in main.go meshDialerAdapter) can still find the peer's
 		// endpoints. memberlist may mark a peer as failed due to UDP
 		// ping timeout even though TCP push/pull works.
+		// Record the leave time for periodic cleanup of stale entries.
+		e.metaLeaveTimes[foundKey] = time.Now()
 		// However, remove from active pools since the connection is gone.
 		delete(e.relayPool, foundKey)
 		delete(e.exitPool, foundKey)
@@ -552,6 +559,45 @@ func (e *meshEventDelegate) AllKnownPeers() []*NodeMeta {
 	return result
 }
 
+// cleanupStaleMetaCache removes metaCache entries for peers that left
+// more than 24 hours ago and haven't rejoined. This prevents unbounded
+// growth of the metaCache when nodes permanently leave the mesh.
+func (e *meshEventDelegate) cleanupStaleMetaCache() {
+	cutoff := time.Now().Add(-24 * time.Hour)
+	e.mu.Lock()
+	for pk, leaveTime := range e.metaLeaveTimes {
+		if leaveTime.Before(cutoff) {
+			delete(e.metaCache, pk)
+			delete(e.metaLeaveTimes, pk)
+			// Also clean from pools in case they were re-added.
+			delete(e.relayPool, pk)
+			delete(e.exitPool, pk)
+			delete(e.entryPool, pk)
+			delete(e.collectorPool, pk)
+		}
+	}
+	e.mu.Unlock()
+}
+
+// StartMetaCacheCleanup starts a background goroutine that periodically
+// removes stale metaCache entries. Returns a stop function.
+func (e *meshEventDelegate) StartMetaCacheCleanup() func() {
+	stopCh := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				e.cleanupStaleMetaCache()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+	return func() { close(stopCh) }
+}
+
 // KnownPeerCount returns the number of known peers (excluding self).
 func (e *meshEventDelegate) KnownPeerCount() int {
 	e.mu.RLock()
@@ -570,6 +616,8 @@ func (e *meshEventDelegate) cacheMeta(meta *NodeMeta) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.metaCache[meta.PublicKey] = meta
+	// Clear leave time — peer has rejoined.
+	delete(e.metaLeaveTimes, meta.PublicKey)
 	if meta.CapRelay {
 		e.relayPool[meta.PublicKey] = meta
 	}

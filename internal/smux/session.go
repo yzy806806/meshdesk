@@ -335,13 +335,10 @@ func (s *Session) handleSyn(f *frame) {
 		return
 	}
 
-	// Create the stream.
-	st := newStream(f.StreamID, s)
-	s.streamsMu.Lock()
-	s.streams[f.StreamID] = st
-	s.streamsMu.Unlock()
-
-	// Acquire a MaxStreams slot for the incoming stream.
+	// Acquire a MaxStreams slot BEFORE creating the stream.
+	// This prevents zombie streams if MaxStreams is full — the slot
+	// acquisition blocks (or returns on doneCh) before the stream is
+	// registered in the map.
 	if s.cfg.MaxStreams > 0 {
 		select {
 		case s.streamSlotCh <- struct{}{}:
@@ -349,6 +346,12 @@ func (s *Session) handleSyn(f *frame) {
 			return
 		}
 	}
+
+	// Create the stream.
+	st := newStream(f.StreamID, s)
+	s.streamsMu.Lock()
+	s.streams[f.StreamID] = st
+	s.streamsMu.Unlock()
 
 	// Send SYN+ACK back.
 	ack := newSynFrame(f.StreamID, true)
