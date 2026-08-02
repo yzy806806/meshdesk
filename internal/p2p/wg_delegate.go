@@ -132,21 +132,38 @@ func (d *WireGuardDelegate) Connect(peerKey string, endpoints []string) error {
 
 // Disconnect closes the connection to a peer and cleans up state.
 // Static peers are NOT removed (§4.4 backward compat).
+//
+// In v2, this also cleans up any dead smux sessions for the peer. A
+// session can be dead (IsClosed=true) but still in the sessions/
+// clientSessions map if the session watcher hasn't run yet. Removing
+// these dead entries immediately prevents DialVirtualPort from finding
+// and failing on them. Live sessions are preserved — memberlist may
+// report a peer as left due to transient UDP ping timeout even though
+// the TCP/smux session is still healthy.
 func (d *WireGuardDelegate) Disconnect(peerKey string) error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 
 	// Never remove static peers.
 	if d.staticKeys[peerKey] {
+		d.mu.Unlock()
 		return nil
 	}
 
 	// Check if we have this peer.
 	if _, ok := d.health[peerKey]; !ok {
+		d.mu.Unlock()
 		return nil // already removed or never added — idempotent
 	}
 
 	delete(d.health, peerKey)
+	d.mu.Unlock()
+
+	// Clean up dead smux sessions (but not live ones). This must happen
+	// outside d.mu to avoid lock ordering issues with sessionsMu.
+	if d.node != nil {
+		d.node.CleanupDeadSessions(peerKey)
+	}
+
 	return nil
 }
 

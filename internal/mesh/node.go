@@ -857,10 +857,24 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 	// Prefer client-mode sessions (outbound) for dialing, but also
 	// accept server-mode sessions now that smux supports OpenStream
 	// on both sides (enables ordinary nodes without public listeners).
+	// Skip dead (closed) sessions — a dead session in the map will
+	// cause OpenStream to fail immediately, wasting time and blocking
+	// the relay fallback path.
 	n.sessionsMu.Lock()
 	sess, ok := n.clientSessions[peerIdentityHex]
-	if !ok {
+	if !ok || sess.IsClosed() {
 		sess, ok = n.sessions[peerIdentityHex]
+		if ok && sess.IsClosed() {
+			// Clean up the dead session entry.
+			delete(n.sessions, peerIdentityHex)
+			ok = false
+		}
+	}
+	if !ok {
+		// Also check if there's a dead client session to clean up.
+		if cs, csOK := n.clientSessions[peerIdentityHex]; csOK && cs.IsClosed() {
+			delete(n.clientSessions, peerIdentityHex)
+		}
 	}
 	n.sessionsMu.Unlock()
 
@@ -1097,6 +1111,20 @@ func (n *MeshNode) RemovePeer(peerKey string) error {
 		sess.Close()
 		delete(n.sessions, peerKey)
 	}
+	// Also clean up clientSessions — a stale client session left in the
+	// map causes DialVirtualPort to find a dead session and fail with
+	// ErrSessionClosed or ErrMaxStreams (if the session is in a
+	// half-dead state where Close was never called on individual streams).
+	// This was the root cause of scenario 3's metrics failover failure:
+	// after the relay node was killed, the client session to the remaining
+	// collector was via the dead relay. RemovePeer on the relay didn't
+	// clean up the client session, so DialVirtualPort kept finding and
+	// failing on it instead of establishing a new direct session.
+	clientSess, hasClient := n.clientSessions[peerKey]
+	if hasClient {
+		clientSess.Close()
+		delete(n.clientSessions, peerKey)
+	}
 	delete(n.sessionEstablishedAt, peerKey)
 	n.sessionsMu.Unlock()
 
@@ -1118,6 +1146,34 @@ func (n *MeshNode) RemovePeer(peerKey string) error {
 	}
 
 	return nil
+}
+
+// CleanupDeadSessions removes any closed (dead) smux sessions for the
+// given peer from both the sessions and clientSessions maps. Live
+// sessions are preserved. This is called from WireGuardDelegate.Disconnect
+// to immediately clean up dead sessions when a peer leaves the mesh,
+// without waiting for the session watcher to detect them via TCP timeout.
+//
+// This is safe to call even if the peer has no sessions or was never
+// connected.
+func (n *MeshNode) CleanupDeadSessions(peerKey string) {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+
+	removed := 0
+	if sess, ok := n.sessions[peerKey]; ok && sess.IsClosed() {
+		delete(n.sessions, peerKey)
+		removed++
+	}
+	if sess, ok := n.clientSessions[peerKey]; ok && sess.IsClosed() {
+		delete(n.clientSessions, peerKey)
+		removed++
+	}
+	if removed > 0 {
+		delete(n.sessionEstablishedAt, peerKey)
+		log.Printf("[mesh] cleanupDeadSessions: removed %d dead session(s) for peer %s",
+			removed, peerKey[:min(len(peerKey), 16)]+"...")
+	}
 }
 
 // GenerateIdentity creates a new Ed25519 keypair for the mesh.
