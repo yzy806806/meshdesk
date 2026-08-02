@@ -1029,6 +1029,19 @@ func (s *Server) handleConfigPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, "config.html", data)
 }
 
+// handleProxyPage renders the SOCKS5 proxy management page.
+// This page lets the admin view and configure SOCKS5 proxy settings:
+// entry/exit node status, proxy port for phone clients, active connections,
+// and configured relay paths. Configuration changes are applied through
+// the existing /api/config PATCH endpoint (same tier system as Config page).
+func (s *Server) handleProxyPage(w http.ResponseWriter, r *http.Request) {
+	data := PageData{
+		Title:      "Proxy Management",
+		ActivePage: "proxy",
+	}
+	s.renderPage(w, "proxy.html", data)
+}
+
 // --- Misc helpers ---
 
 func getHostname() (string, error) {
