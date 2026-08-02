@@ -63,6 +63,11 @@ type Aggregator struct {
 	dedup   map[string]uint64 // sourceID → last sequence
 	dedupMu sync.Mutex
 
+	// dedupLastSeen tracks when each sourceID was last updated, for
+	// periodic cleanup of stale entries (prevents unbounded growth).
+	dedupLastSeen   map[string]time.Time
+	dedupCleanupInterval time.Duration // zero = default 1h
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -140,6 +145,16 @@ func (a *Aggregator) Start() error {
 	}
 	a.running = true
 	a.stopCh = make(chan struct{})
+	if a.dedup == nil {
+		a.dedup = make(map[string]uint64)
+	}
+	if a.dedupLastSeen == nil {
+		a.dedupLastSeen = make(map[string]time.Time)
+	}
+	cleanupInterval := a.dedupCleanupInterval
+	if cleanupInterval == 0 {
+		cleanupInterval = time.Hour
+	}
 	a.mu.Unlock()
 
 	ln, err := a.dialer.ListenMesh(a.port)
@@ -151,6 +166,22 @@ func (a *Aggregator) Start() error {
 	go func() {
 		defer a.wg.Done()
 		a.acceptLoop(ln)
+	}()
+
+	// Periodic cleanup of stale dedup entries to prevent unbounded growth.
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		ticker := time.NewTicker(cleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				a.cleanupDedup()
+			case <-a.stopCh:
+				return
+			}
+		}
 	}()
 
 	return nil
@@ -189,7 +220,11 @@ func (a *Aggregator) acceptLoop(ln net.Listener) {
 			log.Printf("monitor: accept error: %v", err)
 			continue
 		}
-		go a.handlePush(conn)
+		a.wg.Add(1)
+		go func(c net.Conn) {
+			defer a.wg.Done()
+			a.handlePush(c)
+		}(conn)
 	}
 }
 
@@ -232,6 +267,7 @@ func (a *Aggregator) handlePush(conn net.Conn) {
 		return
 	}
 	a.dedup[env.SourceID] = env.Sequence
+	a.dedupLastSeen[env.SourceID] = time.Now()
 	a.dedupMu.Unlock()
 
 	// Store the metrics. The Store handles deduplication naturally
@@ -243,6 +279,25 @@ func (a *Aggregator) handlePush(conn net.Conn) {
 	//   - a mesh dialer is configured,
 	//   - a collector lister is configured.
 	a.forwardToCollectors(env)
+}
+
+// cleanupDedup removes stale entries from the dedup map that haven't
+// been updated in over 2x the cleanup interval. This prevents unbounded
+// growth when nodes leave the mesh permanently.
+func (a *Aggregator) cleanupDedup() {
+	cutoff := time.Now().Add(-2 * time.Hour)
+	a.dedupMu.Lock()
+	for sourceID, lastSeen := range a.dedupLastSeen {
+		if lastSeen.Before(cutoff) {
+			delete(a.dedup, sourceID)
+			delete(a.dedupLastSeen, sourceID)
+		}
+	}
+	a.dedupMu.Unlock()
+	// Also clean stale node buffers from the store.
+	if a.store != nil {
+		a.store.RemoveStaleNodes(2 * time.Hour)
+	}
 }
 
 // forwardToCollectors forwards the given envelope to all known collector

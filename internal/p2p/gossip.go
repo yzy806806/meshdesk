@@ -37,6 +37,10 @@ type GossipLayer struct {
 	// listener between gossip and Reality TLS).
 	transport memberlist.Transport
 
+	// stopMetaCleanup is the cleanup function returned by
+	// StartMetaCacheCleanup; called on Shutdown to stop the goroutine.
+	stopMetaCleanup func()
+
 	// peerCache persists discovered peer endpoints to disk so they
 	// survive restarts. nil when persistence is disabled.
 	peerCache *PeerCache
@@ -347,18 +351,6 @@ func detectOutboundIPsFromInterfaces() []string {
 	return ips
 }
 
-// detectOutboundIPFromInterfaces returns the first non-loopback, non-link-local
-// IP address (IPv4 or IPv6) found on any network interface. This is a
-// convenience wrapper around detectOutboundIPsFromInterfaces for callers
-// that need only a single address. Returns "" if no suitable address is found.
-func detectOutboundIPFromInterfaces() string {
-	ips := detectOutboundIPsFromInterfaces()
-	if len(ips) > 0 {
-		return ips[0]
-	}
-	return ""
-}
-
 // OnCollectorDiscovered is called when a peer with CapCollector=true is
 // detected via gossip (NotifyJoin or NotifyUpdate). It dispatches to the
 // registered collector handler (if any), which typically adds the peer's
@@ -595,6 +587,10 @@ func (g *GossipLayer) Start() error {
 	g.started = true
 	g.mu.Unlock()
 
+	// Start periodic cleanup of stale metaCache entries (prevents
+	// unbounded growth from peers that left permanently).
+	g.stopMetaCleanup = g.events.StartMetaCacheCleanup()
+
 	// Announce our local endpoint before any join so peers receive it
 	// in the initial PushPull state sync. This runs unconditionally —
 	// seed nodes (with empty seeds) must also announce their endpoint,
@@ -650,9 +646,14 @@ func (g *GossipLayer) Stop() error {
 	}
 	g.started = false
 	rsm := g.relaySessionMgr
+	stopCleanup := g.stopMetaCleanup
 	g.mu.Unlock()
 
 	close(g.stopCh)
+
+	if stopCleanup != nil {
+		stopCleanup()
+	}
 
 	if g.healthTicker != nil {
 		g.healthTicker.Stop()

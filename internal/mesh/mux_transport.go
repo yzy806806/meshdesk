@@ -165,10 +165,10 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		tcpListener:   cfg.TCPListener,
 		udpConn:       udpConn,
 		logger:        logger,
-		streamCh:      make(chan net.Conn),
+		streamCh:      make(chan net.Conn, 64),
 		realityCh:     make(chan net.Conn, 64),
 		meshCh:        make(chan net.Conn, 64),
-		packetChIn:    make(chan *memberlist.Packet),
+		packetChIn:    make(chan *memberlist.Packet, 4096),
 		bindAddr:      bindAddr,
 		advertiseAddr: cfg.AdvertiseAddr,
 		advertisePort: cfg.AdvertisePort,
@@ -176,6 +176,14 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 
 	if t.advertisePort == 0 {
 		t.advertisePort = tcpPort
+	}
+	// In UDP-only mode (no TCP listener), advertisePort is still 0.
+	// Extract the actual bound port from the UDP socket so memberlist
+	// can advertise a valid port for TCP push/pull sync.
+	if t.advertisePort == 0 && udpConn != nil {
+		if addr, ok := udpConn.LocalAddr().(*net.UDPAddr); ok && addr != nil {
+			t.advertisePort = addr.Port
+		}
 	}
 
 	// Start the UDP listen loop (always needed for gossip).
