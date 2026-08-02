@@ -711,6 +711,12 @@ func Default() *Config {
 }
 
 // Load reads and parses a YAML config from path.
+//
+// The YAML decoder is configured with KnownFields(false) (the yaml.v3
+// default), so unknown top-level sections — e.g. a leftover xray: block
+// from a pre-refactor config — are silently ignored rather than causing
+// a hard-fail. A warning is logged for each unrecognised top-level key
+// so operators can spot stale sections during cleanup.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -720,6 +726,9 @@ func Load(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
+
+	// Warn about unrecognised top-level keys (e.g. leftover xray: section).
+	warnUnknownTopLevelKeys(data)
 	// Detect deprecated totp_secret in config.yaml (removed field).
 	// The TOTP encryption key is now node-local at /var/lib/meshdesk/totp/master.key.
 	if legacySecret := extractLegacyTOTPSecret(data); legacySecret != "" {
@@ -949,4 +958,39 @@ func extractLegacyTOTPSecret(data []byte) string {
 		return ""
 	}
 	return s
+}
+
+// knownTopLevelKeys is the set of top-level YAML keys recognised by
+// the Config struct. Any key not in this set is considered unknown
+// and will trigger a warning during Load().
+var knownTopLevelKeys = map[string]bool{
+	"node":       true,
+	"mesh":       true,
+	"peers":      true,
+	"p2p":        true,
+	"monitoring": true,
+	"webssh":     true,
+	"auth":       true,
+	"transfer":   true,
+	"proxy":      true,
+	"reality":    true,
+	"join":       true,
+}
+
+// warnUnknownTopLevelKeys unmarshals the raw YAML into a generic map
+// and logs a warning for every top-level key that is not part of the
+// Config struct. This helps operators identify stale sections (e.g.
+// a leftover xray: block from the pre-refactor era) without causing
+// a hard failure — the config still loads successfully.
+func warnUnknownTopLevelKeys(data []byte) {
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	for key := range raw {
+		if !knownTopLevelKeys[key] {
+			log.Printf("[WARNING] config.yaml contains unknown top-level section '%s' — "+
+				"it is ignored and can be safely removed.", key)
+		}
+	}
 }
