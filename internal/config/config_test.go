@@ -474,6 +474,57 @@ func TestAdvertiseEndpointLegacyBackwardCompat(t *testing.T) {
 	}
 }
 
+// TestLoadWithUnknownXraySection verifies that a config file containing
+// a leftover xray: section (from the pre-refactor era) loads without
+// error. The YAML decoder must use KnownFields(false) (the yaml.v3
+// default) so that unknown top-level sections are silently tolerated
+// rather than causing a hard-fail.
+func TestLoadWithUnknownXraySection(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := []byte("node:\n  hostname: test-node\nmesh:\n  port: 51820\nxray:\n  api:\n    address: \"127.0.0.1:10085\"\n  loglevel: warning\nmonitoring:\n  interval: 15\n")
+	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load should succeed with unknown xray: section, got error: %v", err)
+	}
+
+	if cfg.Node.Hostname != "test-node" {
+		t.Errorf("Hostname = %q, want %q", cfg.Node.Hostname, "test-node")
+	}
+	if cfg.Mesh.Port != 51820 {
+		t.Errorf("Port = %d, want 51820", cfg.Mesh.Port)
+	}
+	if cfg.Monitoring.Interval != 15 {
+		t.Errorf("Interval = %d, want 15", cfg.Monitoring.Interval)
+	}
+}
+
+// TestLoadWithMultipleUnknownSections verifies that multiple unknown
+// top-level sections are all tolerated without error.
+func TestLoadWithMultipleUnknownSections(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+
+	yamlContent := []byte("node:\n  hostname: test\nmesh:\n  port: 51820\nxray:\n  foo: bar\nold_section:\n  key: value\nanother_unknown:\n  nested:\n    deep: true\n")
+	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load should succeed with multiple unknown sections, got error: %v", err)
+	}
+
+	if cfg.Node.Hostname != "test" {
+		t.Errorf("Hostname = %q, want %q", cfg.Node.Hostname, "test")
+	}
+}
+
 // TestSavePermissionDenied verifies that config.Save returns a non-nil error
 // (equivalent to a non-zero exit / fatal condition) when the config cannot be
 // written — for example, when a path component in the parent directory is a
