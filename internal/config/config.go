@@ -252,7 +252,17 @@ type RelayNodeConfig struct {
 }
 
 // SSListenerConfig configures the Shadowsocks entry listener.
+//
+// DEPRECATED: SOCKS5 over Reality TLS (virtual port 0x5350) is now the
+// default proxy entry. The SS listener is retained for backward
+// compatibility but is only started when Enabled is explicitly set to true.
+// New deployments should use the SOCKS5 handler instead.
 type SSListenerConfig struct {
+	// Enabled controls whether the SS listener is started. Default:
+	// false (SOCKS5 is the default entry). Set to true only for
+	// backward compatibility with existing SS clients.
+	Enabled bool `yaml:"enabled,omitempty"`
+
 	// Password is the pre-shared password for SS AEAD key derivation.
 	Password string `yaml:"password"`
 
@@ -727,7 +737,10 @@ func Default() *Config {
 				MaxReassemblyWindow: 256,
 			},
 			SS: SSListenerConfig{
-				Port: 8388,
+				// SS is disabled by default; SOCKS5 over Reality TLS
+				// is the default proxy entry. Set enabled: true in
+				// config to use the legacy SS listener.
+				Enabled: false,
 			},
 			Exit: ExitConfig{
 				AllowedPorts:       []int{80, 443},
