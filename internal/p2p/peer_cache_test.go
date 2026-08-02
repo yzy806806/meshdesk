@@ -1,9 +1,11 @@
 package p2p
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -463,5 +465,109 @@ func TestPeerCache_OnPeerLeaveRetainsCollector(t *testing.T) {
 	}
 	if len(c2.CachedCollectors()) != 1 {
 		t.Fatalf("expected 1 collector after reload, got %d", len(c2.CachedCollectors()))
+	}
+}
+
+// TestCachedCollectorsEmpty verifies that CachedCollectors returns an
+// empty or nil slice (both have length 0) when no collectors are cached.
+func TestCachedCollectorsEmpty(t *testing.T) {
+	c := NewPeerCache("/tmp/meshdesk-test-empty-coll.cache")
+	defer func() { _ = os.Remove("/tmp/meshdesk-test-empty-coll.cache") }()
+
+	result := c.CachedCollectors()
+	if len(result) != 0 {
+		t.Errorf("expected 0 collectors, got %d: %v", len(result), result)
+	}
+}
+
+// TestCachedCollectorsConcurrent verifies thread safety of CachedCollectors
+// when called concurrently with OnPeerJoin. No data race should occur.
+func TestCachedCollectorsConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers-race.cache")
+	c := NewPeerCache(path)
+
+	var wg sync.WaitGroup
+	done := make(chan struct{})
+
+	// Writer goroutine: constantly add new collector peers.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			c.OnPeerJoin(&NodeMeta{
+				PublicKey:    "race-coll-" + fmt.Sprintf("%d", i),
+				CapCollector: true,
+				Endpoints:    []string{"10.0.0.1:52888"},
+			})
+		}
+		close(done)
+	}()
+
+	// Reader goroutines: constantly call CachedCollectors.
+	for g := 0; g < 3; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					_ = c.CachedCollectors()
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	// No data race = pass.
+}
+
+// TestPeerCache_LoadCorruptJSON verifies that Load() gracefully handles
+// a corrupt/malformed JSON file without panicking or crashing.
+func TestPeerCache_LoadCorruptJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers-corrupt.cache")
+
+	// Write malformed JSON.
+	if err := os.WriteFile(path, []byte("this is not valid json {{{"), 0600); err != nil {
+		t.Fatalf("failed to write corrupt file: %v", err)
+	}
+
+	c := NewPeerCache(path)
+	err := c.Load()
+	if err == nil {
+		t.Error("expected error for malformed JSON, got nil")
+	}
+	// Cache should be empty after failed load.
+	if c.CachedPeerCount() != 0 {
+		t.Errorf("expected 0 peers after corrupt load, got %d", c.CachedPeerCount())
+	}
+	if len(c.CachedCollectors()) != 0 {
+		t.Errorf("expected 0 collectors after corrupt load, got %v", c.CachedCollectors())
+	}
+}
+
+// TestPeerCache_LoadEmptyFile verifies that Load() succeeds on a valid
+// but empty JSON cache file.
+func TestPeerCache_LoadEmptyFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "peers-empty-json.cache")
+
+	// Write valid but empty peers object.
+	if err := os.WriteFile(path, []byte(`{"v":1,"saved_at":0,"peers":[]}`), 0600); err != nil {
+		t.Fatalf("failed to write empty file: %v", err)
+	}
+
+	c := NewPeerCache(path)
+	if err := c.Load(); err != nil {
+		t.Fatalf("Load on valid empty JSON should not error: %v", err)
+	}
+	if c.CachedPeerCount() != 0 {
+		t.Errorf("expected 0 peers, got %d", c.CachedPeerCount())
+	}
+	if len(c.CachedCollectors()) != 0 {
+		t.Errorf("expected 0 collectors, got %v", c.CachedCollectors())
 	}
 }
