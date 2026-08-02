@@ -17,6 +17,7 @@ meshdesk-*
 /frontend/dist/
 *.test
 web.test
+join.test
 
 # IDE
 .idea/
