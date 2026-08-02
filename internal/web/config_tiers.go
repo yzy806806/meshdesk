@@ -194,17 +194,6 @@ var tierMap = map[string]fieldMeta{
 	"proxy.exit.audit_log_dir":        {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.exit.audit_retention_days": {Tier: TierNormal, Reload: ReloadHot},
 
-	// --- Xray (§3.10) ---
-	"xray.enabled":               {Tier: TierNormal, Reload: ReloadRestart},
-	"xray.binary_path":           {Tier: TierNormal, Reload: ReloadRestart},
-	"xray.config_dir":            {Tier: TierNormal, Reload: ReloadRestart},
-	"xray.log_lines":             {Tier: TierNormal, Reload: ReloadHot},
-	"xray.api_port":              {Tier: TierNormal, Reload: ReloadRestart},
-	"xray.api_listen":            {Tier: TierNormal, Reload: ReloadRestart},
-	"xray.health_check_interval": {Tier: TierNormal, Reload: ReloadHot},
-	"xray.readiness_timeout":     {Tier: TierNormal, Reload: ReloadHot},
-	"xray.drain_timeout":         {Tier: TierNormal, Reload: ReloadHot},
-
 	// --- Reality (§3.11) ---
 	"reality.enabled":      {Tier: TierNormal, Reload: ReloadRestart},
 	"reality.listen_addr":  {Tier: TierNormal, Reload: ReloadRestart},
@@ -480,7 +469,7 @@ func joinPath(parts []string) string {
 var validSections = map[string]bool{
 	"node": true, "mesh": true, "peers": true, "p2p": true,
 	"monitoring": true, "webssh": true, "auth": true, "transfer": true,
-	"proxy": true, "xray": true, "reality": true,
+	"proxy": true, "reality": true,
 }
 
 // maskSentinel is the placeholder string for masked fields.

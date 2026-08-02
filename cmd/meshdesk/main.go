@@ -15,7 +15,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -30,7 +29,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
 	"github.com/yzy806806/meshdesk/internal/webssh"
-	"github.com/yzy806806/meshdesk/internal/xray"
 )
 
 func main() {
@@ -595,7 +593,6 @@ func main() {
 	defer reporter.Stop()
 
 	var webServer *web.Server
-	var xrayMgr *xray.XrayConfigManager
 	if webMode {
 		// Create the auth capability engine first, so it can be wired
 		// into the aggregator for monitor_write enforcement (Decision E).
@@ -673,52 +670,6 @@ func main() {
 			svcMgr = execBackend
 		}
 
-		// Create the xray-core config manager (if enabled in config).
-		if cfg.Xray.Enabled {
-			xrayOpts := xray.ManagerOptions{
-				BinaryPath: cfg.Xray.BinaryPath,
-				ConfigDir:  cfg.Xray.ConfigDir,
-				LogLines:   cfg.Xray.LogLines,
-				ApiPort:    cfg.Xray.ApiPort,
-				ApiListen:  cfg.Xray.ApiListen,
-			}
-			if cfg.Xray.HealthCheckInterval > 0 {
-				xrayOpts.HealthCheckInterval = time.Duration(cfg.Xray.HealthCheckInterval) * time.Second
-			}
-			if cfg.Xray.ReadinessTimeout > 0 {
-				xrayOpts.ReadinessTimeout = time.Duration(cfg.Xray.ReadinessTimeout) * time.Second
-			}
-			// DrainTimeout: -1 means disable drain entirely, 0 means use default.
-			if cfg.Xray.DrainTimeout < 0 {
-				xrayOpts.DrainTimeout = -1 // disable
-			} else if cfg.Xray.DrainTimeout > 0 {
-				xrayOpts.DrainTimeout = time.Duration(cfg.Xray.DrainTimeout) * time.Second
-			}
-			// Use a file-based config store for persistence across restarts.
-			if xrayOpts.ConfigDir == "" {
-				xrayOpts.ConfigDir = xray.DefaultConfigDir
-			}
-			xrayOpts.Store = xray.NewFileConfigStore(
-				filepath.Join(xrayOpts.ConfigDir, "state.json"),
-			)
-			mgr, err := xray.NewManager(xrayOpts)
-			if err != nil {
-				log.Printf("Warning: failed to create xray config manager: %v — xray integration disabled", err)
-			} else {
-				xrayMgr = mgr
-				// Auto-start xray if there are configured inbounds.
-				if len(mgr.ListInbounds()) > 0 {
-					if err := mgr.Start(); err != nil {
-						log.Printf("Warning: failed to start xray-core: %v — use /api/xray/start to retry", err)
-					} else {
-						log.Printf("  Xray:       started (pid=%d, config=%s)", mgr.Status().PID, mgr.ConfigPath())
-					}
-				} else {
-					log.Printf("  Xray:       manager ready (no inbounds configured — use /api/xray/inbound to add)")
-				}
-			}
-		}
-
 		// Create and start the web server.
 		// Wire gossip liveness into the web server for topology.
 		var webLiveness web.PeerLiveness
@@ -737,7 +688,6 @@ func main() {
 			AuthEngine:          authEngine,
 			ServiceMgr:          svcMgr,
 			MeshDialer:          web.NewPeerMeshDialer(node),
-			XrayManager:         xrayMgr,
 			ProxyStatusProvider: &entryNodeStatusAdapter{entryNode: proxyEntryNode},
 			Liveness:            webLiveness,
 		})
@@ -898,10 +848,6 @@ func main() {
 
 	if webServer != nil {
 		webServer.Stop()
-	}
-	// Stop xray-core subprocess if running.
-	if xrayMgr != nil {
-		_ = xrayMgr.Stop()
 	}
 }
 
