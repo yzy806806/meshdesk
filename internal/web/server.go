@@ -68,6 +68,11 @@ type Server struct {
 	// endpoints, hot-reload tracking, and atomic config file writes.
 	configAPI *ConfigAPIManager
 
+	// joinTokenGen generates join tokens and provides join server info
+	// for the one-click join Dashboard page. When nil, a default
+	// implementation is constructed from cfg + node identity.
+	joinTokenGen JoinTokenGenerator
+
 	// webhookDispatcher forwards security alerts to an external endpoint
 	// (Slack, Discord, custom webhook). nil when AlertWebhookURL is empty.
 	webhookDispatcher *WebhookDispatcher
@@ -127,6 +132,11 @@ type Deps struct {
 	// writes to this file. When empty, the config API operates
 	// in-memory only (useful for tests).
 	ConfigPath string
+
+	// JoinTokenGenerator provides join token generation and join server
+	// info for the one-click join Dashboard page. When nil, a default
+	// implementation is constructed from Config + Node identity.
+	JoinTokenGenerator JoinTokenGenerator
 }
 
 // New creates a new web server from the given dependencies.
@@ -157,7 +167,7 @@ func New(deps Deps) (*Server, error) {
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "login_2fa.html",
 		"peers.html", "topology.html", "error.html",
-		"config.html",
+		"config.html", "join.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -196,6 +206,7 @@ func New(deps Deps) (*Server, error) {
 		topologyPathsProvider:   deps.TopologyPaths,
 		liveness:               deps.Liveness,
 		configAPI:               NewConfigAPIManager(deps.ConfigPath),
+		joinTokenGen:            deps.JoinTokenGenerator,
 	}
 
 	if s.monitorStore == nil {
@@ -397,6 +408,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/services/stop", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("stop"))))
 	mux.HandleFunc("/api/services/restart", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("restart"))))
 
+	// Join / one-click install API (auth required for token generation;
+	// install script endpoint is public so curl can fetch it).
+	// GET /join?token=xxx — public: validates token, returns install shell script.
+	// GET /join (no token) — auth required: renders the Dashboard join page.
+	mux.HandleFunc("/api/join/token", s.requireAuth(s.handleJoinToken))
+	mux.HandleFunc("/api/join/install.sh", s.handleJoinInstallScript)
+	mux.HandleFunc("/join", s.handleJoinRoute)
+
 	// Page routes (auth required)
 	mux.HandleFunc("/", s.requireAuth(s.handleDashboard))
 	mux.HandleFunc("/nodes", s.requireAuth(s.handleNodeList))
@@ -430,6 +449,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		// Public routes
 		if path == "/login" || path == "/logout" ||
+			path == "/join" || // /join?token=xxx serves install script (public)
 			strings.HasPrefix(path, "/static/") ||
 			path == "/ws/terminal" {
 			next.ServeHTTP(w, r)

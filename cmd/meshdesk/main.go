@@ -17,11 +17,13 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/config"
+	"github.com/yzy806806/meshdesk/internal/identity"
 	"github.com/yzy806806/meshdesk/internal/join"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
@@ -130,6 +132,8 @@ func main() {
 			AllowAllPorts:  cfg.Proxy.SOCKS5.AllowAllPorts,
 			DestinationFilter: cfg.Proxy.SOCKS5.DestinationFilter,
 			MaxConnections: cfg.Proxy.SOCKS5.MaxConnections,
+			AllowedPeers:   cfg.Proxy.SOCKS5.AllowedPeers,
+			RequireMeshPeer: cfg.Proxy.SOCKS5.RequireMeshPeer,
 		}
 		if !socks5Cfg.AllowAllPorts && len(cfg.Proxy.SOCKS5.AllowedPorts) > 0 {
 			socks5Cfg.AllowedPorts = make(map[int]bool, len(cfg.Proxy.SOCKS5.AllowedPorts))
@@ -728,6 +732,10 @@ func main() {
 			ProxyStatusProvider: &entryNodeStatusAdapter{entryNode: proxyEntryNode},
 			Liveness:            webLiveness,
 			ConfigPath:          configPath,
+			JoinTokenGenerator: &nodeJoinTokenGenerator{
+				cfg:      cfg,
+				identity: node.Identity(),
+			},
 		})
 		if err != nil {
 			log.Fatalf("Failed to create web server: %v", err)
@@ -1046,6 +1054,73 @@ func firstShortID(ids []string) string {
 		return ""
 	}
 	return ids[0]
+}
+
+// nodeJoinTokenGenerator implements web.JoinTokenGenerator using the node's
+// config and identity. It provides join server URL derivation and binary
+// download URL construction for the one-click join Dashboard page.
+type nodeJoinTokenGenerator struct {
+	cfg      *config.Config
+	identity *identity.Identity
+}
+
+func (g *nodeJoinTokenGenerator) GenerateJoinToken(lifetime time.Duration) (string, error) {
+	if g.cfg.Join.Secret == "" {
+		return "", fmt.Errorf("join.secret not configured")
+	}
+	serverFP := ""
+	if g.identity != nil {
+		serverFP = g.identity.PublicKey
+	}
+	return join.GenerateToken([]byte(g.cfg.Join.Secret), serverFP, lifetime)
+}
+
+func (g *nodeJoinTokenGenerator) JoinServerURL() string {
+	if !g.cfg.Join.Enabled {
+		return ""
+	}
+	host := firstAdvertiseEndpointHost(g.cfg)
+	addr := g.cfg.Join.ListenAddr
+	if addr == "" {
+		addr = ":8443"
+	}
+	port := "8443"
+	if idx := strings.LastIndex(addr, ":"); idx >= 0 {
+		port = addr[idx+1:]
+	}
+	scheme := "https"
+	if g.cfg.Join.TLSCertFile == "" || g.cfg.Join.TLSKeyFile == "" {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s:%s", scheme, host, port)
+}
+
+func (g *nodeJoinTokenGenerator) BinaryDownloadURL(arch string) string {
+	if arch == "" {
+		arch = "amd64"
+	}
+	return fmt.Sprintf("https://github.com/yzy806806/meshdesk/releases/latest/download/meshdesk-linux-%s", arch)
+}
+
+func (g *nodeJoinTokenGenerator) JoinEnabled() bool {
+	return g.cfg.Join.Enabled && g.cfg.Reality.Enabled
+}
+
+// firstAdvertiseEndpointHost returns just the host portion of the first
+// advertise endpoint, or the node hostname as fallback.
+func firstAdvertiseEndpointHost(cfg *config.Config) string {
+	if len(cfg.P2P.AdvertiseEndpoints) > 0 {
+		ep := cfg.P2P.AdvertiseEndpoints[0]
+		if idx := strings.LastIndex(ep, ":"); idx > 0 {
+			return ep[:idx]
+		}
+		return ep
+	}
+	host := cfg.Node.Hostname
+	if host == "" {
+		host, _ = os.Hostname()
+	}
+	return host
 }
 
 // firstServerName returns the first server name from the list, or empty string.
