@@ -355,6 +355,17 @@ type SOCKS5YAMLConfig struct {
 
 	// MaxConnections limits concurrent SOCKS5 connections. Default: 256.
 	MaxConnections int `yaml:"max_connections,omitempty"`
+
+	// AllowedPeers restricts which mesh peers can connect to this
+	// SOCKS5 proxy by identity. Each entry is a mesh identity hex
+	// string (64 hex chars for Ed25519 public key). Empty means all
+	// mesh peers are allowed.
+	AllowedPeers []string `yaml:"allowed_peers,omitempty"`
+
+	// RequireMeshPeer rejects SOCKS5 connections from non-mesh sources
+	// (e.g. phone clients that connect via Reality TLS without a mesh
+	// identity). Default: false.
+	RequireMeshPeer bool `yaml:"require_mesh_peer,omitempty"`
 }
 
 // TransferConfig holds file transfer settings.
