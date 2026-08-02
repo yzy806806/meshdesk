@@ -139,6 +139,133 @@ func createTripleNodes(t *testing.T) (*MeshNode, *MeshNode, *MeshNode, string, s
 	return nodeA, relayNode, nodeB, peerA, peerB
 }
 
+// TestRelayHandler_HandleDial_ProductionPath verifies that the
+// RelayHandler→RelayHandler relay works end-to-end: both the relay node
+// and the target node use HandleStream (via RegisterRelayHandler), not
+// a custom virtual port listener. This tests the production code path
+// that was previously broken because HandleStream had no case for
+// MeshRelayDial.
+func TestRelayHandler_HandleDial_ProductionPath(t *testing.T) {
+	nodeA, relayNode, nodeB, peerA, peerB := createTripleNodes(t)
+
+	// Register the relay handler on the relay node.
+	relayHandler, err := relayNode.RegisterRelayHandler()
+	if err != nil {
+		t.Fatalf("relay RegisterRelayHandler: %v", err)
+	}
+	defer relayHandler.Close()
+
+	// Register the relay handler on the target node (B). This is the
+	// key difference from TestRelayHandler_BidirectionalDataFlow: B
+	// uses the production RelayHandler.HandleStream, not a custom
+	// listener. The default OnRelayDial (nil) echoes data via io.Copy.
+	targetHandler, err := nodeB.RegisterRelayHandler()
+	if err != nil {
+		t.Fatalf("nodeB RegisterRelayHandler: %v", err)
+	}
+	defer targetHandler.Close()
+
+	// Node A dials via relay to reach B.
+	dialer := NewRelayDialer(nodeA, peerA)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB)
+	if err != nil {
+		t.Fatalf("DialViaRelay: %v", err)
+	}
+	defer conn.Close()
+
+	// Write test data from A → B (through relay).
+	// B echoes data back via io.Copy(conn, conn) in handleDial's default path.
+	msgA := []byte("hello from A through relay production path")
+	if _, err := conn.Write(msgA); err != nil {
+		t.Fatalf("A write: %v", err)
+	}
+
+	// Read the echo back.
+	buf := make([]byte, len(msgA))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("A read echo: %v", err)
+	}
+	if string(buf) != string(msgA) {
+		t.Errorf("data mismatch: got %q, want %q", buf, msgA)
+	}
+
+	// Verify relay has one active tunnel.
+	if count := relayHandler.TunnelCount(); count != 1 {
+		t.Errorf("relay tunnel count = %d, want 1", count)
+	}
+}
+
+// TestRelayHandler_HandleDial_WithCallback verifies that the OnRelayDial
+// callback is invoked when a MeshRelayDial is received, and that data
+// flows through the callback-provided handler.
+func TestRelayHandler_HandleDial_WithCallback(t *testing.T) {
+	nodeA, relayNode, nodeB, peerA, peerB := createTripleNodes(t)
+
+	// Register the relay handler on the relay node.
+	relayHandler, err := relayNode.RegisterRelayHandler()
+	if err != nil {
+		t.Fatalf("relay RegisterRelayHandler: %v", err)
+	}
+	defer relayHandler.Close()
+
+	// Register the relay handler on the target node (B) with a custom
+	// OnRelayDial callback that echoes data back.
+	targetHandler, err := nodeB.RegisterRelayHandler()
+	if err != nil {
+		t.Fatalf("nodeB RegisterRelayHandler: %v", err)
+	}
+	defer targetHandler.Close()
+
+	callbackCalled := make(chan *MeshRelayDial, 1)
+	targetHandler.OnRelayDial = func(dial *MeshRelayDial, conn net.Conn) {
+		callbackCalled <- dial
+		// Echo data back.
+		io.Copy(conn, conn)
+		conn.Close()
+	}
+
+	// Node A dials via relay to reach B.
+	dialer := NewRelayDialer(nodeA, peerA)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB)
+	if err != nil {
+		t.Fatalf("DialViaRelay: %v", err)
+	}
+	defer conn.Close()
+
+	// Write test data from A → B (through relay).
+	msgA := []byte("hello via callback path")
+	if _, err := conn.Write(msgA); err != nil {
+		t.Fatalf("A write: %v", err)
+	}
+
+	// Read the echo back.
+	buf := make([]byte, len(msgA))
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("A read echo: %v", err)
+	}
+	if string(buf) != string(msgA) {
+		t.Errorf("data mismatch: got %q, want %q", buf, msgA)
+	}
+
+	// Verify the callback was invoked.
+	select {
+	case dial := <-callbackCalled:
+		if dial.TunnelID == "" {
+			t.Error("callback received empty tunnel ID")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnRelayDial callback was not invoked")
+	}
+}
+
 // TestRelayHandler_BidirectionalDataFlow verifies that the RelayHandler
 // can bridge two smux streams: data written by node A appears on node B
 // and vice versa, all piped through the relay node.
