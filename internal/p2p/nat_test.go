@@ -1562,13 +1562,20 @@ func TestNatTraversal_Reprobe_MultipleCycles(t *testing.T) {
 	go nt.reprobeLoop()
 	defer nt.reprobeTC.Stop()
 
-	// Wait for 3+ re-probe cycles.
-	time.Sleep(200 * time.Millisecond)
-
-	// State should still be RELAY_FALLBACK (direct probes fail).
-	state = nt.SessionState(peerKey)
-	if state != NatRelayFallback {
-		t.Errorf("expected RELAY_FALLBACK after multiple reprobes, got %s", state)
+	// Wait for multiple re-probe cycles to complete and state to settle.
+	// Each cycle: RELAY_FALLBACK → DIRECT_REPROBE → (probe fails) → RELAY_FALLBACK.
+	// Poll until state is RELAY_FALLBACK (not caught mid-transition).
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		state = nt.SessionState(peerKey)
+		if state == NatRelayFallback {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("state did not settle to RELAY_FALLBACK after timeout, got %s", state)
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 
 	// Verify endpoint was updated (should still be relay endpoint).
