@@ -44,6 +44,11 @@ type Server struct {
 
 	proxyStatusProvider ProxyStatusProvider
 
+	// socks5StatusProvider supplies runtime SOCKS5 handler state
+	// (active connections, enabled flags) for the proxy management
+	// Dashboard page. May be nil when the node is not running SOCKS5.
+	socks5StatusProvider SOCKS5StatusProvider
+
 	// Topology providers — injected or auto-derived from mesh/monitor.
 	// When nil, the handler builds adapters from s.node and s.monitorStore.
 	topologyPeersProvider   topology.TopologyPeers
@@ -111,6 +116,11 @@ type Deps struct {
 	// is not running as a proxy entry point.
 	ProxyStatusProvider ProxyStatusProvider
 
+	// SOCKS5StatusProvider supplies runtime SOCKS5 handler state for
+	// the /api/proxy/socks5/status endpoint. May be nil when the node
+	// is not running SOCKS5 handlers.
+	SOCKS5StatusProvider SOCKS5StatusProvider
+
 	// AlertWebhookURL is an optional webhook endpoint for external
 	// security alert delivery. When set, a WebhookDispatcher is created
 	// and wired to the AlertStore. When empty, no dispatcher is created.
@@ -167,7 +177,7 @@ func New(deps Deps) (*Server, error) {
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "login_2fa.html",
 		"peers.html", "topology.html", "error.html",
-		"config.html", "join.html",
+		"config.html", "join.html", "proxy.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -200,6 +210,7 @@ func New(deps Deps) (*Server, error) {
 		stepUpStore:         deps.StepUpStore,
 		alertStore:          deps.AlertStore,
 		proxyStatusProvider: deps.ProxyStatusProvider,
+		socks5StatusProvider: deps.SOCKS5StatusProvider,
 
 		topologyPeersProvider:   deps.TopologyPeers,
 		topologyMetricsProvider: deps.TopologyMetrics,
@@ -345,6 +356,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// dashboard itself even when the admin has not completed TOTP.
 	mux.HandleFunc("/api/proxy/status", s.requireAuth(s.handleProxyStatus))
 
+	// SOCKS5 proxy management API (session required).
+	// GET /api/proxy/socks5/status — returns SOCKS5 config, runtime state,
+	// and mesh topology info for the proxy management Dashboard page.
+	mux.HandleFunc("/api/proxy/socks5/status", s.requireAuth(s.handleProxySocks5Status))
+
 	// Config API (session auth required for all endpoints):
 	// GET    /api/config         — full or per-section config with tier masking
 	// PUT    /api/config         — full config replacement (step-up if T2 fields)
@@ -426,6 +442,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/peers", s.requireAuth(s.handlePeersPage))
 	mux.HandleFunc("/topology", s.requireAuth(s.handleTopologyPage))
 	mux.HandleFunc("/config", s.requireAuth(s.handleConfigPage))
+	mux.HandleFunc("/proxy", s.requireAuth(s.handleProxyPage))
 }
 
 // RegisterReloader adds a subsystem reloader to the config API's reloader
