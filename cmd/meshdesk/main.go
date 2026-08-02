@@ -735,6 +735,7 @@ func main() {
 			ServiceMgr:          svcMgr,
 			MeshDialer:          web.NewPeerMeshDialer(node),
 			ProxyStatusProvider: &entryNodeStatusAdapter{entryNode: proxyEntryNode},
+			SOCKS5StatusProvider: node,
 			Liveness:            webLiveness,
 			ConfigPath:          configPath,
 			JoinTokenGenerator: &nodeJoinTokenGenerator{
