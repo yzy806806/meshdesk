@@ -19,7 +19,6 @@ type Config struct {
 	Auth       AuthConfig          `yaml:"auth"`
 	Transfer   TransferConfig      `yaml:"transfer"`
 	Proxy      ProxyConfig         `yaml:"proxy,omitempty"`
-	Xray       XrayYAMLConfig      `yaml:"xray,omitempty"`
 	Reality    RealityServerConfig `yaml:"reality,omitempty"`
 	Join       JoinConfig          `yaml:"join,omitempty"`
 }
@@ -67,51 +66,6 @@ type JoinConfig struct {
 	// InsecureSkipTLSVerify skips TLS certificate verification on the
 	// join client. ONLY for testing — never use in production.
 	InsecureSkipTLSVerify bool `yaml:"insecure_skip_tls_verify,omitempty"`
-}
-
-// XrayYAMLConfig holds settings for the xray-core managed subprocess layer.
-// When Enabled is true, the node starts an xray-core subprocess for
-// VLESS+REALITY transport (replacing padded/websocket obfuscation for
-// public interconnects). See motion-dfa7426d3d4b action item 3.
-type XrayYAMLConfig struct {
-	// Enabled controls whether the xray-core subprocess is started.
-	Enabled bool `yaml:"enabled,omitempty"`
-
-	// BinaryPath is the path to the xray-core binary. When empty,
-	// the manager auto-detects via PATH and common install locations.
-	BinaryPath string `yaml:"binary_path,omitempty"`
-
-	// ConfigDir is where the generated xray config JSON is stored.
-	// Default: /var/lib/meshdesk/xray
-	ConfigDir string `yaml:"config_dir,omitempty"`
-
-	// LogLines is the max number of log lines kept in the ring buffer
-	// for the Dashboard log viewer. Default: 1000.
-	LogLines int `yaml:"log_lines,omitempty"`
-
-	// ApiPort is the port for xray-core's gRPC API inbound, used
-	// for the healthy-before-ready self-check. Default: 8421.
-	// Set to -1 to disable health checking entirely.
-	ApiPort int `yaml:"api_port,omitempty"`
-
-	// ApiListen is the listen address for the API inbound.
-	// Default: "127.0.0.1" (localhost only).
-	ApiListen string `yaml:"api_listen,omitempty"`
-
-	// HealthCheckInterval is how often the background monitor
-	// polls xray-core's health. Default: 10s.
-	HealthCheckInterval int `yaml:"health_check_interval,omitempty"`
-
-	// ReadinessTimeout is how long Start() waits for the first
-	// successful health check before returning an error (seconds).
-	// Default: 15.
-	ReadinessTimeout int `yaml:"readiness_timeout,omitempty"`
-
-	// DrainTimeout is how long Stop() waits for active connections
-	// to drain after signaling xray-core to stop accepting new
-	// inbound connections (seconds). Set to 0 to disable the drain
-	// phase entirely. Default: 10.
-	DrainTimeout int `yaml:"drain_timeout,omitempty"`
 }
 
 // ProxyConfig holds settings for the anonymous proxy subsystem

@@ -44,11 +44,6 @@ type Server struct {
 
 	proxyStatusProvider ProxyStatusProvider
 
-	// xrayManager manages the xray-core subprocess (config generation,
-	// start/stop/reload, crash auto-restart, log capture). May be nil
-	// when xray integration is not configured on this node.
-	xrayManager XrayManager
-
 	// Topology providers — injected or auto-derived from mesh/monitor.
 	// When nil, the handler builds adapters from s.node and s.monitorStore.
 	topologyPeersProvider   topology.TopologyPeers
@@ -111,10 +106,6 @@ type Deps struct {
 	// is not running as a proxy entry point.
 	ProxyStatusProvider ProxyStatusProvider
 
-	// XrayManager manages the xray-core subprocess layer. May be nil
-	// when xray integration is not configured on this node.
-	XrayManager XrayManager
-
 	// AlertWebhookURL is an optional webhook endpoint for external
 	// security alert delivery. When set, a WebhookDispatcher is created
 	// and wired to the AlertStore. When empty, no dispatcher is created.
@@ -169,8 +160,8 @@ func New(deps Deps) (*Server, error) {
 	pageNames := []string{
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "login_2fa.html",
-		"peers.html", "topology.html", "error.html", "proxy_nodes.html",
-		"xui.html", "config.html",
+		"peers.html", "topology.html", "error.html",
+		"config.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -203,7 +194,6 @@ func New(deps Deps) (*Server, error) {
 		stepUpStore:         deps.StepUpStore,
 		alertStore:          deps.AlertStore,
 		proxyStatusProvider: deps.ProxyStatusProvider,
-		xrayManager:         deps.XrayManager,
 
 		topologyPeersProvider:   deps.TopologyPeers,
 		topologyMetricsProvider: deps.TopologyMetrics,
@@ -348,32 +338,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// dashboard itself even when the admin has not completed TOTP.
 	mux.HandleFunc("/api/proxy/status", s.requireAuth(s.handleProxyStatus))
 
-	// Xray-core managed subprocess API (auth required).
-	// POST/GET/DELETE /api/xray/inbound — manage xray inbounds
-	// GET  /api/xray/status — process status + health/readiness
-	// GET  /api/xray/logs   — captured stdout/stderr
-	// POST /api/xray/start  — start xray subprocess
-	// POST /api/xray/stop   — stop xray subprocess
-	// POST /api/xray/reload — SIGHUP hot-reload
-	// POST /api/xray/health — trigger immediate health check
-	// GET  /api/xray/selftest — comprehensive diagnostic for monitoring
-	mux.HandleFunc("/api/xray/inbound", s.requireAuth(s.handleXrayInbound))
-	mux.HandleFunc("/api/xray/status", s.requireAuth(s.handleXrayStatus))
-	mux.HandleFunc("/api/xray/logs", s.requireAuth(s.handleXrayLogs))
-	mux.HandleFunc("/api/xray/start", s.requireAuth(s.handleXrayStart))
-	mux.HandleFunc("/api/xray/stop", s.requireAuth(s.handleXrayStop))
-	mux.HandleFunc("/api/xray/reload", s.requireAuth(s.handleXrayReload))
-	mux.HandleFunc("/api/xray/health", s.requireAuth(s.handleXrayHealth))
-	mux.HandleFunc("/api/xray/selftest", s.requireAuth(s.handleXraySelfTest))
-
-	// x-ui panel features: traffic stats, client management, share links
-	// POST/GET/DELETE /api/xray/inbound/client — manage VLESS clients on inbounds
-	// GET  /api/xray/stats    — traffic stats (per inbound + per client)
-	// POST /api/xray/share     — generate VLESS+REALITY share link
-	mux.HandleFunc("/api/xray/inbound/client", s.requireAuth(s.handleXrayClient))
-	mux.HandleFunc("/api/xray/stats", s.requireAuth(s.handleXrayStats))
-	mux.HandleFunc("/api/xray/share", s.requireAuth(s.handleXrayShare))
-
 	// Config API (session auth required for all endpoints):
 	// GET    /api/config         — full or per-section config with tier masking
 	// PUT    /api/config         — full config replacement (step-up if T2 fields)
@@ -446,8 +410,6 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/services", s.requireAuth(s.handleServicesPage))
 	mux.HandleFunc("/peers", s.requireAuth(s.handlePeersPage))
 	mux.HandleFunc("/topology", s.requireAuth(s.handleTopologyPage))
-	mux.HandleFunc("/proxy-nodes", s.requireAuth(s.handleProxyNodesPage))
-	mux.HandleFunc("/xui", s.requireAuth(s.handleXuiPage))
 	mux.HandleFunc("/config", s.requireAuth(s.handleConfigPage))
 }
 
