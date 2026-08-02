@@ -479,3 +479,238 @@ func TestSOCKS5_RegisterHandler(t *testing.T) {
 		t.Fatal("handler should be closed after node.Close()")
 	}
 }
+
+// TestSOCKS5_RequireMeshPeer_AcceptMeshPeer verifies that a mesh peer
+// present in the routing table is accepted when RequireMeshPeer=true.
+// This tests the positive path: join-protocol-authenticated peers pass.
+func TestSOCKS5_RequireMeshPeer_AcceptMeshPeer(t *testing.T) {
+	// Start a local TCP echo server.
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen echo: %v", err)
+	}
+	defer echoLn.Close()
+	echoPort := echoLn.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		for {
+			conn, err := echoLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	cfg := SOCKS5Config{
+		DialTimeout:    5 * time.Second,
+		IdleTimeout:    10 * time.Second,
+		MaxConnections: 16,
+		RequireMeshPeer: true,
+	}
+
+	serverNode, clientNode, peerID := setupSOCKS5Test(t, cfg)
+
+	// Add the peer to the routing table AFTER registration — simulates
+	// a peer that completed the join protocol. The CheckMeshPeer callback
+	// was wired at registration time and will see this entry.
+	serverNode.routes.AddPeer(&PeerEntry{
+		ID:       peerID,
+		Endpoint: "127.0.0.1:10000",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := clientNode.DialVirtualPort(ctx, peerID, int(SOCKS5VirtualPort))
+	if err != nil {
+		t.Fatalf("DialVirtualPort failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Perform SOCKS5 greeting — should succeed because peer is in routing table.
+	if err := socks5Greeting(conn); err != nil {
+		t.Fatalf("greeting failed: %v", err)
+	}
+
+	authReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, authReply); err != nil {
+		t.Fatalf("read auth reply: %v", err)
+	}
+	if authReply[0] != 0x05 || authReply[1] != 0x00 {
+		t.Fatalf("unexpected auth reply: %v (expected 0x05 0x00)", authReply)
+	}
+
+	// Complete the handshake with a CONNECT request.
+	if err := socks5Request(conn, 0x01, "127.0.0.1", echoPort); err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+
+	rep, err := readSOCKS5Reply(conn)
+	if err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if rep != 0x00 {
+		t.Fatalf("expected success reply (0x00), got 0x%02x", rep)
+	}
+}
+
+// TestSOCKS5_RequireMeshPeer_RejectNonMesh verifies that a peer NOT in
+// the routing table is rejected when RequireMeshPeer=true. This simulates
+// a phone client with a locally-generated Ed25519 keypair that has not
+// completed the mesh join protocol. The connection should be closed
+// immediately by the handler.
+func TestSOCKS5_RequireMeshPeer_RejectNonMesh(t *testing.T) {
+	cfg := SOCKS5Config{
+		DialTimeout:    5 * time.Second,
+		IdleTimeout:    10 * time.Second,
+		MaxConnections: 16,
+		RequireMeshPeer: true,
+	}
+
+	serverNode, clientNode, peerID := setupSOCKS5Test(t, cfg)
+
+	// DO NOT add the peer to the routing table — this simulates a phone
+	// client connecting with a locally-generated Ed25519 keypair that
+	// has NOT completed the mesh join protocol. The routing table only
+	// contains join-protocol-authenticated peers.
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := clientNode.DialVirtualPort(ctx, peerID, int(SOCKS5VirtualPort))
+	if err != nil {
+		t.Fatalf("DialVirtualPort failed: %v", err)
+	}
+	defer conn.Close()
+
+	// The handler should close the connection immediately upon seeing
+	// that the peer is not in the routing table. Try to write a SOCKS5
+	// greeting — it may or may not error depending on smux buffering,
+	// but reading should return EOF/error.
+	socks5Greeting(conn)
+
+	// Try to read the auth reply — should fail because the server closed.
+	buf := make([]byte, 16)
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, err = conn.Read(buf)
+	if err == nil {
+		// If read didn't error, the reply might be buffered before close.
+		// Check that we didn't get a success reply.
+		if len(buf) >= 2 && buf[0] == 0x05 && buf[1] == 0x00 {
+			t.Fatal("unexpected success reply — non-mesh peer should have been rejected")
+		}
+	} else {
+		t.Logf("Read returned expected error: %v", err)
+	}
+
+	// Verify server side: the handler should have 0 active connections.
+	time.Sleep(50 * time.Millisecond) // give goroutine time to finish
+	if serverNode.socks5Handler != nil {
+		active := serverNode.socks5Handler.ActiveConnections()
+		if active != 0 {
+			t.Fatalf("expected 0 active connections after rejection, got %d", active)
+		}
+	}
+}
+
+// TestSOCKS5_AllowedPeers_AcceptListed verifies that AllowedPeers
+// explicitly permits only listed peer IDs and rejects others.
+func TestSOCKS5_AllowedPeers_AcceptListed(t *testing.T) {
+	echoLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen echo: %v", err)
+	}
+	defer echoLn.Close()
+	echoPort := echoLn.Addr().(*net.TCPAddr).Port
+
+	go func() {
+		for {
+			conn, err := echoLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	cfg := SOCKS5Config{
+		DialTimeout:    5 * time.Second,
+		IdleTimeout:    10 * time.Second,
+		MaxConnections: 16,
+		AllowedPeers:   []string{"socks5testpeer"}, // explicit whitelist
+	}
+
+	serverNode, clientNode, peerID := setupSOCKS5Test(t, cfg)
+	_ = serverNode // only used for lifecycle
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := clientNode.DialVirtualPort(ctx, peerID, int(SOCKS5VirtualPort))
+	if err != nil {
+		t.Fatalf("DialVirtualPort failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Greeting should succeed because peer is in AllowedPeers.
+	if err := socks5Greeting(conn); err != nil {
+		t.Fatalf("greeting failed: %v", err)
+	}
+
+	authReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, authReply); err != nil {
+		t.Fatalf("read auth reply: %v", err)
+	}
+	if authReply[0] != 0x05 || authReply[1] != 0x00 {
+		t.Fatalf("expected auth success (listed peer), got %v", authReply)
+	}
+
+	// Complete the CONNECT.
+	socks5Request(conn, 0x01, "127.0.0.1", echoPort)
+	rep, err := readSOCKS5Reply(conn)
+	if err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if rep != 0x00 {
+		t.Fatalf("expected success reply, got 0x%02x", rep)
+	}
+}
+
+// TestSOCKS5_AllowedPeers_RejectUnlisted verifies that a peer NOT in
+// AllowedPeers is rejected even if it has a valid Ed25519 identity.
+func TestSOCKS5_AllowedPeers_RejectUnlisted(t *testing.T) {
+	cfg := SOCKS5Config{
+		DialTimeout:    5 * time.Second,
+		IdleTimeout:    10 * time.Second,
+		MaxConnections: 16,
+		AllowedPeers:   []string{"some-other-peer-id"}, // NOT our peer
+	}
+
+	_, clientNode, peerID := setupSOCKS5Test(t, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := clientNode.DialVirtualPort(ctx, peerID, int(SOCKS5VirtualPort))
+	if err != nil {
+		t.Fatalf("DialVirtualPort failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Try to SOCKS5 greeting — should be rejected because peer not in list.
+	socks5Greeting(conn)
+
+	buf := make([]byte, 16)
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, err = conn.Read(buf)
+	if err == nil {
+		if len(buf) >= 2 && buf[0] == 0x05 && buf[1] == 0x00 {
+			t.Fatal("unexpected success reply — unlisted peer should have been rejected")
+		}
+	} else {
+		t.Logf("Read returned expected error: %v", err)
+	}
+}
