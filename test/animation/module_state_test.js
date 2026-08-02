@@ -75,8 +75,8 @@ const testPage = `<!DOCTYPE html>
     border-radius: 4px; display: none; z-index: 500;
   }
   .node-card { width: 200px; height: 120px; background: #21262d; border-radius: 8px; margin: 8px; display: inline-block; }
-  .xray-logs-panel { padding: 16px; background: #0d1117; border: 1px solid #30363d; display: none; }
-  .xray-share-result { padding: 16px; background: #161b22; border-radius: 8px; display: none; }
+  .proxy-logs-panel { padding: 16px; background: #0d1117; border: 1px solid #30363d; display: none; }
+  .proxy-share-result { padding: 16px; background: #161b22; border-radius: 8px; display: none; }
   .pending-restart-banner { padding: 8px 16px; background: #9e6a0333; color: #d29922; display: none; align-items: center; }
   #sandbox { padding: 16px; }
 </style>
@@ -115,11 +115,11 @@ const testPage = `<!DOCTYPE html>
   <!-- Dashboard cards -->
   <div id="node-grid"></div>
   <!-- Proxy logs panel -->
-  <div id="xray-logs-panel" class="xray-logs-panel">
-    <pre id="xray-log-output"></pre>
+  <div id="proxy-logs-panel" class="proxy-logs-panel">
+    <pre id="proxy-log-output"></pre>
   </div>
   <!-- x-ui share result -->
-  <div id="xui-share-result" class="xray-share-result">
+  <div id="xui-share-result" class="proxy-share-result">
     <input id="xui-share-link" type="text">
   </div>
   <!-- Topology status banner -->
@@ -337,7 +337,7 @@ async function main() {
     // ── 8. Proxy logs panel fadeIn ──
     console.log('\n--- 8. Proxy logs panel fadeIn ---');
     let logsResult = await page.evaluate(async () => {
-      const panel = document.getElementById('xray-logs-panel');
+      const panel = document.getElementById('proxy-logs-panel');
       panel.style.display = 'block';
       panel.style.opacity = '0';
       await window.MeshAnim.fadeIn(panel, { duration: 50 });
