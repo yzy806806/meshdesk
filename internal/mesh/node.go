@@ -1305,6 +1305,44 @@ func buildRealityListenAddr(cfg *config.Config) string {
 	return net.JoinHostPort(host, strconv.Itoa(port))
 }
 
+// --- SOCKS5 status provider methods ---
+//
+// These methods satisfy the web.SOCKS5StatusProvider interface so the
+// Dashboard's proxy management page can display live runtime state
+// (handler running, active connection count) without exposing internal
+// fields.
+
+// SOCKS5HandlerActive returns true if the SOCKS5 direct-dial handler
+// (virtual port 0x5350) is registered and running.
+func (n *MeshNode) SOCKS5HandlerActive() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.socks5Handler != nil
+}
+
+// SOCKS5ExitHandlerActive returns true if the SOCKS5 exit handler
+// (virtual port 0x4558) is registered and running.
+func (n *MeshNode) SOCKS5ExitHandlerActive() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.socks5ExitHandler != nil
+}
+
+// SOCKS5ActiveConnections returns the total number of active SOCKS5
+// connections across all handlers on this node.
+func (n *MeshNode) SOCKS5ActiveConnections() int64 {
+	n.mu.RLock()
+	var total int64
+	if n.socks5Handler != nil {
+		total += n.socks5Handler.ActiveConnections()
+	}
+	if n.socks5ExitHandler != nil {
+		total += n.socks5ExitHandler.ActiveConnections()
+	}
+	n.mu.RUnlock()
+	return total
+}
+
 // firstShortID returns the first short ID from the list, or empty string.
 func firstShortID(ids []string) string {
 	if len(ids) > 0 {
