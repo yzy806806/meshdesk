@@ -158,6 +158,44 @@ UDP 52888 handles gossip ping/pong and anti-entropy.
 - `peers.cache` persists discovered endpoints + collector info across restarts
 - `identity.pem` persists Ed25519 identity (public key stable across restarts)
 
+## TUN Virtual Network
+
+MeshDesk can create a TUN virtual network interface that provides Layer 3 IP routing across the mesh. With TUN enabled, nodes can ping each other by Virtual IP, SSH over the mesh, and access remote subnets through subnet proxy.
+
+### Configuration
+
+```yaml
+mesh:
+  tun_enabled: true
+  mesh_cidr: "10.144.144.0/24"
+  subnet_proxy:
+    - "172.26.0.0/18"
+  tun_name: "mesh0"     # optional, default: mesh0
+  tun_mtu: 1400         # optional, default: 1400
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tun_enabled` | bool | `false` | Create a TUN device on startup. Requires `CAP_NET_ADMIN` or root. |
+| `mesh_cidr` | string | — | CIDR subnet for the TUN network. Every node's Virtual IP is allocated from this range. |
+| `subnet_proxy` | []string | — | Local CIDR subnets this node advertises as reachable. Other nodes add kernel routes for these subnets via this node's Virtual IP. |
+| `tun_name` | string | `mesh0` | TUN interface name. |
+| `tun_mtu` | int | `1400` | MTU for the TUN interface. Set below 1500 to account for mesh encapsulation overhead. |
+| `static_virtual_ip` | string | — | Force a specific Virtual IP instead of using IPAM allocation. Must be within `mesh_cidr`. |
+
+### How it works
+
+1. **IPAM**: When `tun_enabled` is true, each node deterministically allocates a Virtual IP from `mesh_cidr`.
+2. **Routing**: Each node maintains kernel routes for every peer's Virtual IP via the TUN interface. Routing tables are synchronized through gossip as peers join and leave.
+3. **Forwarding**: IP packets destined for a peer are read from the TUN device, encapsulated, and sent over the mesh transport (Reality TLS + smux).
+4. **Subnet Proxy**: Nodes with `subnet_proxy` advertise their local subnets via gossip. Peers automatically install kernel routes to these subnets, allowing cross-network access to devices behind a mesh gateway.
+
+### Capabilities
+
+- **Direct ping**: `ping 10.144.144.2` reaches another mesh node by Virtual IP
+- **Mesh SSH**: `ssh user@10.144.144.2` over the encrypted mesh tunnel
+- **Subnet access**: Access devices on a remote LAN through a mesh gateway node with `subnet_proxy`
+
 ## Dashboard
 
 | Page | Path | Description |
