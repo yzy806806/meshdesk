@@ -107,6 +107,44 @@ Layer 0 — Ed25519 身份（PEM 文件持久化）
 - `peers.cache` 持久化发现的 endpoint 和 collector 信息
 - `identity.pem` 持久化 Ed25519 身份（重启后 public key 不变）
 
+## TUN 虚拟网络
+
+MeshDesk 可以创建 TUN 虚拟网络接口，提供跨 mesh 的 Layer 3 IP 路由。启用 TUN 后，节点之间可以通过虚拟 IP 互相 ping，通过 mesh SSH 登录，以及通过子网代理访问远程子网。
+
+### 配置
+
+```yaml
+mesh:
+  tun_enabled: true
+  mesh_cidr: "10.144.144.0/24"
+  subnet_proxy:
+    - "172.26.0.0/18"
+  tun_name: "mesh0"     # 可选，默认 mesh0
+  tun_mtu: 1400         # 可选，默认 1400
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|-------|------|---------|------|
+| `tun_enabled` | bool | `false` | 启动时创建 TUN 设备。需要 `CAP_NET_ADMIN` 或 root 权限。 |
+| `mesh_cidr` | string | — | TUN 网络的 CIDR 子网。每个节点的虚拟 IP 从此范围中分配。 |
+| `subnet_proxy` | []string | — | 本节点宣告可达的本地 CIDR 子网。其他节点会自动添加经由本节点虚拟 IP 的内核路由。 |
+| `tun_name` | string | `mesh0` | TUN 接口名称。 |
+| `tun_mtu` | int | `1400` | TUN 接口 MTU。设低于 1500 以抵消 mesh 传输层的封装开销。 |
+| `static_virtual_ip` | string | — | 强制指定虚拟 IP，不使用 IPAM 分配。必须在 `mesh_cidr` 范围内。 |
+
+### 工作原理
+
+1. **IPAM**：当 `tun_enabled` 为 true 时，每个节点从 `mesh_cidr` 中确定性分配一个虚拟 IP。
+2. **路由**：每个节点维护通过 TUN 接口到达各 peer 虚拟 IP 的内核路由。路由表通过 gossip 在 peer 加入和离开时同步更新。
+3. **转发**：发往 peer 的 IP 包从 TUN 设备读取后，封装并通过 mesh 传输层（Reality TLS + smux）发送。
+4. **子网代理**：配置了 `subnet_proxy` 的节点通过 gossip 宣告其本地子网。Peer 节点自动安装到达这些子网的内核路由，实现对 mesh 网关后方设备的跨网络访问。
+
+### 支持的功能
+
+- **直接 ping**：`ping 10.144.144.2` 通过虚拟 IP 到达另一个 mesh 节点
+- **Mesh SSH**：`ssh user@10.144.144.2` 通过加密 mesh 隧道
+- **子网访问**：通过配置了 `subnet_proxy` 的 mesh 网关节点访问远程局域网内的设备
+
 ## Dashboard
 
 | 页面 | 路径 | 说明 |
