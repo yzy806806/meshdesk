@@ -9,7 +9,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/vmihailenco/msgpack/v5"
 )
 
 // DefaultMaxRelayTunnels is the default maximum number of active relay tunnels.
@@ -33,9 +32,7 @@ type relayTunnel struct {
 	// to the target.
 	TargetConn net.Conn
 
-	// ready is closed when both initiator and target streams are connected
-	// and bridging can begin.
-	ready chan struct{}
+	// ready field removed (was dead code, caused double-close panic risk).
 
 	CreatedAt    time.Time
 	LastActivity atomic.Int64 // UnixNano
@@ -82,14 +79,17 @@ type RelayHandler struct {
 
 // NewRelayHandler creates a RelayHandler for the given node.
 func NewRelayHandler(node *MeshNode, localKey string) *RelayHandler {
-	return &RelayHandler{
+	h := &RelayHandler{
 		node:              node,
-		localKey:         localKey,
-		tunnels:          make(map[string]*relayTunnel),
-		maxTunnels:       DefaultMaxRelayTunnels,
-		idleTimeout:      DefaultRelayIdleTimeout,
+		localKey:          localKey,
+		tunnels:           make(map[string]*relayTunnel),
+		maxTunnels:        DefaultMaxRelayTunnels,
+		idleTimeout:       DefaultRelayIdleTimeout,
 		heartbeatInterval: DefaultRelayHeartbeatInterval,
 	}
+	// Start idle tunnel cleanup goroutine.
+	go h.cleanupIdleTunnels()
+	return h
 }
 
 // HandleStream is called by the virtual port mux when a stream arrives
@@ -166,7 +166,6 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 		InitiatorKey: "", // unknown from request; could be inferred from peer
 		TargetKey:    req.TargetKey,
 		InitiatorConn: initiatorConn,
-		ready:        make(chan struct{}),
 		CreatedAt:    time.Now(),
 		done:         make(chan struct{}),
 	}
@@ -175,7 +174,7 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	h.mu.Unlock()
 
 	log.Printf("[mesh-relay] relay request: tunnel=%s target=%s",
-		tunnelID[:16], req.TargetKey[:min(len(req.TargetKey), 16)]+"...")
+		tunnelID[:min(len(tunnelID), 16)], req.TargetKey[:min(len(req.TargetKey), 16)]+"...")
 
 	// Try to open a stream to the target peer.
 	targetSession := h.node.GetSession(req.TargetKey)
@@ -231,7 +230,6 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	// Wait for the target to respond. The target will open a NEW stream
 	// back to us on port 0x524C with a MeshRelayResponse. That response
 	// is handled by handleDialBack, which sets TargetConn and closes the
-	// ready channel.
 	//
 	// However, in the simpler case, the target's response arrives on the
 	// SAME stream we just opened (target writes back on the same stream).
@@ -291,7 +289,7 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	h.mu.Unlock()
 
 	if !exists {
-		log.Printf("[mesh-relay] dial-back for unknown tunnel %s", resp.TunnelID[:16])
+		log.Printf("[mesh-relay] dial-back for unknown tunnel %s", resp.TunnelID[:min(len(resp.TunnelID), 16)])
 		conn.Close()
 		return
 	}
@@ -299,7 +297,7 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	if resp.Type == MsgRelayReject {
 		log.Printf("[mesh-relay] target dial-back rejected: %s", resp.RejectReason)
 		conn.Close()
-		close(tunnel.ready) // unblock any waiter
+	
 		return
 	}
 
@@ -308,7 +306,7 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	tunnel.TargetConn = conn
 	h.mu.Unlock()
 
-	close(tunnel.ready)
+
 }
 
 // handleDial processes a MeshRelayDial received from a relay node.
@@ -348,7 +346,7 @@ func (h *RelayHandler) handleDial(conn net.Conn, dial *MeshRelayDial) {
 
 // handleTeardown processes a MeshRelayTeardown message.
 func (h *RelayHandler) handleTeardown(conn net.Conn, td *MeshRelayTeardown) {
-	log.Printf("[mesh-relay] teardown for tunnel %s", td.TunnelID[:16])
+	log.Printf("[mesh-relay] teardown for tunnel %s", td.TunnelID[:min(len(td.TunnelID), 16)])
 	h.removeTunnel(td.TunnelID)
 	conn.Close()
 }
@@ -513,5 +511,28 @@ func readRelayMessageWithContext(conn net.Conn, timeout time.Duration) (any, err
 	return msg, nil
 }
 
-// Ensure msgpack is imported (used by marshalRelayMsg via relay_protocol.go).
-var _ = msgpack.Marshal
+// cleanupIdleTunnels periodically removes tunnels that have been idle
+// (no activity) for longer than idleTimeout. Prevents unbounded growth
+// from stuck io.Copy or abandoned tunnels.
+func (h *RelayHandler) cleanupIdleTunnels() {
+	ticker := time.NewTicker(h.idleTimeout / 2)
+	defer ticker.Stop()
+	for range ticker.C {
+		cutoff := time.Now().Add(-h.idleTimeout)
+		h.mu.Lock()
+		for id, t := range h.tunnels {
+			lastActivity := time.Unix(0, t.LastActivity.Load())
+			if lastActivity.Before(cutoff) {
+				if t.InitiatorConn != nil {
+					t.InitiatorConn.Close()
+				}
+				if t.TargetConn != nil {
+					t.TargetConn.Close()
+				}
+				delete(h.tunnels, id)
+			}
+		}
+		h.mu.Unlock()
+	}
+}
+

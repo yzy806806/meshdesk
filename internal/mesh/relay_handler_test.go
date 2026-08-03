@@ -369,7 +369,6 @@ func TestRelayHandler_AtCapacity(t *testing.T) {
 	tunnelID := newTunnelID()
 	handler.tunnels[tunnelID] = &relayTunnel{
 		ID:        tunnelID,
-		ready:     make(chan struct{}),
 		done:      make(chan struct{}),
 		CreatedAt: time.Now(),
 	}
@@ -490,7 +489,6 @@ func TestRelayHandler_DuplicateTunnel(t *testing.T) {
 	// Pre-insert the tunnel.
 	handler.tunnels[tunnelID] = &relayTunnel{
 		ID:        tunnelID,
-		ready:     make(chan struct{}),
 		done:      make(chan struct{}),
 		CreatedAt: time.Now(),
 	}
@@ -555,7 +553,6 @@ func TestRelayHandler_Close(t *testing.T) {
 		ID:            tunnelID,
 		InitiatorConn: pipe1a,
 		TargetConn:    pipe2a,
-		ready:         make(chan struct{}),
 		done:          make(chan struct{}),
 		CreatedAt:     time.Now(),
 	}
@@ -601,7 +598,6 @@ func TestRelayHandler_Teardown(t *testing.T) {
 	tunnel := &relayTunnel{
 		ID:            tunnelID,
 		InitiatorConn: pipe1a,
-		ready:         make(chan struct{}),
 		done:          make(chan struct{}),
 		CreatedAt:     time.Now(),
 	}
@@ -771,7 +767,6 @@ func TestRelayHandler_ConcurrentTunnels(t *testing.T) {
 			handler.mu.Lock()
 			handler.tunnels[tunnelID] = &relayTunnel{
 				ID:        tunnelID,
-				ready:     make(chan struct{}),
 				done:      make(chan struct{}),
 				CreatedAt: time.Now(),
 			}
