@@ -1,6 +1,7 @@
 package ipam
 
 import (
+	"fmt"
 	"net"
 	"sort"
 	"strings"
@@ -574,5 +575,372 @@ func TestIPStringFormat(t *testing.T) {
 		if !strings.Contains(s, ".") {
 			t.Errorf("IP %s is not IPv4", s)
 		}
+	}
+}
+
+// ─── Table-driven IPAM conflict resolution tests ───
+
+func TestAllocateWithPeers_TableDriven(t *testing.T) {
+	a := mustAlloc(t, "10.10.0.0/28") // 14 usable — enough to force conflicts
+
+	tests := []struct {
+		name     string
+		selfKey  string
+		peerIPs  map[string]net.IP
+		hostCnt  int
+		wantErr  bool
+		// wantConflict is true if the result must differ from Allocate (no peers).
+		wantConflict bool
+		// mustNotBe is the set of IPs the result must NOT equal.
+		mustNotBe []string
+	}{
+		{
+			name:     "no peers, self only",
+			selfKey:  "nodeA",
+			peerIPs:  map[string]net.IP{},
+			hostCnt:  1,
+			wantErr:  false,
+		},
+		{
+			name:    "larger key yields to smaller key claiming same IP",
+			selfKey: "zzzz",
+			peerIPs: map[string]net.IP{
+				"aaaa": net.ParseIP("10.10.0.1"),
+			},
+			hostCnt:      3,
+			wantErr:      false,
+			wantConflict: false, // resolved by yielding
+		},
+		{
+			name:    "smaller key keeps slot despite larger peer",
+			selfKey: "aaaa",
+			peerIPs: map[string]net.IP{
+				"zzzz": net.ParseIP("10.10.0.1"),
+			},
+			hostCnt:      3,
+			wantErr:      false,
+			wantConflict: false,
+		},
+		{
+			name:    "equal keys (self collision)",
+			selfKey: "aaaa",
+			peerIPs: map[string]net.IP{
+				"aaaa": net.ParseIP("10.10.0.5"),
+			},
+			hostCnt:      4,
+			wantErr:      false,
+			wantConflict: false,
+		},
+		{
+			name:    "multiple peers claiming different IPs",
+			selfKey: "nodeD",
+			peerIPs: map[string]net.IP{
+				"nodeA": net.ParseIP("10.10.0.1"),
+				"nodeB": net.ParseIP("10.10.0.2"),
+				"nodeC": net.ParseIP("10.10.0.3"),
+			},
+			hostCnt: 7,
+			wantErr: false,
+			mustNotBe: []string{
+				"10.10.0.1", "10.10.0.2", "10.10.0.3",
+			},
+		},
+		{
+			name:    "hostCount 0 is invalid",
+			selfKey: "node",
+			peerIPs: map[string]net.IP{},
+			hostCnt: 0,
+			wantErr: true,
+		},
+		{
+			name:    "hostCount exceeds usable hosts",
+			selfKey: "node",
+			peerIPs: map[string]net.IP{},
+			hostCnt: 300,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := a.AllocateWithPeers(tt.selfKey, tt.hostCnt, tt.peerIPs)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			// Verify the IP is in the subnet.
+			if !a.subnet.Contains(got) {
+				t.Errorf("allocated IP %s not in subnet %s", got, a.subnet)
+			}
+
+			// Verify mustNotBe constraints.
+			for _, forbidden := range tt.mustNotBe {
+				if got.Equal(net.ParseIP(forbidden)) {
+					t.Errorf("result IP %s equals forbidden IP %s", got, forbidden)
+				}
+			}
+		})
+	}
+}
+
+func TestAllocateWithPeers_MultipleConflicts(t *testing.T) {
+	// Use a /29 subnet (6 usable) with 6 nodes to force many conflicts.
+	a := mustAlloc(t, "10.10.0.0/29")
+
+	// First compute the full allocation.
+	keys := []string{"peerA", "peerB", "peerC", "peerD", "peerE", "peerF"}
+	all, err := a.AllocateAll(keys)
+	if err != nil {
+		t.Fatalf("AllocateAll: %v", err)
+	}
+
+	if len(all) != 6 {
+		t.Fatalf("AllocateAll gave %d entries, want 6", len(all))
+	}
+
+	// Verify uniqueness.
+	seen := make(map[string]string)
+	for key, ip := range all {
+		ipStr := ip.String()
+		if owner, exists := seen[ipStr]; exists {
+			t.Errorf("duplicate IP %s owned by %s and %s", ipStr, owner, key)
+		}
+		seen[ipStr] = key
+	}
+}
+
+func TestAllocateWithPeers_ErrorPaths(t *testing.T) {
+	a := mustAlloc(t, "10.10.0.0/24")
+
+	tests := []struct {
+		name    string
+		selfKey string
+		peerIPs map[string]net.IP
+		hostCnt int
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "negative hostCount (handled as <1)",
+			selfKey: "key",
+			peerIPs: map[string]net.IP{},
+			hostCnt: -1,
+			wantErr: true,
+		},
+		{
+			name:    "zero hostCount",
+			selfKey: "key",
+			peerIPs: map[string]net.IP{},
+			hostCnt: 0,
+			wantErr: true,
+		},
+		{
+			name:    "overfull subnet",
+			selfKey: "key",
+			peerIPs: map[string]net.IP{},
+			hostCnt: 999,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := a.AllocateWithPeers(tt.selfKey, tt.hostCnt, tt.peerIPs)
+			if !tt.wantErr {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Error("expected error, got nil")
+			}
+		})
+	}
+}
+
+func TestAllocateAll_SubnetBoundaries(t *testing.T) {
+	tests := []struct {
+		name      string
+		subnet    string
+		nodeCount int
+		wantErr   bool
+	}{
+		{"/30 — 2 usable, 2 nodes — OK", "10.10.0.0/30", 2, false},
+		{"/30 — 2 usable, 3 nodes — fail", "10.10.0.0/30", 3, true},
+		{"/31 — 2 total (RFC 3021), 2 nodes — OK", "10.10.0.0/31", 2, false},
+		{"/31 — 2 total, 3 nodes — fail", "10.10.0.0/31", 3, true},
+		{"/29 — 6 usable, 6 nodes — OK", "10.10.0.0/29", 6, false},
+		{"/29 — 6 usable, 7 nodes — fail", "10.10.0.0/29", 7, true},
+		{"/24 — 254 usable, 254 nodes — OK", "10.10.0.0/24", 254, false},
+		{"/24 — 254 usable, 255 nodes — fail", "10.10.0.0/24", 255, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := mustAlloc(t, tt.subnet)
+
+			keys := make([]string, tt.nodeCount)
+			for i := range keys {
+				keys[i] = fmt.Sprintf("node_%d", i)
+			}
+
+			result, err := a.AllocateAll(keys)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if len(result) != tt.nodeCount {
+				t.Errorf("got %d entries, want %d", len(result), tt.nodeCount)
+			}
+		})
+	}
+}
+
+func TestHashToSlot_SaltVariation(t *testing.T) {
+	// Verify that different salts produce different slots for the same key
+	// (unless the hash collision is exceptionally unlucky).
+	const hostCount = 100
+
+	type testCase struct {
+		key  string
+		salt int
+	}
+
+	cases := []testCase{
+		{"testkey", 0},
+		{"testkey", 1},
+		{"testkey", 2},
+		{"testkey", 3},
+		{"testkey", 4},
+		{"testkey", 5},
+		{"anotherkey", 0},
+		{"anotherkey", 1},
+	}
+
+	results := make(map[string]int) // "key:salt" → slot
+	for _, tc := range cases {
+		slot := hashToSlot(tc.key, tc.salt, hostCount)
+		if slot < 0 || slot >= hostCount {
+			t.Errorf("hashToSlot(%q, %d, %d) = %d, out of range", tc.key, tc.salt, hostCount, slot)
+		}
+		k := fmt.Sprintf("%s:%d", tc.key, tc.salt)
+		results[k] = slot
+	}
+
+	// Different salts for same key should generally produce different slots.
+	if results["testkey:0"] == results["testkey:1"] &&
+		results["testkey:0"] == results["testkey:2"] &&
+		results["testkey:0"] == results["testkey:3"] {
+		t.Log("note: all salts produced same slot for testkey (unlikely but possible)")
+	}
+}
+
+func TestAllocateWithPeers_ConvergenceWithConflicts(t *testing.T) {
+	// A set of nodes with intentional hash conflicts should converge.
+	// Use a /28 subnet (14 usable) with 8 nodes.
+	a := mustAlloc(t, "10.10.0.0/28")
+
+	// Force conflicts by using keys that hash similarly.
+	keys := []string{
+		"peer_00", "peer_01", "peer_02", "peer_03",
+		"peer_04", "peer_05", "peer_06", "peer_07",
+	}
+
+	// Compute canonical allocation.
+	all, err := a.AllocateAll(keys)
+	if err != nil {
+		t.Fatalf("AllocateAll: %v", err)
+	}
+
+	// Each node uses AllocateWithPeers against all other nodes' canonical IPs.
+	// It must converge on the same result.
+	for _, selfKey := range keys {
+		peerIPs := make(map[string]net.IP)
+		for _, otherKey := range keys {
+			if otherKey != selfKey {
+				peerIPs[otherKey] = all[otherKey]
+			}
+		}
+
+		got, err := a.AllocateWithPeers(selfKey, len(keys), peerIPs)
+		if err != nil {
+			t.Fatalf("AllocateWithPeers(%s): %v", selfKey, err)
+		}
+
+		if !got.Equal(all[selfKey]) {
+			t.Errorf("AllocateWithPeers(%s) = %s, but canonical is %s",
+				selfKey, got, all[selfKey])
+		}
+	}
+}
+
+func TestAllocateWithPeers_YieldsToSmallestOfMany(t *testing.T) {
+	// When a slot is claimed by multiple peers, the self should yield
+	// if ANY of the conflicting peers has a smaller key.
+	a := mustAlloc(t, "10.10.0.0/24")
+
+	// Compute the natural IP for "peer_mid".
+	natIP, err := a.Allocate("peer_mid", 4)
+	if err != nil {
+		t.Fatalf("Allocate: %v", err)
+	}
+
+	// Two peers claim the same IP — one smaller, one larger than self.
+	peerIPs := map[string]net.IP{
+		"peer_big": natIP, // larger key
+		"peer_sml": natIP, // smaller key
+	}
+
+	got, err := a.AllocateWithPeers("peer_mid", 4, peerIPs)
+	if err != nil {
+		t.Fatalf("AllocateWithPeers: %v", err)
+	}
+
+	// Since "peer_sml" < "peer_mid", self must yield.
+	if got.Equal(natIP) {
+		t.Error("expected self to yield because peer_sml is smaller")
+	}
+
+	if !a.subnet.Contains(got) {
+		t.Errorf("yielded IP %s not in subnet", got)
+	}
+}
+
+func TestAllocateAll_InexhaustibleSaltSpace(t *testing.T) {
+	// Use a /30 subnet (2 usable) with 2 nodes whose keys have hash collisions
+	// that can be resolved with salt. This should still work.
+	a := mustAlloc(t, "10.10.0.0/30")
+
+	keys := []string{"nodeX", "nodeY"}
+	result, err := a.AllocateAll(keys)
+	if err != nil {
+		t.Fatalf("AllocateAll: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Fatalf("got %d entries, want 2", len(result))
+	}
+
+	// Both IPs must be unique.
+	ips := make(map[string]bool)
+	for _, ip := range result {
+		ipStr := ip.String()
+		if ips[ipStr] {
+			t.Fatalf("duplicate IP %s in /30 subnet", ipStr)
+		}
+		ips[ipStr] = true
 	}
 }

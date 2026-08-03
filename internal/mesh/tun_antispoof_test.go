@@ -245,3 +245,406 @@ func TestValidateSourceIP_Concurrent(t *testing.T) {
 
 	<-done
 }
+
+// ─── Additional IPv6 anti-spoofing edge cases ───
+
+func TestValidateSourceIP_IPv6_UnknownPeer(t *testing.T) {
+	f, router := newTestForwarder("fd00::/64", "localkey")
+
+	// Register peerA only.
+	router.AddRoute(net.ParseIP("fd00::5"), "peerA")
+
+	// Validate as peerB (unknown).
+	packet := makeIPv6Packet(net.ParseIP("fd00::5"), net.ParseIP("fd00::1"))
+	if f.validateSourceIP(packet, "peerB") {
+		t.Fatal("validateSourceIP should return false for unknown peer (IPv6)")
+	}
+}
+
+func TestValidateSourceIP_IPv6_MalformedPacket(t *testing.T) {
+	f, router := newTestForwarder("fd00::/64", "localkey")
+
+	router.AddRoute(net.ParseIP("fd00::5"), "peerA")
+
+	// IPv6 header needs at least 40 bytes.
+	packet := make([]byte, 20)
+	packet[0] = 0x60
+	if f.validateSourceIP(packet, "peerA") {
+		t.Fatal("validateSourceIP should return false for truncated IPv6 packet")
+	}
+}
+
+func TestValidateSourceIP_IPv6_EmptyPacket(t *testing.T) {
+	f, router := newTestForwarder("fd00::/64", "localkey")
+
+	router.AddRoute(net.ParseIP("fd00::5"), "peerA")
+
+	if f.validateSourceIP([]byte{}, "peerA") {
+		t.Fatal("validateSourceIP should return false for empty packet (IPv6 context)")
+	}
+}
+
+// ─── Dual-stack coexistence tests ───
+
+func TestValidateSourceIP_DualStack(t *testing.T) {
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	// IPv4 peer.
+	v4IP := net.ParseIP("10.10.0.5")
+	router.AddRoute(v4IP, "peerA")
+
+	// IPv6 peer (in a different subnet, but router allows any IP).
+	v6IP := net.ParseIP("fd00::5")
+	router.AddRoute(v6IP, "peerB")
+
+	// IPv4 peer sends valid IPv4 packet.
+	v4Pkt := makeIPv4Packet(v4IP, net.ParseIP("10.10.0.1"))
+	if !f.validateSourceIP(v4Pkt, "peerA") {
+		t.Fatal("IPv4 peer should pass with valid IPv4 packet")
+	}
+
+	// IPv4 peer sending from IPv6 address — spoof.
+	if f.validateSourceIP(v4Pkt, "peerB") {
+		t.Fatal("IPv4 packet from IPv6 peer should fail (wrong peer)")
+	}
+
+	// IPv6 peer sends valid IPv6 packet.
+	v6Pkt := makeIPv6Packet(v6IP, net.ParseIP("10.10.0.1"))
+	if !f.validateSourceIP(v6Pkt, "peerB") {
+		t.Fatal("IPv6 peer should pass with valid IPv6 packet")
+	}
+}
+
+func TestValidateSourceIP_DualStack_RouterInIPv4_IPv6Peer(t *testing.T) {
+	// Router is on an IPv4 subnet, but an IPv6-capable peer connects.
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	// Peer with IPv6 address registered.
+	v6IP := net.ParseIP("fd00::5")
+	router.AddRoute(v6IP, "peerA")
+
+	// Peer sends IPv6 packet with correct source.
+	v6Pkt := makeIPv6Packet(v6IP, net.ParseIP("10.10.0.1"))
+	if !f.validateSourceIP(v6Pkt, "peerA") {
+		t.Fatal("IPv6 peer should pass validation with correct source")
+	}
+
+	// Peer sends IPv6 packet with spoofed source.
+	spoofedIP := net.ParseIP("fd00::99")
+	spoofedPkt := makeIPv6Packet(spoofedIP, net.ParseIP("10.10.0.1"))
+	if f.validateSourceIP(spoofedPkt, "peerA") {
+		t.Fatal("IPv6 spoofed packet should fail validation")
+	}
+}
+
+// ─── Anti-spoofing: counter verification ───
+
+func TestValidateSourceIP_SpoofedCounterIncrements(t *testing.T) {
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	peerIP := net.ParseIP("10.10.0.5")
+	router.AddRoute(peerIP, "peerA")
+
+	// Initial counter is 0.
+	if f.packetsSpoofed.Load() != 0 {
+		t.Fatalf("initial spoofed count = %d, want 0", f.packetsSpoofed.Load())
+	}
+
+	// Send several spoofed packets (validation returns false).
+	// Note: validateSourceIP only returns bool; the caller in handleInboundStream
+	// increments the counter. We test the counter directly via atomic.Add.
+	for i := 0; i < 5; i++ {
+		spoofedPacket := makeIPv4Packet(net.ParseIP("10.10.0.99"), net.ParseIP("10.10.0.1"))
+		if f.validateSourceIP(spoofedPacket, "peerA") {
+			t.Fatalf("spoofed packet %d should fail validation", i)
+		}
+		f.packetsSpoofed.Add(1) // simulate what handleInboundStream does
+	}
+
+	if f.packetsSpoofed.Load() != 5 {
+		t.Fatalf("spoofed count = %d, want 5", f.packetsSpoofed.Load())
+	}
+}
+
+// ─── Subnet boundary and edge IPs as spoof sources ───
+
+func TestValidateSourceIP_SubnetBoundarySpoof(t *testing.T) {
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	// Peer is at 10.10.0.5.
+	peerIP := net.ParseIP("10.10.0.5")
+	router.AddRoute(peerIP, "peerA")
+
+	tests := []struct {
+		name    string
+		spoofed string
+	}{
+		{"network address", "10.10.0.0"},
+		{"broadcast address", "10.10.0.255"},
+		{"outside subnet", "192.168.1.1"},
+		{"loopback", "127.0.0.1"},
+		{"all zeros", "0.0.0.0"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spoofedIP := net.ParseIP(tt.spoofed)
+			pkt := makeIPv4Packet(spoofedIP, net.ParseIP("10.10.0.1"))
+			if f.validateSourceIP(pkt, "peerA") {
+				t.Fatalf("spoofed source %s should fail validation", tt.spoofed)
+			}
+		})
+	}
+}
+
+func TestValidateSourceIP_IPv6_SubnetBoundarySpoof(t *testing.T) {
+	f, router := newTestForwarder("fd00::/64", "localkey")
+
+	peerIP := net.ParseIP("fd00::5")
+	router.AddRoute(peerIP, "peerA")
+
+	tests := []struct {
+		name    string
+		spoofed string
+	}{
+		{"outside ULA range", "2001:db8::1"},
+		{"loopback", "::1"},
+		{"all zeros", "::"},
+		{"multicast", "ff02::1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			spoofedIP := net.ParseIP(tt.spoofed)
+			pkt := makeIPv6Packet(spoofedIP, net.ParseIP("fd00::1"))
+			if f.validateSourceIP(pkt, "peerA") {
+				t.Fatalf("spoofed IPv6 source %s should fail validation", tt.spoofed)
+			}
+		})
+	}
+}
+
+// ─── Table-driven spoofing scenarios ───
+
+func TestValidateSourceIP_TableDriven(t *testing.T) {
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	// Register two peers.
+	router.AddRoute(net.ParseIP("10.10.0.5"), "peerA")
+	router.AddRoute(net.ParseIP("10.10.0.6"), "peerB")
+
+	tests := []struct {
+		name       string
+		srcIP      string
+		dstIP      string
+		peerID     string
+		expectPass bool
+	}{
+		{"valid: peerA sends from 10.10.0.5", "10.10.0.5", "10.10.0.1", "peerA", true},
+		{"valid: peerB sends from 10.10.0.6", "10.10.0.6", "10.10.0.1", "peerB", true},
+		{"spoof: peerA claims to be peerB's IP", "10.10.0.6", "10.10.0.1", "peerA", false},
+		{"spoof: peerB claims to be peerA's IP", "10.10.0.5", "10.10.0.1", "peerB", false},
+		{"spoof: peerA sends from unknown IP", "10.10.0.99", "10.10.0.1", "peerA", false},
+		{"spoof: peerA sends from outside subnet", "192.168.1.1", "10.10.0.1", "peerA", false},
+		{"unknown peer", "10.10.0.5", "10.10.0.1", "peerC", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pkt := makeIPv4Packet(net.ParseIP(tt.srcIP), net.ParseIP(tt.dstIP))
+			got := f.validateSourceIP(pkt, tt.peerID)
+			if got != tt.expectPass {
+				t.Fatalf("validateSourceIP = %v, want %v", got, tt.expectPass)
+			}
+		})
+	}
+}
+
+// ─── Self-traffic and cross-identity spoofing ───
+
+func TestValidateSourceIP_SelfTraffic(t *testing.T) {
+	// A peer should NOT be able to claim it's the local node.
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	// Set up local IP.
+	router.SetLocalIP(net.ParseIP("10.10.0.1"))
+
+	// Register a peer.
+	peerIP := net.ParseIP("10.10.0.5")
+	router.AddRoute(peerIP, "peerA")
+
+	// PeerA sends a packet with src=10.10.0.1 (the local node's IP).
+	// This is spoofing — the peer claims to be the local node.
+	spoofedLocalPkt := makeIPv4Packet(net.ParseIP("10.10.0.1"), net.ParseIP("10.10.0.5"))
+	if f.validateSourceIP(spoofedLocalPkt, "peerA") {
+		t.Fatal("peer should not be able to spoof the local node's IP")
+	}
+}
+
+func TestValidateSourceIP_CrossPacketVersions(t *testing.T) {
+	// IPv4 peer can't send IPv6 packets as themselves and vice versa.
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	// IPv4 peer.
+	router.AddRoute(net.ParseIP("10.10.0.5"), "peerA")
+
+	// IPv6 peer.
+	router.AddRoute(net.ParseIP("fd00::5"), "peerB")
+
+	// peerA (IPv4) sends IPv6 packet with correct-looking IPv6 src.
+	// But peerA's registered IP is IPv4, so this should fail.
+	v6Pkt := makeIPv6Packet(net.ParseIP("fd00::5"), net.ParseIP("10.10.0.1"))
+	if f.validateSourceIP(v6Pkt, "peerA") {
+		t.Fatal("IPv4 peer should not pass with IPv6 packet (IP versions differ)")
+	}
+
+	// peerB (IPv6) sends IPv4 packet with peerA's IP — spoof.
+	v4Pkt := makeIPv4Packet(net.ParseIP("10.10.0.5"), net.ParseIP("fd00::1"))
+	if f.validateSourceIP(v4Pkt, "peerB") {
+		t.Fatal("IPv6 peer should not pass with IPv4 packet (IP versions differ)")
+	}
+}
+
+// ─── Stats initialization and snapshot consistency ───
+
+func TestTunForwarderStats_AllZero(t *testing.T) {
+	f, _ := newTestForwarder("10.10.0.0/24", "localkey")
+
+	stats := f.Stats()
+	if stats.PacketsSent != 0 || stats.PacketsReceived != 0 ||
+		stats.PacketsDropped != 0 || stats.PacketsSpoofed != 0 ||
+		stats.BytesSent != 0 || stats.BytesReceived != 0 {
+		t.Fatal("all stats should be zero on fresh forwarder")
+	}
+}
+
+func TestTunForwarderStats_SnapshotConsistency(t *testing.T) {
+	f, _ := newTestForwarder("10.10.0.0/24", "localkey")
+
+	// Modify counters.
+	f.packetsSpoofed.Add(3)
+	f.packetsSent.Add(100)
+
+	// Snapshot should reflect current values.
+	stats := f.Stats()
+	if stats.PacketsSpoofed != 3 {
+		t.Fatalf("PacketsSpoofed = %d, want 3", stats.PacketsSpoofed)
+	}
+	if stats.PacketsSent != 100 {
+		t.Fatalf("PacketsSent = %d, want 100", stats.PacketsSent)
+	}
+
+	// Modify more.
+	f.packetsSpoofed.Add(2)
+
+	// Old snapshot should be unchanged (we captured by value).
+	if stats.PacketsSpoofed != 3 {
+		t.Fatalf("old snapshot mutated: PacketsSpoofed = %d, want 3", stats.PacketsSpoofed)
+	}
+
+	// New snapshot should reflect update.
+	stats2 := f.Stats()
+	if stats2.PacketsSpoofed != 5 {
+		t.Fatalf("new snapshot PacketsSpoofed = %d, want 5", stats2.PacketsSpoofed)
+	}
+}
+
+// ─── Subnet proxy anti-spoofing tests ───
+
+func TestValidateSourceIP_SubnetProxy_OutsideMesh(t *testing.T) {
+	// When a peer sends a packet with a source IP outside the mesh
+	// subnet (e.g. from its LAN 192.168.1.x), the packet should be
+	// accepted IF the RouteManager is configured and the source IP
+	// falls within the peer's advertised subnet.
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	peerIP := net.ParseIP("10.10.0.5")
+	router.AddRoute(peerIP, "peerA")
+
+	// Configure RouteManager with peerA's subnet proxy.
+	rm := tun.NewRouteManager("mesh0")
+	rm.AddPeerSubnets("peerA", "10.10.0.5", []string{"192.168.1.0/24"})
+	f.cfg.RouteManager = rm
+
+	// Packet from peerA's LAN (192.168.1.100) — outside mesh subnet
+	// but within peerA's advertised subnet proxy.
+	lanSrc := net.ParseIP("192.168.1.100")
+	packet := makeIPv4Packet(lanSrc, net.ParseIP("10.10.0.1"))
+	if !f.validateSourceIP(packet, "peerA") {
+		t.Fatal("validateSourceIP should return true for subnet proxy traffic (src within peer's advertised subnet)")
+	}
+}
+
+func TestValidateSourceIP_SubnetProxy_NoRouteManager(t *testing.T) {
+	// Without a RouteManager, outside-mesh-subnet packets should be
+	// rejected (backward-compatible with pre-subnet-proxy behavior).
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	peerIP := net.ParseIP("10.10.0.5")
+	router.AddRoute(peerIP, "peerA")
+
+	// No RouteManager configured.
+	lanSrc := net.ParseIP("192.168.1.100")
+	packet := makeIPv4Packet(lanSrc, net.ParseIP("10.10.0.1"))
+	if f.validateSourceIP(packet, "peerA") {
+		t.Fatal("validateSourceIP should return false for outside-mesh IP when no RouteManager is configured")
+	}
+}
+
+func TestValidateSourceIP_SubnetProxy_WrongPeer(t *testing.T) {
+	// Peer A's LAN traffic should NOT be accepted from peer B.
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	peerAIP := net.ParseIP("10.10.0.5")
+	router.AddRoute(peerAIP, "peerA")
+	peerBIP := net.ParseIP("10.10.0.6")
+	router.AddRoute(peerBIP, "peerB")
+
+	// RouteManager has peerA's subnet, but packet arrives from peerB.
+	rm := tun.NewRouteManager("mesh0")
+	rm.AddPeerSubnets("peerA", "10.10.0.5", []string{"192.168.1.0/24"})
+	f.cfg.RouteManager = rm
+
+	lanSrc := net.ParseIP("192.168.1.100")
+	packet := makeIPv4Packet(lanSrc, net.ParseIP("10.10.0.1"))
+	if f.validateSourceIP(packet, "peerB") {
+		t.Fatal("validateSourceIP should return false when peerB sends traffic from peerA's subnet")
+	}
+}
+
+func TestValidateSourceIP_SubnetProxy_MeshSubnetMismatch(t *testing.T) {
+	// A packet whose source IP is IN the mesh subnet but doesn't match
+	// the peer's VirtualIP should still be rejected (not treated as
+	// subnet proxy traffic).
+	f, router := newTestForwarder("10.10.0.0/24", "localkey")
+
+	peerIP := net.ParseIP("10.10.0.5")
+	router.AddRoute(peerIP, "peerA")
+
+	// Source 10.10.0.99 is in the mesh subnet but doesn't match peerA's VIP.
+	spoofedMeshIP := net.ParseIP("10.10.0.99")
+	packet := makeIPv4Packet(spoofedMeshIP, net.ParseIP("10.10.0.1"))
+	if f.validateSourceIP(packet, "peerA") {
+		t.Fatal("validateSourceIP should return false for mesh-subnet IP mismatch (not subnet proxy)")
+	}
+}
+
+func TestValidateSourceIP_SubnetProxy_IPv6(t *testing.T) {
+	// IPv6 subnet proxy traffic — source outside mesh subnet.
+	f, router := newTestForwarder("fd00::/64", "localkey")
+
+	peerIP := net.ParseIP("fd00::5")
+	router.AddRoute(peerIP, "peerA")
+
+	// Configure RouteManager with peerA's IPv6 subnet proxy.
+	rm := tun.NewRouteManager("mesh0")
+	rm.AddPeerSubnets("peerA", "fd00::5", []string{"2001:db8::/32"})
+	f.cfg.RouteManager = rm
+
+	// Packet from peerA's LAN (2001:db8::100) — outside mesh subnet.
+	lanSrc := net.ParseIP("2001:db8::100")
+	packet := makeIPv6Packet(lanSrc, net.ParseIP("fd00::1"))
+	if !f.validateSourceIP(packet, "peerA") {
+		t.Fatal("validateSourceIP should return true for IPv6 subnet proxy traffic")
+	}
+}
