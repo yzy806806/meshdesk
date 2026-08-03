@@ -361,7 +361,65 @@ func main() {
 			// Wire the gossip layer to the NAT traversal so it can send
 			// relay control messages (SETUP, TEARDOWN) via gossip.
 			natTraversal.SetGossipLayer(gossipLayer)
-		}
+			}
+
+			// Wire TUN integration with the gossip layer.
+			// This bridges the mesh package (TUN/IPAM) with the p2p package
+			// (gossip), avoiding an import cycle.
+			if cfg.Mesh.TunEnabled && gossipLayer != nil {
+				// Set up callbacks so the TUN subsystem can propagate
+				// its VirtualIP and subnet proxies to the gossip layer.
+				node.SetVirtualIPBroadcaster(gossipLayer.SetLocalVirtualIP)
+				node.SetSubnetProxyBroadcaster(gossipLayer.SetLocalSubnetProxies)
+
+				// Provide a callback for the TUN IPAM allocator to query
+				// known peer VirtualIPs for conflict resolution.
+				node.SetPeerMetaProvider(func() map[string]string {
+					result := make(map[string]string)
+					for _, meta := range gossipLayer.KnownPeers() {
+						if meta.VirtualIP != "" {
+							result[meta.PublicKey] = meta.VirtualIP
+						}
+					}
+					return result
+				})
+
+				// Wire gossip join/leave handlers to sync kernel routes
+				// for peer VirtualIPs. When a peer joins with a VirtualIP,
+				// add a /32 route; when it leaves, remove it.
+				gl.Events().SetJoinHandler(func(meta *p2p.NodeMeta) {
+					if meta.VirtualIP != "" {
+						node.AddPeerVirtualIPRoute(meta.PublicKey, meta.VirtualIP)
+					}
+				})
+				gl.Events().SetLeaveHandler(func(peerKey string) {
+					node.RemovePeerVirtualIPRoute(peerKey)
+					node.RemovePeerSubnetProxies(peerKey)
+				})
+
+				// Wire the subnet proxy handler: when a peer advertises
+				// subnet proxies, add kernel routes via its VirtualIP.
+				gossipLayer.SetSubnetProxyHandler(func(pubKey, virtualIP string, subnets []string) {
+					if len(subnets) > 0 {
+						node.AddPeerSubnetProxies(pubKey, virtualIP, subnets)
+					} else {
+						node.RemovePeerSubnetProxies(pubKey)
+					}
+				})
+
+				// Process already-known peers (in case gossip started
+				// before the TUN integration was wired).
+				for _, meta := range gossipLayer.KnownPeers() {
+					if meta.VirtualIP != "" {
+						node.AddPeerVirtualIPRoute(meta.PublicKey, meta.VirtualIP)
+					}
+					if len(meta.SubnetProxies) > 0 && meta.VirtualIP != "" {
+						node.AddPeerSubnetProxies(meta.PublicKey, meta.VirtualIP, meta.SubnetProxies)
+					}
+				}
+
+				log.Printf("  TUN:        gossip integration active (VirtualIP routing + subnet proxy)")
+			}
 
 		defer func() {
 			if natTraversal != nil {
