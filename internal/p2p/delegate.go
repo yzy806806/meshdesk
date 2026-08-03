@@ -87,6 +87,13 @@ type NodeMeta struct {
 	// deterministic allocator. Propagated via gossip so every node
 	// knows every other node's mesh-subnet IP. Empty when TUN is disabled.
 	VirtualIP string `msgpack:"vip,omitempty"`
+
+	// SubnetProxies is the list of local CIDR subnets that this node
+	// can route to (e.g. a LAN behind the node). Other nodes use this
+	// to add kernel routes: traffic for these subnets goes via this
+	// node's VirtualIP through the TUN interface. Empty when no
+	// subnet proxies are configured.
+	SubnetProxies []string `msgpack:"spx,omitempty"`
 }
 
 // MarshalMeta serializes NodeMeta to MessagePack bytes.

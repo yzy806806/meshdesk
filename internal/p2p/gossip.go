@@ -225,6 +225,27 @@ func (g *GossipLayer) SetLocalVirtualIP(virtualIP string) {
 	}
 }
 
+// SetLocalSubnetProxies sets the local node's advertised subnet proxies
+// in gossip metadata. These are local CIDR subnets that this node can
+// route to (e.g. a LAN behind it). Other nodes learn about them via
+// gossip and add kernel routes via this node's VirtualIP.
+func (g *GossipLayer) SetLocalSubnetProxies(subnets []string) {
+	g.delegate.updateLocalMeta(func(m *NodeMeta) {
+		m.SubnetProxies = subnets
+		m.Seq++
+	})
+
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+
+	if ml != nil {
+		if err := ml.UpdateNode(time.Second); err != nil {
+			log.Printf("[p2p] subnet proxies: UpdateNode failed: %v", err)
+		}
+	}
+}
+
 // announceLocalEndpoint proactively sets the local node's WireGuard endpoint(s)
 // so gossip propagates them to all peers. This breaks the chicken-and-egg
 // problem where reactive OnEndpointDiscovered only fires when a peer already
@@ -417,6 +438,14 @@ func (g *GossipLayer) SetCollectorHandler(hdl CollectorDiscoveredHandler) {
 //	gossipLayer.SetCollectorRemovedHandler(reporter.RemoveCollector)
 func (g *GossipLayer) SetCollectorRemovedHandler(hdl CollectorRemovedHandler) {
 	g.events.SetCollectorRemovedHandler(hdl)
+}
+
+// SetSubnetProxyHandler installs a handler for subnet proxy change events.
+// When a peer joins or updates with advertised subnet proxies, the handler
+// is invoked with the peer's public key, VirtualIP, and the list of subnet
+// CIDRs. When a peer leaves, the handler is invoked with empty subnets.
+func (g *GossipLayer) SetSubnetProxyHandler(hdl SubnetProxyChangeHandler) {
+	g.events.SetSubnetProxyHandler(hdl)
 }
 
 // SeedCollectorsFromCache re-fires the collector discovery callback for
