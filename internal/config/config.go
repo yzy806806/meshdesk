@@ -525,6 +525,13 @@ type MeshConfig struct {
 
 	// TunMTU is the MTU for the TUN interface. Default: 1400.
 	TunMTU int `yaml:"tun_mtu,omitempty"`
+
+	// StaticVirtualIP forces a specific VirtualIP instead of using IPAM
+	// allocation. When set, the node uses this IP regardless of peer
+	// state. Use only when IPAM cannot converge (e.g., single-node
+	// testing, NAT-separated nodes with no relay).
+	// Format: "10.100.0.2". The IP must be within mesh_cidr.
+	StaticVirtualIP string `yaml:"static_virtual_ip,omitempty"`
 }
 
 // P2pConfig holds settings for the P2P dynamic networking layer
