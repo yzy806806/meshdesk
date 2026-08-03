@@ -99,6 +99,26 @@ type MeshNode struct {
 	// (0x5350) and an exit handler (0x4558) simultaneously.
 	socks5ExitHandler socks5Closer
 
+	// tunIntegration holds the TUN device, IPAM allocator, router,
+	// route manager, and forwarder. Non-nil when cfg.Mesh.TunEnabled
+	// is true and setupTUN() has succeeded.
+	tunIntegration *TUNIntegration
+
+	// peerMetaProvider is a callback that returns known peer public keys
+	// → VirtualIP strings. Set by main.go to bridge the gossip layer
+	// with the TUN IPAM allocator, avoiding an import cycle.
+	peerMetaProvider func() map[string]string
+
+	// virtualIPBroadcaster is a callback to propagate the local node's
+	// VirtualIP to the gossip layer. Set by main.go to
+	// gossipLayer.SetLocalVirtualIP.
+	virtualIPBroadcaster func(string)
+
+	// subnetProxyBroadcaster is a callback to propagate the local node's
+	// subnet proxies to the gossip layer. Set by main.go to
+	// gossipLayer.SetLocalSubnetProxies.
+	subnetProxyBroadcaster func([]string)
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -181,88 +201,95 @@ func (n *MeshNode) Start() error {
 		// Virtual port listeners (ListenVirtualPort) still work for
 		// inbound streams on sessions that this node dials outbound.
 		log.Printf("[mesh] ordinary node mode (no public TCP listener, UDP gossip on %s:%d)", udpAddr, udpPort)
-		return nil
-	}
-
-	if !n.cfg.Reality.Enabled {
-		return fmt.Errorf("mesh: Reality TLS not enabled in config (set reality.enabled=true)")
-	}
-
-	// Build the listen address from config.
-	addr := buildRealityListenAddr(n.cfg)
-
-	// Create the Reality TLS handshake config.
-	hsCfg := handshake.HandshakeConfig{
-		ListenAddr:         addr,
-		RealityDest:        n.cfg.Reality.Dest,
-		RealityPrivateKey:  n.cfg.Reality.PrivateKey,
-		RealityShortID:     firstShortID(n.cfg.Reality.ShortIDs),
-		RealityServerNames: n.cfg.Reality.ServerNames,
-		DialTimeout:        30 * time.Second,
-		TLSFingerprint:     "chrome",
-	}
-
-	hs := handshake.NewRealityHandshake(hsCfg)
-
-	var ln net.Listener
-	var err error
-
-	if n.cfg.P2P.Enabled {
-		// Port multiplexing: create a shared TCP listener and MuxTransport,
-		// then wrap the MuxTransport's RealityListener with REALITY auth.
-		tcpListener, err := net.Listen("tcp", addr)
-		if err != nil {
-			return fmt.Errorf("mesh: start shared TCP listener on %s: %w", addr, err)
+	} else {
+		// Shared node mode (reality.enabled: true).
+		if !n.cfg.Reality.Enabled {
+			return fmt.Errorf("mesh: Reality TLS not enabled in config (set reality.enabled=true)")
 		}
 
-		muxCfg := MuxTransportConfig{
-			TCPListener:   tcpListener,
-			BindAddr:      "0.0.0.0",
-			AdvertiseAddr: "", // auto-detect
+		// Build the listen address from config.
+		addr := buildRealityListenAddr(n.cfg)
+
+		// Create the Reality TLS handshake config.
+		hsCfg := handshake.HandshakeConfig{
+			ListenAddr:         addr,
+			RealityDest:        n.cfg.Reality.Dest,
+			RealityPrivateKey:  n.cfg.Reality.PrivateKey,
+			RealityShortID:     firstShortID(n.cfg.Reality.ShortIDs),
+			RealityServerNames: n.cfg.Reality.ServerNames,
+			DialTimeout:        30 * time.Second,
+			TLSFingerprint:     "chrome",
 		}
-		mt, err := NewMuxTransport(muxCfg)
-		if err != nil {
-			tcpListener.Close()
-			return fmt.Errorf("mesh: create mux transport: %w", err)
+
+		hs := handshake.NewRealityHandshake(hsCfg)
+
+		var ln net.Listener
+		var err error
+
+		if n.cfg.P2P.Enabled {
+			// Port multiplexing: create a shared TCP listener and MuxTransport,
+			// then wrap the MuxTransport's RealityListener with REALITY auth.
+			tcpListener, err := net.Listen("tcp", addr)
+			if err != nil {
+				return fmt.Errorf("mesh: start shared TCP listener on %s: %w", addr, err)
+			}
+
+			muxCfg := MuxTransportConfig{
+				TCPListener:   tcpListener,
+				BindAddr:      "0.0.0.0",
+				AdvertiseAddr: "", // auto-detect
+			}
+			mt, err := NewMuxTransport(muxCfg)
+			if err != nil {
+				tcpListener.Close()
+				return fmt.Errorf("mesh: create mux transport: %w", err)
+			}
+
+			n.mu.Lock()
+			n.muxTransport = mt
+			n.mu.Unlock()
+
+			// Wrap the MuxTransport's RealityListener with REALITY auth.
+			realityLn := mt.RealityListener()
+			ln, err = hs.ListenWithListener(n.ctx, realityLn)
+			if err != nil {
+				mt.Shutdown()
+				return fmt.Errorf("mesh: start reality listener on %s: %w", addr, err)
+			}
+		} else {
+			// No P2P — create a standalone Reality TLS listener.
+			ln, err = hs.Listen(n.ctx, addr)
+			if err != nil {
+				return fmt.Errorf("mesh: start reality listener on %s: %w", addr, err)
+			}
 		}
 
 		n.mu.Lock()
-		n.muxTransport = mt
+		if n.listener != nil {
+			n.listener.Close()
+		}
+		n.listener = ln
+		n.hs = hs
 		n.mu.Unlock()
 
-		// Wrap the MuxTransport's RealityListener with REALITY auth.
-		realityLn := mt.RealityListener()
-		ln, err = hs.ListenWithListener(n.ctx, realityLn)
-		if err != nil {
-			mt.Shutdown()
-			return fmt.Errorf("mesh: start reality listener on %s: %w", addr, err)
-		}
-	} else {
-		// No P2P — create a standalone Reality TLS listener.
-		ln, err = hs.Listen(n.ctx, addr)
-		if err != nil {
-			return fmt.Errorf("mesh: start reality listener on %s: %w", addr, err)
+		log.Printf("[mesh] Reality TLS listener started on %s (dest=%s)", addr, n.cfg.Reality.Dest)
+
+		// Start accept loop in background.
+		go n.acceptLoop(ln)
+
+		// If MuxTransport is active, also start a mesh-internal accept loop
+		// for connections that use the mesh-internal marker byte (0x4D).
+		if n.muxTransport != nil {
+			meshLn := n.muxTransport.MeshListener()
+			go n.acceptMeshLoop(meshLn)
 		}
 	}
 
-	n.mu.Lock()
-	if n.listener != nil {
-		n.listener.Close()
-	}
-	n.listener = ln
-	n.hs = hs
-	n.mu.Unlock()
-
-	log.Printf("[mesh] Reality TLS listener started on %s (dest=%s)", addr, n.cfg.Reality.Dest)
-
-	// Start accept loop in background.
-	go n.acceptLoop(ln)
-
-	// If MuxTransport is active, also start a mesh-internal accept loop
-	// for connections that use the mesh-internal marker byte (0x4D).
-	if n.muxTransport != nil {
-		meshLn := n.muxTransport.MeshListener()
-		go n.acceptMeshLoop(meshLn)
+	// Set up TUN integration if enabled.
+	if n.cfg.Mesh.TunEnabled {
+		if err := n.setupTUN(); err != nil {
+			log.Printf("[mesh] warning: TUN setup failed: %v (continuing without TUN)", err)
+		}
 	}
 
 	return nil
@@ -489,6 +516,9 @@ func (n *MeshNode) Close() error {
 	}
 
 	n.mu.Unlock()
+
+	// Tear down TUN integration if active.
+	n.teardownTUN()
 
 	// Close all smux sessions.
 	n.sessionsMu.Lock()

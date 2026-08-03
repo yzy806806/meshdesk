@@ -499,6 +499,32 @@ type MeshConfig struct {
 	// GossipPort is the TCP port for memberlist gossip on the mesh IP.
 	// Default: 7946. Only used when p2p.enabled is true.
 	GossipPort int `yaml:"gossip_port,omitempty"`
+
+	// --- TUN virtual network interface ---
+
+	// TunEnabled controls whether the TUN device is created on startup.
+	// When true, the node creates a TUN interface, allocates a VirtualIP
+	// via IPAM, and syncs kernel routes for peer VirtualIPs.
+	// Default: false. Requires CAP_NET_ADMIN or root.
+	TunEnabled bool `yaml:"tun_enabled,omitempty"`
+
+	// MeshCIDR is the CIDR subnet for the TUN interface (e.g. "10.144.144.0/24").
+	// The node's VirtualIP is allocated from this subnet by the IPAM
+	// deterministic allocator. Required when TunEnabled is true.
+	MeshCIDR string `yaml:"mesh_cidr,omitempty"`
+
+	// SubnetProxy is a list of local CIDR subnets that this node
+	// advertises as reachable through its TUN interface (e.g. a LAN
+	// behind it). Other nodes add kernel routes for these subnets
+	// via this node's VirtualIP.
+	SubnetProxy []string `yaml:"subnet_proxy,omitempty"`
+
+	// TunName is the desired TUN interface name (e.g. "mesh0").
+	// If empty, defaults to "mesh0".
+	TunName string `yaml:"tun_name,omitempty"`
+
+	// TunMTU is the MTU for the TUN interface. Default: 1400.
+	TunMTU int `yaml:"tun_mtu,omitempty"`
 }
 
 // P2pConfig holds settings for the P2P dynamic networking layer
@@ -749,6 +775,7 @@ func Default() *Config {
 		Mesh: MeshConfig{
 			Port:       51820,
 			GossipPort: 7946,
+			TunMTU:     DefaultTunMTU,
 		},
 		Monitoring: MonitoringConfig{
 			Interval: 15,
@@ -849,6 +876,30 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Mesh.GossipPort == 0 {
 		cfg.Mesh.GossipPort = 7946
+	}
+	// TUN config defaults for MeshConfig fields.
+	if cfg.Mesh.TunMTU == 0 {
+		cfg.Mesh.TunMTU = DefaultTunMTU
+	}
+	if cfg.Mesh.TunName == "" && cfg.Mesh.TunEnabled {
+		cfg.Mesh.TunName = "mesh0"
+	}
+	// Backward compatibility: if the top-level tun: section has fields
+	// set and the mesh.* fields don't, migrate from tun: to mesh.
+	if cfg.Tun.Enabled && !cfg.Mesh.TunEnabled {
+		cfg.Mesh.TunEnabled = true
+	}
+	if cfg.Tun.Subnet != "" && cfg.Mesh.MeshCIDR == "" {
+		cfg.Mesh.MeshCIDR = cfg.Tun.Subnet
+	}
+	if cfg.Tun.Name != "" && cfg.Mesh.TunName == "" {
+		cfg.Mesh.TunName = cfg.Tun.Name
+	}
+	if cfg.Tun.MTU != 0 && cfg.Mesh.TunMTU == 0 {
+		cfg.Mesh.TunMTU = cfg.Tun.MTU
+	}
+	if len(cfg.Tun.SubnetProxies) > 0 && len(cfg.Mesh.SubnetProxy) == 0 {
+		cfg.Mesh.SubnetProxy = cfg.Tun.SubnetProxies
 	}
 	// P2P config defaults.
 	if !cfg.P2P.NatTraversal && cfg.P2P.Enabled {
