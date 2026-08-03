@@ -92,11 +92,48 @@ func main() {
 	}
 
 	// Create and start the mesh node.
+	var gossipLayer *p2p.GossipLayer
 	node, err := mesh.New(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create mesh node: %v", err)
 	}
 	defer node.Close()
+
+	// Wire the TUN IPAM peer meta provider callback before node.Start()
+	// so setupTUN can query known peer VirtualIPs for conflict resolution.
+	// The closure captures gossipLayer by reference; it will be nil until
+	// gossip starts, so we guard with a nil check.
+	if cfg.Mesh.TunEnabled {
+		node.SetPeerMetaProvider(func() map[string]string {
+			if gossipLayer == nil {
+				return nil
+			}
+			result := make(map[string]string)
+			for _, meta := range gossipLayer.KnownPeers() {
+				if meta.VirtualIP != "" {
+					result[meta.PublicKey] = meta.VirtualIP
+				}
+			}
+			return result
+		})
+	}
+
+	// Wire the TUN VirtualIP and subnet proxy broadcasters before node.Start()
+	// so setupTUN can propagate them to the gossip layer immediately.
+	// Use closures that capture gossipLayer by reference (nil-safe), matching
+	// the SetPeerMetaProvider pattern above.
+	if cfg.Mesh.TunEnabled {
+		node.SetVirtualIPBroadcaster(func(vip string) {
+			if gossipLayer != nil {
+				gossipLayer.SetLocalVirtualIP(vip)
+			}
+		})
+		node.SetSubnetProxyBroadcaster(func(subnets []string) {
+			if gossipLayer != nil {
+				gossipLayer.SetLocalSubnetProxies(subnets)
+			}
+		})
+	}
 
 	if err := node.Start(); err != nil {
 		log.Fatalf("Failed to start mesh node: %v", err)
@@ -180,7 +217,6 @@ func main() {
 	}
 
 	// Initialize the P2P gossip discovery layer (if enabled).
-	var gossipLayer *p2p.GossipLayer
 	var natTraversal *p2p.NatTraversal
 	if cfg.P2P.Enabled {
 		// Create the WireGuard delegate for dynamic peer management.
@@ -366,35 +402,46 @@ func main() {
 			// Wire TUN integration with the gossip layer.
 			// This bridges the mesh package (TUN/IPAM) with the p2p package
 			// (gossip), avoiding an import cycle.
+			//
+			// NOTE: SetVirtualIPBroadcaster and SetSubnetProxyBroadcaster are
+			// now wired BEFORE node.Start() so setupTUN can propagate them
+			// immediately. Only join/leave routing handlers are set here.
 			if cfg.Mesh.TunEnabled && gossipLayer != nil {
-				// Set up callbacks so the TUN subsystem can propagate
-				// its VirtualIP and subnet proxies to the gossip layer.
-				node.SetVirtualIPBroadcaster(gossipLayer.SetLocalVirtualIP)
-				node.SetSubnetProxyBroadcaster(gossipLayer.SetLocalSubnetProxies)
-
-				// Provide a callback for the TUN IPAM allocator to query
-				// known peer VirtualIPs for conflict resolution.
-				node.SetPeerMetaProvider(func() map[string]string {
-					result := make(map[string]string)
-					for _, meta := range gossipLayer.KnownPeers() {
-						if meta.VirtualIP != "" {
-							result[meta.PublicKey] = meta.VirtualIP
-						}
-					}
-					return result
-				})
-
 				// Wire gossip join/leave handlers to sync kernel routes
 				// for peer VirtualIPs. When a peer joins with a VirtualIP,
 				// add a /32 route; when it leaves, remove it.
+				// Also detect IPAM conflicts: if a new peer claims the
+				// same VirtualIP, trigger re-allocation.
 				gl.Events().SetJoinHandler(func(meta *p2p.NodeMeta) {
 					if meta.VirtualIP != "" {
+						// Check for IPAM conflict.
+						ti := node.TUNIntegration()
+						if ti != nil && ti.VirtualIP != nil &&
+							ti.VirtualIP.String() == meta.VirtualIP {
+							peerIPs := make(map[string]net.IP)
+							for _, pm := range gossipLayer.KnownPeers() {
+								if pm.VirtualIP != "" {
+									peerIPs[pm.PublicKey] = net.ParseIP(pm.VirtualIP)
+								}
+							}
+							node.ReallocateAfterGossip(peerIPs)
+						}
 						node.AddPeerVirtualIPRoute(meta.PublicKey, meta.VirtualIP)
 					}
 				})
 				gl.Events().SetLeaveHandler(func(peerKey string) {
-					node.RemovePeerVirtualIPRoute(peerKey)
-					node.RemovePeerSubnetProxies(peerKey)
+					// Decouple TUN route cleanup from memberlist NotifyLeave.
+					// memberlist may flap (UDP ping timeout) while the smux
+					// session is still alive and functional. Only remove TUN
+					// routes if the session is truly dead.
+					if node.HasActiveSession(peerKey) {
+						log.Printf("[p2p] NotifyLeave: keeping TUN routes for peer %s (smux session still alive)",
+							peerKey[:8])
+						return
+					}
+					log.Printf("[p2p] NotifyLeave: removing TUN routes for peer %s (no active session)",
+						peerKey[:8])
+					node.RemoveAllTUNRoutesForPeer(peerKey)
 				})
 
 				// Wire the subnet proxy handler: when a peer advertises
@@ -418,8 +465,70 @@ func main() {
 					}
 				}
 
+				// Re-broadcast the local VirtualIP now that gossip is active.
+				// During setupTUN (called inside node.Start()), gossipLayer was
+				// still nil, so the VirtualIP broadcast was deferred. Now that
+				// gossip is running, we push it so peers can discover our IP.
+				//
+				// Also handle IPAM conflict: if a peer has the same VirtualIP,
+				// re-allocate to a different IP.
+				if ti := node.TUNIntegration(); ti != nil {
+					// Collect peer VirtualIPs from gossip.
+					peerIPs := make(map[string]net.IP)
+					for _, meta := range gossipLayer.KnownPeers() {
+						if meta.VirtualIP != "" {
+							peerIPs[meta.PublicKey] = net.ParseIP(meta.VirtualIP)
+						}
+					}
+					// Re-allocate if there's a conflict.
+					node.ReallocateAfterGossip(peerIPs)
+					// Re-broadcast (may have changed due to re-allocation).
+					if ti2 := node.TUNIntegration(); ti2 != nil {
+						node.SetTUNLocalVirtualIP(ti2.VirtualIP.String())
+						if len(cfg.Mesh.SubnetProxy) > 0 {
+							node.SetTUNSubnetProxies(cfg.Mesh.SubnetProxy)
+						}
+					}
+				}
+
+				// Wire the update handler to detect peer VirtualIP changes
+				// (including the initial broadcast from re-joined peers).
+				gl.Events().SetUpdateHandler(func(meta *p2p.NodeMeta) {
+					if meta.VirtualIP == "" {
+						return
+					}
+					// Check for IPAM conflict with local VirtualIP.
+					ti := node.TUNIntegration()
+					if ti != nil && ti.VirtualIP != nil &&
+						ti.VirtualIP.String() == meta.VirtualIP {
+						// Conflict: peer claims the same VirtualIP.
+						// Collect all known peer VirtualIPs and re-allocate.
+						peerIPs := make(map[string]net.IP)
+						for _, pm := range gossipLayer.KnownPeers() {
+							if pm.VirtualIP != "" {
+								peerIPs[pm.PublicKey] = net.ParseIP(pm.VirtualIP)
+							}
+						}
+						node.ReallocateAfterGossip(peerIPs)
+					}
+					node.AddPeerVirtualIPRoute(meta.PublicKey, meta.VirtualIP)
+					if len(meta.SubnetProxies) > 0 {
+						node.AddPeerSubnetProxies(meta.PublicKey, meta.VirtualIP, meta.SubnetProxies)
+					}
+				})
+
+				// Wire the session death handler: when a smux session truly dies
+				// (detected by the reconnect watcher), clean up TUN routes.
+				// This is the correct cleanup path, as opposed to memberlist
+				// NotifyLeave which may fire on UDP flaps while the session is
+				// still alive.
+				node.SetSessionDeathHandler(func(peerKey string) {
+					log.Printf("[mesh] session death: cleaning up TUN routes for peer %s", peerKey[:8])
+					node.RemoveAllTUNRoutesForPeer(peerKey)
+				})
+
 				log.Printf("  TUN:        gossip integration active (VirtualIP routing + subnet proxy)")
-			}
+				}
 
 		defer func() {
 			if natTraversal != nil {

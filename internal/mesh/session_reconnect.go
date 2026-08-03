@@ -76,6 +76,17 @@ func (n *MeshNode) watchSession(
 	log.Printf("[mesh] session lost for peer %s, starting auto-reconnect",
 		shortPeerID(peerIdentityHex))
 
+	// Fire the session death handler to clean up TUN routes and other
+	// session-dependent state. This is the correct place to clean up:
+	// the smux session is truly dead, as opposed to a memberlist UDP flap
+	// where the session may still be alive.
+	n.mu.RLock()
+	deathHdl := n.sessionDeathHandler
+	n.mu.RUnlock()
+	if deathHdl != nil {
+		deathHdl(peerIdentityHex)
+	}
+
 	if n.isShuttingDown() {
 		log.Printf("[mesh] node shutting down, skipping reconnect for peer %s",
 			shortPeerID(peerIdentityHex))

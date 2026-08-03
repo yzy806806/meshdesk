@@ -384,6 +384,15 @@ func (n *MeshNode) RemovePeerSubnetProxies(peerPubKey string) {
 	ti.RouteManager.RemovePeerSubnets(peerPubKey)
 }
 
+// RemoveAllTUNRoutesForPeer removes both the peer's VirtualIP /32 route and
+// all subnet proxy routes. This is the comprehensive cleanup that should be
+// called when a peer is truly gone (smux session dead and reconnect exhausted),
+// as opposed to a memberlist flap where the session is still alive.
+func (n *MeshNode) RemoveAllTUNRoutesForPeer(peerPubKey string) {
+	n.RemovePeerVirtualIPRoute(peerPubKey)
+	n.RemovePeerSubnetProxies(peerPubKey)
+}
+
 // SetTUNLocalVirtualIP propagates the local node's VirtualIP to the
 // gossip layer. This is called from setupTUN after IPAM allocation.
 // The actual gossip propagation is done via a callback set by main.go.
