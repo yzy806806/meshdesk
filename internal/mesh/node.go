@@ -119,6 +119,13 @@ type MeshNode struct {
 	// gossipLayer.SetLocalSubnetProxies.
 	subnetProxyBroadcaster func([]string)
 
+	// sessionDeathHandler is called when a smux session with a peer dies
+	// (detected by the reconnect watcher). The argument is the peer's
+	// identity hex. Set by main.go to clean up TUN routes when the peer
+	// is truly unreachable, as opposed to a memberlist UDP flap where the
+	// session is still alive.
+	sessionDeathHandler func(string)
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -581,9 +588,36 @@ func (n *MeshNode) Close() error {
 
 // GetSession returns the smux session for a peer by identity hex string.
 // Returns nil if no session exists for the peer.
+// HasActiveSession returns true if there is a live (non-closed) smux session
+// with the given peer identity hex. This is used to check whether a peer is
+// still reachable at the session layer even when memberlist UDP probing fails.
+//
+// The distinction matters because memberlist may mark a peer as "left" due to
+// UDP ping timeouts (e.g. cross-network latency, NAT, or VPN packet loss)
+// while the TCP smux session is still alive and functional. In that case,
+// TUN routes and other session-dependent state should be preserved.
+func (n *MeshNode) HasActiveSession(peerIdentityHex string) bool {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+
+	if sess, ok := n.clientSessions[peerIdentityHex]; ok && sess != nil && !sess.IsClosed() {
+		return true
+	}
+	if sess, ok := n.sessions[peerIdentityHex]; ok && sess != nil && !sess.IsClosed() {
+		return true
+	}
+	return false
+}
+
+// GetSession returns the active smux session for the given peer identity hex,
+// or nil if no session exists. It checks both the main sessions map and the
+// client sessions map, preferring client (outbound) sessions.
 func (n *MeshNode) GetSession(peerIdentityHex string) *smux.Session {
 	n.sessionsMu.Lock()
 	defer n.sessionsMu.Unlock()
+	if sess, ok := n.clientSessions[peerIdentityHex]; ok && sess != nil {
+		return sess
+	}
 	return n.sessions[peerIdentityHex]
 }
 
@@ -604,6 +638,16 @@ func (n *MeshNode) Listener() net.Listener {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.listener
+}
+
+// SetSessionDeathHandler installs a callback that is invoked when a smux
+// session with a peer dies (detected by the reconnect watcher). The argument
+// is the peer's identity hex. This is used to clean up TUN routes and other
+// session-dependent state when the peer is truly unreachable.
+func (n *MeshNode) SetSessionDeathHandler(h func(string)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.sessionDeathHandler = h
 }
 
 // MuxTransport returns the shared TCP/UDP transport multiplexer, or nil
