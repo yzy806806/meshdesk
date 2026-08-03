@@ -252,6 +252,56 @@ func (n *MeshNode) TUNIntegration() *TUNIntegration {
 	return n.tunIntegration
 }
 
+// ReallocateAfterGossip re-runs IPAM allocation now that peer
+// VirtualIPs are known via gossip. If this node's IP conflicts with
+// a peer's and this node should yield (smaller pubkey wins), it
+// finds a new VirtualIP, updates the kernel interface, and returns
+// the new IP. Returns the VirtualIP (new or unchanged) and whether
+// a change was made.
+//
+// This is called by main.go after gossip has started and peer
+// VirtualIPs have been synced, fixing the chicken-and-egg problem
+// where setupTUN runs before gossip is active.
+func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, bool) {
+	n.mu.Lock()
+	ti := n.tunIntegration
+	n.mu.Unlock()
+
+	if ti == nil || ti.Allocator == nil {
+		return nil, false
+	}
+
+	pubKey := n.identity.PublicKey
+	hostCount := len(peerIPs) + 1
+	newIP, err := ti.Allocator.AllocateWithPeers(pubKey, hostCount, peerIPs)
+	if err != nil {
+		log.Printf("[mesh/tun] ReallocateAfterGossip: AllocateWithPeers failed: %v", err)
+		return ti.VirtualIP, false
+	}
+
+	if ti.VirtualIP != nil && newIP.Equal(ti.VirtualIP) {
+		return ti.VirtualIP, false // No change needed
+	}
+
+	oldIP := ti.VirtualIP
+	log.Printf("[mesh/tun] IPAM re-allocated: %s → %s (conflict resolved)", oldIP, newIP)
+
+	// Update Router local IP.
+	ti.Router.SetLocalIP(newIP)
+	ti.VirtualIP = newIP
+
+	// Update kernel: remove old IP, add new IP.
+	if oldIP != nil {
+		removeKernelAddr(ti.IfName, oldIP, ti.Allocator.Subnet())
+	}
+	addKernelAddr(ti.IfName, newIP, ti.Allocator.Subnet())
+
+	// Re-broadcast the new VirtualIP.
+	n.SetTUNLocalVirtualIP(newIP.String())
+
+	return newIP, true
+}
+
 // AddPeerVirtualIPRoute adds a kernel route for a peer's VirtualIP:
 // `ip route add <peerVirtualIP>/32 dev <tun_ifname>`.
 // Called when a peer with a VirtualIP joins via gossip.
@@ -377,6 +427,47 @@ func (n *MeshNode) SetSubnetProxyBroadcaster(cb func([]string)) {
 	n.mu.Unlock()
 }
 
+// removeKernelAddr removes an IP address from a kernel interface.
+// The prefix length must match what was used when the address was added
+// (i.e. the mesh CIDR prefix), because Linux matches addresses by both
+// IP and prefix length — using /32 when the address was added as /24
+// results in "Address not found".
+func removeKernelAddr(ifName string, ip net.IP, ipNet *net.IPNet) {
+	prefix, _ := ipNet.Mask.Size()
+	addrStr := fmt.Sprintf("%s/%d", ip.String(), prefix)
+	cmd := exec.Command("ip", "addr", "del", addrStr, "dev", ifName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// "Cannot assign requested address" and "Address not found" are
+		// both non-fatal — the address may have already been removed or
+		// never assigned (e.g. prefix mismatch from a previous version).
+		out := string(output)
+		if !strings.Contains(out, "Cannot assign requested address") &&
+			!strings.Contains(out, "Address not found") {
+			log.Printf("[mesh/tun] ip addr del %s dev %s: %v: %s",
+				addrStr, ifName, err, strings.TrimSpace(out))
+		}
+	}
+}
+
+// addrWithPrefix formats an IP address with the prefix length from the
+// given IPNet, e.g. ("10.100.0.1", /24) → "10.100.0.1/24".
+func addrWithPrefix(ip net.IP, ipNet *net.IPNet) string {
+	prefix, _ := ipNet.Mask.Size()
+	return fmt.Sprintf("%s/%d", ip.String(), prefix)
+}
+
+// addKernelAddr adds an IP address to a kernel interface.
+func addKernelAddr(ifName string, ip net.IP, ipNet *net.IPNet) {
+	addrStr := addrWithPrefix(ip, ipNet)
+	cmd := exec.Command("ip", "addr", "add", addrStr, "dev", ifName)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		if !strings.Contains(string(output), "File exists") {
+			log.Printf("[mesh/tun] ip addr add %s dev %s: %v: %s",
+				addrStr, ifName, err, strings.TrimSpace(string(output)))
+		}
+	}
+}
+
 // configureTUNInterface configures the kernel network interface:
 //   - ip addr add <ip>/<prefix> dev <ifName>
 //   - ip link set up dev <ifName>
@@ -391,8 +482,7 @@ func configureTUNInterface(ifName string, virtualIP net.IP, ipNet *net.IPNet, mt
 	}
 
 	// Assign IP address.
-	prefix, _ := ipNet.Mask.Size()
-	addrStr := fmt.Sprintf("%s/%d", virtualIP.String(), prefix)
+	addrStr := addrWithPrefix(virtualIP, ipNet)
 	cmd := exec.Command("ip", "addr", "add", addrStr, "dev", ifName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// "File exists" is non-fatal — the address may already be set.
