@@ -57,6 +57,19 @@ func (n *MeshNode) setupTUN() error {
 		return fmt.Errorf("tun: mesh_cidr is required when tun_enabled is true")
 	}
 
+	// Detect subnet conflicts BEFORE creating the TUN device.
+	// This checks whether any existing interface (e.g., EasyTier's tun0)
+	// has an IP in the same subnet as mesh_cidr. If so, the kernel routing
+	// table would have competing routes for the same subnet.
+	// We log a prominent warning but do NOT block startup — the route
+	// metric 0 fix in configureTUNInterface should handle the conflict.
+	conflicts := detectSubnetConflict(cfg.Mesh.MeshCIDR)
+	if len(conflicts) > 0 {
+		log.Printf("[mesh/tun] WARNING: mesh_cidr %s overlaps with existing interface(s): %s",
+			cfg.Mesh.MeshCIDR, strings.Join(conflicts, ", "))
+		log.Printf("[mesh/tun] WARNING: route metric 0 will be used to prioritize mesh0, but consider using a non-overlapping mesh_cidr to avoid ambiguity")
+	}
+
 	mtu := cfg.Mesh.TunMTU
 	if mtu == 0 {
 		mtu = config.DefaultTunMTU
@@ -509,7 +522,12 @@ func addKernelAddr(ifName string, ip net.IP, ipNet *net.IPNet) {
 // configureTUNInterface configures the kernel network interface:
 //   - ip addr add <ip>/<prefix> dev <ifName>
 //   - ip link set up dev <ifName>
-//   - ip route add <subnet> dev <ifName>  (on-link route for the mesh subnet)
+//   - ip route replace <subnet> dev <ifName> metric 0  (on-link route for the mesh subnet)
+//
+// The on-link route uses `ip route replace` (not `add`) with metric 0 so
+// that it takes priority over any existing route for the same subnet on
+// another interface (e.g., EasyTier's tun0). Metric 0 is the highest
+// priority in the kernel routing table — lower metric = higher priority.
 func configureTUNInterface(ifName string, virtualIP net.IP, ipNet *net.IPNet, mtu int) error {
 	// Set MTU.
 	if mtu > 0 {
@@ -523,9 +541,12 @@ func configureTUNInterface(ifName string, virtualIP net.IP, ipNet *net.IPNet, mt
 	addrStr := addrWithPrefix(virtualIP, ipNet)
 	cmd := exec.Command("ip", "addr", "add", addrStr, "dev", ifName)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		// "File exists" is non-fatal — the address may already be set.
-		if !strings.Contains(string(output), "File exists") {
-			return fmt.Errorf("ip addr add %s dev %s: %w: %s", addrStr, ifName, err, strings.TrimSpace(string(output)))
+		out := string(output)
+		// "File exists" and "Address already assigned" are non-fatal —
+		// the address may already be set from a previous run or by the
+		// kernel when the TUN device was created with the same subnet.
+		if !strings.Contains(out, "File exists") && !strings.Contains(out, "Address already assigned") {
+			return fmt.Errorf("ip addr add %s dev %s: %w: %s", addrStr, ifName, err, strings.TrimSpace(out))
 		}
 		log.Printf("[mesh/tun] ip addr add %s dev %s: already exists", addrStr, ifName)
 	} else {
@@ -539,44 +560,140 @@ func configureTUNInterface(ifName string, virtualIP net.IP, ipNet *net.IPNet, mt
 	}
 	log.Printf("[mesh/tun] interface %s is up", ifName)
 
-	// Add on-link route for the mesh subnet (if not already present).
-	// This makes the kernel route packets for the mesh subnet to the TUN.
+	// Add on-link route for the mesh subnet with metric 0 (highest priority).
+	// Use `ip route replace` instead of `ip route add` so that if another
+	// interface (e.g., EasyTier's tun0) already has a route for the same
+	// subnet, our route replaces it instead of failing with "File exists".
+	// Metric 0 ensures the kernel prefers mesh0 over any competing route
+	// with a higher metric.
 	subnetStr := ipNet.String()
-	cmd = exec.Command("ip", "route", "add", subnetStr, "dev", ifName)
+	cmd = exec.Command("ip", "route", "replace", subnetStr, "dev", ifName, "metric", "0")
 	if output, err := cmd.CombinedOutput(); err != nil {
-		if !strings.Contains(string(output), "File exists") {
-			log.Printf("[mesh/tun] ip route add %s dev %s: %v: %s (may already exist)",
-				subnetStr, ifName, err, strings.TrimSpace(string(output)))
-		}
+		log.Printf("[mesh/tun] ip route replace %s dev %s metric 0: %v: %s (may need manual intervention)",
+			subnetStr, ifName, err, strings.TrimSpace(string(output)))
 	} else {
-		log.Printf("[mesh/tun] added on-link route: %s dev %s", subnetStr, ifName)
+		log.Printf("[mesh/tun] added on-link route: %s dev %s metric 0", subnetStr, ifName)
 	}
 
 	return nil
 }
 
+// detectSubnetConflict checks whether any existing kernel route or
+// interface subnet overlaps with the mesh CIDR. This detects the
+// scenario where another VPN (e.g., EasyTier) has already created a
+// tun0 interface with a route for the same subnet as mesh_cidr.
+//
+// Returns a list of conflicting interface entries (each "dev <ifname>
+// src <ip>") if conflicts are found, or nil if no conflict exists.
+// The caller should log a prominent warning when conflicts are found.
+func detectSubnetConflict(meshCIDR string) []string {
+	_, meshNet, err := net.ParseCIDR(meshCIDR)
+	if err != nil {
+		return nil
+	}
+
+	// Run `ip -o addr show` to get all interface addresses in a
+	// machine-readable format (one line per address).
+	cmd := exec.Command("ip", "-o", "addr", "show")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// If we can't check, don't block startup — just return nil.
+		log.Printf("[mesh/tun] detectSubnetConflict: ip addr show failed: %v", err)
+		return nil
+	}
+
+	var conflicts []string
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		// Parse `ip -o addr show` output format:
+		// "2: eth0    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0\"
+		// We look for "inet <ip>/<prefix>" and check if the CIDR overlaps.
+		inetIdx := strings.Index(line, "inet ")
+		if inetIdx < 0 {
+			continue
+		}
+		rest := line[inetIdx+5:] // skip "inet "
+		spaceIdx := strings.Index(rest, " ")
+		if spaceIdx < 0 {
+			continue
+		}
+		addrCIDR := rest[:spaceIdx]
+		// Skip link-local (169.254.x.x) and loopback (127.x.x.x) addresses.
+		if strings.HasPrefix(addrCIDR, "169.254.") || strings.HasPrefix(addrCIDR, "127.") {
+			continue
+		}
+
+		_, existingNet, err := net.ParseCIDR(addrCIDR)
+		if err != nil {
+			continue
+		}
+
+		// Check for overlap: two CIDRs overlap if either contains the
+		// other's network address.
+		if cidrOverlap(meshNet, existingNet) {
+			// Extract the interface name from the line.
+			// Format: "<ifindex>: <ifname>    inet ..."
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				ifName := strings.TrimSuffix(parts[1], ":")
+				// Skip our own mesh interface (in case of restart).
+				if ifName == "mesh0" || strings.HasPrefix(ifName, "mesh") {
+					continue
+				}
+				conflicts = append(conflicts, fmt.Sprintf("%s on %s", addrCIDR, ifName))
+			}
+		}
+	}
+
+	return conflicts
+}
+
+// cidrOverlap returns true if two CIDR subnets overlap (one contains
+// the other's network address, or vice versa).
+func cidrOverlap(a, b *net.IPNet) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Contains(b.IP) || b.Contains(a.IP)
+}
+
 // addKernelRoute adds a /32 route for a peer's VirtualIP:
-// `ip route add <ip>/32 dev <ifName>`
+// `ip route add <ip>/32 dev <ifName> metric 0`
+//
+// Metric 0 ensures peer VirtualIP routes take priority over any
+// competing subnet route on another interface (e.g., EasyTier's tun0
+// with a route for the same /24 subnet). The /32 prefix already wins
+// via longest-prefix-match, but adding metric 0 is belt-and-suspenders
+// for environments where the competing route also has metric 0.
 func addKernelRoute(ifName string, ip net.IP) {
-	args := []string{"route", "add", fmt.Sprintf("%s/32", ip.String()), "dev", ifName}
+	args := []string{"route", "add", fmt.Sprintf("%s/32", ip.String()), "dev", ifName, "metric", "0"}
 	cmd := exec.Command("ip", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// "File exists" is non-fatal.
 		if !strings.Contains(string(output), "File exists") {
-			log.Printf("[mesh/tun] ip route add %s/32 dev %s: %v: %s",
+			log.Printf("[mesh/tun] ip route add %s/32 dev %s metric 0: %v: %s",
 				ip, ifName, err, strings.TrimSpace(string(output)))
 		}
 	}
 }
 
 // removeKernelRoute removes a /32 route for a peer's VirtualIP:
-// `ip route del <ip>/32 dev <ifName>`
+// `ip route del <ip>/32 dev <ifName> metric 0`
+//
+// The metric 0 must be included in the delete to match the add —
+// Linux matches routes by (prefix, dev, metric) tuple, so a delete
+// without the metric would fail to remove the route.
 func removeKernelRoute(ifName string, ip net.IP) {
-	args := []string{"route", "del", fmt.Sprintf("%s/32", ip.String()), "dev", ifName}
+	args := []string{"route", "del", fmt.Sprintf("%s/32", ip.String()), "dev", ifName, "metric", "0"}
 	cmd := exec.Command("ip", args...)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	if _, err := cmd.CombinedOutput(); err != nil {
 		// Non-fatal — route may have already been removed.
-		log.Printf("[mesh/tun] ip route del %s/32 dev %s: %v: %s",
-			ip, ifName, err, strings.TrimSpace(string(output)))
+		// Try without metric as a fallback (for routes created by older versions).
+		fallbackArgs := []string{"route", "del", fmt.Sprintf("%s/32", ip.String()), "dev", ifName}
+		fbCmd := exec.Command("ip", fallbackArgs...)
+		if fbOutput, fbErr := fbCmd.CombinedOutput(); fbErr != nil {
+			log.Printf("[mesh/tun] ip route del %s/32 dev %s: %v: %s",
+				ip, ifName, fbErr, strings.TrimSpace(string(fbOutput)))
+		}
 	}
 }
