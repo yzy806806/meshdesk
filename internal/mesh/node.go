@@ -126,6 +126,15 @@ type MeshNode struct {
 	// session is still alive.
 	sessionDeathHandler func(string)
 
+	// sessionReconnectHandler is called after a smux session with a peer
+	// is successfully re-established by the reconnect watcher. The
+	// argument is the peer's identity hex. Set by main.go to re-add TUN
+	// routes that were removed by the sessionDeathHandler. Since the peer
+	// stays in memberlist (only the smux session died, not gossip
+	// membership), no new NotifyJoin fires, so the join handler in
+	// main.go never re-runs. This callback fills that gap.
+	sessionReconnectHandler func(string)
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -664,6 +673,18 @@ func (n *MeshNode) SetSessionDeathHandler(h func(string)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.sessionDeathHandler = h
+}
+
+// SetSessionReconnectHandler installs a callback that is invoked after a
+// smux session with a peer is successfully re-established by the reconnect
+// watcher. The argument is the peer's identity hex. This is used to re-add
+// TUN routes that were removed when the session died, since the peer stays
+// in memberlist and no new NotifyJoin fires to trigger the normal join
+// handler.
+func (n *MeshNode) SetSessionReconnectHandler(h func(string)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.sessionReconnectHandler = h
 }
 
 // MuxTransport returns the shared TCP/UDP transport multiplexer, or nil
