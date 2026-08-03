@@ -92,6 +92,18 @@ type TunConfig struct {
 	// If empty, the kernel assigns the next available name (tun0, tun1, ...).
 	// Names longer than 15 characters are truncated (IFNAMSIZ limit).
 	Name string `yaml:"name,omitempty"`
+
+	// SubnetProxies is a list of local CIDR subnets that this node
+	// advertises as reachable through its TUN interface. Other mesh
+	// nodes will add kernel routes for these subnets via this node's
+	// VirtualIP, allowing them to access hosts on the advertised
+	// subnets (e.g. a LAN behind the node).
+	//
+	// Example:
+	//   subnet_proxies:
+	//     - 192.168.1.0/24
+	//     - 10.0.0.0/8
+	SubnetProxies []string `yaml:"subnet_proxies,omitempty"`
 }
 
 // DefaultTunMTU is the default MTU for TUN interfaces.

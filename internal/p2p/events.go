@@ -43,6 +43,13 @@ type CollectorDiscoveredHandler func(peerKey string)
 // peers.
 type CollectorRemovedHandler func(peerKey string)
 
+// SubnetProxyChangeHandler is called when a peer's advertised subnet
+// proxies change (on join or update). The handler receives the peer's
+// public key, VirtualIP, and the new list of subnet CIDRs. When the
+// peer leaves or clears its subnets, the handler is called with an
+// empty subnets slice.
+type SubnetProxyChangeHandler func(pubKey, virtualIP string, subnets []string)
+
 // meshEventDelegate implements memberlist.EventDelegate to bridge gossip
 // events to the PeerManager and routing table.
 type meshEventDelegate struct {
@@ -67,6 +74,11 @@ type meshEventDelegate struct {
 	// mesh (NotifyLeave) or loses CapCollector (NotifyUpdate). nil if not
 	// wired.
 	collectorRemovedHandler CollectorRemovedHandler
+
+	// subnetProxyHandler is called when a peer's advertised subnet
+	// proxies change (join, update, or leave with empty subnets).
+	// nil if subnet proxy routing is not enabled.
+	subnetProxyHandler SubnetProxyChangeHandler
 
 	// peerCache persists discovered peer endpoints to disk so they
 	// survive restarts. nil when persistence is disabled.
@@ -141,6 +153,17 @@ func (e *meshEventDelegate) SetCollectorRemovedHandler(h CollectorRemovedHandler
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.collectorRemovedHandler = h
+}
+
+// SetSubnetProxyHandler installs a callback for subnet proxy change
+// events. When a peer joins or updates with advertised subnet proxies,
+// the callback is invoked with the peer's public key, VirtualIP, and
+// the list of subnet CIDRs. When a peer leaves, the callback is invoked
+// with an empty subnets slice.
+func (e *meshEventDelegate) SetSubnetProxyHandler(h SubnetProxyChangeHandler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.subnetProxyHandler = h
 }
 
 // SetRelayPathBuilder installs the relay path builder for NAT peer relay selection.
@@ -260,6 +283,16 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 	if joinHdl != nil {
 		joinHdl(meta)
 	}
+
+	// Fire subnet proxy handler if the peer advertises subnets.
+	if len(meta.SubnetProxies) > 0 {
+		e.mu.RLock()
+		spHdl := e.subnetProxyHandler
+		e.mu.RUnlock()
+		if spHdl != nil && meta.VirtualIP != "" {
+			spHdl(meta.PublicKey, meta.VirtualIP, meta.SubnetProxies)
+		}
+	}
 }
 
 // NotifyLeave is called when a node leaves the memberlist cluster.
@@ -351,6 +384,14 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 		log.Printf("[p2p] NotifyLeave: collector peer %s left, notifying handler",
 			meta.PublicKey[:8])
 		collectorRemovedHdl(meta.PublicKey)
+	}
+
+	// Fire subnet proxy handler with empty subnets to clean up routes.
+	e.mu.RLock()
+	spHdl := e.subnetProxyHandler
+	e.mu.RUnlock()
+	if spHdl != nil {
+		spHdl(meta.PublicKey, meta.VirtualIP, nil)
 	}
 
 	if leaveHdl != nil {
@@ -469,6 +510,15 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 
 	if updateHdl != nil {
 		updateHdl(meta)
+	}
+
+	// Fire subnet proxy handler if the peer has a VirtualIP and
+	// advertises subnet proxies (or previously did and now doesn't).
+	e.mu.RLock()
+	spHdl := e.subnetProxyHandler
+	e.mu.RUnlock()
+	if spHdl != nil && meta.VirtualIP != "" {
+		spHdl(meta.PublicKey, meta.VirtualIP, meta.SubnetProxies)
 	}
 }
 

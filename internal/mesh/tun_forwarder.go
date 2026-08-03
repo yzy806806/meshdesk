@@ -44,6 +44,12 @@ type TunForwarderConfig struct {
 	// DialVirtualPort. The forwarder dials the TunVirtualPort on
 	// the target peer's smux session.
 	MeshNode *MeshNode
+
+	// RouteManager manages subnet proxy routes. When non-nil, the
+	// forwarder consults it for packets whose destination IP falls
+	// outside the mesh subnet (e.g. 192.168.1.x behind a peer).
+	// If nil, non-mesh-subnet packets are dropped.
+	RouteManager *tun.RouteManager
 }
 
 // TunForwarder implements the TUN data transceive loop:
@@ -265,8 +271,38 @@ func (f *TunForwarder) tunReadLoop() {
 
 		// Check if the destination is in the TUN subnet.
 		if !f.cfg.Router.IsInSubnet(dstIP) {
-			// Not in our subnet — drop. (In the future, this could
-			// trigger subnet proxy / NAT functionality.)
+			// Not in our subnet — try subnet proxy routing.
+			// The RouteManager maintains a mapping of advertised
+			// subnets (e.g. 192.168.1.0/24) to peer VirtualIPs.
+			if f.cfg.RouteManager != nil {
+				gwVirtualIP, ok := f.cfg.RouteManager.ResolveSubnetProxy(dstIP)
+				if ok {
+					// Found a subnet proxy route — resolve the
+					// gateway VirtualIP to a peer public key.
+					peerKey, found := f.cfg.Router.ResolveIP(net.ParseIP(gwVirtualIP))
+					if found && !f.cfg.Router.IsSelf(peerKey) {
+						// Forward the packet to the subnet proxy peer.
+						conn, err := f.getOutboundStream(peerKey)
+						if err != nil {
+							f.packetsDropped.Add(1)
+							log.Printf("[tun-forwarder] subnet proxy: failed to get stream to peer %s...: %v",
+								shortKey(peerKey), err)
+							continue
+						}
+						if err := writeFramedPacket(conn, packet); err != nil {
+							f.packetsDropped.Add(1)
+							log.Printf("[tun-forwarder] subnet proxy: write to peer %s... failed: %v",
+								shortKey(peerKey), err)
+							f.closeOutboundStream(peerKey)
+							continue
+						}
+						f.packetsSent.Add(1)
+						f.bytesSent.Add(uint64(len(packet)))
+						continue
+					}
+				}
+			}
+			// No subnet proxy route found — drop.
 			f.packetsDropped.Add(1)
 			continue
 		}
@@ -494,13 +530,40 @@ func (f *TunForwarder) validateSourceIP(packet []byte, peerID string) bool {
 		return false
 	}
 
-	if !expectedIP.Equal(srcIP) {
-		log.Printf("[tun-forwarder] anti-spoof: source IP mismatch — expected %s, got %s from peer %s",
-			expectedIP, srcIP, shortKey(peerID))
+	// If the source IP matches the peer's VirtualIP, accept it.
+	if expectedIP.Equal(srcIP) {
+		return true
+	}
+
+	// If the source IP is NOT in the mesh subnet, it may be from a
+	// subnet proxy (e.g. the peer is forwarding traffic from its LAN).
+	// Only accept it if the RouteManager is configured and the source
+	// IP falls within one of the advertised subnet proxies that is
+	// routed via this peer's VirtualIP.
+	if !f.cfg.Router.IsInSubnet(srcIP) {
+		if f.cfg.RouteManager != nil {
+			gw, found := f.cfg.RouteManager.ResolveSubnetProxy(srcIP)
+			if found {
+				// The source IP must be within a subnet that is
+				// routed via this peer's VirtualIP. This ensures
+				// peer A can't send traffic claiming to be from
+				// peer B's LAN.
+				if gw == expectedIP.String() {
+					return true
+				}
+			}
+		}
+		// Either no RouteManager, or the source IP doesn't match
+		// any of this peer's advertised subnets — reject.
+		log.Printf("[tun-forwarder] anti-spoof: source IP %s outside mesh subnet, not in peer %s's advertised subnets",
+			srcIP, shortKey(peerID))
 		return false
 	}
 
-	return true
+	// Source is in the mesh subnet but doesn't match — reject.
+	log.Printf("[tun-forwarder] anti-spoof: source IP mismatch — expected %s, got %s from peer %s",
+		expectedIP, srcIP, shortKey(peerID))
+	return false
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
