@@ -138,6 +138,18 @@ func (n *MeshNode) reconnectLoop(
 		if err == nil {
 			log.Printf("[mesh] reconnect succeeded for peer %s after %d attempts",
 				shortPeerID(peerIdentityHex), attempt)
+
+			// Fire the session reconnect handler to re-add TUN routes that
+			// were removed by the sessionDeathHandler. Since the peer stays
+			// in memberlist (only the smux session died), no new NotifyJoin
+			// fires, so the normal join handler in main.go never re-runs.
+			n.mu.RLock()
+			reconnectHdl := n.sessionReconnectHandler
+			n.mu.RUnlock()
+			if reconnectHdl != nil {
+				reconnectHdl(peerIdentityHex)
+			}
+
 			n.removeReconnectTracker(peerIdentityHex)
 			return
 		}
