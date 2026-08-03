@@ -80,6 +80,13 @@ type NodeMeta struct {
 
 	// Seq is a monotonic sequence number for detecting stale metadata.
 	Seq uint64 `msgpack:"seq"`
+
+	// --- TUN / IPAM ---
+
+	// VirtualIP is the TUN interface IP address assigned by the IPAM
+	// deterministic allocator. Propagated via gossip so every node
+	// knows every other node's mesh-subnet IP. Empty when TUN is disabled.
+	VirtualIP string `msgpack:"vip,omitempty"`
 }
 
 // MarshalMeta serializes NodeMeta to MessagePack bytes.
