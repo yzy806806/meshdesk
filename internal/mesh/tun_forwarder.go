@@ -261,12 +261,18 @@ func (f *TunForwarder) tunReadLoop() {
 
 		// Check if the packet is for self.
 		if f.cfg.Router.IsLocalIP(dstIP) {
-			// Packet is for our own TUN IP — the kernel networking
-			// stack handles local delivery. We should not see these
-			// on the TUN read side (the kernel delivers locally
-			// before sending to the TUN), but if we do, drop them.
-			f.packetsDropped.Add(1)
-			continue
+			// The kernel should handle local delivery, but during
+			// IPAM conflict resolution a peer may temporarily share
+			// the same VirtualIP. If the Router has a peer route for
+			// this IP, forward it (the peer may be using this IP
+			// while we are re-allocating).
+			peerKey, found := f.cfg.Router.ResolveIP(dstIP)
+			if !found || f.cfg.Router.IsSelf(peerKey) {
+				f.packetsDropped.Add(1)
+				continue
+			}
+			// IPAM conflict: peer claims this IP too. Skip the
+			// IsLocalIP guard and fall through to normal forwarding.
 		}
 
 		// Check if the destination is in the TUN subnet.
