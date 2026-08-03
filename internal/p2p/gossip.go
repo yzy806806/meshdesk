@@ -203,6 +203,28 @@ func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 	}
 }
 
+// SetLocalVirtualIP sets the local node's TUN VirtualIP in gossip metadata.
+// The VirtualIP is assigned by the IPAM deterministic allocator and
+// propagated to all peers so they can route packets to this node's
+// TUN interface. After updating, it calls memberlist.UpdateNode to
+// re-broadcast the alive message.
+func (g *GossipLayer) SetLocalVirtualIP(virtualIP string) {
+	g.delegate.updateLocalMeta(func(m *NodeMeta) {
+		m.VirtualIP = virtualIP
+		m.Seq++
+	})
+
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+
+	if ml != nil {
+		if err := ml.UpdateNode(time.Second); err != nil {
+			log.Printf("[p2p] virtual IP: UpdateNode failed: %v", err)
+		}
+	}
+}
+
 // announceLocalEndpoint proactively sets the local node's WireGuard endpoint(s)
 // so gossip propagates them to all peers. This breaks the chicken-and-egg
 // problem where reactive OnEndpointDiscovered only fires when a peer already
