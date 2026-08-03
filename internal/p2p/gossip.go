@@ -596,8 +596,16 @@ func (g *GossipLayer) Start() error {
 	mlConfig.TCPTimeout = 10 * time.Second
 	mlConfig.IndirectChecks = 3
 	mlConfig.RetransmitMult = 4
-	mlConfig.SuspicionMult = 4
-	mlConfig.SuspicionMaxTimeoutMult = 6
+	// Increase suspicion timeout to tolerate cross-network UDP latency.
+	// The default SuspicionMult=4 with ProbeInterval=1s gives only ~4s before
+	// a missed UDP ping triggers suspect→fail. On inter-cloud VPN links
+	// (EasyTier), UDP packets can be delayed or dropped by the VPN overlay,
+	// causing false positives. Increasing SuspicionMult to 8 gives ~8s of
+	// tolerance, which is enough for transient VPN packet loss.
+	// Similarly, SuspicionMaxTimeoutMult=12 (from 6) allows more time for
+	// peer confirmations to arrive.
+	mlConfig.SuspicionMult = 8
+	mlConfig.SuspicionMaxTimeoutMult = 12
 	mlConfig.PushPullInterval = time.Duration(g.cfg.GossipInterval) * time.Second
 	mlConfig.ProbeInterval = time.Duration(g.cfg.GossipProbeInterval) * time.Second
 	// ProbeTimeout: allow enough time for cross-network RTT (up to 300ms
