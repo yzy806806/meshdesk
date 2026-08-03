@@ -527,6 +527,29 @@ func main() {
 					node.RemoveAllTUNRoutesForPeer(peerKey)
 				})
 
+				// Wire the session reconnect handler: after a smux session
+				// is successfully re-established, re-add TUN routes that
+				// were removed by the sessionDeathHandler. Since the peer
+				// stays in memberlist, no new NotifyJoin fires, so the
+				// join handler never re-runs. This callback fills that gap
+				// by looking up the peer's NodeMeta from the gossip layer
+				// and re-adding both the /32 route and subnet proxy routes.
+				node.SetSessionReconnectHandler(func(peerKey string) {
+					for _, meta := range gossipLayer.KnownPeers() {
+						if meta.PublicKey == peerKey {
+							if meta.VirtualIP != "" {
+								log.Printf("[mesh] reconnect: restoring TUN routes for peer %s (vip=%s)", peerKey[:8], meta.VirtualIP)
+								node.AddPeerVirtualIPRoute(meta.PublicKey, meta.VirtualIP)
+							}
+							if len(meta.SubnetProxies) > 0 && meta.VirtualIP != "" {
+								node.AddPeerSubnetProxies(meta.PublicKey, meta.VirtualIP, meta.SubnetProxies)
+							}
+							return
+						}
+					}
+					log.Printf("[mesh] reconnect: peer %s not found in gossip KnownPeers, skipping TUN route restoration", peerKey[:8])
+				})
+
 				log.Printf("  TUN:        gossip integration active (VirtualIP routing + subnet proxy)")
 				}
 
