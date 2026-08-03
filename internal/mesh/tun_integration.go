@@ -87,24 +87,46 @@ func (n *MeshNode) setupTUN() error {
 		return fmt.Errorf("tun: create IPAM allocator: %w", err)
 	}
 
-	// Allocate this node's VirtualIP. If we know the peer public keys
-	// (from gossip), use AllocateWithPeers for conflict resolution.
-	// Otherwise, allocate as a single-node mesh.
-	pubKey := n.identity.PublicKey
-	peerIPs := n.collectPeerVirtualIPs()
-	hostCount := len(peerIPs) + 1
+	_, ipNet, _ := net.ParseCIDR(cfg.Mesh.MeshCIDR)
 
-	virtualIP, err := alloc.AllocateWithPeers(pubKey, hostCount, peerIPs)
-	if err != nil {
-		dev.Close()
-		return fmt.Errorf("tun: IPAM allocate: %w", err)
+	// Allocate this node's VirtualIP.
+	//
+	// If static_virtual_ip is set in config, use it directly (after
+	// validating it's within mesh_cidr). This bypasses IPAM entirely,
+	// which is essential for testing, predictable IP assignment in
+	// small clusters, and working around IPAM conflicts.
+	//
+	// Otherwise, use IPAM with known peer IPs for deterministic
+	// allocation and conflict resolution.
+	pubKey := n.identity.PublicKey
+	var virtualIP net.IP
+	if cfg.Mesh.StaticVirtualIP != "" {
+		staticIP := net.ParseIP(cfg.Mesh.StaticVirtualIP)
+		if staticIP == nil {
+			dev.Close()
+			return fmt.Errorf("tun: invalid static_virtual_ip %q: not a valid IP address", cfg.Mesh.StaticVirtualIP)
+		}
+		if !ipNet.Contains(staticIP) {
+			dev.Close()
+			return fmt.Errorf("tun: static_virtual_ip %s is outside mesh_cidr %s", staticIP, cfg.Mesh.MeshCIDR)
+		}
+		virtualIP = staticIP
+		log.Printf("[mesh/tun] using static VirtualIP %s (bypassing IPAM)", virtualIP)
+	} else {
+		peerIPs := n.collectPeerVirtualIPs()
+		hostCount := len(peerIPs) + 1
+
+		virtualIP, err = alloc.AllocateWithPeers(pubKey, hostCount, peerIPs)
+		if err != nil {
+			dev.Close()
+			return fmt.Errorf("tun: IPAM allocate: %w", err)
+		}
+
+		log.Printf("[mesh/tun] allocated VirtualIP %s (host_count=%d, peers=%d)",
+			virtualIP, hostCount, len(peerIPs))
 	}
 
-	log.Printf("[mesh/tun] allocated VirtualIP %s (host_count=%d, peers=%d)",
-		virtualIP, hostCount, len(peerIPs))
-
 	// Step 3: Create router and set local IP.
-	_, ipNet, _ := net.ParseCIDR(cfg.Mesh.MeshCIDR)
 	router := tun.NewRouter(ipNet, pubKey)
 	router.SetLocalIP(virtualIP)
 
@@ -269,6 +291,13 @@ func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, boo
 
 	if ti == nil || ti.Allocator == nil {
 		return nil, false
+	}
+
+	// If static_virtual_ip is set, never reallocate — the user explicitly
+	// chose this IP and it should not change regardless of peer state.
+	if n.cfg.Mesh.StaticVirtualIP != "" {
+		log.Printf("[mesh/tun] ReallocateAfterGossip: skipping (static_virtual_ip=%s)", n.cfg.Mesh.StaticVirtualIP)
+		return ti.VirtualIP, false
 	}
 
 	pubKey := n.identity.PublicKey
