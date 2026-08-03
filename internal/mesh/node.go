@@ -171,33 +171,44 @@ func New(cfg *config.Config) (*MeshNode, error) {
 // inject into the gossip layer.
 //
 // Ordinary node mode (reality.enabled: false, p2p.enabled: true):
-// The node does NOT listen on any public port. It only creates virtual port
-// listeners for inbound smux streams (from sessions it initiated outbound).
-// Gossip binds to 127.0.0.1 so no external port is exposed. The node joins
-// the cluster via configured seeds and establishes smux sessions by dialing
-// shared nodes using the mesh-internal path (0x4D marker byte).
+// The node creates a plain TCP listener (no Reality TLS) on the gossip
+// port. This allows memberlist push/pull sync and mesh-internal smux
+// sessions (0x4D marker byte) from other nodes. The node joins the
+// cluster via configured seeds and establishes smux sessions by dialing
+// shared nodes using the mesh-internal path.
 func (n *MeshNode) Start() error {
 	if n.cfg.P2P.Enabled && !n.cfg.Reality.Enabled {
-		// Ordinary node mode: no TCP listener, no exposed ports.
-		// But create a UDP-only MuxTransport so memberlist uses it
-		// for UDP gossip instead of binding its own socket on 127.0.0.1
-		// (which fails with "sendto: invalid argument" when sending to
-		// public addresses).
-		udpAddr := "0.0.0.0"
-		// For ordinary nodes, bind UDP to 0.0.0.0 so it can send to
-		// public addresses. The port mirrors the mesh port.
-		udpPort := n.cfg.Mesh.GossipPort
-		if udpPort == 0 {
-			udpPort = n.cfg.Mesh.Port
+		// Ordinary node mode: no Reality TLS, but still needs a TCP
+		// listener for memberlist push/pull sync. Without TCP, other
+		// nodes cannot initiate push/pull state sync, causing them to
+		// mark this node as failed within seconds (NotifyJoin →
+		// Suspect → NotifyLeave).
+		//
+		// We create a plain TCP listener (no Reality multiplexing) on
+		// the gossip port. The MuxTransport's demux logic routes:
+		//   - memberlist traffic (non-0x16, non-0x4D) → StreamCh
+		//   - mesh-internal connections (0x4D) → meshCh
+		//   - TLS (0x16) → realityCh (ignored — no Reality listener)
+		bindAddr := "0.0.0.0"
+		tcpPort := n.cfg.Mesh.GossipPort
+		if tcpPort == 0 {
+			tcpPort = n.cfg.Mesh.Port
 		}
+		tcpListenAddr := net.JoinHostPort(bindAddr, strconv.Itoa(tcpPort))
+		tcpListener, err := net.Listen("tcp", tcpListenAddr)
+		if err != nil {
+			return fmt.Errorf("mesh: start ordinary node TCP listener on %s: %w", tcpListenAddr, err)
+		}
+
 		muxCfg := MuxTransportConfig{
-			TCPListener: nil, // UDP-only mode
-			BindAddr:    udpAddr,
-			UDPPort:     udpPort,
+			TCPListener: tcpListener,
+			BindAddr:    bindAddr,
+			UDPPort:     tcpPort,
 		}
 		mt, err := NewMuxTransport(muxCfg)
 		if err != nil {
-			return fmt.Errorf("mesh: create UDP-only mux transport: %w", err)
+			tcpListener.Close()
+			return fmt.Errorf("mesh: create ordinary node mux transport: %w", err)
 		}
 		n.mu.Lock()
 		n.muxTransport = mt
@@ -205,9 +216,14 @@ func (n *MeshNode) Start() error {
 		n.listener = nil
 		n.mu.Unlock()
 
-		// Virtual port listeners (ListenVirtualPort) still work for
-		// inbound streams on sessions that this node dials outbound.
-		log.Printf("[mesh] ordinary node mode (no public TCP listener, UDP gossip on %s:%d)", udpAddr, udpPort)
+		log.Printf("[mesh] ordinary node mode (TCP+UDP gossip on %s:%d)", bindAddr, tcpPort)
+
+		// Start a mesh-internal accept loop for connections that use
+		// the mesh-internal marker byte (0x4D). Other ordinary nodes or
+		// shared nodes can dial this node's TCP listener and establish
+		// smux sessions directly (without Reality TLS).
+		meshLn := n.muxTransport.MeshListener()
+		go n.acceptMeshLoop(meshLn)
 	} else {
 		// Shared node mode (reality.enabled: true).
 		if !n.cfg.Reality.Enabled {
