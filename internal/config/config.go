@@ -21,6 +21,7 @@ type Config struct {
 	Proxy      ProxyConfig         `yaml:"proxy,omitempty"`
 	Reality    RealityServerConfig `yaml:"reality,omitempty"`
 	Join       JoinConfig          `yaml:"join,omitempty"`
+	Tun        TunConfig           `yaml:"tun,omitempty"`
 }
 
 // JoinConfig holds settings for the auto-join protocol.
@@ -67,6 +68,36 @@ type JoinConfig struct {
 	// join client. ONLY for testing — never use in production.
 	InsecureSkipTLSVerify bool `yaml:"insecure_skip_tls_verify,omitempty"`
 }
+
+// TunConfig holds settings for the TUN virtual network interface.
+// When Enabled is true, the node creates a TUN device via /dev/net/tun
+// and configures it with the specified subnet and MTU. The TUN device
+// provides Layer 3 packet routing for the mesh subnet proxy.
+type TunConfig struct {
+	// Enabled controls whether the TUN device is created on startup.
+	// Default: false. Requires CAP_NET_ADMIN or root privileges.
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// Subnet is the CIDR subnet assigned to the TUN interface (e.g. "10.10.0.0/24").
+	// The node's TUN IP is derived from this subnet — it takes the first
+	// usable address (network address + 1). Required when Enabled is true.
+	Subnet string `yaml:"subnet,omitempty"`
+
+	// MTU is the maximum transmission unit for the TUN interface.
+	// Default: 1400. Lower than the typical 1500 to account for
+	// encapsulation overhead in the mesh transport layer.
+	MTU int `yaml:"mtu,omitempty"`
+
+	// Name is the desired TUN interface name (e.g. "mesh0").
+	// If empty, the kernel assigns the next available name (tun0, tun1, ...).
+	// Names longer than 15 characters are truncated (IFNAMSIZ limit).
+	Name string `yaml:"name,omitempty"`
+}
+
+// DefaultTunMTU is the default MTU for TUN interfaces.
+// Set below 1500 to avoid fragmentation when packets traverse the
+// mesh transport (Reality TLS + smux + AES-256-GCM overhead).
+const DefaultTunMTU = 1400
 
 // ProxyConfig holds settings for the anonymous proxy subsystem
 // (multi-path dispersed transport). See docs/PROXY_DESIGN.md.
@@ -993,6 +1024,10 @@ func Load(path string) (*Config, error) {
 	if cfg.Join.Enabled && cfg.Join.TokenLifetime == 0 {
 		cfg.Join.TokenLifetime = 1800 // 30 minutes
 	}
+	// TUN config defaults.
+	if cfg.Tun.Enabled && cfg.Tun.MTU == 0 {
+		cfg.Tun.MTU = DefaultTunMTU
+	}
 	return cfg, nil
 }
 
@@ -1054,6 +1089,7 @@ var knownTopLevelKeys = map[string]bool{
 	"proxy":      true,
 	"reality":    true,
 	"join":       true,
+	"tun":        true,
 }
 
 // warnUnknownTopLevelKeys unmarshals the raw YAML into a generic map
