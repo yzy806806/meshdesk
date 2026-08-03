@@ -86,6 +86,7 @@ type TunForwarder struct {
 	packetsSent     atomic.Uint64
 	packetsReceived atomic.Uint64
 	packetsDropped  atomic.Uint64
+	packetsSpoofed  atomic.Uint64
 	bytesSent       atomic.Uint64
 	bytesReceived   atomic.Uint64
 }
@@ -165,15 +166,17 @@ func (f *TunForwarder) Stop() {
 	f.outboundMu.Unlock()
 
 	f.wg.Wait()
-	log.Printf("[tun-forwarder] stopped (sent=%d, recv=%d, dropped=%d)",
-		f.packetsSent.Load(), f.packetsReceived.Load(), f.packetsDropped.Load())
+	log.Printf("[tun-forwarder] stopped (sent=%d, recv=%d, dropped=%d, spoofed=%d)",
+		f.packetsSent.Load(), f.packetsReceived.Load(), f.packetsDropped.Load(), f.packetsSpoofed.Load())
 }
 
 // Stats returns current forwarder statistics.
+// TunForwarderStats holds the current forwarder statistics.
 type TunForwarderStats struct {
 	PacketsSent     uint64
 	PacketsReceived uint64
 	PacketsDropped  uint64
+	PacketsSpoofed  uint64
 	BytesSent       uint64
 	BytesReceived   uint64
 }
@@ -183,6 +186,7 @@ func (f *TunForwarder) Stats() TunForwarderStats {
 		PacketsSent:     f.packetsSent.Load(),
 		PacketsReceived: f.packetsReceived.Load(),
 		PacketsDropped:  f.packetsDropped.Load(),
+		PacketsSpoofed:  f.packetsSpoofed.Load(),
 		BytesSent:       f.bytesSent.Load(),
 		BytesReceived:   f.bytesReceived.Load(),
 	}
@@ -423,21 +427,14 @@ func (f *TunForwarder) handleInboundStream(conn net.Conn) {
 			return
 		}
 
-		// Optional: validate source IP matches the peer's VirtualIP.
+		// Validate source IP matches the peer's VirtualIP (anti-spoofing).
+		// Every inbound packet must have its src IP verified against the
+		// sending peer's NodeMeta.VirtualIP. Mismatched, unparseable, or
+		// unknown-peer packets are dropped.
 		if peerID != "" {
-			if srcIP, err := parseSrcIP(packet); err == nil {
-				if expectedIP, ok := f.cfg.Router.ResolvePeer(peerID); ok {
-					if !expectedIP.Equal(srcIP) {
-						// Source IP mismatch — potential spoofing.
-						// Drop the packet but keep the stream open
-						// (the peer might have multiple IPs or a
-						// misconfigured routing table).
-						f.packetsDropped.Add(1)
-						log.Printf("[tun-forwarder] source IP mismatch: expected %s, got %s from peer %s",
-							expectedIP, srcIP, shortKey(peerID))
-						continue
-					}
-				}
+			if !f.validateSourceIP(packet, peerID) {
+				f.packetsSpoofed.Add(1)
+				continue
 			}
 		}
 
@@ -455,6 +452,55 @@ func (f *TunForwarder) handleInboundStream(conn net.Conn) {
 		f.packetsReceived.Add(1)
 		f.bytesReceived.Add(uint64(len(packet)))
 	}
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Source IP anti-spoofing validation
+// ──────────────────────────────────────────────────────────────────────────────
+
+// validateSourceIP checks that the source IP address in the given IP packet
+// matches the VirtualIP registered for the sending peer in the routing table.
+//
+// This is the core anti-spoofing check: every IP packet arriving on a TUN
+// virtual port must have its source IP verified against the sending peer's
+// NodeMeta.VirtualIP. If they don't match, the packet is an attempted spoof
+// and must be dropped.
+//
+// Returns true if the source IP is valid (matches the peer's VirtualIP),
+// false if the packet should be dropped.
+//
+// The method drops (returns false) in three cases:
+//  1. Cannot parse the source IP from the packet (malformed packet).
+//  2. The sending peer is not in the routing table (unknown peer — cannot
+//     verify its VirtualIP).
+//  3. The parsed source IP does not match the peer's registered VirtualIP.
+func (f *TunForwarder) validateSourceIP(packet []byte, peerID string) bool {
+	srcIP, err := parseSrcIP(packet)
+	if err != nil {
+		if isDebugLogEnabled() {
+			log.Printf("[tun-forwarder] anti-spoof: cannot parse src IP from peer %s: %v",
+				shortKey(peerID), err)
+		}
+		return false
+	}
+
+	expectedIP, ok := f.cfg.Router.ResolvePeer(peerID)
+	if !ok {
+		// Peer not in routing table — cannot verify identity.
+		if isDebugLogEnabled() {
+			log.Printf("[tun-forwarder] anti-spoof: peer %s not in routing table, dropping packet (src=%s)",
+				shortKey(peerID), srcIP)
+		}
+		return false
+	}
+
+	if !expectedIP.Equal(srcIP) {
+		log.Printf("[tun-forwarder] anti-spoof: source IP mismatch — expected %s, got %s from peer %s",
+			expectedIP, srcIP, shortKey(peerID))
+		return false
+	}
+
+	return true
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
