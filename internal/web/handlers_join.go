@@ -1,8 +1,6 @@
 package web
 
 import (
-	"crypto/ecdh"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -393,9 +391,9 @@ func buildInstallScript(joinURL, token, binaryURL string) string {
 
 	// --- Download binary ---
 	b.WriteString("# Download meshdesk binary\n")
-	b.WriteString("BINARY_URL=\"\"\n")
+	b.WriteString("BINARY_URL=''\n")
 	if binaryURL != "" {
-		b.WriteString(fmt.Sprintf("BINARY_URL=\"%s\"\n", binaryURL))
+		b.WriteString(fmt.Sprintf("BINARY_URL='%s'\n", escapeShellSingle(binaryURL)))
 	}
 	b.WriteString(`
 # If no explicit binary URL, try GitHub releases
@@ -467,8 +465,8 @@ fi
 
 	// --- Join the mesh ---
 	b.WriteString("# Join the mesh cluster via auto-join protocol\n")
-	b.WriteString(fmt.Sprintf("JOIN_URL=\"%s\"\n", escapeShellSingle(joinURL)))
-	b.WriteString(fmt.Sprintf("JOIN_TOKEN=\"%s\"\n", escapeShellSingle(token)))
+	b.WriteString(fmt.Sprintf("JOIN_URL='%s'\n", escapeShellSingle(joinURL)))
+	b.WriteString(fmt.Sprintf("JOIN_TOKEN='%s'\n", escapeShellSingle(token)))
 	b.WriteString(fmt.Sprintf(`echo "Joining mesh cluster at $JOIN_URL ..."
 exec "$INSTALL_DIR/meshdesk" join %s --config "$CONFIG_DIR/config.yaml"
 `, joinFlags))
@@ -505,21 +503,4 @@ func (s *Server) nodeIdentity() *identity.Identity {
 	return s.node.Identity()
 }
 
-// deriveRealityPublicKey extracts the X25519 public key from the config's
-// Reality private key. Returns empty string on failure.
-func deriveRealityPublicKey(cfg *config.Config) string {
-	if cfg == nil || cfg.Reality.PrivateKey == "" {
-		return ""
-	}
-	privBytes, err := hex.DecodeString(cfg.Reality.PrivateKey)
-	if err != nil || len(privBytes) != 32 {
-		return ""
-	}
-	priv, err := ecdh.X25519().NewPrivateKey(privBytes)
-	if err != nil {
-		return ""
-	}
-	return hex.EncodeToString(priv.PublicKey().Bytes())
-}
 
-var _ = log.Printf // ensure log import is used in case we add logging later

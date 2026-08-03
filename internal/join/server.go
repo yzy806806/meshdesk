@@ -501,6 +501,16 @@ func (s *JoinServer) allowRequest(ip string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Periodic cleanup of stale rate limit entries (prevents unbounded growth).
+	if len(s.rateLimit) > 1000 {
+		cutoff := time.Now().Add(-5 * time.Minute)
+		for addr, b := range s.rateLimit {
+			if b.windowStart.Before(cutoff) {
+				delete(s.rateLimit, addr)
+			}
+		}
+	}
+
 	bucket, ok := s.rateLimit[ip]
 	if !ok {
 		s.rateLimit[ip] = &rateBucket{count: 1, windowStart: time.Now()}

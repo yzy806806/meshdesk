@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -133,8 +132,6 @@ type SOCKS5Handler struct {
 	allowedPeers map[string]bool   // set of peerIDs permitted to connect
 	checkMeshPeer func(string) bool // routing table check (nil = fallback to non-empty check)
 	requireMesh  bool              // true if non-mesh connections are rejected
-	mu           sync.Mutex
-	connWG       sync.WaitGroup
 }
 
 // NewSOCKS5Handler creates a SOCKS5Handler with the given configuration.

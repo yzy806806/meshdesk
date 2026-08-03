@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -98,8 +97,6 @@ type SOCKS5ForwardHandler struct {
 	dialer   *net.Dialer
 	active   int64
 	closed   atomic.Bool
-	mu       sync.Mutex
-	connWG   sync.WaitGroup
 }
 
 // NewSOCKS5ForwardHandler creates a forwarding handler bound to the given node.
