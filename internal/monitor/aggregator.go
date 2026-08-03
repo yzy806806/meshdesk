@@ -67,6 +67,7 @@ type Aggregator struct {
 	// periodic cleanup of stale entries (prevents unbounded growth).
 	dedupLastSeen   map[string]time.Time
 	dedupCleanupInterval time.Duration // zero = default 1h
+	staleThreshold       time.Duration // zero = default 2*cleanupInterval
 
 	mu      sync.Mutex
 	running bool
@@ -155,6 +156,11 @@ func (a *Aggregator) Start() error {
 	if cleanupInterval == 0 {
 		cleanupInterval = time.Hour
 	}
+	staleThreshold := a.staleThreshold
+	if staleThreshold == 0 {
+		staleThreshold = 2 * cleanupInterval
+	}
+	a.staleThreshold = staleThreshold
 	a.mu.Unlock()
 
 	ln, err := a.dialer.ListenMesh(a.port)
@@ -285,7 +291,11 @@ func (a *Aggregator) handlePush(conn net.Conn) {
 // been updated in over 2x the cleanup interval. This prevents unbounded
 // growth when nodes leave the mesh permanently.
 func (a *Aggregator) cleanupDedup() {
-	cutoff := time.Now().Add(-2 * time.Hour)
+	threshold := a.staleThreshold
+	if threshold == 0 {
+		threshold = 2 * time.Hour
+	}
+	cutoff := time.Now().Add(-threshold)
 	a.dedupMu.Lock()
 	for sourceID, lastSeen := range a.dedupLastSeen {
 		if lastSeen.Before(cutoff) {
@@ -294,9 +304,8 @@ func (a *Aggregator) cleanupDedup() {
 		}
 	}
 	a.dedupMu.Unlock()
-	// Also clean stale node buffers from the store.
 	if a.store != nil {
-		a.store.RemoveStaleNodes(2 * time.Hour)
+		a.store.RemoveStaleNodes(threshold)
 	}
 }
 
