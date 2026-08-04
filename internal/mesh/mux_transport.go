@@ -2,7 +2,6 @@ package mesh
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync"
@@ -462,28 +461,22 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 	// Peek the first byte with a short deadline to avoid hanging on
 	// slow or malicious clients that connect but never send data.
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	peekBuf := make([]byte, peekByteCount)
-	n, err := io.ReadFull(conn, peekBuf)
+
+	// Use bufferedConn (bufio.Reader-based) instead of connWithPrefix.
+	// memberlist v0.6.0's RemoveLabelHeaderFromStream wraps the conn in
+	// another bufio.Reader; with connWithPrefix, the first bufio.fill()
+	// consumes the prefix byte, causing data corruption. bufferedConn
+	// keeps the peeked byte in the bufio buffer, so any subsequent
+	// bufio.Reader Peek/Read sees it correctly.
+	wrapped, firstByte, err := newBufferedConn(conn)
 	conn.SetReadDeadline(time.Time{}) // reset deadline
 
 	if err != nil {
-		if n == 0 {
-			// Nothing peeked — close the connection.
-			conn.Close()
-			return
-		}
-		// Got partial data before error. If we got at least 1 byte,
-		// we can still make a routing decision.
-		if n < peekByteCount {
-			conn.Close()
-			return
-		}
+		conn.Close()
+		return
 	}
 
-	// Wrap the connection so the peeked byte is replayed.
-	wrapped := NewConnWithPrefix(conn, peekBuf[:n])
-
-	if peekBuf[0] == tlsHandshakeRecordType {
+	if firstByte == tlsHandshakeRecordType {
 		// TLS ClientHello → Reality path.
 		select {
 		case t.realityCh <- wrapped:
@@ -494,17 +487,25 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 			t.logger.Printf("[WARN] mux: reality accept queue full, dropping connection from %s", conn.RemoteAddr())
 			wrapped.Close()
 		}
-	} else if peekBuf[0] == meshInternalMarker {
+	} else if firstByte == meshInternalMarker {
 		// Mesh-internal connection → mesh key exchange + smux path.
-		// Don't use connWithPrefix — the 0x4D marker byte is not
-		// part of the key exchange protocol and should not be replayed.
+		// The 0x4D marker byte is not part of the key exchange protocol
+		// and should not be replayed. Use a connWithPrefix that wraps
+		// the original conn (not the bufferedConn, which would replay
+		// the marker). The marker byte was peeked by bufio.Peek which
+		// does not consume from the underlying conn — but fill() may
+		// have read additional data into the bufio buffer.
+		// To avoid data loss, we use wrapped (bufferedConn) and create
+		// a skipPrefix wrapper that reads from the bufio but skips the
+		// first byte.
+		skippedConn := newSkipPrefixConn(wrapped.(*bufferedConn), conn)
 		select {
-		case t.meshCh <- conn:
+		case t.meshCh <- skippedConn:
 		case <-t.shutdownDone():
-			conn.Close()
+			wrapped.Close()
 		default:
 			t.logger.Printf("[WARN] mux: mesh accept queue full, dropping connection from %s", conn.RemoteAddr())
-			conn.Close()
+			wrapped.Close()
 		}
 	} else {
 		// Memberlist gossip stream.
