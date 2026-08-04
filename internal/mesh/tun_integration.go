@@ -323,7 +323,9 @@ func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, boo
 	// If static_virtual_ip is set, never reallocate.
 	if n.cfg.Mesh.StaticVirtualIP != "" {
 		log.Printf("[mesh/tun] ReallocateAfterGossip: skipping (static_virtual_ip=%s)", n.cfg.Mesh.StaticVirtualIP)
-		return ti.VirtualIP, false
+		vip := ti.VirtualIP
+		n.mu.Unlock()
+		return vip, false
 	}
 
 	pubKey := n.identity.PublicKey
@@ -331,11 +333,15 @@ func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, boo
 	newIP, err := ti.Allocator.AllocateWithPeers(pubKey, hostCount, peerIPs)
 	if err != nil {
 		log.Printf("[mesh/tun] ReallocateAfterGossip: AllocateWithPeers failed: %v", err)
-		return ti.VirtualIP, false
+		vip := ti.VirtualIP
+		n.mu.Unlock()
+		return vip, false
 	}
 
 	if ti.VirtualIP != nil && newIP.Equal(ti.VirtualIP) {
-		return ti.VirtualIP, false // No change needed
+		vip := ti.VirtualIP
+		n.mu.Unlock()
+		return vip, false // No change needed
 	}
 
 	oldIP := ti.VirtualIP
