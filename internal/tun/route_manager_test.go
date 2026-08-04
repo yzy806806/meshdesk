@@ -27,7 +27,7 @@ func (m *mockCmdRunner) run(args ...string) error {
 	m.commands = append(m.commands, cmdCopy)
 
 	// Check if this command should fail.
-	cidr := args[2] // "route add <cidr> ..." or "route del <cidr ..."
+	cidr := args[2]   // "route add <cidr> ..." or "route del <cidr ..."
 	action := args[1] // "add" or "del"
 	key := action + ":" + cidr
 	if m.failOn[key] {

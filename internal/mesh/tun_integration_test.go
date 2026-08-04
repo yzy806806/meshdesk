@@ -400,10 +400,10 @@ func TestTunIntegration_ByteLevelSpoofing_IPv4(t *testing.T) {
 	// Build a valid IPv4 packet at the byte level.
 	buildValid := func() []byte {
 		pkt := make([]byte, 20)
-		pkt[0] = 0x45                                   // Version 4, IHL 5
-		pkt[2] = 0x00                                   // Total length high byte
-		pkt[3] = 0x14                                   // Total length = 20
-		copy(pkt[12:16], peerIP.To4())                  // Source IP = 10.200.0.5
+		pkt[0] = 0x45                                     // Version 4, IHL 5
+		pkt[2] = 0x00                                     // Total length high byte
+		pkt[3] = 0x14                                     // Total length = 20
+		copy(pkt[12:16], peerIP.To4())                    // Source IP = 10.200.0.5
 		copy(pkt[16:20], net.ParseIP("10.200.0.1").To4()) // Dst IP
 		return pkt
 	}
@@ -501,7 +501,7 @@ func TestTunIntegration_ByteLevelSpoofing_IPv4(t *testing.T) {
 		},
 		{
 			// 192.168.x.x (outside subnet → REJECT without RouteManager)
-			name: "src_192_168_outside_subnet_reject",
+			name:   "src_192_168_outside_subnet_reject",
 			mutate: func(p []byte) { copy(p[12:16], net.ParseIP("192.168.1.1").To4()) },
 		},
 	}
@@ -529,7 +529,7 @@ func TestTunIntegration_ByteLevelSpoofing_IPv6(t *testing.T) {
 
 	buildValid := func() []byte {
 		pkt := make([]byte, 40)
-		pkt[0] = 0x60 // Version 6
+		pkt[0] = 0x60                                   // Version 6
 		copy(pkt[8:24], peerIP.To16())                  // Source IP = fd00::5
 		copy(pkt[24:40], net.ParseIP("fd00::1").To16()) // Dst IP
 		return pkt
@@ -554,7 +554,7 @@ func TestTunIntegration_ByteLevelSpoofing_IPv6(t *testing.T) {
 		},
 		{
 			// Same but also change penultimate: fd00::fffa (inside /64)
-			name: "byte22_byte23_inside_subnet_reject",
+			name:   "byte22_byte23_inside_subnet_reject",
 			mutate: func(p []byte) { p[22] ^= 0xFF; p[23] ^= 0xFF },
 		},
 		{
@@ -566,7 +566,7 @@ func TestTunIntegration_ByteLevelSpoofing_IPv6(t *testing.T) {
 		},
 		{
 			// Set the interface identifier part (bytes 16-23) to a specific value.
-			name: "byte16_inside_subnet_reject",
+			name:   "byte16_inside_subnet_reject",
 			mutate: func(p []byte) { p[16] = 0xAB },
 		},
 		{
@@ -713,7 +713,9 @@ func TestTunIntegration_ByteLevelSpoofing_MixedVersions(t *testing.T) {
 
 // TestTunIntegration_HandleInboundStream_ValidPackets verifies that the
 // full inbound stream pipeline works end-to-end:
-//   framed stream → readFramedPacket → validateSourceIP → TUN Write
+//
+//	framed stream → readFramedPacket → validateSourceIP → TUN Write
+//
 // Uses net.Pipe for the stream and a real TUN device for the write target.
 func TestTunIntegration_HandleInboundStream_ValidPackets(t *testing.T) {
 	skipUnlessTun(t)

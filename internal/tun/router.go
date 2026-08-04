@@ -266,7 +266,7 @@ func (r *Router) SyncFromPeers(peers []PeerRoute) {
 	defer r.mu.Unlock()
 
 	// Build the new set.
-	newIPs := make(map[string]string)  // ip → pubkey
+	newIPs := make(map[string]string)   // ip → pubkey
 	newPeers := make(map[string]net.IP) // pubkey → ip
 
 	for _, p := range peers {

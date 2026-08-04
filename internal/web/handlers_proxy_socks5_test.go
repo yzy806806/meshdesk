@@ -12,9 +12,9 @@ import (
 
 // mockSOCKS5StatusProvider is a test double for SOCKS5StatusProvider.
 type mockSOCKS5StatusProvider struct {
-	handlerActive   bool
+	handlerActive     bool
 	exitHandlerActive bool
-	activeConns      int64
+	activeConns       int64
 }
 
 func (m *mockSOCKS5StatusProvider) SOCKS5HandlerActive() bool {
@@ -36,8 +36,8 @@ func newSOCKS5TestServer(t *testing.T, provider SOCKS5StatusProvider) *Server {
 	t.Helper()
 	cfg := config.Default()
 	srv, err := New(Deps{
-		Config:              cfg,
-		MonitorStore:        monitor.NewStore(),
+		Config:               cfg,
+		MonitorStore:         monitor.NewStore(),
 		SOCKS5StatusProvider: provider,
 	})
 	if err != nil {
@@ -50,7 +50,7 @@ func newSOCKS5TestServer(t *testing.T, provider SOCKS5StatusProvider) *Server {
 
 func TestProxySocks5Status_BasicResponse(t *testing.T) {
 	srv := newSOCKS5TestServer(t, &mockSOCKS5StatusProvider{
-		handlerActive:    true,
+		handlerActive:     true,
 		exitHandlerActive: false,
 		activeConns:       3,
 	})

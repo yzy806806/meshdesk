@@ -1943,7 +1943,7 @@ func transcriptMsg(msg handshakeMessage, h transcriptHash) error {
 			return nil
 		}
 	}
-	
+
 	data, err := msg.marshal()
 	if err != nil {
 		return err

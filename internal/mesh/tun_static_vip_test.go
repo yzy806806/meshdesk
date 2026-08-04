@@ -51,10 +51,10 @@ func TestStaticVirtualIP_Validation(t *testing.T) {
 			errContain: "not a valid IP address",
 		},
 		{
-			name:       "empty_ip_string",
-			staticIP:   "",
-			meshCIDR:   "10.200.0.0/24",
-			wantErr:    false, // empty means use IPAM, not an error
+			name:     "empty_ip_string",
+			staticIP: "",
+			meshCIDR: "10.200.0.0/24",
+			wantErr:  false, // empty means use IPAM, not an error
 		},
 		{
 			name:     "valid_ip_in_16_subnet",

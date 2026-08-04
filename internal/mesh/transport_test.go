@@ -33,12 +33,12 @@ import (
 // recommended pattern for transport contract testing: a real Transport is not
 // required for validating PeerConn assertions or failover logic.
 type mockTransport struct {
-	name      string
-	healthy   bool
-	latency   time.Duration
-	pipeAddr  net.Addr // reported as the remote address for connections
-	mu        sync.Mutex
-	closed    bool
+	name     string
+	healthy  bool
+	latency  time.Duration
+	pipeAddr net.Addr // reported as the remote address for connections
+	mu       sync.Mutex
+	closed   bool
 }
 
 // mockAddr implements net.Addr for in-memory pipe connections.

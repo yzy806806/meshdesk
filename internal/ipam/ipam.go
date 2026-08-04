@@ -85,9 +85,9 @@ func NewAllocator(subnet string) (*Allocator, error) {
 	}
 
 	return &Allocator{
-		subnet:       ipNet,
-		hostBits:     hostBits,
-		usableHosts:  usableHosts,
+		subnet:      ipNet,
+		hostBits:    hostBits,
+		usableHosts: usableHosts,
 	}, nil
 }
 

@@ -1070,10 +1070,8 @@ func TestTopologySSE_ScannerReadSSEFormat(t *testing.T) {
 	srv := newTopologyTestServer(t)
 	startSSEHub(t, srv)
 
-	req := httptest.NewRequest("GET", "/api/topology/events", nil)
-	ctx, cancel := context.WithCancel(req.Context())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req = req.WithContext(ctx)
 
 	// Hijackable server — we'll test by piping the handler output
 	// into a bufio.Scanner.

@@ -30,8 +30,8 @@ func TestParseToken_ExtraJSONFields(t *testing.T) {
 	data, _ := base64.RawURLEncoding.DecodeString(raw)
 	var tok map[string]interface{}
 	json.Unmarshal(data, &tok)
-	tok["__proto__"] = "attacker"     // prototype pollution attempt
-	tok["constructor"] = "evil"       // constructor pollution attempt
+	tok["__proto__"] = "attacker"      // prototype pollution attempt
+	tok["constructor"] = "evil"        // constructor pollution attempt
 	tok["malicious_field"] = "dropped" // extra field should be ignored
 	data2, _ := json.Marshal(tok)
 	injected := base64.RawURLEncoding.EncodeToString(data2)
@@ -279,8 +279,8 @@ func TestSigningMaterial_CoversAllFields(t *testing.T) {
 
 	// Each tampered version should fail validation.
 	tamperings := []struct {
-		name    string
-		tamper  func(t Token) Token
+		name   string
+		tamper func(t Token) Token
 	}{
 		{"version", func(t Token) Token { t.Version = 2; return t }},
 		{"expiry", func(t Token) Token { t.ExpiresAt += 1; return t }},
@@ -368,13 +368,13 @@ func TestRateLimit_WindowReset(t *testing.T) {
 		t.Fatalf("GenerateIdentity: %v", err)
 	}
 	srv := NewJoinServer(ServerConfig{
-		Secret:           []byte("test-secret"),
+		Secret:            []byte("test-secret"),
 		ServerIdentity:    id,
 		BootstrapEndpoint: "127.0.0.1:52888",
 		GossipPort:        7946,
 		RealityPublicKey:  "deadbeef",
 		RealityShortID:    "0123456789abcdef",
-		RealityServerName:  "www.example.com",
+		RealityServerName: "www.example.com",
 		Collectors:        []string{"c1"},
 		MaxJoinRequests:   3,
 	})
@@ -399,10 +399,10 @@ func TestRateLimit_WindowReset(t *testing.T) {
 func TestRateLimit_AccessAllowRequestDirectly(t *testing.T) {
 	// Tests that the rate limiter works correctly.
 	srv := NewJoinServer(ServerConfig{
-		Secret:           []byte("secret"),
+		Secret:            []byte("secret"),
 		ServerIdentity:    mustGenerateIdentity(t),
 		BootstrapEndpoint: "127.0.0.1:52888",
-		MaxJoinRequests:  5,
+		MaxJoinRequests:   5,
 	})
 
 	ip := "10.10.10.10"
@@ -535,18 +535,18 @@ func TestChallengeCache_Expiry(t *testing.T) {
 	id, _ := identity.GenerateIdentity()
 	srv := NewJoinServer(ServerConfig{
 		Secret:            []byte("test-secret"),
-		ServerIdentity:     id,
-		BootstrapEndpoint:  "127.0.0.1:52888",
+		ServerIdentity:    id,
+		BootstrapEndpoint: "127.0.0.1:52888",
 		RealityPublicKey:  "deadbeef",
 		RealityShortID:    "0123456789abcdef",
-		RealityServerName:  "www.example.com",
+		RealityServerName: "www.example.com",
 	})
 
 	// Manually add an expired challenge.
 	srv.mu.Lock()
 	srv.challengeCache["expired-challenge"] = challengeEntry{
 		joinerPubKey: "test-pubkey",
-		expiresAt:   time.Now().Add(-1 * time.Hour),
+		expiresAt:    time.Now().Add(-1 * time.Hour),
 	}
 	srv.mu.Unlock()
 

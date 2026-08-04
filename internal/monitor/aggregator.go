@@ -65,7 +65,7 @@ type Aggregator struct {
 
 	// dedupLastSeen tracks when each sourceID was last updated, for
 	// periodic cleanup of stale entries (prevents unbounded growth).
-	dedupLastSeen   map[string]time.Time
+	dedupLastSeen        map[string]time.Time
 	dedupCleanupInterval time.Duration // zero = default 1h
 	staleThreshold       time.Duration // zero = default 2*cleanupInterval
 
@@ -120,15 +120,15 @@ func NewAggregator(cfg AggregatorConfig) *Aggregator {
 		store = NewStore()
 	}
 	return &Aggregator{
-		store:          store,
-		dialer:         cfg.Dialer,
-		port:           port,
-		meshDialer:     cfg.MeshDialer,
+		store:           store,
+		dialer:          cfg.Dialer,
+		port:            port,
+		meshDialer:      cfg.MeshDialer,
 		collectorLister: cfg.CollectorLister,
-		selfPeerID:     cfg.SelfPeerID,
-		authChecker:    cfg.AuthChecker,
-		dedup:          make(map[string]uint64),
-		stopCh:         make(chan struct{}),
+		selfPeerID:      cfg.SelfPeerID,
+		authChecker:     cfg.AuthChecker,
+		dedup:           make(map[string]uint64),
+		stopCh:          make(chan struct{}),
 	}
 }
 

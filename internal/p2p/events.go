@@ -53,13 +53,13 @@ type SubnetProxyChangeHandler func(pubKey, virtualIP string, subnets []string)
 // meshEventDelegate implements memberlist.EventDelegate to bridge gossip
 // events to the PeerManager and routing table.
 type meshEventDelegate struct {
-	delegate  *meshDelegate
-	wg        PeerManager
-	mu        sync.RWMutex
-	metaCache map[string]*NodeMeta // publicKey → latest metadata
-	relayPool map[string]*NodeMeta // publicKey → relay candidates (CapRelay)
-	exitPool  map[string]*NodeMeta // publicKey → exit candidates (CapExit)
-	entryPool map[string]*NodeMeta // publicKey → entry candidates (CapProxyEntry)
+	delegate      *meshDelegate
+	wg            PeerManager
+	mu            sync.RWMutex
+	metaCache     map[string]*NodeMeta // publicKey → latest metadata
+	relayPool     map[string]*NodeMeta // publicKey → relay candidates (CapRelay)
+	exitPool      map[string]*NodeMeta // publicKey → exit candidates (CapExit)
+	entryPool     map[string]*NodeMeta // publicKey → entry candidates (CapProxyEntry)
 	collectorPool map[string]*NodeMeta // publicKey → collector candidates (CapCollector)
 
 	joinHandler   PeerJoinHandler
@@ -100,15 +100,15 @@ type meshEventDelegate struct {
 // newMeshEventDelegate creates a new event delegate.
 func newMeshEventDelegate(delegate *meshDelegate, wg PeerManager) *meshEventDelegate {
 	return &meshEventDelegate{
-		delegate:      delegate,
-		wg:            wg,
-		metaCache:       make(map[string]*NodeMeta),
-		relayPool:       make(map[string]*NodeMeta),
-		exitPool:        make(map[string]*NodeMeta),
-		entryPool:       make(map[string]*NodeMeta),
-		collectorPool:   make(map[string]*NodeMeta),
-		leaveTimes:      make(map[string]time.Time),
-		metaLeaveTimes:  make(map[string]time.Time),
+		delegate:       delegate,
+		wg:             wg,
+		metaCache:      make(map[string]*NodeMeta),
+		relayPool:      make(map[string]*NodeMeta),
+		exitPool:       make(map[string]*NodeMeta),
+		entryPool:      make(map[string]*NodeMeta),
+		collectorPool:  make(map[string]*NodeMeta),
+		leaveTimes:     make(map[string]time.Time),
+		metaLeaveTimes: make(map[string]time.Time),
 	}
 }
 

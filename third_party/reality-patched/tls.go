@@ -252,22 +252,22 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				break
 			}
 			break
-			}
-			mutex.Unlock()
-			if hs.c.conn != conn {
-				_, err := io.Copy(target, NewRatelimitedConn(underlying, &config.LimitFallbackUpload))
-				// close target writer when received FIN (err==nil)
-				if err == nil {
-					targetWriterCloser, ok := target.(CloseWriteConn)
-					if ok {
-						targetWriterCloser.CloseWrite()
-					}
-				} else {
-					// Close target when encountering RST (or any other errors)
-					target.Close()
+		}
+		mutex.Unlock()
+		if hs.c.conn != conn {
+			_, err := io.Copy(target, NewRatelimitedConn(underlying, &config.LimitFallbackUpload))
+			// close target writer when received FIN (err==nil)
+			if err == nil {
+				targetWriterCloser, ok := target.(CloseWriteConn)
+				if ok {
+					targetWriterCloser.CloseWrite()
 				}
+			} else {
+				// Close target when encountering RST (or any other errors)
+				target.Close()
 			}
-			waitGroup.Done()
+		}
+		waitGroup.Done()
 	}()
 
 	go func() {

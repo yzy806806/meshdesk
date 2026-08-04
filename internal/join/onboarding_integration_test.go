@@ -69,14 +69,14 @@ func TestIntegration_ZeroConfigOnboarding(t *testing.T) {
 	// Create the join server on the bootstrap node.
 	srv := NewJoinServer(ServerConfig{
 		Secret:            sharedSecret,
-		ServerIdentity:     bootstrapIdentity,
-		BootstrapEndpoint:  "bootstrap.example.com:52888",
-		GossipPort:         7946,
-		RealityPublicKey:   realityPubKey,
-		RealityShortID:     realityShortID,
-		RealityServerName:  realityServerName,
-		Collectors:         collectors,
-		TokenLifetime:      30 * time.Minute,
+		ServerIdentity:    bootstrapIdentity,
+		BootstrapEndpoint: "bootstrap.example.com:52888",
+		GossipPort:        7946,
+		RealityPublicKey:  realityPubKey,
+		RealityShortID:    realityShortID,
+		RealityServerName: realityServerName,
+		Collectors:        collectors,
+		TokenLifetime:     30 * time.Minute,
 	})
 	defer srv.Stop()
 
@@ -433,14 +433,14 @@ func TestIntegration_ZeroConfigOnboarding_PlainHTTP(t *testing.T) {
 
 	srv := NewJoinServer(ServerConfig{
 		Secret:            sharedSecret,
-		ServerIdentity:     bootstrapIdentity,
-		BootstrapEndpoint:  "127.0.0.1:52888",
-		GossipPort:         7946,
-		RealityPublicKey:   "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-		RealityShortID:     "deadbeefcafef00d",
-		RealityServerName:  "www.example.com",
-		Collectors:         []string{"collector-1"},
-		TokenLifetime:      10 * time.Minute,
+		ServerIdentity:    bootstrapIdentity,
+		BootstrapEndpoint: "127.0.0.1:52888",
+		GossipPort:        7946,
+		RealityPublicKey:  "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		RealityShortID:    "deadbeefcafef00d",
+		RealityServerName: "www.example.com",
+		Collectors:        []string{"collector-1"},
+		TokenLifetime:     10 * time.Minute,
 	})
 	defer srv.Stop()
 
@@ -504,14 +504,14 @@ func TestIntegration_OnboardingProducesValidMeshConfig(t *testing.T) {
 
 	srv := NewJoinServer(ServerConfig{
 		Secret:            sharedSecret,
-		ServerIdentity:     bootstrapIdentity,
-		BootstrapEndpoint:  "bootstrap.mesh.test:52888",
-		GossipPort:         7946,
-		RealityPublicKey:   "pubkey-for-reality-tls-connection",
-		RealityShortID:     "shortid12345678",
-		RealityServerName:  "sni.mesh.test",
-		Collectors:         []string{"collector-a", "collector-b", "collector-c"},
-		TokenLifetime:      30 * time.Minute,
+		ServerIdentity:    bootstrapIdentity,
+		BootstrapEndpoint: "bootstrap.mesh.test:52888",
+		GossipPort:        7946,
+		RealityPublicKey:  "pubkey-for-reality-tls-connection",
+		RealityShortID:    "shortid12345678",
+		RealityServerName: "sni.mesh.test",
+		Collectors:        []string{"collector-a", "collector-b", "collector-c"},
+		TokenLifetime:     30 * time.Minute,
 	})
 	defer srv.Stop()
 
@@ -652,14 +652,14 @@ func TestIntegration_MultipleJoinersConsistentConfig(t *testing.T) {
 
 	srv := NewJoinServer(ServerConfig{
 		Secret:            sharedSecret,
-		ServerIdentity:     bootstrapIdentity,
-		BootstrapEndpoint:  "bootstrap.multi.test:52888",
-		GossipPort:         7946,
-		RealityPublicKey:   "shared-reality-pubkey-for-all-joiners",
-		RealityShortID:     "shared-short-id",
-		RealityServerName:  "shared.sni.test",
-		Collectors:         []string{"collector-shared"},
-		TokenLifetime:      30 * time.Minute,
+		ServerIdentity:    bootstrapIdentity,
+		BootstrapEndpoint: "bootstrap.multi.test:52888",
+		GossipPort:        7946,
+		RealityPublicKey:  "shared-reality-pubkey-for-all-joiners",
+		RealityShortID:    "shared-short-id",
+		RealityServerName: "shared.sni.test",
+		Collectors:        []string{"collector-shared"},
+		TokenLifetime:     30 * time.Minute,
 	})
 	defer srv.Stop()
 

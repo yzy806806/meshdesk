@@ -650,10 +650,8 @@ func TestExitReassemblerLargeData(t *testing.T) {
 
 	// 1000 chunks of 100 bytes each = 100KB.
 	chunkData := bytes.Repeat([]byte("abcdefghij"), 10) // 100 bytes
-	var expected []byte
 
 	for i := 0; i < 1000; i++ {
-		expected = append(expected, chunkData...)
 		chunkType := ChunkData
 		if i == 999 {
 			chunkType = ChunkStreamEnd

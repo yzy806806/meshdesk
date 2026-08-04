@@ -1480,9 +1480,7 @@ func TestNatTraversal_AllSessions_ConcurrentModification(t *testing.T) {
 	go func() {
 		for i := 0; i < 100; i++ {
 			sessions := nt.AllSessions()
-			if len(sessions) < 0 {
-				t.Error("AllSessions returned negative length") // should never happen
-			}
+			_ = sessions // ensure read access works under concurrent mutation
 		}
 		done <- struct{}{}
 	}()

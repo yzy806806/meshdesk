@@ -13,28 +13,14 @@ import (
 // mockCollectorLister is a test CollectorLister that returns a preset
 // list of collector peer IDs.
 type mockCollectorLister struct {
-	mu     sync.Mutex
-	peers  []string
-	called bool
+	mu    sync.Mutex
+	peers []string
 }
 
 func (m *mockCollectorLister) CollectorPeerIDs() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.called = true
 	return m.peers
-}
-
-func (m *mockCollectorLister) wasCalled() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.called
-}
-
-func (m *mockCollectorLister) setPeers(peers []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.peers = peers
 }
 
 // captureDialer is a test MeshDialer that captures forwarded envelopes.
@@ -314,9 +300,9 @@ func TestAggregatorNoForwardingWithoutConfig(t *testing.T) {
 
 	// No MeshDialer or CollectorLister — forwarding disabled.
 	agg := NewAggregator(AggregatorConfig{
-		Store: store,
+		Store:  store,
 		Dialer: mesh,
-		Port:  4204,
+		Port:   4204,
 	})
 	if err := agg.Start(); err != nil {
 		t.Fatalf("agg Start: %v", err)

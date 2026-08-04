@@ -19,11 +19,11 @@ func TestCollectorDiscoveredOnNotifyJoin(t *testing.T) {
 	events := newMeshEventDelegate(delegate, mockPM)
 
 	peerMeta := &NodeMeta{
-		PublicKey:   "collector0000000000000000000000000000000000000000000000000000",
-		Hostname:    "dashboard-1",
-		Role:        "web",
+		PublicKey:    "collector0000000000000000000000000000000000000000000000000000",
+		Hostname:     "dashboard-1",
+		Role:         "web",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:51820"},
+		Endpoints:    []string{"203.0.113.5:51820"},
 	}
 
 	metaData, err := peerMeta.MarshalMeta()
@@ -187,11 +187,11 @@ func TestCollectorHandlerIdempotentJoin(t *testing.T) {
 	events := newMeshEventDelegate(delegate, mockPM)
 
 	peerMeta := &NodeMeta{
-		PublicKey:   "collector0000000000000000000000000000000000000000000000000000",
-		Hostname:    "dashboard-1",
-		Role:        "web",
+		PublicKey:    "collector0000000000000000000000000000000000000000000000000000",
+		Hostname:     "dashboard-1",
+		Role:         "web",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:51820"},
+		Endpoints:    []string{"203.0.113.5:51820"},
 	}
 
 	metaData, _ := peerMeta.MarshalMeta()
@@ -233,11 +233,11 @@ func TestCollectorRemovedOnLeave(t *testing.T) {
 	events := newMeshEventDelegate(delegate, mockPM)
 
 	peerMeta := &NodeMeta{
-		PublicKey:   "collector0000000000000000000000000000000000000000000000000000",
-		Hostname:    "dashboard-1",
-		Role:        "web",
+		PublicKey:    "collector0000000000000000000000000000000000000000000000000000",
+		Hostname:     "dashboard-1",
+		Role:         "web",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:51820"},
+		Endpoints:    []string{"203.0.113.5:51820"},
 	}
 
 	metaData, _ := peerMeta.MarshalMeta()
@@ -336,11 +336,11 @@ func TestCollectorRemovedHandlerOnLeave(t *testing.T) {
 	events := newMeshEventDelegate(delegate, mockPM)
 
 	peerMeta := &NodeMeta{
-		PublicKey:   "collector0000000000000000000000000000000000000000000000000000",
-		Hostname:    "dashboard-1",
-		Role:        "web",
+		PublicKey:    "collector0000000000000000000000000000000000000000000000000000",
+		Hostname:     "dashboard-1",
+		Role:         "web",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:51820"},
+		Endpoints:    []string{"203.0.113.5:51820"},
 	}
 
 	metaData, _ := peerMeta.MarshalMeta()
@@ -425,12 +425,12 @@ func TestCollectorRemovedHandlerOnCapabilityLoss(t *testing.T) {
 
 	// Peer starts as a collector.
 	peerMeta := &NodeMeta{
-		PublicKey:   "collector0000000000000000000000000000000000000000000000000000",
-		Hostname:    "dashboard-1",
-		Role:        "web",
+		PublicKey:    "collector0000000000000000000000000000000000000000000000000000",
+		Hostname:     "dashboard-1",
+		Role:         "web",
 		CapCollector: true,
-		Seq:         1,
-		Endpoints:   []string{"203.0.113.5:51820"},
+		Seq:          1,
+		Endpoints:    []string{"203.0.113.5:51820"},
 	}
 
 	metaData, _ := peerMeta.MarshalMeta()
@@ -485,11 +485,11 @@ func TestCollectorRemovedHandlerNotCalledWhenNoHandler(t *testing.T) {
 	events := newMeshEventDelegate(delegate, mockPM)
 
 	peerMeta := &NodeMeta{
-		PublicKey:   "collector0000000000000000000000000000000000000000000000000000",
-		Hostname:    "dashboard-1",
-		Role:        "web",
+		PublicKey:    "collector0000000000000000000000000000000000000000000000000000",
+		Hostname:     "dashboard-1",
+		Role:         "web",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:51820"},
+		Endpoints:    []string{"203.0.113.5:51820"},
 	}
 
 	metaData, _ := peerMeta.MarshalMeta()

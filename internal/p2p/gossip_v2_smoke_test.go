@@ -282,12 +282,12 @@ func contains(s, substr string) bool {
 // TestGossipV2_NodeMetaCapCollectorCompat verifies cross-version msgpack
 // compatibility for the CapCollector field. When an older node serializes
 // NodeMeta without the "cc" (CapCollector) field, the current code must:
-//   1. Successfully unmarshal the payload (no parse errors).
-//   2. Default CapCollector to false (zero value).
-//   3. Correctly parse all other fields.
+//  1. Successfully unmarshal the payload (no parse errors).
+//  2. Default CapCollector to false (zero value).
+//  3. Correctly parse all other fields.
 //
 // When a newer node sends "cc":true, the current code must:
-//   1. Correctly set CapCollector to true.
+//  1. Correctly set CapCollector to true.
 //
 // This test extends TestGossipV2_NodeMetaNoMeshIP by adding cross-version
 // compatibility coverage for the CapCollector field added in commit d489512.

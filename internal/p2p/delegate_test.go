@@ -160,12 +160,12 @@ func TestNodeMetaCapCollectorRoundTrip(t *testing.T) {
 
 	// Case 2: CapCollector=false (default) — must survive round-trip as false.
 	original2 := &NodeMeta{
-		PublicKey:  "agnt0000000000000000000000000000000000000000000000000000000000",
-		Hostname:   "agent-1",
-		Role:       "agent",
-		Endpoints:  []string{"203.0.113.10:51820"},
-		Version:    "1.0.0",
-		Seq:        1,
+		PublicKey: "agnt0000000000000000000000000000000000000000000000000000000000",
+		Hostname:  "agent-1",
+		Role:      "agent",
+		Endpoints: []string{"203.0.113.10:51820"},
+		Version:   "1.0.0",
+		Seq:       1,
 		// CapCollector intentionally not set (zero value)
 	}
 

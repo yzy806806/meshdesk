@@ -15,11 +15,11 @@ import (
 
 // mockJoinTokenGenerator is a test implementation of JoinTokenGenerator.
 type mockJoinTokenGenerator struct {
-	enabled    bool
-	secret     string
-	serverFP   string
-	joinURL    string
-	binaryURL  string
+	enabled   bool
+	secret    string
+	serverFP  string
+	joinURL   string
+	binaryURL string
 }
 
 func (m *mockJoinTokenGenerator) GenerateJoinToken(lifetime time.Duration) (string, error) {

@@ -72,14 +72,6 @@ func TestStressOutOfOrderDualPathInterleaved(t *testing.T) {
 	}
 	wireChunks := encodeChunks(t, chunks, e2eKey, circuitID)
 
-	// Build the expected reassembled payload (concatenate in order).
-	var expected []byte
-	for _, c := range chunks {
-		if c.Type != ChunkStreamEnd {
-			expected = append(expected, c.Payload...)
-		}
-	}
-
 	// Split: even-indexed chunks go on path 0, odd-indexed on path 1.
 	// Deliver all path 0 chunks first, then all path 1 chunks.
 	for i := 0; i < numChunks; i++ {
