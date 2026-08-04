@@ -1,0 +1,38 @@
+[Unit]
+Description=MeshDesk Mesh VPN Node
+Documentation=https://github.com/yzy806806/meshdesk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Binary location
+ExecStart=/usr/local/bin/meshdesk --config /etc/meshdesk/config.yaml
+
+# Enable web UI mode by uncommenting:
+# ExecStart=/usr/local/bin/meshdesk --config /etc/meshdesk/config.yaml --web
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshdesk
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=false
+ProtectHome=false
+
+# Resource limits
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
