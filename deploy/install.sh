@@ -146,7 +146,7 @@ if [ ! -s "$TMP_FILE" ]; then
     fatal "Downloaded file is empty. Something went wrong."
 fi
 
-info "Downloaded $(ls -lh "$TMP_FILE" | awk '{print $5}')"
+info "Downloaded $(stat -c %s "$TMP_FILE" 2>/dev/null || stat -f %z "$TMP_FILE") bytes"
 
 # ============================================================================
 # Install binary
@@ -263,7 +263,7 @@ systemctl daemon-reload
 # ============================================================================
 if [ -n "$JOIN_URL" ] && [ -n "$JOIN_TOKEN" ]; then
     info "Running join protocol: $JOIN_URL"
-    if "$INSTALL_DIR/meshdesk" join "$JOIN_URL" --token "$JOIN_TOKEN"; then
+    if "$INSTALL_DIR/meshdesk" join --join-url "$JOIN_URL" --join-token "$JOIN_TOKEN"; then
         info "Join successful! Config written to $CONFIG_DIR/config.yaml"
     else
         fatal "Join failed. Check the token and bootstrap node availability."
