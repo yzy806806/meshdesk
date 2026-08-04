@@ -144,7 +144,38 @@ func main() {
 				gossipLayer.SetLocalSubnetProxies(subnets)
 			}
 		})
+		node.SetACLRulesBroadcaster(func(rules []string) {
+			if gossipLayer != nil {
+				gossipLayer.SetLocalACLRules(rules)
+			}
+		})
 	}
+
+	// Wire the relay metadata provider so tryRelayFallback can make
+	// intelligent, RTT-sorted, health-filtered relay candidate selection
+	// using gossip-propagated NodeMeta. The closure captures gossipLayer
+	// by reference; it will be nil until gossip starts.
+	node.SetRelayMetaProvider(func() []mesh.RelayPeerInfo {
+		if gossipLayer == nil {
+			return nil
+		}
+		var result []mesh.RelayPeerInfo
+		for _, meta := range gossipLayer.KnownPeers() {
+			var rtt time.Duration
+			if meta.RTTUs > 0 {
+				rtt = time.Duration(meta.RTTUs) * time.Microsecond
+			}
+			result = append(result, mesh.RelayPeerInfo{
+				PeerKey:      meta.PublicKey,
+				RTT:          rtt,
+				CapRelay:     meta.CapRelay,
+				MaxCircuits:  meta.MaxCircuits,
+				LoadCircuits: meta.LoadCircuits,
+				NatType:      meta.NatType,
+			})
+		}
+		return result
+	})
 
 	if err := node.Start(); err != nil {
 		log.Fatalf("Failed to start mesh node: %v", err)

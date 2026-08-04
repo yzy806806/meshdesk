@@ -119,6 +119,17 @@ type MeshNode struct {
 	// gossipLayer.SetLocalSubnetProxies.
 	subnetProxyBroadcaster func([]string)
 
+	// aclEngine is the TUN access control list engine. When non-nil,
+	// every inbound TUN packet is checked against ACL rules before
+	// being written to the TUN device. Set by setupTUN when ACL is
+	// configured. Accessible via ACL() for the web Dashboard.
+	aclEngine *ACLEngine
+
+	// aclRulesBroadcaster is a callback to propagate the local node's
+	// ACL rules to the gossip layer. Set by main.go to
+	// gossipLayer.SetLocalACLRules.
+	aclRulesBroadcaster func([]string)
+
 	// sessionDeathHandler is called when a smux session with a peer dies
 	// (detected by the reconnect watcher). The argument is the peer's
 	// identity hex. Set by main.go to clean up TUN routes when the peer
@@ -134,6 +145,15 @@ type MeshNode struct {
 	// membership), no new NotifyJoin fires, so the join handler in
 	// main.go never re-runs. This callback fills that gap.
 	sessionReconnectHandler func(string)
+
+	// relayMetaProvider is a callback that returns metadata for all
+	// known relay-capable peers from the gossip layer. Each entry is
+	// (peerKey, rtt, capRelay, maxCircuits, loadCircuits, natType).
+	// Set by main.go to bridge the gossip layer with the relay dialer,
+	// avoiding an import cycle between mesh and p2p packages.
+	// If nil, tryRelayFallback falls back to the legacy behavior of
+	// trying all peers with active sessions.
+	relayMetaProvider func() []RelayPeerInfo
 
 	mu     sync.RWMutex
 	closed bool
@@ -685,6 +705,40 @@ func (n *MeshNode) SetSessionReconnectHandler(h func(string)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.sessionReconnectHandler = h
+}
+
+// ACL returns the TUN ACL engine, or nil when ACL is not configured.
+// The web Dashboard uses this to query stats and update rules at runtime.
+func (n *MeshNode) ACL() *ACLEngine {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.aclEngine
+}
+
+// SetACLRulesBroadcaster registers a callback to propagate the local
+// node's ACL rules to the gossip layer. main.go wires this to
+// gossipLayer.SetLocalACLRules.
+func (n *MeshNode) SetACLRulesBroadcaster(cb func([]string)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.aclRulesBroadcaster = cb
+}
+
+// aclRulesBroadcaster is a callback to propagate the local node's ACL
+// rules to the gossip layer. Set by main.go.
+func (n *MeshNode) aclRulesBroadcasterCB() func([]string) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.aclRulesBroadcaster
+}
+
+// BroadcastACLRules sends the local node's ACL rules to the gossip layer
+// via the callback registered by main.go. This is called when ACL rules
+// are updated at runtime via the Dashboard.
+func (n *MeshNode) BroadcastACLRules(rules []string) {
+	if cb := n.aclRulesBroadcasterCB(); cb != nil {
+		cb(rules)
+	}
 }
 
 // MuxTransport returns the shared TCP/UDP transport multiplexer, or nil
