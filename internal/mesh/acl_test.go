@@ -480,6 +480,423 @@ func TestACLEngine_CurrentRules(t *testing.T) {
 	}
 }
 
+// ─── IPv6 parsePacketInfo tests ───
+
+func TestParsePacketInfo_IPv6TCP(t *testing.T) {
+	pkt := makeIPv6PacketACL("2001:db8::1", "2001:db8::2", 6, 12345, 80)
+	info, ok := parsePacketInfo(pkt)
+	if !ok {
+		t.Fatal("failed to parse IPv6 TCP packet")
+	}
+	if info.protocol != "tcp" {
+		t.Fatalf("expected tcp, got %s", info.protocol)
+	}
+	if info.srcPort != 12345 {
+		t.Fatalf("expected src port 12345, got %d", info.srcPort)
+	}
+	if info.dstPort != 80 {
+		t.Fatalf("expected dst port 80, got %d", info.dstPort)
+	}
+	if !info.srcIP.Equal(net.ParseIP("2001:db8::1")) {
+		t.Fatalf("expected src IP 2001:db8::1, got %s", info.srcIP)
+	}
+	if !info.dstIP.Equal(net.ParseIP("2001:db8::2")) {
+		t.Fatalf("expected dst IP 2001:db8::2, got %s", info.dstIP)
+	}
+}
+
+func TestParsePacketInfo_IPv6UDP(t *testing.T) {
+	pkt := makeIPv6PacketACL("2001:db8::1", "2001:db8::2", 17, 5353, 53)
+	info, ok := parsePacketInfo(pkt)
+	if !ok {
+		t.Fatal("failed to parse IPv6 UDP packet")
+	}
+	if info.protocol != "udp" {
+		t.Fatalf("expected udp, got %s", info.protocol)
+	}
+	if info.srcPort != 5353 {
+		t.Fatalf("expected src port 5353, got %d", info.srcPort)
+	}
+	if info.dstPort != 53 {
+		t.Fatalf("expected dst port 53, got %d", info.dstPort)
+	}
+}
+
+func TestParsePacketInfo_IPv6ICMP(t *testing.T) {
+	pkt := makeIPv6PacketACL("2001:db8::1", "2001:db8::2", 58, 0, 0)
+	info, ok := parsePacketInfo(pkt)
+	if !ok {
+		t.Fatal("failed to parse IPv6 ICMPv6 packet")
+	}
+	if info.protocol != "icmp" {
+		t.Fatalf("expected icmp, got %s", info.protocol)
+	}
+}
+
+func TestParsePacketInfo_IPv6TooShort(t *testing.T) {
+	_, ok := parsePacketInfo([]byte{0x60, 0x00})
+	if ok {
+		t.Fatal("expected parse failure for too-short IPv6 packet")
+	}
+}
+
+func TestParsePacketInfo_BadVersion(t *testing.T) {
+	_, ok := parsePacketInfo([]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if ok {
+		t.Fatal("expected parse failure for bad IP version")
+	}
+}
+
+// ─── Source CIDR matching tests ───
+
+func TestACLEngine_SourceCIDRMatch(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action:     config.ACLActionDeny,
+				SourceCIDR: "10.10.0.0/24",
+			},
+		},
+	})
+	// Source inside denied range — denied.
+	pkt := makeIPv4PacketACL("10.10.0.50", "192.168.1.1", 6, 1234, 80)
+	if e.Check(pkt, "peer") {
+		t.Fatal("packet from denied source CIDR should be denied")
+	}
+	// Source outside denied range — allowed.
+	pkt2 := makeIPv4PacketACL("10.10.1.50", "192.168.1.1", 6, 1234, 80)
+	if !e.Check(pkt2, "peer") {
+		t.Fatal("packet from allowed source CIDR should be allowed")
+	}
+}
+
+func TestACLEngine_SourceCIDRAndProtocolMatch(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action:     config.ACLActionDeny,
+				SourceCIDR: "10.10.0.0/24",
+				Protocol:   "udp",
+			},
+		},
+	})
+	// Source matches, protocol matches — denied.
+	pkt := makeIPv4PacketACL("10.10.0.50", "192.168.1.1", 17, 1234, 80)
+	if e.Check(pkt, "peer") {
+		t.Fatal("UDP from denied source CIDR should be denied")
+	}
+	// Source matches, different protocol — allowed.
+	pkt2 := makeIPv4PacketACL("10.10.0.50", "192.168.1.1", 6, 1234, 80)
+	if !e.Check(pkt2, "peer") {
+		t.Fatal("TCP from same source CIDR should be allowed (protocol mismatch)")
+	}
+}
+
+// ─── Source port matching tests ───
+
+func TestACLEngine_SrcPortMatch(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action:  config.ACLActionDeny,
+				SrcPort: 8080,
+			},
+		},
+	})
+	// Source port 8080 — denied.
+	pkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 8080, 80)
+	if e.Check(pkt, "peer") {
+		t.Fatal("packet from src port 8080 should be denied")
+	}
+	// Source port 9090 — allowed.
+	pkt2 := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 9090, 80)
+	if !e.Check(pkt2, "peer") {
+		t.Fatal("packet from src port 9090 should be allowed")
+	}
+}
+
+func TestACLEngine_DstPortMatch(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action:  config.ACLActionDeny,
+				DstPort: 22,
+			},
+		},
+	})
+	// Dest port 22 — denied.
+	pkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 12345, 22)
+	if e.Check(pkt, "peer") {
+		t.Fatal("packet to dst port 22 should be denied")
+	}
+	// Dest port 80 — allowed.
+	pkt2 := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 12345, 80)
+	if !e.Check(pkt2, "peer") {
+		t.Fatal("packet to dst port 80 should be allowed")
+	}
+}
+
+// ─── Combined rule matching tests ───
+
+func TestACLEngine_AllFieldsMatch(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action:     config.ACLActionDeny,
+				SourceCIDR: "10.10.0.0/24",
+				DestCIDR:   "192.168.1.1/32",
+				Protocol:   "tcp",
+				SrcPort:    8000,
+				DstPort:    443,
+				PeerID:     "badpeer",
+			},
+		},
+	})
+	// All fields match — denied.
+	pkt := makeIPv4PacketACL("10.10.0.50", "192.168.1.1", 6, 8000, 443)
+	if e.Check(pkt, "badpeer") {
+		t.Fatal("packet matching all rule fields should be denied")
+	}
+	// One field mismatches (src port) — allowed.
+	pkt2 := makeIPv4PacketACL("10.10.0.50", "192.168.1.1", 6, 8001, 443)
+	if !e.Check(pkt2, "badpeer") {
+		t.Fatal("packet with wrong src port should be allowed")
+	}
+	// One field mismatches (peer ID) — allowed.
+	pkt3 := makeIPv4PacketACL("10.10.0.50", "192.168.1.1", 6, 8000, 443)
+	if !e.Check(pkt3, "goodpeer") {
+		t.Fatal("packet from different peer should be allowed")
+	}
+}
+
+// ─── Edge case tests ───
+
+func TestACLEngine_UnparseablePacketDefaultDeny(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionDeny,
+	})
+	// Unparseable packet with default-deny — should be denied.
+	if e.Check([]byte{0x00, 0x01}, "peer") {
+		t.Fatal("unparseable packet should be denied under default-deny")
+	}
+	stats := e.Stats()
+	if stats.DenyCount != 1 {
+		t.Fatalf("expected 1 deny, got %d", stats.DenyCount)
+	}
+}
+
+func TestACLEngine_UnparseablePacketDefaultAllow(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+	})
+	// Unparseable packet with default-allow — should be allowed.
+	if !e.Check([]byte{0x00, 0x01}, "peer") {
+		t.Fatal("unparseable packet should be allowed under default-allow")
+	}
+	stats := e.Stats()
+	if stats.AllowCount != 1 {
+		t.Fatalf("expected 1 allow, got %d", stats.AllowCount)
+	}
+}
+
+func TestACLEngine_WildcardPeerID(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action: config.ACLActionDeny,
+				PeerID: "*",
+			},
+		},
+	})
+	// Wildcard peer ID should match any peer.
+	pkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 1234, 80)
+	if e.Check(pkt, "anypeer") {
+		t.Fatal("wildcard peer ID rule should deny any peer")
+	}
+}
+
+func TestACLEngine_WildcardProtocol(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionDeny,
+		Rules: []config.ACLRule{
+			{
+				Action:   config.ACLActionAllow,
+				Protocol: "*",
+			},
+		},
+	})
+	// Wildcard protocol should match TCP.
+	pkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 1234, 80)
+	if !e.Check(pkt, "peer") {
+		t.Fatal("wildcard protocol should match TCP")
+	}
+	// Wildcard protocol should match UDP.
+	pkt2 := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 17, 1234, 80)
+	if !e.Check(pkt2, "peer") {
+		t.Fatal("wildcard protocol should match UDP")
+	}
+	// Wildcard protocol should match ICMP.
+	pkt3 := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 1, 0, 0)
+	if !e.Check(pkt3, "peer") {
+		t.Fatal("wildcard protocol should match ICMP")
+	}
+}
+
+func TestACLEngine_EmptyPeerIDField(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action: config.ACLActionDeny,
+				// PeerID empty — means "match any peer" (no peer filter).
+			},
+		},
+	})
+	// Empty peer ID means "don't filter by peer" — so all peers match. Denied.
+	pkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 1234, 80)
+	if e.Check(pkt, "anypeer") {
+		t.Fatal("rule with empty peer ID should match (no peer filter) and deny")
+	}
+}
+
+// ─── UpdateRules with state carryover tests ───
+
+func TestACLEngine_UpdateRulesResetsHits(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action: config.ACLActionDeny,
+				DestCIDR: "10.0.0.1/32",
+			},
+		},
+	})
+	// Generate some hits.
+	pkt := makeIPv4PacketACL("10.0.0.2", "10.0.0.1", 6, 1234, 80)
+	e.Check(pkt, "peer")
+	e.Check(pkt, "peer")
+
+	stats := e.Stats()
+	if stats.RuleHits[0].Hits != 2 {
+		t.Fatalf("expected 2 hits before update, got %d", stats.RuleHits[0].Hits)
+	}
+
+	// Update rules (replaces the rule set).
+	err := e.UpdateRules(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionDeny,
+		Rules: []config.ACLRule{
+			{
+				Action: config.ACLActionAllow,
+				DestCIDR: "10.0.0.0/8",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Hits should be reset.
+	stats2 := e.Stats()
+	if len(stats2.RuleHits) != 1 {
+		t.Fatalf("expected 1 rule hit entry, got %d", len(stats2.RuleHits))
+	}
+	if stats2.RuleHits[0].Hits != 0 {
+		t.Fatalf("hits should be reset after UpdateRules, got %d", stats2.RuleHits[0].Hits)
+	}
+	if stats2.DefaultPolicy != config.ACLActionDeny {
+		t.Fatal("default policy should be deny after update")
+	}
+}
+
+func TestACLEngine_UpdateRulesCanDisable(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionDeny,
+		Rules: []config.ACLRule{
+			{Action: config.ACLActionDeny, DestCIDR: "10.0.0.1/32"},
+		},
+	})
+	// Disable ACL.
+	err := e.UpdateRules(config.ACLConfig{
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.IsEnabled() {
+		t.Fatal("engine should be disabled after update")
+	}
+	// All packets should be allowed when disabled.
+	pkt := makeIPv4PacketACL("10.0.0.2", "10.0.0.1", 6, 1234, 80)
+	if !e.Check(pkt, "peer") {
+		t.Fatal("disabled engine should allow all")
+	}
+}
+
+// ─── Concurrency test ───
+
+func TestACLEngine_ConcurrentCheck(t *testing.T) {
+	e, _ := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{Action: config.ACLActionDeny, DestCIDR: "10.0.0.1/32"},
+		},
+	})
+
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				pkt := makeIPv4PacketACL("10.0.0.2", "10.0.0.1", 6, 1234, 80)
+				e.Check(pkt, "peer")
+				// Also check a non-matching packet (different dest) to exercise allow path.
+				pkt2 := makeIPv4PacketACL("10.0.0.2", "10.0.0.3", 6, 1234, 80)
+				e.Check(pkt2, "peer")
+			}
+			done <- struct{}{}
+		}()
+		go func() {
+			for j := 0; j < 50; j++ {
+				e.Stats()
+				e.CurrentRules()
+				e.IsEnabled()
+			}
+			done <- struct{}{}
+		}()
+	}
+
+	// Wait for all goroutines (10 checkers + 10 readers = 20).
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+
+	stats := e.Stats()
+	total := stats.AllowCount + stats.DenyCount
+	// 10 goroutines × 100 iterations × 2 calls each = 2000 total.
+	if total != 2000 {
+		t.Fatalf("expected 2000 total decisions, got %d (allow=%d, deny=%d)", total, stats.AllowCount, stats.DenyCount)
+	}
+}
+
 // ─── Helper: makeIPv4PacketACL ───
 // Creates a minimal valid IPv4 packet for testing.
 func makeIPv4PacketACL(srcIP, dstIP string, protocol byte, srcPort, dstPort int) []byte {
@@ -497,6 +914,32 @@ func makeIPv4PacketACL(srcIP, dstIP string, protocol byte, srcPort, dstPort int)
 	if protocol == 6 || protocol == 17 {
 		binary.BigEndian.PutUint16(pkt[20:22], uint16(srcPort))
 		binary.BigEndian.PutUint16(pkt[22:24], uint16(dstPort))
+	}
+	return pkt
+}
+
+// makeIPv6PacketACL creates a minimal valid IPv6 packet for testing ACL parsePacketInfo.
+func makeIPv6PacketACL(srcIP, dstIP string, protocol byte, srcPort, dstPort int) []byte {
+	pkt := make([]byte, 60) // IPv6 header (40) + TCP/UDP header (20)
+	// IPv6 header
+	pkt[0] = 0x60 // version 6, traffic class 0
+	// Flow label: 0 (next 3 bytes)
+	// Payload length will vary based on transport header
+	if protocol == 6 || protocol == 17 {
+		binary.BigEndian.PutUint16(pkt[4:6], 20) // TCP/UDP header = 20 bytes
+	} else {
+		binary.BigEndian.PutUint16(pkt[4:6], 0) // No payload for ICMPv6
+	}
+	pkt[6] = protocol // Next Header
+	pkt[7] = 0x40     // Hop Limit = 64
+	src := net.ParseIP(srcIP)
+	dst := net.ParseIP(dstIP)
+	copy(pkt[8:24], src)
+	copy(pkt[24:40], dst)
+	// Transport header (ports for TCP/UDP)
+	if protocol == 6 || protocol == 17 {
+		binary.BigEndian.PutUint16(pkt[40:42], uint16(srcPort))
+		binary.BigEndian.PutUint16(pkt[42:44], uint16(dstPort))
 	}
 	return pkt
 }
