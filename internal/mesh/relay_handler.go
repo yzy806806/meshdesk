@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
 )
 
 // DefaultMaxRelayTunnels is the default maximum number of active relay tunnels.
@@ -57,12 +56,12 @@ type relayTunnel struct {
 //     via io.Copy. When either copy returns, both streams are closed.
 //  5. Close() tears down all active tunnels.
 type RelayHandler struct {
-	node       *MeshNode
-	localKey   string
-	tunnels    map[string]*relayTunnel
-	mu         sync.RWMutex
-	maxTunnels int
-	idleTimeout time.Duration
+	node              *MeshNode
+	localKey          string
+	tunnels           map[string]*relayTunnel
+	mu                sync.RWMutex
+	maxTunnels        int
+	idleTimeout       time.Duration
 	heartbeatInterval time.Duration
 
 	// OnRelayDial is called when a MeshRelayDial is received from a relay
@@ -162,12 +161,12 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 
 	// Create the tunnel entry.
 	tunnel := &relayTunnel{
-		ID:           tunnelID,
-		InitiatorKey: "", // unknown from request; could be inferred from peer
-		TargetKey:    req.TargetKey,
+		ID:            tunnelID,
+		InitiatorKey:  "", // unknown from request; could be inferred from peer
+		TargetKey:     req.TargetKey,
 		InitiatorConn: initiatorConn,
-		CreatedAt:    time.Now(),
-		done:         make(chan struct{}),
+		CreatedAt:     time.Now(),
+		done:          make(chan struct{}),
 	}
 	tunnel.LastActivity.Store(nowNano())
 	h.tunnels[tunnelID] = tunnel
@@ -181,7 +180,7 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	if targetSession == nil {
 		// Also check clientSessions.
 		h.node.sessionsMu.Lock()
-		targetSession, _ = h.node.clientSessions[req.TargetKey]
+		targetSession = h.node.clientSessions[req.TargetKey]
 		h.node.sessionsMu.Unlock()
 	}
 	if targetSession == nil {
@@ -297,7 +296,7 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	if resp.Type == MsgRelayReject {
 		log.Printf("[mesh-relay] target dial-back rejected: %s", resp.RejectReason)
 		conn.Close()
-	
+
 		return
 	}
 
@@ -305,7 +304,6 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	h.mu.Lock()
 	tunnel.TargetConn = conn
 	h.mu.Unlock()
-
 
 }
 
@@ -535,4 +533,3 @@ func (h *RelayHandler) cleanupIdleTunnels() {
 		h.mu.Unlock()
 	}
 }
-

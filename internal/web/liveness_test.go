@@ -9,8 +9,8 @@ import (
 
 // mockLiveness is a test PeerLiveness implementation.
 type mockLiveness struct {
-	alive     map[string]bool // peerID → alive
-	aliveIDs  []string        // ordered list for AlivePeerIDs
+	alive     map[string]bool   // peerID → alive
+	aliveIDs  []string          // ordered list for AlivePeerIDs
 	hostnames map[string]string // peerID → hostname (for PeerHostname)
 }
 
@@ -325,7 +325,7 @@ func TestLiveness_TopologySnapshotWithLiveness(t *testing.T) {
 	liveness := &mockLiveness{
 		alive: map[string]bool{
 			"aaa1": true,
-			"bbb2": true, // alive but no metrics
+			"bbb2": true,  // alive but no metrics
 			"ccc3": false, // dead
 		},
 		aliveIDs: []string{"aaa1", "bbb2"},

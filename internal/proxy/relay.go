@@ -119,9 +119,9 @@ type circuitEntry struct {
 // a dial function to connect to the next hop and a write function to
 // send data. This allows the transport layer to be wired in later.
 type Relay struct {
-	cfg       RelayConfig
-	mu        sync.RWMutex
-	circuits  map[string]*circuitEntry // circuit ID (hex) → state
+	cfg      RelayConfig
+	mu       sync.RWMutex
+	circuits map[string]*circuitEntry // circuit ID (hex) → state
 
 	// secSink receives suspicious-activity events for alerting.
 	// Accessed atomically — set via SetSecurityEventSink, read by secReport

@@ -19,15 +19,15 @@ func mustAlloc(t *testing.T, subnet string) *Allocator {
 
 func TestNewAllocator(t *testing.T) {
 	tests := []struct {
-		subnet      string
-		wantErr     bool
+		subnet     string
+		wantErr    bool
 		wantUsable int
 	}{
 		{"10.10.0.0/24", false, 254},
 		{"10.10.0.0/16", false, 65534},
 		{"10.10.0.0/30", false, 2},
-		{"10.10.0.0/31", false, 2},   // RFC 3021
-		{"10.10.0.0/32", true, 0},    // too small
+		{"10.10.0.0/31", false, 2}, // RFC 3021
+		{"10.10.0.0/32", true, 0},  // too small
 		{"invalid", true, 0},
 		{"", true, 0},
 	}
@@ -391,13 +391,13 @@ func TestAllocateWithPeers_KeepsOverLargerKey(t *testing.T) {
 
 func TestResolveConflict(t *testing.T) {
 	tests := []struct {
-		self   string
-		peer   string
-		yield  bool // true = self should yield
+		self  string
+		peer  string
+		yield bool // true = self should yield
 	}{
-		{"zzz", "aaa", true},   // self larger → yield
-		{"aaa", "zzz", false},  // self smaller → keep
-		{"aaa", "aaa", false},  // equal → keep (shouldn't happen, but safe)
+		{"zzz", "aaa", true},  // self larger → yield
+		{"aaa", "zzz", false}, // self smaller → keep
+		{"aaa", "aaa", false}, // equal → keep (shouldn't happen, but safe)
 	}
 
 	for _, tt := range tests {
@@ -584,22 +584,22 @@ func TestAllocateWithPeers_TableDriven(t *testing.T) {
 	a := mustAlloc(t, "10.10.0.0/28") // 14 usable — enough to force conflicts
 
 	tests := []struct {
-		name     string
-		selfKey  string
-		peerIPs  map[string]net.IP
-		hostCnt  int
-		wantErr  bool
+		name    string
+		selfKey string
+		peerIPs map[string]net.IP
+		hostCnt int
+		wantErr bool
 		// wantConflict is true if the result must differ from Allocate (no peers).
 		wantConflict bool
 		// mustNotBe is the set of IPs the result must NOT equal.
 		mustNotBe []string
 	}{
 		{
-			name:     "no peers, self only",
-			selfKey:  "nodeA",
-			peerIPs:  map[string]net.IP{},
-			hostCnt:  1,
-			wantErr:  false,
+			name:    "no peers, self only",
+			selfKey: "nodeA",
+			peerIPs: map[string]net.IP{},
+			hostCnt: 1,
+			wantErr: false,
 		},
 		{
 			name:    "larger key yields to smaller key claiming same IP",

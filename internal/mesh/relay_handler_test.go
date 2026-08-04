@@ -674,7 +674,7 @@ func TestRelayStream_BidirectionalCopy(t *testing.T) {
 	if err == nil {
 		// May take a moment for the close to propagate.
 		time.Sleep(100 * time.Millisecond)
-		_, err = conn2b.Write([]byte("should fail now"))
+		_, _ = conn2b.Write([]byte("should fail now"))
 	}
 	// It's OK if the write succeeds once (buffered); the key is that
 	// eventually the connection closes. We don't hard-assert here

@@ -19,16 +19,16 @@ func TestSeedCollectorsFromCache(t *testing.T) {
 
 	// Populate the cache with a collector and a non-collector.
 	pc.OnPeerJoin(&NodeMeta{
-		PublicKey:   "seed-collector-1",
-		Hostname:    "dashboard-seed",
+		PublicKey:    "seed-collector-1",
+		Hostname:     "dashboard-seed",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:52888"},
+		Endpoints:    []string{"203.0.113.5:52888"},
 	})
 	pc.OnPeerJoin(&NodeMeta{
-		PublicKey:   "seed-agent-1",
-		Hostname:    "agent-seed",
+		PublicKey:    "seed-agent-1",
+		Hostname:     "agent-seed",
 		CapCollector: false,
-		Endpoints:   []string{"10.0.0.2:52888"},
+		Endpoints:    []string{"10.0.0.2:52888"},
 	})
 
 	// Build a minimal GossipLayer with just events + peerCache.
@@ -76,9 +76,9 @@ func TestSeedCollectorsFromCacheEmpty(t *testing.T) {
 
 	// Only add a non-collector.
 	pc.OnPeerJoin(&NodeMeta{
-		PublicKey:   "no-collector",
+		PublicKey:    "no-collector",
 		CapCollector: false,
-		Endpoints:   []string{"10.0.0.1:52888"},
+		Endpoints:    []string{"10.0.0.1:52888"},
 	})
 
 	localMeta := &NodeMeta{
@@ -119,9 +119,9 @@ func TestSeedCollectorsFromCacheNoHandler(t *testing.T) {
 	pc := NewPeerCache(path)
 
 	pc.OnPeerJoin(&NodeMeta{
-		PublicKey:   "nohdl-collector",
+		PublicKey:    "nohdl-collector",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:52888"},
+		Endpoints:    []string{"203.0.113.5:52888"},
 	})
 
 	localMeta := &NodeMeta{

@@ -52,7 +52,7 @@ type MeshNode struct {
 	// clientSessions stores outbound (client-mode) sessions separately so
 	// that DialVirtualPort can prefer them even when a server-mode session
 	// from an inbound connection has replaced the entry in sessions.
-	clientSessions      map[string]*smux.Session
+	clientSessions       map[string]*smux.Session
 	sessionEstablishedAt map[string]time.Time
 	// peerManagers tracks per-peer PeerManager instances for outbound
 	// connections (one per peer). Inbound sessions from handleConnection

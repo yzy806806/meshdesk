@@ -34,8 +34,8 @@ const tunDevicePath = "/dev/net/tun"
 // We use a byte array for the data union because the ioctl writes the
 // assigned interface name back into ifr_name.
 type ifreq struct {
-	Name  [IFNAMSIZ]byte // ifr_name — interface name (null-terminated)
-	Flags uint16         // ifr_flags — IFF_TUN, IFF_NO_PI, etc.
+	Name  [IFNAMSIZ]byte     // ifr_name — interface name (null-terminated)
+	Flags uint16             // ifr_flags — IFF_TUN, IFF_NO_PI, etc.
 	_     [IFNAMSIZ - 2]byte // padding to match kernel struct size
 }
 

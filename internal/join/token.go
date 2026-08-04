@@ -48,11 +48,11 @@ const nonceLen = 16
 //	  "sig": "hex(hmac-sha256)"        // signature over v||exp||n||fp
 //	}
 type Token struct {
-	Version     int    `json:"v"`
-	ExpiresAt   int64  `json:"exp"`
-	Nonce       string `json:"n"`
-	ServerFP    string `json:"fp"`
-	Signature   string `json:"sig"`
+	Version   int    `json:"v"`
+	ExpiresAt int64  `json:"exp"`
+	Nonce     string `json:"n"`
+	ServerFP  string `json:"fp"`
+	Signature string `json:"sig"`
 }
 
 // GenerateToken creates a new join token signed with the given secret.

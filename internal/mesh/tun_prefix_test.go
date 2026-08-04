@@ -11,10 +11,10 @@ import (
 // the mesh subnet, not a hardcoded /32.
 func TestAddrWithPrefix(t *testing.T) {
 	tests := []struct {
-		name    string
-		ip      string
-		cidr    string
-		want    string
+		name string
+		ip   string
+		cidr string
+		want string
 	}{
 		{
 			name: "/24 prefix",

@@ -14,7 +14,9 @@ import (
 //
 // If encodings differ between x86_64 and arm64, memberlist communication
 // between nodes on different architectures will fail with errors like:
-//   "msg type (116) not supported"
+//
+//	"msg type (116) not supported"
+//
 // because the first byte (message type) gets corrupted.
 func TestCrossArchMsgpackEncoding(t *testing.T) {
 	hd := codec.MsgpackHandle{}
@@ -73,18 +75,18 @@ func TestCrossArchMsgpackEncoding(t *testing.T) {
 // (used for NodeMeta) also produces consistent encodings across architectures.
 func TestCrossArchNodeMetaEncoding(t *testing.T) {
 	m := NodeMeta{
-		PublicKey:    "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-		Hostname:     "test-host",
-		Role:         "agent",
-		CapRelay:     true,
-		CapExit:      false,
-		Endpoints:    []string{"10.0.0.1:52888"},
-		NatType:      "none",
-		LoadCPU:      0.5,
-		LoadMem:      0.3,
-		Version:      "1.0.0",
-		Seq:          42,
-		VirtualIP:    "10.100.0.1",
+		PublicKey:     "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		Hostname:      "test-host",
+		Role:          "agent",
+		CapRelay:      true,
+		CapExit:       false,
+		Endpoints:     []string{"10.0.0.1:52888"},
+		NatType:       "none",
+		LoadCPU:       0.5,
+		LoadMem:       0.3,
+		Version:       "1.0.0",
+		Seq:           42,
+		VirtualIP:     "10.100.0.1",
 		SubnetProxies: []string{"192.168.1.0/24"},
 	}
 

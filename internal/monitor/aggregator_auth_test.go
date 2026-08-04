@@ -968,12 +968,12 @@ func TestAggregatorWithMeshIdentityChecker_MixedPeers(t *testing.T) {
 		sourceID   string
 		wantStored bool
 	}{
-		{"mesh-node-A", true},   // in routing table → accepted
-		{"mesh-node-B", false},  // NOT in routing table → rejected
-		{"mesh-node-C", true},   // in routing table → accepted
-		{"mesh-node-D", false},  // NOT in routing table → rejected
-		{"mesh-node-E", true},   // in routing table → accepted
-		{"intruder", false},     // completely unknown → rejected
+		{"mesh-node-A", true},  // in routing table → accepted
+		{"mesh-node-B", false}, // NOT in routing table → rejected
+		{"mesh-node-C", true},  // in routing table → accepted
+		{"mesh-node-D", false}, // NOT in routing table → rejected
+		{"mesh-node-E", true},  // in routing table → accepted
+		{"intruder", false},    // completely unknown → rejected
 	}
 
 	for _, tt := range tests {
@@ -1108,10 +1108,10 @@ func TestAggregatorWithMeshIdentityChecker_AuditLogging(t *testing.T) {
 // verification.
 func TestAggregatorWithMockAuthChecker_RejectedPushIsDropped(t *testing.T) {
 	tests := []struct {
-		name        string
-		sourceID    string
-		allowedMap  map[string]bool
-		wantStored  bool
+		name       string
+		sourceID   string
+		allowedMap map[string]bool
+		wantStored bool
 	}{
 		{
 			name:     "authorized pubkey accepted",
@@ -1131,8 +1131,8 @@ func TestAggregatorWithMockAuthChecker_RejectedPushIsDropped(t *testing.T) {
 			wantStored: false,
 		},
 		{
-			name:     "nil checker accepts all",
-			sourceID: "any-peer",
+			name:       "nil checker accepts all",
+			sourceID:   "any-peer",
 			allowedMap: nil, // will use nil checker
 			wantStored: true,
 		},

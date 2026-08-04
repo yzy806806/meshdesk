@@ -224,7 +224,7 @@ func signatureSchemesForCertificate(version uint16, cert *Certificate) []Signatu
 	sigAlgs = slices.DeleteFunc(sigAlgs, func(sigAlg SignatureScheme) bool {
 		return !isSupportedSignatureAlgorithm(sigAlg, supportedAlgs)
 	})
-	
+
 	return sigAlgs
 }
 
@@ -242,7 +242,7 @@ func selectSignatureScheme(vers uint16, c *Certificate, peerAlgs []SignatureSche
 		// RFC 9155 made signature_algorithms mandatory in TLS 1.2, and we gated
 		// it behind the tlssha1 GODEBUG setting.
 		// if tlssha1.Value() != "1" {
-			return 0, errors.New("tls: missing signature_algorithms from TLS 1.2 peer")
+		return 0, errors.New("tls: missing signature_algorithms from TLS 1.2 peer")
 		// }
 		// peerAlgs = []SignatureScheme{PKCS1WithSHA1, ECDSAWithSHA1}
 	}

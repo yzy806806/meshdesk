@@ -28,8 +28,8 @@ package proxy
 
 import (
 	"context"
-	"fmt"
 	"crypto/rand"
+	"fmt"
 	"net"
 	"sort"
 	"sync"

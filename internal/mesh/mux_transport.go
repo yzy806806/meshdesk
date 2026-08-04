@@ -24,12 +24,6 @@ import (
 // See RFC 5246 §6.2.1: ContentType handshake = 22.
 const tlsHandshakeRecordType = 0x16
 
-// peekByteCount is the number of bytes to peek from each incoming TCP connection
-// to determine whether it is a TLS/Reality connection or a memberlist gossip
-// stream. One byte is sufficient: TLS starts with 0x16, while memberlist
-// messageType values are 0–14 or 244 (hasLabelMsg) — none equals 22.
-const peekByteCount = 1
-
 // muxUDPPacketBufSize is the receive buffer size for UDP packet reads.
 const muxUDPPacketBufSize = 65536
 

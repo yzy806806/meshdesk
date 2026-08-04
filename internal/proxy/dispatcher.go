@@ -18,9 +18,9 @@ package proxy
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"io"
-	"crypto/rand"
 	"net"
 	"sync"
 	"time"

@@ -41,7 +41,7 @@ type JoinTokenGenerator interface {
 // JoinTokenGenerator was injected. It can generate tokens from the config's
 // join secret, but cannot serve binary downloads (BinaryDownloadURL returns "").
 type defaultJoinTokenGenerator struct {
-	cfg     *config.Config
+	cfg      *config.Config
 	identity *identity.Identity
 }
 
@@ -416,7 +416,7 @@ echo "Binary installed to $INSTALL_DIR/meshdesk"
 
 	// --- Write minimal config ---
 	b.WriteString("# Write minimal config (join server fills in the rest)\n")
-	b.WriteString(fmt.Sprintf("cat > \"$CONFIG_DIR/config.yaml\" <<'CFGEOF'\n"))
+	b.WriteString("cat > \"$CONFIG_DIR/config.yaml\" <<'CFGEOF'\n")
 	b.WriteString("node:\n")
 	b.WriteString("  hostname: \"\"\n")
 	b.WriteString("  web: \":8080\"\n")
@@ -502,5 +502,3 @@ func (s *Server) nodeIdentity() *identity.Identity {
 	}
 	return s.node.Identity()
 }
-
-

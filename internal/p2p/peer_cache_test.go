@@ -349,18 +349,18 @@ func TestPeerCache_CapCollectorPersistence(t *testing.T) {
 
 	// Add a collector peer and a non-collector peer.
 	c.OnPeerJoin(&NodeMeta{
-		PublicKey:   "collector-key-1",
-		Hostname:    "dashboard-1",
-		Role:        "web",
+		PublicKey:    "collector-key-1",
+		Hostname:     "dashboard-1",
+		Role:         "web",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:52888"},
+		Endpoints:    []string{"203.0.113.5:52888"},
 	})
 	c.OnPeerJoin(&NodeMeta{
-		PublicKey:   "agent-key-2",
-		Hostname:    "agent-1",
-		Role:        "agent",
+		PublicKey:    "agent-key-2",
+		Hostname:     "agent-1",
+		Role:         "agent",
 		CapCollector: false,
-		Endpoints:   []string{"10.0.0.2:52888"},
+		Endpoints:    []string{"10.0.0.2:52888"},
 	})
 
 	// Verify CachedCollectors returns only the collector.
@@ -398,10 +398,10 @@ func TestPeerCache_CapCollectorUpdateTransition(t *testing.T) {
 
 	// Add a non-collector peer.
 	c.OnPeerJoin(&NodeMeta{
-		PublicKey:   "transition-key",
-		Hostname:    "node-t",
+		PublicKey:    "transition-key",
+		Hostname:     "node-t",
 		CapCollector: false,
-		Endpoints:   []string{"10.0.0.1:52888"},
+		Endpoints:    []string{"10.0.0.1:52888"},
 	})
 	if len(c.CachedCollectors()) != 0 {
 		t.Fatalf("expected 0 collectors initially, got %v", c.CachedCollectors())
@@ -409,10 +409,10 @@ func TestPeerCache_CapCollectorUpdateTransition(t *testing.T) {
 
 	// Update to collector.
 	c.OnPeerUpdate(&NodeMeta{
-		PublicKey:   "transition-key",
-		Hostname:    "node-t",
+		PublicKey:    "transition-key",
+		Hostname:     "node-t",
 		CapCollector: true,
-		Endpoints:   []string{"10.0.0.1:52888"},
+		Endpoints:    []string{"10.0.0.1:52888"},
 	})
 	if len(c.CachedCollectors()) != 1 {
 		t.Fatalf("expected 1 collector after update, got %v", c.CachedCollectors())
@@ -420,10 +420,10 @@ func TestPeerCache_CapCollectorUpdateTransition(t *testing.T) {
 
 	// Update back to non-collector.
 	c.OnPeerUpdate(&NodeMeta{
-		PublicKey:   "transition-key",
-		Hostname:    "node-t",
+		PublicKey:    "transition-key",
+		Hostname:     "node-t",
 		CapCollector: false,
-		Endpoints:   []string{"10.0.0.1:52888"},
+		Endpoints:    []string{"10.0.0.1:52888"},
 	})
 	if len(c.CachedCollectors()) != 0 {
 		t.Fatalf("expected 0 collectors after losing capability, got %v", c.CachedCollectors())
@@ -437,10 +437,10 @@ func TestPeerCache_OnPeerLeaveRetainsCollector(t *testing.T) {
 
 	// Add a collector peer.
 	c.OnPeerJoin(&NodeMeta{
-		PublicKey:   "leave-collector",
-		Hostname:    "dashboard-leave",
+		PublicKey:    "leave-collector",
+		Hostname:     "dashboard-leave",
 		CapCollector: true,
-		Endpoints:   []string{"203.0.113.5:52888"},
+		Endpoints:    []string{"203.0.113.5:52888"},
 	})
 	if len(c.CachedCollectors()) != 1 {
 		t.Fatalf("expected 1 collector before leave, got %d", len(c.CachedCollectors()))

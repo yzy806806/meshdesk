@@ -691,7 +691,7 @@ func TestMetadataInCiphertextContract(t *testing.T) {
 	}
 
 	// Verify that the WireChunk contains only opaque ciphertext + header + nonce.
-	if wc.Ciphertext == nil || len(wc.Ciphertext) == 0 {
+	if len(wc.Ciphertext) == 0 {
 		t.Fatal("ciphertext is empty — nothing encrypted?")
 	}
 	if wc.Header == nil || len(wc.Header) != 64 {

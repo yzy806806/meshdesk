@@ -506,9 +506,9 @@ func TestSOCKS5_RequireMeshPeer_AcceptMeshPeer(t *testing.T) {
 	}()
 
 	cfg := SOCKS5Config{
-		DialTimeout:    5 * time.Second,
-		IdleTimeout:    10 * time.Second,
-		MaxConnections: 16,
+		DialTimeout:     5 * time.Second,
+		IdleTimeout:     10 * time.Second,
+		MaxConnections:  16,
 		RequireMeshPeer: true,
 	}
 
@@ -564,9 +564,9 @@ func TestSOCKS5_RequireMeshPeer_AcceptMeshPeer(t *testing.T) {
 // immediately by the handler.
 func TestSOCKS5_RequireMeshPeer_RejectNonMesh(t *testing.T) {
 	cfg := SOCKS5Config{
-		DialTimeout:    5 * time.Second,
-		IdleTimeout:    10 * time.Second,
-		MaxConnections: 16,
+		DialTimeout:     5 * time.Second,
+		IdleTimeout:     10 * time.Second,
+		MaxConnections:  16,
 		RequireMeshPeer: true,
 	}
 
