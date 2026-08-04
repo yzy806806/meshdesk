@@ -1,6 +1,6 @@
 # MeshDesk
 
-**Decentralized server mesh network + monitoring + WebSSH + SOCKS5 proxy — in a single binary.**
+**Decentralized server mesh network + monitoring + WebSSH + SOCKS5 proxy + TUN virtual network — in a single binary.**
 
 [中文文档](./README_CN.md)
 
@@ -8,13 +8,14 @@
 
 ## What is MeshDesk?
 
-MeshDesk combines five tools into one:
+MeshDesk combines six tools into one:
 
 1. **Mesh VPN** — P2P decentralized networking between all your servers (no EasyTier needed)
 2. **Server Monitoring** — CPU, memory, disk, network, services (no Nezha needed)
 3. **Web Terminal** — SSH directly from the browser
 4. **SOCKS5 Proxy** — Reality TLS + smux relay to exit nodes, standard SOCKS5 client
-5. **Dashboard** — Full node management, one-click join, config editing, proxy control
+5. **TUN Virtual Network** — Transparent IP routing between nodes (ping, SSH, any application)
+6. **Dashboard** — Full node management, one-click join, config editing, proxy control
 
 Every node runs the same binary. Any node can become the control panel with `--web`.
 
@@ -210,6 +211,31 @@ mesh:
 | Files | `/files` | File transfer |
 | Terminal | `/terminal` | WebSSH |
 | Services | `/services` | Remote service management |
+
+## TUN Virtual Network
+
+```yaml
+mesh:
+  tun_enabled: true
+  mesh_cidr: "10.144.144.0/24"
+  subnet_proxy: ["192.168.1.0/24"]  # optional: share local subnet
+```
+
+- **Transparent IP routing** — `ping 10.144.144.x`, `ssh user@10.144.144.x`, any application
+- **Deterministic IPAM** — IP = cidr_base + (pubkey_hash % host_count), zero conflict, zero coordination
+- **Subnet proxy** — Share local subnet with other mesh nodes
+- **Route sync** — Gossip propagates VirtualIP + SubnetProxy, kernel routes auto-updated
+- **Anti-spoofing** — Source IP validation on every inbound TUN packet
+- **Zero dependency** — Raw syscall `/dev/net/tun`, no wireguard library
+
+```
+App ping 10.144.144.2
+  ↓ TUN device
+  ↓ IP packet → dst IP → route table → public key
+  ↓ smux stream (existing)
+  ↓ Reality TLS 52888 (existing)
+  ↓ Remote TUN → kernel → target app
+```
 
 ## SOCKS5 Proxy
 
