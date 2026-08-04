@@ -435,6 +435,7 @@ func main() {
 					natJoinHandler(meta)
 				}
 				// TUN routing.
+				log.Printf("[tun] join handler: peer %s VirtualIP=%q", meta.PublicKey[:8], meta.VirtualIP)
 				if meta.VirtualIP != "" {
 					localVIP := node.GetTUNVirtualIP()
 					if localVIP != nil && localVIP.String() == meta.VirtualIP {
@@ -504,6 +505,7 @@ func main() {
 						peerIPs[meta.PublicKey] = net.ParseIP(meta.VirtualIP)
 					}
 				}
+				log.Printf("[tun] re-broadcast: %d known peers, localVIP=%v", len(peerIPs), node.GetTUNVirtualIP())
 				// Re-allocate if there's a conflict.
 				node.ReallocateAfterGossip(peerIPs)
 				// Re-broadcast (may have changed due to re-allocation).
