@@ -246,6 +246,27 @@ func (g *GossipLayer) SetLocalSubnetProxies(subnets []string) {
 	}
 }
 
+// SetLocalACLRules sets the local node's ACL rules in gossip metadata.
+// The rules are propagated to all peers so they can enforce ingress
+// policy based on the sending node's declared rules. After updating,
+// it calls memberlist.UpdateNode to re-broadcast the alive message.
+func (g *GossipLayer) SetLocalACLRules(rules []string) {
+	g.delegate.updateLocalMeta(func(m *NodeMeta) {
+		m.ACLRules = rules
+		m.Seq++
+	})
+
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+
+	if ml != nil {
+		if err := ml.UpdateNode(time.Second); err != nil {
+			log.Printf("[p2p] ACL rules: UpdateNode failed: %v", err)
+		}
+	}
+}
+
 // announceLocalEndpoint proactively sets the local node's WireGuard endpoint(s)
 // so gossip propagates them to all peers. This breaks the chicken-and-egg
 // problem where reactive OnEndpointDiscovered only fires when a peer already
@@ -828,10 +849,65 @@ func (g *GossipLayer) healthPollLoop() {
 		}
 
 		peers := g.wgDelegate.AllDynamicPeers()
+		var totalRTT time.Duration
+		rttCount := 0
 		for _, pk := range peers {
 			_ = g.wgDelegate.IsConnected(pk)
+			// Measure RTT using the WireGuard handshake estimator.
+			rtt := g.EstimateRTT(pk)
+			if rtt > 0 && rtt < 5*time.Second {
+				totalRTT += rtt
+				rttCount++
+			}
+		}
+
+		// Update the local node's advertised RTT as the average RTT
+		// to all known peers. This gives other nodes a latency estimate
+		// for relay selection without needing to probe us directly.
+		if rttCount > 0 {
+			avgRTT := totalRTT / time.Duration(rttCount)
+			g.SetLocalRTT(avgRTT)
 		}
 	}
+}
+
+// SetLocalRTT updates the local node's self-measured RTT (round-trip time
+// to the mesh seed) in the gossip metadata. The RTT is stored in
+// microseconds and propagated to all peers so they can make latency-aware
+// relay selection decisions. After updating, it calls memberlist.UpdateNode
+// to re-broadcast the alive message.
+func (g *GossipLayer) SetLocalRTT(rtt time.Duration) {
+	rttUs := uint32(0)
+	if rtt > 0 {
+		rttUs = uint32(rtt.Microseconds())
+		if rttUs == 0 {
+			rttUs = 1 // clamp: 0 means "no measurement"
+		}
+	}
+	g.delegate.updateLocalMeta(func(m *NodeMeta) {
+		m.RTTUs = rttUs
+		m.Seq++
+	})
+
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+
+	if ml != nil {
+		if err := ml.UpdateNode(time.Second); err != nil {
+			log.Printf("[p2p] RTT update: UpdateNode failed: %v", err)
+		}
+	}
+}
+
+// PeerRTT returns the advertised RTT for a peer, or 0 if unknown.
+// This reads the RTTUs field from the peer's cached NodeMeta.
+func (g *GossipLayer) PeerRTT(peerKey string) time.Duration {
+	meta := g.events.GetPeerMeta(peerKey)
+	if meta == nil || meta.RTTUs == 0 {
+		return 0
+	}
+	return time.Duration(meta.RTTUs) * time.Microsecond
 }
 
 // SelectTopKRelays is a convenience method that selects the top K=2 relays

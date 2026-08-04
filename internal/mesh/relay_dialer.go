@@ -5,9 +5,47 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
+	"sort"
 	"time"
 )
+
+// RelayPeerInfo carries the metadata needed by the relay dialer to make
+// intelligent path selection decisions. It is populated from the gossip
+// layer's NodeMeta cache and provided to the MeshNode via a callback
+// to avoid an import cycle between the mesh and p2p packages.
+type RelayPeerInfo struct {
+	// PeerKey is the hex-encoded public key of the peer.
+	PeerKey string
+
+	// RTT is the advertised round-trip time to this peer.
+	// Zero means no measurement available.
+	RTT time.Duration
+
+	// CapRelay indicates the node can forward relay circuits.
+	CapRelay bool
+
+	// MaxCircuits is the maximum circuits this relay will accept.
+	// Zero means unknown (treated as unlimited).
+	MaxCircuits int
+
+	// LoadCircuits is the active relay circuit count.
+	LoadCircuits int
+
+	// NatType describes the node's NAT situation.
+	// "symmetric" NAT can't relay reliably.
+	NatType string
+}
+
+// SetRelayMetaProvider registers a callback that returns metadata for all
+// known relay-capable peers from the gossip layer. When set, tryRelayFallback
+// uses this to filter and sort relay candidates by RTT and health. If nil,
+// tryRelayFallback falls back to the legacy behavior of trying all peers
+// with active sessions.
+func (n *MeshNode) SetRelayMetaProvider(cb func() []RelayPeerInfo) {
+	n.relayMetaProvider = cb
+}
 
 // RelayDialer provides DialViaRelay — a method to open a data stream
 // to a target peer through an intermediate relay node.
@@ -257,29 +295,116 @@ func (n *MeshNode) DialViaRelay(
 }
 
 // tryRelayFallback is called by DialVirtualPort when no direct session
-// exists to the target peer. It collects all known peers that have
-// active sessions (potential relay candidates) and tries DialViaRelay
-// through each one.
+// exists to the target peer. It collects relay candidates and tries
+// DialViaRelay through each one.
 //
-// This is a best-effort fallback — if no relay candidate succeeds, the
-// original "no session" error is returned by the caller.
+// When a relayMetaProvider is set (wired from the gossip layer via
+// SetRelayMetaProvider), candidates are:
+//   - Filtered by CapRelay capability from gossip NodeMeta
+//   - Filtered by health (at-capacity and symmetric-NAT relays excluded)
+//   - Sorted by advertised RTT (lowest first) for optimal path selection
+//
+// When no relayMetaProvider is set, it falls back to the legacy behavior
+// of trying all peers with active (non-closed) sessions.
 //
 // Filtering:
 //   - The target peer is excluded (relaying to itself is nonsensical).
-//   - Closed sessions are skipped (a dead session in the map cannot relay).
+//   - Closed sessions are skipped (a dead session cannot relay).
 //   - The local node's own key is excluded.
+//   - Relay peers at capacity (LoadCircuits >= MaxCircuits) are skipped.
+//   - Relay peers behind symmetric NAT are skipped.
 func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string) (net.Conn, error) {
 	localKey := ""
 	if n.identity != nil {
 		localKey = n.identity.PublicKey
 	}
 
-	// Collect all peers we have sessions with — they are potential
-	// relay candidates. In a production system, we would filter by
-	// CapMeshRelay capability from gossip NodeMeta, but for now we
-	// try all connected peers with active (non-closed) sessions.
+	var candidates []string
+
+	// If we have a relay metadata provider (from the gossip layer),
+	// use it for intelligent candidate selection.
+	if n.relayMetaProvider != nil {
+		relayPeers := n.relayMetaProvider()
+
+		// Build a set of peers with active sessions for the final
+		// connectivity check.
+		n.sessionsMu.Lock()
+		sessionOK := func(key string) bool {
+			if sess, ok := n.sessions[key]; ok && !sess.IsClosed() {
+				return true
+			}
+			if sess, ok := n.clientSessions[key]; ok && !sess.IsClosed() {
+				return true
+			}
+			return false
+		}
+		n.sessionsMu.Unlock()
+
+		// Filter and collect eligible relay candidates.
+		type candidate struct {
+			key string
+			rtt time.Duration
+		}
+		var eligible []candidate
+		for _, rp := range relayPeers {
+			// Skip self.
+			if rp.PeerKey == localKey {
+				continue
+			}
+			// Skip the target peer.
+			if rp.PeerKey == targetKey {
+				continue
+			}
+			// Must have relay capability.
+			if !rp.CapRelay {
+				continue
+			}
+			// Skip relays at capacity.
+			if rp.MaxCircuits > 0 && rp.LoadCircuits >= rp.MaxCircuits {
+				continue
+			}
+			// Skip symmetric NAT relays (can't relay reliably).
+			if rp.NatType == "symmetric" {
+				continue
+			}
+			// Must have an active session to the relay.
+			if !sessionOK(rp.PeerKey) {
+				continue
+			}
+			eligible = append(eligible, candidate{key: rp.PeerKey, rtt: rp.RTT})
+		}
+
+		// Sort by RTT ascending (lowest first). Peers with RTT=0
+		// (unknown) go last but are still eligible.
+		sort.Slice(eligible, func(i, j int) bool {
+			ri, rj := eligible[i].rtt, eligible[j].rtt
+			if ri == 0 {
+				ri = time.Duration(math.MaxInt64)
+			}
+			if rj == 0 {
+				rj = time.Duration(math.MaxInt64)
+			}
+			return ri < rj
+		})
+
+		candidates = make([]string, len(eligible))
+		for i, c := range eligible {
+			candidates[i] = c.key
+		}
+
+		if len(candidates) == 0 {
+			return nil, fmt.Errorf("no relay candidates (no eligible relay-capable peers)")
+		}
+
+		log.Printf("[mesh] tryRelayFallback: %d relay-capable candidate(s) for target %s (RTT-sorted)",
+			len(candidates), targetKey[:min(len(targetKey), 16)]+"...")
+
+		return n.DialViaRelay(ctx, targetKey, candidates)
+	}
+
+	// Legacy fallback: collect all peers we have sessions with.
 	n.sessionsMu.Lock()
-	candidates := make([]string, 0, len(n.sessions)+len(n.clientSessions))
+	candidates = make([]string, 0, len(n.sessions)+len(n.clientSessions))
 	seen := make(map[string]bool)
 	for k, sess := range n.sessions {
 		if k == targetKey || k == localKey || seen[k] || sess.IsClosed() {
