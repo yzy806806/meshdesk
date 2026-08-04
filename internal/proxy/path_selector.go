@@ -177,6 +177,8 @@ func DefaultPathSelectorConfig() PathSelectorConfig {
 //  2. Actively probes K candidates in parallel
 //  3. Selects N disjoint paths with the lowest composite quality score
 //  4. Rejects any pair with overlapping relay nodes (hard requirement)
+//  5. Tracks relay health and automatically fails over to the next-best
+//     candidate when a selected relay becomes unhealthy
 type PathSelector struct {
 	cfg PathSelectorConfig
 	mu  sync.Mutex
@@ -188,6 +190,12 @@ type PathSelector struct {
 
 	// probeCacheTTL is how long cached probe results are valid.
 	probeCacheTTL time.Duration
+
+	// healthTracker tracks relay health state for failover decisions.
+	// A relay that fails probes is marked unhealthy and excluded from
+	// path selection until it recovers (successful probe after
+	// healthRecoveryDelay).
+	healthTracker *RelayHealthTracker
 }
 
 type probeCacheEntry struct {
@@ -222,12 +230,19 @@ func NewPathSelector(cfg PathSelectorConfig) *PathSelector {
 		cfg:           cfg,
 		probeCache:    make(map[string]*probeCacheEntry),
 		probeCacheTTL: defaultProbeCacheTTL,
+		healthTracker: NewRelayHealthTracker(),
 	}
 }
 
 // SelectPaths is the main entry point. Given a list of candidate relays
 // and the exit address, it probes candidates, ranks them, and selects
 // two disjoint paths with the best quality scores.
+//
+// Health-aware selection:
+//   - Unhealthy relays (3+ consecutive probe failures) are excluded.
+//   - Degraded relays (1-2 failures) get a 50% quality penalty.
+//   - If fewer than 2 healthy relays are available, unhealthy relays
+//     that have waited past the recovery delay are re-probed.
 //
 // Returns (path1, path2, error). Error is non-nil if fewer than two
 // disjoint paths can be constructed from the candidates.
@@ -237,17 +252,46 @@ func (ps *PathSelector) SelectPaths(ctx context.Context, candidates []CandidateR
 			len(candidates), ps.cfg.MinCandidates)
 	}
 
-	// Step 1: Filter candidates by advertised RTT (pre-probe filtering).
+	// Step 1: Filter out unhealthy relays (unless eligible for retry).
+	healthyCandidates := make([]CandidateRelay, 0, len(candidates))
+	for _, c := range candidates {
+		if ps.healthTracker.IsUnhealthy(c.NodeID) {
+			if ps.healthTracker.CanRetry(c.NodeID) {
+				// Allow re-probing: if it succeeds, it will be
+				// marked healthy in the probe step.
+				healthyCandidates = append(healthyCandidates, c)
+			}
+			// Skip unhealthy relays that can't be retried yet.
+			continue
+		}
+		healthyCandidates = append(healthyCandidates, c)
+	}
+
+	if len(healthyCandidates) < ps.cfg.MinCandidates {
+		return nil, nil, fmt.Errorf("insufficient healthy relay candidates: %d (need %d, %d unhealthy)",
+			len(healthyCandidates), ps.cfg.MinCandidates, len(candidates)-len(healthyCandidates))
+	}
+
+	// Step 2: Filter candidates by advertised RTT (pre-probe filtering).
 	// This reduces the probe set from N to K (O(K) scaling).
-	filtered := ps.filterCandidates(candidates)
+	filtered := ps.filterCandidates(healthyCandidates)
 	if len(filtered) > ps.cfg.MaxCandidates {
 		filtered = filtered[:ps.cfg.MaxCandidates]
 	}
 
-	// Step 2: Probe candidates in parallel.
+	// Step 3: Probe candidates in parallel.
 	probed := ps.probeCandidates(ctx, filtered)
 
-	// Step 3: Sort by RTT (best first).
+	// Step 4: Update health tracker based on probe results.
+	for _, p := range probed {
+		if p.Error != nil {
+			ps.healthTracker.RecordFailure(p.NodeID)
+		} else {
+			ps.healthTracker.RecordSuccess(p.NodeID, p.RTT)
+		}
+	}
+
+	// Step 5: Sort by composite quality score (best first, health-adjusted).
 	sort.Slice(probed, func(i, j int) bool {
 		// Failed probes go to the end.
 		if probed[i].Error != nil && probed[j].Error == nil {
@@ -259,7 +303,10 @@ func (ps *PathSelector) SelectPaths(ctx context.Context, candidates []CandidateR
 		if probed[i].Error != nil && probed[j].Error != nil {
 			return false // both failed, order doesn't matter
 		}
-		return probed[i].RTT < probed[j].RTT
+		// Apply health penalty to RTT for scoring.
+		scoreI := float64(probed[i].RTT) * ps.healthTracker.HealthPenalty(probed[i].NodeID)
+		scoreJ := float64(probed[j].RTT) * ps.healthTracker.HealthPenalty(probed[j].NodeID)
+		return scoreI < scoreJ
 	})
 
 	// Remove failed probes.
@@ -274,7 +321,7 @@ func (ps *PathSelector) SelectPaths(ctx context.Context, candidates []CandidateR
 		return nil, nil, fmt.Errorf("only %d relays responded to probe (need 2)", len(valid))
 	}
 
-	// Step 4: Select two disjoint paths.
+	// Step 6: Select two disjoint paths.
 	// For v1, we select single-hop paths (entry → relay → exit) and
 	// ensure the two relay sets are disjoint. Multi-hop path construction
 	// is supported but requires more candidates.
@@ -414,9 +461,11 @@ func (ps *PathSelector) selectDisjointPaths(candidates []PathProbeResult, exitAd
 				continue
 			}
 
-			// Compute composite scores.
-			score1 := ComputePathScore(c1.RTT, c1.HopCount, 0)
-			score2 := ComputePathScore(c2.RTT, c2.HopCount, 0)
+			// Compute composite scores with health penalty.
+			penalty1 := ps.healthTracker.HealthPenalty(c1.NodeID)
+			penalty2 := ps.healthTracker.HealthPenalty(c2.NodeID)
+			score1 := ComputePathScore(c1.RTT, c1.HopCount, 0) * penalty1
+			score2 := ComputePathScore(c2.RTT, c2.HopCount, 0) * penalty2
 			totalScore := score1 + score2
 
 			if bestScore < 0 || totalScore < bestScore {
@@ -519,4 +568,107 @@ func (ps *PathSelector) ClearProbeCache() {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 	ps.probeCache = make(map[string]*probeCacheEntry)
+}
+
+// HealthTracker returns the path selector's relay health tracker.
+// Callers can use it to mark relays as unhealthy (e.g., when the circuit
+// manager detects a dead relay via missed keepalives) or to query health
+// state for failover decisions.
+func (ps *PathSelector) HealthTracker() *RelayHealthTracker {
+	return ps.healthTracker
+}
+
+// MarkRelayUnhealthy immediately marks a relay as unhealthy, bypassing
+// the normal probe-failure threshold. Use this when an external signal
+// (e.g., circuit keepalive timeout) detects that a relay is dead.
+// The relay will be excluded from path selection until it recovers
+// (successful probe after healthRecoveryDelay).
+func (ps *PathSelector) MarkRelayUnhealthy(nodeID string) {
+	ps.healthTracker.RecordFailure(nodeID)
+	ps.healthTracker.RecordFailure(nodeID)
+	ps.healthTracker.RecordFailure(nodeID)
+	// Invalidate probe cache so the relay is re-probed fresh on next selection.
+	ps.InvalidateProbeCache(nodeID)
+}
+
+// SelectReplacementPath finds a replacement path from the given
+// candidates, excluding the relay IDs from the failed path. This is
+// the automatic failover mechanism: when a selected path becomes
+// unhealthy, the caller calls this to get a replacement that is
+// disjoint from any remaining healthy paths.
+//
+// failedRelayIDs is the set of relay IDs from the failed path that
+// must not appear in the replacement.
+func (ps *PathSelector) SelectReplacementPath(
+	ctx context.Context,
+	candidates []CandidateRelay,
+	exitAddr string,
+	failedRelayIDs map[string]bool,
+) (*Path, error) {
+	// Filter out the failed relays. Check both NodeID and MeshAddr
+	// since failedRelayIDs may contain either (Path.Nodes() returns
+	// the Relays field which contains MeshAddr values).
+	remaining := make([]CandidateRelay, 0, len(candidates))
+	for _, c := range candidates {
+		if failedRelayIDs[c.NodeID] || failedRelayIDs[c.MeshAddr] {
+			continue
+		}
+		remaining = append(remaining, c)
+	}
+
+	if len(remaining) < 1 {
+		return nil, fmt.Errorf("no relay candidates remaining after excluding failed relays")
+	}
+
+	// Filter out unhealthy relays (unless eligible for retry).
+	healthyCandidates := make([]CandidateRelay, 0, len(remaining))
+	for _, c := range remaining {
+		if ps.healthTracker.IsUnhealthy(c.NodeID) && !ps.healthTracker.CanRetry(c.NodeID) {
+			continue
+		}
+		healthyCandidates = append(healthyCandidates, c)
+	}
+
+	if len(healthyCandidates) == 0 {
+		return nil, fmt.Errorf("no healthy relay candidates remaining")
+	}
+
+	// Probe and find the best single path.
+	filtered := ps.filterCandidates(healthyCandidates)
+	if len(filtered) > ps.cfg.MaxCandidates {
+		filtered = filtered[:ps.cfg.MaxCandidates]
+	}
+
+	probed := ps.probeCandidates(ctx, filtered)
+
+	// Update health tracker.
+	for _, p := range probed {
+		if p.Error != nil {
+			ps.healthTracker.RecordFailure(p.NodeID)
+		} else {
+			ps.healthTracker.RecordSuccess(p.NodeID, p.RTT)
+		}
+	}
+
+	// Find the best valid result.
+	var bestResult *PathProbeResult
+	bestScore := float64(-1)
+	for _, p := range probed {
+		if p.Error != nil {
+			continue
+		}
+		penalty := ps.healthTracker.HealthPenalty(p.NodeID)
+		score := ComputePathScore(p.RTT, p.HopCount, 0) * penalty
+		if bestScore < 0 || score < bestScore {
+			bestScore = score
+			result := p
+			bestResult = &result
+		}
+	}
+
+	if bestResult == nil {
+		return nil, fmt.Errorf("all replacement candidates failed probe")
+	}
+
+	return ps.buildPath(*bestResult, exitAddr), nil
 }

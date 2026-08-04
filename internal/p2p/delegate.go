@@ -71,6 +71,14 @@ type NodeMeta struct {
 	// MaxCircuits is the maximum circuits this relay will accept.
 	MaxCircuits int `msgpack:"mc,omitempty"`
 
+	// --- Latency ---
+
+	// RTTUs is the node's self-measured round-trip time to the gossip
+	// mesh seed, in microseconds. Propagated via gossip so every peer
+	// has a latency estimate for relay selection and path optimization.
+	// Zero means no measurement available.
+	RTTUs uint32 `msgpack:"rtt,omitempty"`
+
 	// --- Version ---
 
 	// Version is the semantic version for compatibility checks.
@@ -94,6 +102,15 @@ type NodeMeta struct {
 	// node's VirtualIP through the TUN interface. Empty when no
 	// subnet proxies are configured.
 	SubnetProxies []string `msgpack:"spx,omitempty"`
+
+	// --- ACL (Access Control List) ---
+
+	// ACLRules is the compact representation of this node's ACL rules,
+	// propagated via gossip so every peer can enforce ingress policy
+	// based on the sending node's declared rules. Each entry is a
+	// compact string encoding: "action|src_cidr|dst_cidr|protocol|src_port|dst_port|peer_id|description".
+	// Empty when ACL is disabled or no rules are configured.
+	ACLRules []string `msgpack:"ar,omitempty"`
 }
 
 // MarshalMeta serializes NodeMeta to MessagePack bytes.
