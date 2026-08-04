@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.arch }}
+    name: Build ${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
