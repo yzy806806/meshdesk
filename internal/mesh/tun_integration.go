@@ -154,12 +154,26 @@ func (n *MeshNode) setupTUN() error {
 	// kernel routes for them (they're local). The route manager is
 	// used for OTHER peers' subnet proxies.
 
-	// Step 5: Create and start the TUN forwarder.
+	// Step 5: Create ACL engine (if configured).
+	var aclEngine *ACLEngine
+	if cfg.ACL.Enabled || len(cfg.ACL.Rules) > 0 {
+		ae, err := NewACLEngine(cfg.ACL)
+		if err != nil {
+			dev.Close()
+			return fmt.Errorf("tun: create ACL engine: %w", err)
+		}
+		aclEngine = ae
+		log.Printf("[mesh/tun] ACL engine active (enabled=%v, rules=%d, default=%s)",
+			cfg.ACL.Enabled, len(cfg.ACL.Rules), cfg.ACL.DefaultPolicy)
+	}
+
+	// Step 6: Create and start the TUN forwarder.
 	fwdCfg := TunForwarderConfig{
 		Device:       dev,
 		Router:       router,
 		MeshNode:     n,
 		RouteManager: routeMgr,
+		ACLEngine:    aclEngine,
 	}
 
 	fwd, err := NewTunForwarder(fwdCfg)
@@ -190,6 +204,7 @@ func (n *MeshNode) setupTUN() error {
 		VirtualIP:    virtualIP,
 		IfName:       dev.Name(),
 	}
+	n.aclEngine = aclEngine
 	n.mu.Unlock()
 
 	// Propagate VirtualIP and subnet proxies to the gossip layer
@@ -198,6 +213,11 @@ func (n *MeshNode) setupTUN() error {
 	n.SetTUNLocalVirtualIP(virtualIP.String())
 	if len(cfg.Mesh.SubnetProxy) > 0 {
 		n.SetTUNSubnetProxies(cfg.Mesh.SubnetProxy)
+	}
+
+	// Broadcast ACL rules to the gossip layer (if configured).
+	if aclEngine != nil && len(cfg.ACL.Rules) > 0 {
+		n.BroadcastACLRules(EncodeACLRulesForGossip(cfg.ACL.Rules))
 	}
 
 	log.Printf("[mesh/tun] TUN integration complete (ifname=%s, virtualIP=%s)",

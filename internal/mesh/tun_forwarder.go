@@ -50,6 +50,12 @@ type TunForwarderConfig struct {
 	// outside the mesh subnet (e.g. 192.168.1.x behind a peer).
 	// If nil, non-mesh-subnet packets are dropped.
 	RouteManager *tun.RouteManager
+
+	// ACLEngine is the access control list engine for ingress packet
+	// filtering. When non-nil, every inbound packet is checked against
+	// the ACL rules after anti-spoofing validation and before being
+	// written to the TUN device. When nil, all packets are allowed.
+	ACLEngine *ACLEngine
 }
 
 // TunForwarder implements the TUN data transceive loop:
@@ -484,6 +490,18 @@ func (f *TunForwarder) handleInboundStream(conn net.Conn) {
 		if !f.validateSourceIP(packet, peerID) {
 			f.packetsSpoofed.Add(1)
 			continue
+		}
+
+		// ACL policy check (if engine is configured).
+		if f.cfg.ACLEngine != nil {
+			if !f.cfg.ACLEngine.Check(packet, peerID) {
+				f.packetsDropped.Add(1)
+				if isDebugLogEnabled() {
+					log.Printf("[tun-forwarder] ACL: packet denied from peer %s",
+						shortKey(peerID))
+				}
+				continue
+			}
 		}
 
 		// Write the packet to the TUN device.

@@ -177,7 +177,7 @@ func New(deps Deps) (*Server, error) {
 		"dashboard.html", "node_detail.html", "terminal.html",
 		"files.html", "services.html", "login.html", "login_2fa.html",
 		"peers.html", "topology.html", "error.html",
-		"config.html", "join.html", "proxy.html",
+		"config.html", "join.html", "proxy.html", "acl.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -443,6 +443,17 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/topology", s.requireAuth(s.handleTopologyPage))
 	mux.HandleFunc("/config", s.requireAuth(s.handleConfigPage))
 	mux.HandleFunc("/proxy", s.requireAuth(s.handleProxyPage))
+	mux.HandleFunc("/acl", s.requireAuth(s.handleACLPage))
+
+	// ACL API endpoints (session required).
+	// GET    /api/acl/status  — returns ACL engine status + rules + hit stats.
+	// PUT    /api/acl/rules    — replace all ACL rules (step-up: settings).
+	// POST   /api/acl/rules    — add a single rule.
+	// DELETE /api/acl/rules    — delete a rule by index.
+	// PUT    /api/acl/engine   — update engine settings (enabled, default_policy).
+	mux.HandleFunc("/api/acl/status", s.requireAuth(s.handleACLStatus))
+	mux.HandleFunc("/api/acl/rules", s.requireAuth(s.handleACLRules))
+	mux.HandleFunc("/api/acl/engine", s.requireAuth(s.handleACLEngine))
 }
 
 // RegisterReloader adds a subsystem reloader to the config API's reloader
