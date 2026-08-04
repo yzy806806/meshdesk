@@ -209,6 +209,7 @@ func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 // TUN interface. After updating, it calls memberlist.UpdateNode to
 // re-broadcast the alive message.
 func (g *GossipLayer) SetLocalVirtualIP(virtualIP string) {
+	log.Printf("[p2p] SetLocalVirtualIP: %s", virtualIP)
 	g.delegate.updateLocalMeta(func(m *NodeMeta) {
 		m.VirtualIP = virtualIP
 		m.Seq++
