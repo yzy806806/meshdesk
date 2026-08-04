@@ -509,7 +509,10 @@ func main() {
 				// Re-allocate if there's a conflict.
 				node.ReallocateAfterGossip(peerIPs)
 				// Re-broadcast (may have changed due to re-allocation).
-				if vip := node.GetTUNVirtualIP(); vip != nil {
+				vip := node.GetTUNVirtualIP()
+				log.Printf("[tun] re-broadcast: after realloc, vip=%v", vip)
+				if vip != nil {
+					log.Printf("[tun] re-broadcast: calling SetTUNLocalVirtualIP(%s)", vip.String())
 					node.SetTUNLocalVirtualIP(vip.String())
 					if len(cfg.Mesh.SubnetProxy) > 0 {
 						node.SetTUNSubnetProxies(cfg.Mesh.SubnetProxy)
