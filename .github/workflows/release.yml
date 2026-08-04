@@ -116,3 +116,4 @@ jobs:
             artifacts/meshdesk.service
             artifacts/install.sh
             artifacts/README.md
+            artifacts/README_CN.md
