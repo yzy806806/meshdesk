@@ -1,5 +1,46 @@
 # Release Notes
 
+## v3.1.0 — 2026-08-04
+
+### Major Changes
+
+- **TUN Virtual Network** — Transparent IP routing between mesh nodes. `ping 10.144.144.x`, `ssh user@10.144.144.x`, any application works over the mesh.
+- **IPAM** — Deterministic virtual IP allocation: `IP = cidr_base + (pubkey_hash % host_count)`. Zero conflict, zero coordination, no central IPAM server.
+- **Subnet Proxy** — Nodes can share local subnets (e.g., `192.168.1.0/24`) with other mesh nodes. Gossip propagates, kernel routes auto-updated.
+- **Route Sync** — Gossip NodeMeta now carries `VirtualIP` + `SubnetProxy`. Nodes auto-learn full network topology and update kernel routing tables.
+- **Anti-spoofing** — Every inbound TUN packet validated: source IP must match sender's VirtualIP. Deny-by-default when peer identity is unknown.
+
+### TUN Implementation
+
+- **Zero dependency** — Raw syscall `/dev/net/tun` + `ioctl(TUNSETIFF)`, no wireguard library
+- **MTU 1400** — Avoids fragmentation through Reality TLS tunnel
+- **Config gate** — `tun.enabled` flag, fails gracefully without CAP_NET_ADMIN
+- **IPAM conflict resolution** — If two nodes claim same IP, larger pubkey salt+rehash
+- **Route restoration on reconnect** — TUN routes restored after smux session reconnect
+
+### Code Review Fixes (Third Round)
+
+**Critical:**
+- SetLocalIP now removes old IP entry (prevents stale route leakage after IPAM reallocation)
+- NAT traversal + TUN join/leave handlers merged (SetJoinHandler overwrites, not appends)
+
+**High:**
+- ti.VirtualIP read/write protected by mutex (data race fix)
+- Subnet reassignment cleans old peer's routes map (prevents stale deletion)
+- peerID empty → deny by default (defense in depth)
+
+**Medium:**
+- IPv6 /64+ hostBits > 63 overflow check
+- ParseCIDR error checked (nil panic prevention)
+- writeFramedPacket single Write for atomicity
+
+### Verification
+
+- 22/22 unit test packages pass
+- Real-device: aliyun (10.100.0.10) ↔ N1 (10.100.0.30) bidirectional ping 0% loss
+- SSH banner received over TUN VirtualIP
+- Subnet proxy route injected into kernel (`172.26.0.0/18 via 10.100.0.10 dev mesh0`)
+
 ## v3.0.0 — 2026-08-03
 
 ### Major Changes
