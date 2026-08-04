@@ -3,6 +3,7 @@ package mesh
 import (
 	"bufio"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -80,14 +81,17 @@ func (b *bufferedConn) SetWriteDeadline(t time.Time) error {
 // mesh key exchange.
 type skipPrefixConn struct {
 	*bufio.Reader
-	conn net.Conn
+	conn  net.Conn
+	once  sync.Once
 }
 
 func (s *skipPrefixConn) Read(p []byte) (int, error) {
-	if s.Reader.Buffered() > 0 {
-		// Discard the first buffered byte (marker) on first Read.
-		_, _ = s.Reader.ReadByte()
-	}
+	s.once.Do(func() {
+		// Discard the first buffered byte (the 0x4D marker) on first Read.
+		if s.Reader.Buffered() > 0 {
+			_, _ = s.Reader.ReadByte()
+		}
+	})
 	return s.Reader.Read(p)
 }
 
