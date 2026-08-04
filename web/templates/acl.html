@@ -1,0 +1,165 @@
+{{define "content"}}
+<div class="acl-view">
+  <header>
+    <h2>Access Control (ACL)</h2>
+    <p class="muted">Define allow/deny rules for TUN traffic. Rules are evaluated in order — first match wins. Rules are propagated to all peers via gossip.</p>
+  </header>
+
+  <!-- Status feedback banner -->
+  <div id="acl-feedback" class="cfg-feedback" style="display:none;"></div>
+
+  <!-- Loading placeholder -->
+  <div id="acl-loading">
+    <p class="placeholder">Loading ACL status...</p>
+  </div>
+
+  <!-- Main content (hidden until loaded) -->
+  <div id="acl-content" style="display:none;">
+
+    <!-- ACL Engine Status -->
+    <section class="acl-card">
+      <h3>Engine Status</h3>
+      <div class="acl-status-grid">
+        <div class="acl-status-item">
+          <span class="acl-status-label">Enabled</span>
+          <span class="acl-status-badge" id="acl-enabled">—</span>
+        </div>
+        <div class="acl-status-item">
+          <span class="acl-status-label">Default Policy</span>
+          <span class="acl-status-value" id="acl-default-policy">—</span>
+        </div>
+        <div class="acl-status-item">
+          <span class="acl-status-label">Total Allow</span>
+          <span class="acl-status-value" id="acl-allow-count">0</span>
+        </div>
+        <div class="acl-status-item">
+          <span class="acl-status-label">Total Deny</span>
+          <span class="acl-status-value" id="acl-deny-count">0</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Rule Hit Statistics -->
+    <section class="acl-card" id="acl-stats-card" style="display:none;">
+      <h3>Rule Hit Statistics</h3>
+      <table id="acl-stats-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Action</th>
+            <th>Hits</th>
+            <th>Description</th>
+          </tr>
+        </thead>
+        <tbody id="acl-stats-tbody">
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Current Rules -->
+    <section class="acl-card">
+      <h3>Current Rules</h3>
+      <p class="muted">Rules are evaluated top-to-bottom. Drag to reorder (coming soon). First match wins.</p>
+      <table id="acl-rules-table">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Action</th>
+            <th>Source CIDR</th>
+            <th>Dest CIDR</th>
+            <th>Protocol</th>
+            <th>Src Port</th>
+            <th>Dst Port</th>
+            <th>Peer ID</th>
+            <th>Description</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="acl-rules-tbody">
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Add / Edit Rule Form -->
+    <section class="acl-card">
+      <h3 id="acl-form-title">Add Rule</h3>
+      <div class="acl-form-grid">
+        <div class="acl-form-field">
+          <label for="acl-action">Action</label>
+          <select id="acl-action">
+            <option value="allow">Allow</option>
+            <option value="deny">Deny</option>
+          </select>
+        </div>
+        <div class="acl-form-field">
+          <label for="acl-src-cidr">Source CIDR</label>
+          <input type="text" id="acl-src-cidr" placeholder="10.144.144.0/24 or *">
+        </div>
+        <div class="acl-form-field">
+          <label for="acl-dst-cidr">Dest CIDR</label>
+          <input type="text" id="acl-dst-cidr" placeholder="10.144.144.5/32 or *">
+        </div>
+        <div class="acl-form-field">
+          <label for="acl-protocol">Protocol</label>
+          <select id="acl-protocol">
+            <option value="*">Any</option>
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+            <option value="icmp">ICMP</option>
+          </select>
+        </div>
+        <div class="acl-form-field">
+          <label for="acl-src-port">Src Port</label>
+          <input type="number" id="acl-src-port" min="0" max="65535" placeholder="0 = any">
+        </div>
+        <div class="acl-form-field">
+          <label for="acl-dst-port">Dst Port</label>
+          <input type="number" id="acl-dst-port" min="0" max="65535" placeholder="0 = any">
+        </div>
+        <div class="acl-form-field acl-form-full">
+          <label for="acl-peer-id">Peer ID (public key hex, or *)</label>
+          <input type="text" id="acl-peer-id" placeholder="* or hex public key">
+        </div>
+        <div class="acl-form-field acl-form-full">
+          <label for="acl-description">Description</label>
+          <input type="text" id="acl-description" placeholder="Human-readable comment">
+        </div>
+      </div>
+      <div class="acl-form-actions">
+        <button type="button" class="primary" id="acl-save-rule" onclick="aclSaveRule()">Add Rule</button>
+        <button type="button" class="secondary" id="acl-cancel-edit" onclick="aclCancelEdit()" style="display:none;">Cancel Edit</button>
+      </div>
+    </section>
+
+    <!-- Engine Controls -->
+    <section class="acl-card">
+      <h3>Engine Controls</h3>
+      <div class="acl-controls-grid">
+        <div class="acl-form-field">
+          <label for="acl-toggle-enabled">ACL Enabled</label>
+          <div class="proxy-toggle">
+            <input type="checkbox" id="acl-toggle-enabled">
+            <span class="proxy-toggle-label">Enable ACL packet filtering</span>
+          </div>
+        </div>
+        <div class="acl-form-field">
+          <label for="acl-toggle-default">Default Policy</label>
+          <select id="acl-toggle-default">
+            <option value="allow">Allow (whitelist mode)</option>
+            <option value="deny">Deny (blacklist mode)</option>
+          </select>
+        </div>
+      </div>
+      <div class="acl-form-actions">
+        <button type="button" class="primary" onclick="aclSaveEngine()">Apply Engine Settings</button>
+        <button type="button" class="secondary" onclick="aclRefresh()">↻ Refresh</button>
+      </div>
+    </section>
+
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/acl.js"></script>
+{{end}}
