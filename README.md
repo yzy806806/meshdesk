@@ -1,241 +1,199 @@
 # MeshDesk
 
-**Decentralized server mesh network + monitoring + WebSSH + SOCKS5 proxy + TUN virtual network — in a single binary.**
+**Decentralized server mesh — VPN + monitoring + WebSSH + SOCKS5 proxy + TUN virtual network, in a single Go binary.**
 
 [中文文档](./README_CN.md)
 
 ---
 
-## What is MeshDesk?
+## Why MeshDesk?
 
-MeshDesk combines six tools into one:
+If you manage multiple servers, you probably run Nezha for monitoring, EasyTier or WireGuard for networking, and maybe a proxy tool for circumventing firewalls. That's three or more processes, three configs, three things to update.
 
-1. **Mesh VPN** — P2P decentralized networking between all your servers (no EasyTier needed)
-2. **Server Monitoring** — CPU, memory, disk, network, services (no Nezha needed)
-3. **Web Terminal** — SSH directly from the browser
-4. **SOCKS5 Proxy** — Reality TLS + smux relay to exit nodes, standard SOCKS5 client
-5. **TUN Virtual Network** — Transparent IP routing between nodes (ping, SSH, any application)
-6. **Dashboard** — Full node management, one-click join, config editing, proxy control
+MeshDesk does all of it in one binary:
 
-Every node runs the same binary. Any node can become the control panel with `--web`.
+| Feature | Nezha | EasyTier | WireGuard | MeshDesk |
+|---------|:-----:|:--------:|:---------:|:--------:|
+| Server monitoring | ✅ | — | — | ✅ |
+| Mesh VPN / TUN | — | ✅ | ✅ | ✅ |
+| WebSSH | ✅ | — | — | ✅ |
+| SOCKS5 proxy | — | — | — | ✅ |
+| One-click join | — | — | — | ✅ |
+| Anti-DPI (Reality TLS) | — | — | — | ✅ |
+| Single binary | — | ✅ | — | ✅ |
+| Dashboard config | — | — | — | ✅ |
 
-### Why not just use Nezha + EasyTier?
+### Key Design Choices
 
-| | Nezha | EasyTier | MeshDesk |
-|---|---|---|---|
-| Server monitoring | ✅ | ❌ | ✅ |
-| Mesh VPN | ❌ | ✅ | ✅ |
-| WebSSH | ✅ (via agent) | ❌ | ✅ |
-| Single binary | ❌ (dashboard + agent) | ✅ | ✅ |
-| One-click join | ❌ | ❌ | ✅ |
-| Dashboard config | ❌ | ❌ | ✅ |
-| SOCKS5 proxy | ❌ | ❌ | ✅ |
+- **Reality TLS** — All mesh traffic is disguised as HTTPS to a real website (e.g. `www.apple.com:443`). DPI cannot distinguish it from legitimate traffic. No WireGuard, no KCP, no recognizable UDP patterns.
+- **Single port** — Everything runs on one TCP+UDP port (default 52888). MuxTransport sniffs the first byte to route Reality TLS, mesh-internal smux, SOCKS5, and memberlist gossip.
+- **Zero third-party TUN** — The TUN device is created via raw `/dev/net/tun` syscalls (~150 lines). No wireguard-go, no gVisor, no external dependencies.
+- **Deterministic IPAM** — Virtual IP = `cidr_base + (pubkey_hash % host_count)`. No DHCP server, no coordination, zero conflicts.
+- **Self-evolving** — Built with the Agora multi-agent framework. AI teams implement features, write tests, review code, and deploy autonomously.
+
+---
 
 ## Quick Start
 
-### Shared Node (has public port)
+### 1. Build
 
 ```bash
-# Generate identity and reality keys
-meshdesk gen-identity > /etc/meshdesk/identity.pem
-meshdesk gen-reality > keys.txt
+go build -o meshdesk ./cmd/meshdesk/
 
-# Config
-cat > /etc/meshdesk/config.yaml << 'EOF'
+# Cross-compile for ARM64 (e.g. ARM SBCs)
+GOOS=linux GOARCH=arm64 go build -o meshdesk-arm64 ./cmd/meshdesk/
+```
+
+### 2. Shared Node (has a public port)
+
+```bash
+meshdesk gen-identity    # → identity.pem
+meshdesk gen-reality      # → reality keys
+
+meshdesk --web --config /etc/meshdesk/config.yaml
+```
+
+Config:
+```yaml
 node:
-  hostname: "my-node"
+  hostname: "gateway"
   web: ":8080"
   identity_file: "/etc/meshdesk/identity.pem"
 mesh:
   port: 52888
-  gossip_port: 52888
+  tun_enabled: true
+  mesh_cidr: "10.100.0.0/24"
 p2p:
   enabled: true
-  advertise_endpoints:
-    - "YOUR_PUBLIC_IP:52888"
+  advertise_endpoints: ["YOUR_PUBLIC_IP:52888"]
   gossip_probe_interval: 5
 reality:
   enabled: true
-  listen_addr: "0.0.0.0"
-  listen_port: 52888
   dest: "www.apple.com:443"
   server_names: ["www.apple.com"]
-  private_key: "YOUR_REALITY_PRIVATE_KEY"
+  private_key: "..."
   short_ids: ["aabbccdd"]
-monitoring:
-  interval: 15
-  port: 4191
 auth:
   web_users:
     - username: admin
       password_hash: "$2b$10$..."  # bcrypt
-EOF
-
-# Run
-meshdesk --web --config /etc/meshdesk/config.yaml
 ```
 
-### Ordinary Node (no exposed ports)
-
-Just point the seed at a shared node:
+### 3. Ordinary Node (no exposed port)
 
 ```yaml
 p2p:
   enabled: true
-  seeds:
-    - "SHARED_NODE_IP:52888"
+  seeds: ["SHARED_NODE_IP:52888"]
   gossip_probe_interval: 5
 reality:
   enabled: false
+mesh:
+  tun_enabled: true
+  mesh_cidr: "10.100.0.0/24"
 ```
 
-### One-Click Join (from Dashboard)
+### 4. One-Click Join
 
-1. Open Dashboard → **Join** page
-2. Click "Generate Install Command"
-3. Copy the command, SSH to the new machine, paste and run:
+Open the Dashboard → **Join** page, click "Generate Install Command", paste on the new machine:
 
 ```bash
-curl -sSL http://dashboard:8080/join?token=xxx | sudo sh
+curl -sSL http://gateway:8080/join?token=xxx | sudo sh
 ```
 
 The new node auto-downloads the binary, generates identity, writes config, and joins the cluster.
+
+---
 
 ## Architecture
 
 ### Protocol Stack
 
 ```
-┌─────────────────────────────────────────────┐
-│ Layer 4 — MeshNode                          │
-│   Wires everything together: gossip,        │
-│   WebSSH, file transfer, SOCKS5, proxy      │
-├─────────────────────────────────────────────┤
-│ Layer 3 — smux Multiplexer                  │
-│   Stream multiplexing over a single conn.   │
-│   WebSSH, file transfer, RPC, SOCKS5, and   │
-│   proxy traffic share one encrypted link    │
-├─────────────────────────────────────────────┤
+┌──────────────────────────────────────────────┐
+│ Application Layer                            │
+│   Monitoring · WebSSH · File Transfer        │
+│   SOCKS5 Proxy · TUN Forwarding · Dashboard  │
+├──────────────────────────────────────────────┤
+│ Layer 3 — smux Stream Multiplexer            │
+│   Many virtual streams over one connection   │
+├──────────────────────────────────────────────┤
 │ Layer 2b — AES-256-GCM Encryption           │
-│   Session-key encryption of all traffic.    │
-├─────────────────────────────────────────────┤
-│ Layer 2a — X25519 ECDH Key Exchange         │
-│   Ephemeral key exchange + Ed25519 signing. │
-├─────────────────────────────────────────────┤
-│ Layer 1 — Reality TLS Handshake             │
-│   REALITY TLS hijack on port 52888.         │
-│   Indistinguishable from HTTPS traffic.     │
-├─────────────────────────────────────────────┤
-│ Layer 0 — Ed25519 Identity                 │
-│   Permanent node identity (PEM file).       │
-└─────────────────────────────────────────────┘
+│   Per-session keys, nonce-based replay       │
+│   protection, authenticated encryption       │
+├──────────────────────────────────────────────┤
+│ Layer 2a — X25519 ECDH Key Exchange          │
+│   Ephemeral DH + Ed25519 identity signing    │
+├──────────────────────────────────────────────┤
+│ Layer 1 — Reality TLS                        │
+│   REALITY hijack on port 52888               │
+│   Indistinguishable from HTTPS to apple.com  │
+├──────────────────────────────────────────────┤
+│ Layer 0 — Ed25519 Identity                   │
+│   Permanent node identity (PEM file)         │
+└──────────────────────────────────────────────┘
 ```
 
-### MuxTransport — Single Port Multiplexing
+### Single-Port Multiplexing (MuxTransport)
 
 Port 52888 handles all protocols via first-byte sniffing:
 
-| First Byte | Protocol | Virtual Port | Description |
-|------------|----------|-------------|-------------|
-| 0x16 | Reality TLS | — | TLS ClientHello, encrypted mesh traffic |
-| 0x4D | mesh-internal | — | smux session establishment |
-| 0x53 | SOCKS5 entry | 0x5350 | Phone/client SOCKS5 proxy entry |
-| 0x45 | SOCKS5 exit | 0x4558 | Exit node handler for SOCKS5 |
-| 0x52 | smux relay | 0x524C | Stream relay for cross-network routing |
-| other | gossip | — | memberlist TCP push/pull sync |
+| First Byte | Protocol | Target | Description |
+|:----------:|----------|--------|-------------|
+| `0x16` | Reality TLS | `realityCh` | TLS ClientHello — encrypted mesh traffic |
+| `0x4D` | mesh-internal | `meshCh` | smux session establishment (key exchange) |
+| `0x53` | SOCKS5 entry | — | Phone/client SOCKS5 proxy entry (`0x5350`) |
+| `0x45` | SOCKS5 exit | — | Exit node handler (`0x4558`) |
+| `0x52` | smux relay | — | Cross-network stream relay (`0x524C`) |
+| other | gossip | `streamCh` | memberlist TCP push/pull sync |
 
-UDP 52888 handles gossip ping/pong and anti-entropy.
+UDP 52888 handles memberlist gossip (ping/pong, anti-entropy).
 
 ### Node Types
 
-- **Shared node** (`reality.enabled: true`): listens on 52888 TCP+UDP, Reality TLS + MuxTransport. The only node type that exposes a public port.
-- **Ordinary node** (`reality.enabled: false`): no TCP listener, UDP-only gossip. Connects outbound to shared nodes. Never exposes a port.
+| | Shared Node | Ordinary Node |
+|---|---|---|
+| Public port | ✅ TCP+UDP 52888 | — |
+| Reality TLS | ✅ (server) | — |
+| MuxTransport | ✅ TCP listener | UDP-only |
+| Gossip | ✅ | ✅ |
+| Monitoring | ✅ | ✅ |
+| Dashboard | ✅ (`--web`) | ✅ (`--web`) |
+| TUN | ✅ | ✅ |
 
-### Monitoring Auto-Routing
-
-- Dashboard nodes broadcast `CapCollector` via gossip NodeMeta
-- Other nodes auto-discover collectors and push metrics
-- Aggregators forward metrics to each other (`Forwarded` flag + `SourceID+Sequence` dedup prevents loops)
-- `peers.cache` persists discovered endpoints + collector info across restarts
-- `identity.pem` persists Ed25519 identity (public key stable across restarts)
+---
 
 ## TUN Virtual Network
 
-MeshDesk can create a TUN virtual network interface that provides Layer 3 IP routing across the mesh. With TUN enabled, nodes can ping each other by Virtual IP, SSH over the mesh, and access remote subnets through subnet proxy.
-
-### Configuration
+Transparent Layer 3 IP routing across the mesh. With TUN enabled, nodes can `ping`, `ssh`, and run any IP application over the virtual network.
 
 ```yaml
 mesh:
   tun_enabled: true
-  mesh_cidr: "10.144.144.0/24"
-  subnet_proxy:
-    - "172.26.0.0/18"
-  tun_name: "mesh0"     # optional, default: mesh0
-  tun_mtu: 1400         # optional, default: 1400
+  mesh_cidr: "10.100.0.0/24"
+  subnet_proxy: ["172.26.0.0/18"]   # share local LAN
+  tun_name: "mesh0"
+  tun_mtu: 1400
 ```
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `tun_enabled` | bool | `false` | Create a TUN device on startup. Requires `CAP_NET_ADMIN` or root. |
-| `mesh_cidr` | string | — | CIDR subnet for the TUN network. Every node's Virtual IP is allocated from this range. |
-| `subnet_proxy` | []string | — | Local CIDR subnets this node advertises as reachable. Other nodes add kernel routes for these subnets via this node's Virtual IP. |
-| `tun_name` | string | `mesh0` | TUN interface name. |
-| `tun_mtu` | int | `1400` | MTU for the TUN interface. Set below 1500 to account for mesh encapsulation overhead. |
-| `static_virtual_ip` | string | — | Force a specific Virtual IP instead of using IPAM allocation. Must be within `mesh_cidr`. |
+**How it works:**
 
-### How it works
-
-1. **IPAM**: When `tun_enabled` is true, each node deterministically allocates a Virtual IP from `mesh_cidr`.
-2. **Routing**: Each node maintains kernel routes for every peer's Virtual IP via the TUN interface. Routing tables are synchronized through gossip as peers join and leave.
-3. **Forwarding**: IP packets destined for a peer are read from the TUN device, encapsulated, and sent over the mesh transport (Reality TLS + smux).
-4. **Subnet Proxy**: Nodes with `subnet_proxy` advertise their local subnets via gossip. Peers automatically install kernel routes to these subnets, allowing cross-network access to devices behind a mesh gateway.
-
-### Capabilities
-
-- **Direct ping**: `ping 10.144.144.2` reaches another mesh node by Virtual IP
-- **Mesh SSH**: `ssh user@10.144.144.2` over the encrypted mesh tunnel
-- **Subnet access**: Access devices on a remote LAN through a mesh gateway node with `subnet_proxy`
-
-## Dashboard
-
-| Page | Path | Description |
-|------|------|-------------|
-| Topology | `/topology` | 3D mesh topology, node status |
-| Monitor | `/` | CPU/memory/load for all nodes |
-| Config | `/config` | Edit all node settings (4-tier access) |
-| Join | `/join` | Generate one-click install command |
-| Proxy | `/proxy` | SOCKS5 proxy status, entry/exit config |
-| Nodes | `/nodes` | Node list with details |
-| Peers | `/peers` | Known peers management |
-| Files | `/files` | File transfer |
-| Terminal | `/terminal` | WebSSH |
-| Services | `/services` | Remote service management |
-
-## TUN Virtual Network
-
-```yaml
-mesh:
-  tun_enabled: true
-  mesh_cidr: "10.144.144.0/24"
-  subnet_proxy: ["192.168.1.0/24"]  # optional: share local subnet
-```
-
-- **Transparent IP routing** — `ping 10.144.144.x`, `ssh user@10.144.144.x`, any application
-- **Deterministic IPAM** — IP = cidr_base + (pubkey_hash % host_count), zero conflict, zero coordination
-- **Subnet proxy** — Share local subnet with other mesh nodes
-- **Route sync** — Gossip propagates VirtualIP + SubnetProxy, kernel routes auto-updated
-- **Anti-spoofing** — Source IP validation on every inbound TUN packet
-- **Zero dependency** — Raw syscall `/dev/net/tun`, no wireguard library
+1. **IPAM** — Each node deterministically allocates a Virtual IP from `mesh_cidr` based on its public key hash. No central allocator, no conflicts.
+2. **Route sync** — When a peer joins, its VirtualIP propagates via gossip. All nodes install `/32` kernel routes via the TUN interface.
+3. **Forwarding** — IP packets read from TUN → destination IP resolved to peer public key → sent over smux stream → remote TUN → kernel → target app.
+4. **Subnet proxy** — Nodes with `subnet_proxy` advertise local subnets. Peers install kernel routes, enabling cross-network LAN access.
+5. **Anti-spoofing** — Every inbound TUN packet is validated: source IP must match the sender's gossip-advertised VirtualIP.
 
 ```
-App ping 10.144.144.2
-  ↓ TUN device
-  ↓ IP packet → dst IP → route table → public key
-  ↓ smux stream (existing)
-  ↓ Reality TLS 52888 (existing)
-  ↓ Remote TUN → kernel → target app
+$ ping 10.100.0.10
+PING 10.100.0.10: 56 data bytes
+64 bytes from 10.100.0.10: icmp_seq=0 ttl=64 time=184ms
+
+$ ssh user@10.100.0.10
+user@10.100.0.10's password:
 ```
+
+---
 
 ## SOCKS5 Proxy
 
@@ -244,21 +202,71 @@ Phone → Shared node:52888 → Reality TLS → SOCKS5 (0x5350) → mesh relay (
 - Use any standard SOCKS5 client (no VLESS/xray needed)
 - Multi-path relay with automatic failover
 - Exit node controls allowed ports (default: 80, 443)
+- Traffic appears as normal HTTPS to DPI
 
-## Build
+---
+
+## Dashboard
+
+| Page | Path | Description |
+|------|------|-------------|
+| Topology | `/topology` | 3D mesh topology graph, real-time node status |
+| Monitor | `/` | CPU / memory / disk / load / network for all nodes |
+| Config | `/config` | Edit all node settings (4-tier access control) |
+| Join | `/join` | Generate one-click install command |
+| Proxy | `/proxy` | SOCKS5 proxy status, entry/exit configuration |
+| Nodes | `/nodes` | Node list with details and capabilities |
+| Peers | `/peers` | Known peers management |
+| Files | `/files` | File transfer between nodes |
+| Terminal | `/terminal` | WebSSH — SSH directly from browser |
+| Services | `/services` | Remote systemd service management |
+
+---
+
+## Monitoring
+
+- Push-based metrics collection over the mesh (no exposed port needed)
+- Auto-discovery: nodes with `CapCollector` capability are discovered via gossip
+- Deduplication: `SourceID + Sequence` prevents metric loops
+- Persistence: `peers.cache` saves discovered endpoints across restarts
+- Identity stability: `identity.pem` keeps Ed25519 public key constant
+
+---
+
+## Project Stats
+
+| Metric | Value |
+|--------|-------|
+| Language | Go |
+| Source files | ~310 |
+| Lines of Go | ~138,000 |
+| Dependencies | memberlist, go-msgpack, Reality TLS library |
+| Platforms | Linux (amd64, arm64) |
+| License | MIT |
+
+---
+
+## Build & Deploy
 
 ```bash
-# AMD64
+# Build
 go build -o meshdesk ./cmd/meshdesk/
 
-# ARM64
+# Cross-compile
 GOOS=linux GOARCH=arm64 go build -o meshdesk-arm64 ./cmd/meshdesk/
+
+# Run (needs root for TUN)
+sudo meshdesk --web --config /etc/meshdesk/config.yaml
+
+# Agent-only mode (no dashboard, no TUN)
+meshdesk --config /etc/meshdesk/config.yaml
 ```
+
+---
 
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
-- [Release Notes](docs/RELEASE_NOTES.md)
 - [Join Guide](docs/JOIN_GUIDE.md)
 - [SOCKS5 Proxy Guide](docs/SOCKS5_PROXY_GUIDE.md)
 - [Config Inventory](docs/CONFIG_INVENTORY.md)
