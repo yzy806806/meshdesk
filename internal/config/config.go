@@ -22,6 +22,7 @@ type Config struct {
 	Reality    RealityServerConfig `yaml:"reality,omitempty"`
 	Join       JoinConfig          `yaml:"join,omitempty"`
 	Tun        TunConfig           `yaml:"tun,omitempty"`
+	ACL        ACLConfig           `yaml:"acl,omitempty"`
 }
 
 // JoinConfig holds settings for the auto-join protocol.
@@ -104,6 +105,65 @@ type TunConfig struct {
 	//     - 192.168.1.0/24
 	//     - 10.0.0.0/8
 	SubnetProxies []string `yaml:"subnet_proxies,omitempty"`
+}
+
+// ACLAction defines whether an ACL rule allows or denies traffic.
+type ACLAction string
+
+const (
+	ACLActionAllow ACLAction = "allow"
+	ACLActionDeny  ACLAction = "deny"
+)
+
+// ACLRule defines a single access control rule for TUN traffic.
+// Rules are evaluated in order; the first match wins. If no rule
+// matches, the default policy is "allow" (backward-compatible with
+// pre-ACL deployments).
+//
+// All fields support wildcard "*" to match any value. CIDR fields
+// support standard CIDR notation (e.g. "10.10.0.0/24") or exact IPs.
+type ACLRule struct {
+	// Action is "allow" or "deny". Required.
+	Action ACLAction `yaml:"action"`
+
+	// SourceCIDR matches the source VirtualIP. "*" matches any.
+	// Example: "10.10.0.0/24" matches all IPs in that subnet.
+	SourceCIDR string `yaml:"src_cidr,omitempty"`
+
+	// DestCIDR matches the destination IP. "*" matches any.
+	// Example: "10.10.0.5/32" matches only that exact IP.
+	DestCIDR string `yaml:"dst_cidr,omitempty"`
+
+	// Protocol matches the IP protocol: "tcp", "udp", "icmp", or "*".
+	Protocol string `yaml:"protocol,omitempty"`
+
+	// SrcPort matches the source port (TCP/UDP only). 0 = any.
+	SrcPort int `yaml:"src_port,omitempty"`
+
+	// DstPort matches the destination port (TCP/UDP only). 0 = any.
+	DstPort int `yaml:"dst_port,omitempty"`
+
+	// PeerID matches the sending peer's Ed25519 public key (hex).
+	// "*" or empty matches any peer. A specific key restricts the
+	// rule to traffic from that peer only.
+	PeerID string `yaml:"peer_id,omitempty"`
+
+	// Description is a human-readable comment for the rule.
+	Description string `yaml:"description,omitempty"`
+}
+
+// ACLConfig holds TUN access control list configuration.
+type ACLConfig struct {
+	// Enabled controls whether ACL checking is active. When false
+	// (default), all traffic is allowed (backward-compatible).
+	Enabled bool `yaml:"enabled,omitempty"`
+
+	// DefaultPolicy is the action taken when no rule matches.
+	// "allow" (default) or "deny".
+	DefaultPolicy ACLAction `yaml:"default_policy,omitempty"`
+
+	// Rules is the ordered list of ACL rules. First match wins.
+	Rules []ACLRule `yaml:"rules,omitempty"`
 }
 
 // DefaultTunMTU is the default MTU for TUN interfaces.
@@ -848,6 +908,10 @@ func Default() *Config {
 			DirectReprobeInterval: 120,
 			MaxPeers:              256,
 		},
+		ACL: ACLConfig{
+			Enabled:       false,
+			DefaultPolicy: ACLActionAllow,
+		},
 	}
 }
 
@@ -1098,6 +1162,10 @@ func Load(path string) (*Config, error) {
 	if cfg.Tun.Enabled && cfg.Tun.MTU == 0 {
 		cfg.Tun.MTU = DefaultTunMTU
 	}
+	// ACL config defaults.
+	if cfg.ACL.DefaultPolicy == "" {
+		cfg.ACL.DefaultPolicy = ACLActionAllow
+	}
 	return cfg, nil
 }
 
@@ -1160,6 +1228,7 @@ var knownTopLevelKeys = map[string]bool{
 	"reality":    true,
 	"join":       true,
 	"tun":        true,
+	"acl":        true,
 }
 
 // warnUnknownTopLevelKeys unmarshals the raw YAML into a generic map
