@@ -35,6 +35,10 @@ import (
 	"github.com/yzy806806/meshdesk/internal/webssh"
 )
 
+// Version is set at build time via -ldflags "-X main.Version=...".
+// Defaults to "dev" when built without CI.
+var Version = "dev"
+
 func main() {
 	// Handle "join-token" subcommand: meshdesk join-token <secret> [server-fp]
 	if len(os.Args) >= 2 && os.Args[1] == "join-token" {
@@ -55,6 +59,7 @@ func main() {
 		relayMode      bool
 		socks5Listen   string
 		socks5ExitNode string
+		showVersion    bool
 	)
 	flag.StringVar(&configPath, "config", "/etc/meshdesk/config.yaml", "path to config file")
 	flag.BoolVar(&webMode, "web", false, "enable web UI mode")
@@ -62,7 +67,13 @@ func main() {
 	flag.BoolVar(&relayMode, "relay", false, "enable relay mode (accept relay circuits from peers)")
 	flag.StringVar(&socks5Listen, "socks5-listen", "", "SOCKS5 client listen address (e.g. 127.0.0.1:1080)")
 	flag.StringVar(&socks5ExitNode, "socks5-exit-node", "", "exit node public key for SOCKS5 client mode")
+	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("meshdesk %s\n", Version)
+		os.Exit(0)
+	}
 
 	if genKey {
 		identity, err := mesh.GenerateIdentity()
@@ -139,7 +150,7 @@ func main() {
 		log.Fatalf("Failed to start mesh node: %v", err)
 	}
 
-	log.Printf("MeshDesk node started")
+	log.Printf("MeshDesk %s started", Version)
 	log.Printf("  Public key: %s", node.Identity().PublicKey)
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 	log.Printf("  Peers:      %d", node.RoutingTable().PeerCount())

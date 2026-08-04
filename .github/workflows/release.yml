@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            asset_name: meshdesk-linux-amd64
+          - goarch: arm64
+            asset_name: meshdesk-linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Build binary
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -trimpath -ldflags="-s -w -X main.Version=${{ steps.version.outputs.VERSION }}" \
+            -o ${{ matrix.asset_name }} ./cmd/meshdesk/
+
+      - name: Verify binary
+        run: |
+          file ${{ matrix.asset_name }}
+          ls -lh ${{ matrix.asset_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare release assets
+        run: |
+          chmod +x artifacts/meshdesk-linux-*
+          # Generate checksums
+          cd artifacts
+          sha256sum meshdesk-linux-* > checksums.txt
+          ls -lh
+
+      - name: Copy static assets
+        run: |
+          cp deploy/meshdesk.service artifacts/
+          cp deploy/install.sh artifacts/
+          cp README.md artifacts/
+          cp README_CN.md artifacts/ 2>/dev/null || true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: MeshDesk ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            artifacts/meshdesk-linux-amd64
+            artifacts/meshdesk-linux-arm64
+            artifacts/checksums.txt
+            artifacts/meshdesk.service
+            artifacts/install.sh
+            artifacts/README.md
