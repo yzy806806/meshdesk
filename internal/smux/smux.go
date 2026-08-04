@@ -77,7 +77,7 @@ func DefaultConfig() Config {
 		MaxFrameSize:      16384,
 		WriteBufferSize:   262144,
 		AcceptBacklog:     64,
-		HandshakeTimeout:  10 * time.Second,
+		HandshakeTimeout:  30 * time.Second,
 		StreamIdleTimeout: 0,
 		PingInterval:      0,
 	}
