@@ -124,14 +124,14 @@ func DefaultSOCKS5Config() SOCKS5Config {
 //  4. When either direction completes, both connections are closed.
 //  5. Close() tears down all active connections.
 type SOCKS5Handler struct {
-	config       SOCKS5Config
-	dialer       *net.Dialer
-	activeConns  int64
-	closed       atomic.Bool
-	allowedNets  []*net.IPNet      // parsed DestinationFilter
-	allowedPeers map[string]bool   // set of peerIDs permitted to connect
+	config        SOCKS5Config
+	dialer        *net.Dialer
+	activeConns   int64
+	closed        atomic.Bool
+	allowedNets   []*net.IPNet      // parsed DestinationFilter
+	allowedPeers  map[string]bool   // set of peerIDs permitted to connect
 	checkMeshPeer func(string) bool // routing table check (nil = fallback to non-empty check)
-	requireMesh  bool              // true if non-mesh connections are rejected
+	requireMesh   bool              // true if non-mesh connections are rejected
 }
 
 // NewSOCKS5Handler creates a SOCKS5Handler with the given configuration.

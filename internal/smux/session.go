@@ -32,7 +32,7 @@ type Session struct {
 	nextStreamID uint32
 
 	// Stream count (for MaxStreams backpressure)
-	streamSlotCh  chan struct{} // semaphore for MaxStreams
+	streamSlotCh chan struct{} // semaphore for MaxStreams
 
 	// Accept queue
 	acceptCh chan *Stream

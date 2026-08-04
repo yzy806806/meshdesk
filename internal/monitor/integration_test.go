@@ -757,7 +757,7 @@ func TestReporterCollectorsListImmutability(t *testing.T) {
 
 	// Mutate the returned slice.
 	collectors[0] = "hacked"
-	collectors = append(collectors, "injected")
+	_ = append(collectors, "injected")
 
 	// Internal state should be unchanged.
 	internal := rep.Collectors()

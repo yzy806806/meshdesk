@@ -775,7 +775,7 @@ func TestLargeDataRoundTripFixed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("chunk %d (reverse): %v", i, err)
 		}
-		accumulated = append(accumulated, delivered...)
+		_ = append(accumulated, delivered...)
 	}
 
 	// The last chunk fed (seq 0) should trigger delivery of all

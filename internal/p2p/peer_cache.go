@@ -27,13 +27,13 @@ const peerCacheSaveInterval = 30 * time.Second
 // endpoints are not persisted because their relay circuits are rebuilt
 // dynamically on each startup.
 type CachedPeer struct {
-	PublicKey   string   `json:"pk"`
-	Hostname    string   `json:"hn,omitempty"`
-	Role        string   `json:"role,omitempty"`
-	Endpoints   []string `json:"eps"`
-	FirstSeen   int64    `json:"fs"` // Unix timestamp
-	LastSeen    int64    `json:"ls"` // Unix timestamp
-	CapCollector bool    `json:"cc,omitempty"` // persisted collector capability
+	PublicKey    string   `json:"pk"`
+	Hostname     string   `json:"hn,omitempty"`
+	Role         string   `json:"role,omitempty"`
+	Endpoints    []string `json:"eps"`
+	FirstSeen    int64    `json:"fs"`           // Unix timestamp
+	LastSeen     int64    `json:"ls"`           // Unix timestamp
+	CapCollector bool     `json:"cc,omitempty"` // persisted collector capability
 }
 
 // peerCacheFile is the JSON representation of the on-disk cache file.
@@ -57,12 +57,12 @@ type peerCacheFile struct {
 // gossip is the authoritative source. Stale entries are overwritten when
 // gossip re-discovers the peer.
 type PeerCache struct {
-	mu       sync.Mutex
-	path     string
-	peers    map[string]*CachedPeer // publicKey → cached peer
-	dirty    bool
-	stopCh   chan struct{}
-	stopped  bool
+	mu      sync.Mutex
+	path    string
+	peers   map[string]*CachedPeer // publicKey → cached peer
+	dirty   bool
+	stopCh  chan struct{}
+	stopped bool
 }
 
 // NewPeerCache creates a new PeerCache backed by the given file path.
@@ -186,12 +186,12 @@ func (c *PeerCache) OnPeerJoin(meta *NodeMeta) {
 		existing.CapCollector = meta.CapCollector
 	} else {
 		c.peers[meta.PublicKey] = &CachedPeer{
-			PublicKey:   meta.PublicKey,
-			Hostname:    meta.Hostname,
-			Role:        meta.Role,
-			Endpoints:   meta.Endpoints,
-			FirstSeen:   now,
-			LastSeen:    now,
+			PublicKey:    meta.PublicKey,
+			Hostname:     meta.Hostname,
+			Role:         meta.Role,
+			Endpoints:    meta.Endpoints,
+			FirstSeen:    now,
+			LastSeen:     now,
 			CapCollector: meta.CapCollector,
 		}
 	}
@@ -226,12 +226,12 @@ func (c *PeerCache) OnPeerUpdate(meta *NodeMeta) {
 		existing.CapCollector = meta.CapCollector
 	} else {
 		c.peers[meta.PublicKey] = &CachedPeer{
-			PublicKey:   meta.PublicKey,
-			Hostname:    meta.Hostname,
-			Role:        meta.Role,
-			Endpoints:   meta.Endpoints,
-			FirstSeen:   now,
-			LastSeen:    now,
+			PublicKey:    meta.PublicKey,
+			Hostname:     meta.Hostname,
+			Role:         meta.Role,
+			Endpoints:    meta.Endpoints,
+			FirstSeen:    now,
+			LastSeen:     now,
 			CapCollector: meta.CapCollector,
 		}
 	}

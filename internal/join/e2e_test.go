@@ -25,11 +25,11 @@ func newE2EServer(t *testing.T, opts *e2eServerOpts) (*JoinServer, []byte, *iden
 	}
 	secret := []byte(opts.Secret)
 	cfg := ServerConfig{
-		Secret:           secret,
+		Secret:            secret,
 		ServerIdentity:    id,
 		BootstrapEndpoint: opts.BootstrapEndpoint,
 		GossipPort:        opts.GossipPort,
-		RealityPublicKey: opts.RealityPublicKey,
+		RealityPublicKey:  opts.RealityPublicKey,
 		RealityShortID:    opts.RealityShortID,
 		RealityServerName: opts.RealityServerName,
 		Collectors:        opts.Collectors,
@@ -43,26 +43,26 @@ func newE2EServer(t *testing.T, opts *e2eServerOpts) (*JoinServer, []byte, *iden
 
 type e2eServerOpts struct {
 	Secret            string
-	BootstrapEndpoint  string
-	GossipPort         int
+	BootstrapEndpoint string
+	GossipPort        int
 	RealityPublicKey  string
-	RealityShortID     string
-	RealityServerName  string
-	Collectors         []string
-	MaxJoinRequests    int
-	TokenLifetime      time.Duration
+	RealityShortID    string
+	RealityServerName string
+	Collectors        []string
+	MaxJoinRequests   int
+	TokenLifetime     time.Duration
 }
 
 func defaultE2EOpts() *e2eServerOpts {
 	return &e2eServerOpts{
 		Secret:            "e2e-shared-secret",
-		BootstrapEndpoint:  "bootstrap.example.com:52888",
-		GossipPort:         7946,
+		BootstrapEndpoint: "bootstrap.example.com:52888",
+		GossipPort:        7946,
 		RealityPublicKey:  "deadbeef12345678",
-		RealityShortID:     "a1b2c3d4e5f6a7b8",
-		RealityServerName:  "reality-sni.example.com",
-		Collectors:         []string{"collector-alicloud", "collector-tencent"},
-		TokenLifetime:      5 * time.Minute,
+		RealityShortID:    "a1b2c3d4e5f6a7b8",
+		RealityServerName: "reality-sni.example.com",
+		Collectors:        []string{"collector-alicloud", "collector-tencent"},
+		TokenLifetime:     5 * time.Minute,
 	}
 }
 
@@ -96,9 +96,9 @@ func e2eJoinClientTLS(ts *httptest.Server, tlsConfig *tls.Config, token string, 
 // E2E Test 1: Full join flow over HTTPS (TLS) with challenge-response
 // =============================================================================
 // Validates the complete auto-join protocol with Ed25519 challenge-response:
-//   1. Server generates token → 2. Client sends over TLS → 3. Server validates
-//   → 4. Server issues challenge → 5. Client signs challenge → 6. Server verifies
-//   → 7. Returns ConfigBundle with reality config + collectors → 8. Client applies it
+//  1. Server generates token → 2. Client sends over TLS → 3. Server validates
+//     → 4. Server issues challenge → 5. Client signs challenge → 6. Server verifies
+//     → 7. Returns ConfigBundle with reality config + collectors → 8. Client applies it
 func TestE2E_FullJoinFlowWithTLS(t *testing.T) {
 	opts := defaultE2EOpts()
 	srv, secret, id := newE2EServer(t, opts)
@@ -333,11 +333,11 @@ func TestE2E_ServerFingerprintBinding(t *testing.T) {
 	opts2 := defaultE2EOpts()
 	opts2.BootstrapEndpoint = "other.example.com:52888"
 	srv2 := NewJoinServer(ServerConfig{
-		Secret:           []byte(opts2.Secret),
+		Secret:            []byte(opts2.Secret),
 		ServerIdentity:    id2,
 		BootstrapEndpoint: opts2.BootstrapEndpoint,
 		GossipPort:        opts2.GossipPort,
-		RealityPublicKey: opts2.RealityPublicKey,
+		RealityPublicKey:  opts2.RealityPublicKey,
 		RealityShortID:    opts2.RealityShortID,
 		RealityServerName: opts2.RealityServerName,
 		Collectors:        opts2.Collectors,

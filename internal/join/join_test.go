@@ -159,15 +159,15 @@ func newTestServer(t *testing.T) (*JoinServer, []byte, *identity.Identity) {
 	}
 	secret := []byte("test-hmac-secret")
 	cfg := ServerConfig{
-		Secret:           secret,
+		Secret:            secret,
 		ServerIdentity:    id,
 		BootstrapEndpoint: "127.0.0.1:52888",
 		GossipPort:        7946,
 		RealityPublicKey:  "deadbeef",
 		RealityShortID:    "0123456789abcdef",
-		RealityServerName:  "www.example.com",
+		RealityServerName: "www.example.com",
 		Collectors:        []string{"collector1", "collector2"},
-		TokenLifetime:      30 * time.Minute,
+		TokenLifetime:     30 * time.Minute,
 	}
 	return NewJoinServer(cfg), secret, id
 }

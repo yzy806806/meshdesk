@@ -70,8 +70,8 @@ type ExitCandidate struct {
 // DefaultSOCKS5ForwardConfig returns sensible defaults.
 func DefaultSOCKS5ForwardConfig() SOCKS5ForwardConfig {
 	return SOCKS5ForwardConfig{
-		DialTimeout:   15 * time.Second,
-		IdleTimeout:   5 * time.Minute,
+		DialTimeout:    15 * time.Second,
+		IdleTimeout:    5 * time.Minute,
 		MaxConnections: 256,
 	}
 }
@@ -92,11 +92,11 @@ func DefaultSOCKS5ForwardConfig() SOCKS5ForwardConfig {
 // This reuses internal/proxy/path_selector.go's SelectExit for exit node
 // selection and internal/proxy/exit.go's port validation logic.
 type SOCKS5ForwardHandler struct {
-	config   SOCKS5ForwardConfig
-	node     *MeshNode
-	dialer   *net.Dialer
-	active   int64
-	closed   atomic.Bool
+	config SOCKS5ForwardConfig
+	node   *MeshNode
+	dialer *net.Dialer
+	active int64
+	closed atomic.Bool
 }
 
 // NewSOCKS5ForwardHandler creates a forwarding handler bound to the given node.
@@ -316,7 +316,7 @@ func (h *SOCKS5ForwardHandler) selectExitNode() (string, error) {
 
 	// Build exit probe map for SelectExit. If ExitProbeResults is nil,
 	// use the first candidate.
-	if h.config.ExitProbeResults == nil || len(h.config.ExitProbeResults) == 0 {
+	if len(h.config.ExitProbeResults) == 0 {
 		return candidates[0].NodeID, nil
 	}
 

@@ -495,12 +495,10 @@ func TestAC_Rotate01_MasterKeyRotationMultipleUsers(t *testing.T) {
 	defer store.Close()
 
 	// Enroll 3 users
-	var secrets []string
 	for _, name := range []string{"alice", "bob", "carol"} {
 		result, _ := store.Enroll(name)
 		validCode := computeTOTP(result.Secret, time.Now())
 		store.ValidateCode(name, validCode) // → VERIFIED
-		secrets = append(secrets, result.Secret)
 	}
 
 	// Rotate master key

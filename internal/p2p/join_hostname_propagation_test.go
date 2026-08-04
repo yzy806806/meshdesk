@@ -13,12 +13,12 @@ import (
 // chain that the topology API's LatestHostname uses as a gossip fallback.
 //
 // This test exercises the full chain:
-//   1. Joiner sets hostname via SetLocalIdentity
-//   2. Joiner's NodeMeta (with hostname) is included in JoinRequest
-//   3. Bootstrap receives JoinRequest, reads hostname from NodeMeta
-//   4. After gossip state sync, bootstrap's event delegate caches joiner's meta
-//   5. GetPeerMeta returns the cached hostname
-//   6. The hostname matches what the joiner originally set
+//  1. Joiner sets hostname via SetLocalIdentity
+//  2. Joiner's NodeMeta (with hostname) is included in JoinRequest
+//  3. Bootstrap receives JoinRequest, reads hostname from NodeMeta
+//  4. After gossip state sync, bootstrap's event delegate caches joiner's meta
+//  5. GetPeerMeta returns the cached hostname
+//  6. The hostname matches what the joiner originally set
 func TestJoinHostnamePropagation_Integration(t *testing.T) {
 	// --- Setup: bootstrap and joiner ---
 	bootstrapKey := "bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa1111"

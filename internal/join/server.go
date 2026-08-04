@@ -62,12 +62,12 @@ type PeerInfo struct {
 // JoinRequest is the request body sent by the joining node.
 //
 // The join protocol is a two-step challenge-response flow:
-//   1. Initial request (ChallengeResponse empty): server validates the
-//      token, generates a random challenge, and returns it.
-//   2. Challenge response (ChallengeResponse set): the joiner signs the
-//      challenge with its Ed25519 private key and sends it back. The
-//      server verifies the signature against the joiner's claimed public
-//      key before distributing the config bundle.
+//  1. Initial request (ChallengeResponse empty): server validates the
+//     token, generates a random challenge, and returns it.
+//  2. Challenge response (ChallengeResponse set): the joiner signs the
+//     challenge with its Ed25519 private key and sends it back. The
+//     server verifies the signature against the joiner's claimed public
+//     key before distributing the config bundle.
 type JoinRequest struct {
 	// Token is the base64-encoded join token (HMAC-signed, with nonce + expiry).
 	Token string `json:"token"`
@@ -169,7 +169,7 @@ type JoinServer struct {
 
 type challengeEntry struct {
 	joinerPubKey string
-	expiresAt   time.Time
+	expiresAt    time.Time
 }
 
 // challengeTTL is how long an issued challenge remains valid for
@@ -263,16 +263,16 @@ func (s *JoinServer) Stop() {
 //
 // The protocol is a two-step challenge-response flow:
 //
-//  Step 1 (challenge issuance): The joiner sends a JoinRequest with token
-//  + joiner pubkey but NO ChallengeResponse. The server validates the
-//  token, generates a random 32-byte challenge, caches it, and returns
-//  it in the JoinResponse. No bundle is returned yet.
+//	Step 1 (challenge issuance): The joiner sends a JoinRequest with token
+//	+ joiner pubkey but NO ChallengeResponse. The server validates the
+//	token, generates a random 32-byte challenge, caches it, and returns
+//	it in the JoinResponse. No bundle is returned yet.
 //
-//  Step 2 (challenge verification): The joiner signs the challenge with
-//  its Ed25519 private key and sends a second JoinRequest with the same
-//  token + the Challenge and ChallengeResponse fields set. The server
-//  verifies the signature against the joiner's claimed public key. If
-//  valid, the config bundle is returned. If invalid, an error is returned.
+//	Step 2 (challenge verification): The joiner signs the challenge with
+//	its Ed25519 private key and sends a second JoinRequest with the same
+//	token + the Challenge and ChallengeResponse fields set. The server
+//	verifies the signature against the joiner's claimed public key. If
+//	valid, the config bundle is returned. If invalid, an error is returned.
 //
 // This proves the joiner actually possesses the private key
 // corresponding to the public key it claims — preventing impersonation
@@ -382,7 +382,7 @@ func (s *JoinServer) handleChallengeStep(w http.ResponseWriter, req JoinRequest,
 	s.mu.Lock()
 	s.challengeCache[challengeHex] = challengeEntry{
 		joinerPubKey: req.JoinerPublicKey,
-		expiresAt:   time.Now().Add(challengeTTL),
+		expiresAt:    time.Now().Add(challengeTTL),
 	}
 	// GC expired challenges.
 	now := time.Now()

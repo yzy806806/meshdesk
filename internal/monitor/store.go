@@ -10,9 +10,9 @@ import (
 // agent node, it holds the local replica (self-metrics + buffered
 // metrics during collector outage).
 type Store struct {
-	mu        sync.RWMutex
-	buffers   map[string]*RingBuffer // nodeID → ring buffer
-	lastSeen  map[string]time.Time   // nodeID → last update time
+	mu       sync.RWMutex
+	buffers  map[string]*RingBuffer // nodeID → ring buffer
+	lastSeen map[string]time.Time   // nodeID → last update time
 }
 
 // NewStore creates an empty multi-node metrics store.

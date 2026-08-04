@@ -57,9 +57,9 @@ type MeshRelayRequest struct {
 // MeshRelayResponse is sent by the relay node back to the initiator
 // (or target) to indicate acceptance or rejection of a relay tunnel.
 type MeshRelayResponse struct {
-	Type         MeshRelayMsgType `msgpack:"t"`              // MsgRelayAccept or MsgRelayReject
-	TunnelID     string           `msgpack:"tid"`            // matches request
-	RejectReason string           `msgpack:"rr,omitempty"`   // only if rejected
+	Type         MeshRelayMsgType `msgpack:"t"`            // MsgRelayAccept or MsgRelayReject
+	TunnelID     string           `msgpack:"tid"`          // matches request
+	RejectReason string           `msgpack:"rr,omitempty"` // only if rejected
 	Timestamp    int64            `msgpack:"ts"`
 }
 
@@ -67,10 +67,10 @@ type MeshRelayResponse struct {
 // separate stream, asking the target to open a relay stream back to
 // the relay with the same tunnelID so the relay can bridge them.
 type MeshRelayDial struct {
-	Type        MeshRelayMsgType `msgpack:"t"`
-	TunnelID    string           `msgpack:"tid"` // matches the initiator's tunnel
-	InitiatorKey string          `msgpack:"ik"`  // who wants to talk to you
-	Timestamp   int64            `msgpack:"ts"`
+	Type         MeshRelayMsgType `msgpack:"t"`
+	TunnelID     string           `msgpack:"tid"` // matches the initiator's tunnel
+	InitiatorKey string           `msgpack:"ik"`  // who wants to talk to you
+	Timestamp    int64            `msgpack:"ts"`
 }
 
 // MeshRelayTeardown is sent by either side or the relay to close a tunnel.
@@ -155,10 +155,10 @@ func unmarshalRelayMsg(data []byte) (any, error) {
 // RelayRejectReason constants — human-readable reason strings returned in
 // MeshRelayResponse.RejectReason.
 const (
-	RelayRejectAtCapacity       = "at_capacity"
+	RelayRejectAtCapacity        = "at_capacity"
 	RelayRejectNoSessionToTarget = "no_session_to_target"
-	RelayRejectTargetRejected   = "target_rejected"
-	RelayRejectInvalidTarget    = "invalid_target"
-	RelayRejectDuplicateTunnel  = "duplicate_tunnel"
-	RelayRejectNotRelayCapable  = "not_relay_capable"
+	RelayRejectTargetRejected    = "target_rejected"
+	RelayRejectInvalidTarget     = "invalid_target"
+	RelayRejectDuplicateTunnel   = "duplicate_tunnel"
+	RelayRejectNotRelayCapable   = "not_relay_capable"
 )

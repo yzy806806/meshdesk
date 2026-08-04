@@ -513,9 +513,9 @@ func TestRouter_SyncFromPeers_NilEntriesIgnored(t *testing.T) {
 
 	// Input includes nil IP and empty pubkey entries.
 	peers := []PeerRoute{
-		{PublicKey: "", VirtualIP: net.ParseIP("10.10.0.5")},         // empty key → ignored
-		{PublicKey: "peerA", VirtualIP: nil},                         // nil IP → ignored
-		{PublicKey: "peerB", VirtualIP: net.ParseIP("10.10.0.6")},    // valid
+		{PublicKey: "", VirtualIP: net.ParseIP("10.10.0.5")},      // empty key → ignored
+		{PublicKey: "peerA", VirtualIP: nil},                      // nil IP → ignored
+		{PublicKey: "peerB", VirtualIP: net.ParseIP("10.10.0.6")}, // valid
 	}
 	r.SyncFromPeers(peers)
 
