@@ -1,7 +1,10 @@
 package mesh
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -462,22 +465,34 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 	// slow or malicious clients that connect but never send data.
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
-	// Use bufferedConn (bufio.Reader-based) instead of connWithPrefix.
-	// memberlist v0.6.0's RemoveLabelHeaderFromStream wraps the conn in
-	// another bufio.Reader; with connWithPrefix, the first bufio.fill()
-	// consumes the prefix byte, causing data corruption. bufferedConn
-	// keeps the peeked byte in the bufio buffer, so any subsequent
-	// bufio.Reader Peek/Read sees it correctly.
-	wrapped, firstByte, err := newBufferedConn(conn)
+	// Read the first byte directly (not via bufio) so we can decide
+	// the routing without buffering side effects. For memberlist gossip
+	// streams, we wrap with bufferedConn (bufio.Reader-based) to be
+	// compatible with memberlist v0.6.0's RemoveLabelHeaderFromStream.
+	// For mesh-internal connections, we use connWithPrefix (simple
+	// prefix replay) since mesh key exchange does not go through
+	// memberlist's bufio wrapping.
+	peekBuf := make([]byte, 1)
+	n, err := io.ReadFull(conn, peekBuf)
 	conn.SetReadDeadline(time.Time{}) // reset deadline
 
 	if err != nil {
+		if n == 0 {
+			conn.Close()
+			return
+		}
 		conn.Close()
 		return
 	}
+	firstByte := peekBuf[0]
 
 	if firstByte == tlsHandshakeRecordType {
 		// TLS ClientHello → Reality path.
+		// Use bufferedConn so the peeked byte is replayed correctly
+		// when the Reality TLS listener reads from this connection.
+		wrapped := &bufferedConn{Reader: bufio.NewReader(conn), conn: conn}
+		// Prepend the peeked byte so the Reality listener sees it.
+		wrapped.Reader = bufio.NewReader(io.MultiReader(bytes.NewReader(peekBuf), conn))
 		select {
 		case t.realityCh <- wrapped:
 		case <-t.shutdownDone():
@@ -489,29 +504,31 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 		}
 	} else if firstByte == meshInternalMarker {
 		// Mesh-internal connection → mesh key exchange + smux path.
-		// The 0x4D marker byte is not part of the key exchange protocol
-		// and should not be replayed. Use a connWithPrefix that wraps
-		// the original conn (not the bufferedConn, which would replay
-		// the marker). The marker byte was peeked by bufio.Peek which
-		// does not consume from the underlying conn — but fill() may
-		// have read additional data into the bufio buffer.
-		// To avoid data loss, we use wrapped (bufferedConn) and create
-		// a skipPrefix wrapper that reads from the bufio but skips the
-		// first byte.
-		skippedConn := newSkipPrefixConn(wrapped.(*bufferedConn), conn)
+		// Use connWithPrefix to replay the marker byte — mesh key
+		// exchange does NOT go through memberlist's RemoveLabelHeaderFromStream,
+		// so there is no double-buffering issue.
+		// However, the mesh key exchange expects the connection WITHOUT
+		// the 0x4D marker (it was already consumed by the peek above).
+		// So we use the raw conn (no prefix replay).
 		select {
-		case t.meshCh <- skippedConn:
+		case t.meshCh <- conn:
 		case <-t.shutdownDone():
-			wrapped.Close()
+			conn.Close()
 		default:
 			t.logger.Printf("[WARN] mux: mesh accept queue full, dropping connection from %s", conn.RemoteAddr())
-			wrapped.Close()
+			conn.Close()
 		}
 	} else {
 		// Memberlist gossip stream.
+		// Use bufferedConn (bufio.Reader-based) for compatibility with
+		// memberlist v0.6.0's RemoveLabelHeaderFromStream.
+		wrapped := &bufferedConn{Reader: bufio.NewReader(io.MultiReader(bytes.NewReader(peekBuf), conn)), conn: conn}
 		select {
 		case t.streamCh <- wrapped:
 		case <-t.shutdownDone():
+			wrapped.Close()
+		default:
+			t.logger.Printf("[WARN] mux: gossip accept queue full, dropping connection from %s", conn.RemoteAddr())
 			wrapped.Close()
 		}
 	}
