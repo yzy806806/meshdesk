@@ -78,7 +78,7 @@ func (m *virtualPortMux) register(port uint16) (*VirtualListener, error) {
 
 	vl := &VirtualListener{
 		port:     port,
-		acceptCh: make(chan net.Conn),
+		acceptCh: make(chan net.Conn, 16),
 		doneCh:   make(chan struct{}),
 	}
 	m.listeners[port] = vl

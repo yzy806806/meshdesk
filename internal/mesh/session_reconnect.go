@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"sync"
 	"time"
 
@@ -301,16 +300,4 @@ func (n *MeshNode) stopAllReconnectWatchers() {
 		}(tracker)
 	}
 	wg.Wait()
-}
-
-func backoffDelay(attempt int, initial, max time.Duration) time.Duration {
-	if attempt < 1 {
-		attempt = 1
-	}
-	mult := math.Pow(1.5, float64(attempt-1))
-	delayFloat := float64(initial) * mult
-	if delayFloat > float64(max) || delayFloat < 0 {
-		return max
-	}
-	return time.Duration(delayFloat)
 }
