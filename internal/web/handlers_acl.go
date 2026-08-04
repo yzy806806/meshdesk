@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/mesh"
@@ -32,11 +31,11 @@ type aclRuleJSON struct {
 
 // aclStatusResponse is the JSON response for GET /api/acl/status.
 type aclStatusResponse struct {
-	Enabled       bool             `json:"enabled"`
-	DefaultPolicy string           `json:"default_policy"`
-	AllowCount    uint64           `json:"allow_count"`
-	DenyCount     uint64           `json:"deny_count"`
-	Rules         []aclRuleJSON    `json:"rules"`
+	Enabled       bool                  `json:"enabled"`
+	DefaultPolicy string                `json:"default_policy"`
+	AllowCount    uint64                `json:"allow_count"`
+	DenyCount     uint64                `json:"deny_count"`
+	Rules         []aclRuleJSON         `json:"rules"`
 	RuleHits      []mesh.ACLRuleHitStats `json:"rule_hits"`
 }
 
@@ -81,14 +80,8 @@ func (s *Server) handleACLStatus(w http.ResponseWriter, r *http.Request) {
 
 	stats := engine.Stats()
 
-	// Build rules JSON from the config (stored in the engine).
-	rules := make([]aclRuleJSON, 0, len(stats.RuleHits))
-	for _, hit := range stats.RuleHits {
-		rules = append(rules, aclRuleJSON{
-			Action:      hit.Action,
-			Description: hit.Desc,
-		})
-	}
+	// Build rules JSON from the engine's current rules (full detail fields).
+	rules := rulesToJSON(engine.CurrentRules())
 
 	writeJSON(w, http.StatusOK, aclStatusResponse{
 		Enabled:       stats.Enabled,
@@ -107,13 +100,13 @@ func (s *Server) handleACLStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 	provider := s.getACLProvider()
 	if provider == nil {
-		http.Error(w, `{"error":"ACL not available"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "ACL not available")
 		return
 	}
 
 	engine := provider.ACL()
 	if engine == nil {
-		http.Error(w, `{"error":"ACL engine not initialized"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "ACL engine not initialized")
 		return
 	}
 
@@ -122,13 +115,13 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 		// Add a single rule.
 		var rule aclRuleJSON
 		if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-			http.Error(w, `{"error":"invalid JSON: `+err.Error()+`"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
 
 		cfgRule := jsonToConfigRule(rule)
 		if err := validateRule(cfgRule); err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
@@ -141,7 +134,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 			DefaultPolicy: engine.DefaultPolicy(),
 			Rules:         currentRules,
 		}); err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -158,7 +151,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 		// Replace all rules.
 		var rules []aclRuleJSON
 		if err := json.NewDecoder(r.Body).Decode(&rules); err != nil {
-			http.Error(w, `{"error":"invalid JSON: `+err.Error()+`"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 			return
 		}
 
@@ -166,7 +159,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 		for i, r := range rules {
 			cr := jsonToConfigRule(r)
 			if err := validateRule(cr); err != nil {
-				http.Error(w, fmt.Sprintf(`{"error":"rule %d: %s"}`, i, err.Error()), http.StatusBadRequest)
+				writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("rule %d: %s", i, err.Error()))
 				return
 			}
 			cfgRules = append(cfgRules, cr)
@@ -177,7 +170,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 			DefaultPolicy: engine.DefaultPolicy(),
 			Rules:         cfgRules,
 		}); err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -194,13 +187,13 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 		indexStr := r.URL.Query().Get("index")
 		index, err := strconv.Atoi(indexStr)
 		if err != nil {
-			http.Error(w, `{"error":"invalid index parameter"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "invalid index parameter")
 			return
 		}
 
 		currentRules := engine.CurrentRules()
 		if index < 0 || index >= len(currentRules) {
-			http.Error(w, `{"error":"index out of range"}`, http.StatusBadRequest)
+			writeJSONError(w, http.StatusBadRequest, "index out of range")
 			return
 		}
 
@@ -212,7 +205,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 			DefaultPolicy: engine.DefaultPolicy(),
 			Rules:         newRules,
 		}); err != nil {
-			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 
@@ -239,13 +232,13 @@ func (s *Server) handleACLEngine(w http.ResponseWriter, r *http.Request) {
 
 	provider := s.getACLProvider()
 	if provider == nil {
-		http.Error(w, `{"error":"ACL not available"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "ACL not available")
 		return
 	}
 
 	engine := provider.ACL()
 	if engine == nil {
-		http.Error(w, `{"error":"ACL engine not initialized"}`, http.StatusServiceUnavailable)
+		writeJSONError(w, http.StatusServiceUnavailable, "ACL engine not initialized")
 		return
 	}
 
@@ -254,7 +247,7 @@ func (s *Server) handleACLEngine(w http.ResponseWriter, r *http.Request) {
 		DefaultPolicy string `json:"default_policy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid JSON: `+err.Error()+`"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
 
@@ -268,7 +261,7 @@ func (s *Server) handleACLEngine(w http.ResponseWriter, r *http.Request) {
 		defaultPolicy = engine.DefaultPolicy()
 	}
 	if defaultPolicy != config.ACLActionAllow && defaultPolicy != config.ACLActionDeny {
-		http.Error(w, `{"error":"default_policy must be allow or deny"}`, http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "default_policy must be allow or deny")
 		return
 	}
 
@@ -278,7 +271,7 @@ func (s *Server) handleACLEngine(w http.ResponseWriter, r *http.Request) {
 		DefaultPolicy: defaultPolicy,
 		Rules:         currentRules,
 	}); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -352,6 +345,3 @@ func rulesToJSON(rules []config.ACLRule) []aclRuleJSON {
 	}
 	return result
 }
-
-// Ensure unused import doesn't break (strings used in future validation).
-var _ = strings.TrimSpace
