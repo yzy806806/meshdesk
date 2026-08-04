@@ -979,8 +979,8 @@ func TestTunIntegration_HandleInboundStream_UnknownPeer(t *testing.T) {
 }
 
 // TestTunIntegration_HandleInboundStream_EmptyPeerID verifies that packets
-// arriving on a stream with no peer identity (empty peerID) are handled
-// correctly — validation is skipped entirely, packets are written to TUN.
+// arriving on a stream with no peer identity (empty peerID) are dropped
+// by default (deny-by-default anti-spoof policy).
 func TestTunIntegration_HandleInboundStream_EmptyPeerID(t *testing.T) {
 	skipUnlessTun(t)
 
@@ -1001,7 +1001,7 @@ func TestTunIntegration_HandleInboundStream_EmptyPeerID(t *testing.T) {
 	defer fwdEnd.Close()
 
 	// Plain net.Conn without connWithPeer wrapper — peerID is empty.
-	// The handler skips validation when peerID == "".
+	// The handler drops all packets (deny by default).
 
 	done := make(chan struct{})
 	f.wg.Add(1)
@@ -1012,7 +1012,7 @@ func TestTunIntegration_HandleInboundStream_EmptyPeerID(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		packet := makeIPv4Packet(
-			net.ParseIP("10.200.0.99"), // any IP, validation skipped
+			net.ParseIP("10.200.0.99"), // any IP, dropped — no peer identity
 			net.ParseIP("10.200.0.1"),
 		)
 		if err := writeFramedPacket(sendEnd, packet); err != nil {
@@ -1030,12 +1030,9 @@ func TestTunIntegration_HandleInboundStream_EmptyPeerID(t *testing.T) {
 	}
 
 	stats := f.Stats()
-	// All 3 should be received (validation skipped for empty peerID).
-	if stats.PacketsReceived != 3 {
-		t.Fatalf("PacketsReceived = %d, want 3 (validation skipped for empty peerID)", stats.PacketsReceived)
-	}
-	if stats.PacketsSpoofed != 0 {
-		t.Fatalf("PacketsSpoofed = %d, want 0 (no validation for empty peerID)", stats.PacketsSpoofed)
+	// All 3 should be dropped as spoofed (no peer identity, deny by default).
+	if stats.PacketsSpoofed != 3 {
+		t.Fatalf("PacketsSpoofed = %d, want 3 (deny by default for empty peerID)", stats.PacketsSpoofed)
 	}
 }
 

@@ -100,7 +100,11 @@ func (n *MeshNode) setupTUN() error {
 		return fmt.Errorf("tun: create IPAM allocator: %w", err)
 	}
 
-	_, ipNet, _ := net.ParseCIDR(cfg.Mesh.MeshCIDR)
+	_, ipNet, err := net.ParseCIDR(cfg.Mesh.MeshCIDR)
+	if err != nil {
+		dev.Close()
+		return fmt.Errorf("tun: invalid mesh_cidr %q: %w", cfg.Mesh.MeshCIDR, err)
+	}
 
 	// Allocate this node's VirtualIP.
 	//
@@ -287,6 +291,17 @@ func (n *MeshNode) TUNIntegration() *TUNIntegration {
 	return n.tunIntegration
 }
 
+// GetTUNVirtualIP returns this node's TUN VirtualIP, or nil if TUN is
+// not enabled or VirtualIP not yet assigned. Thread-safe.
+func (n *MeshNode) GetTUNVirtualIP() net.IP {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	if n.tunIntegration == nil {
+		return nil
+	}
+	return n.tunIntegration.VirtualIP
+}
+
 // ReallocateAfterGossip re-runs IPAM allocation now that peer
 // VirtualIPs are known via gossip. If this node's IP conflicts with
 // a peer's and this node should yield (smaller pubkey wins), it
@@ -300,14 +315,12 @@ func (n *MeshNode) TUNIntegration() *TUNIntegration {
 func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, bool) {
 	n.mu.Lock()
 	ti := n.tunIntegration
-	n.mu.Unlock()
-
 	if ti == nil || ti.Allocator == nil {
+		n.mu.Unlock()
 		return nil, false
 	}
 
-	// If static_virtual_ip is set, never reallocate — the user explicitly
-	// chose this IP and it should not change regardless of peer state.
+	// If static_virtual_ip is set, never reallocate.
 	if n.cfg.Mesh.StaticVirtualIP != "" {
 		log.Printf("[mesh/tun] ReallocateAfterGossip: skipping (static_virtual_ip=%s)", n.cfg.Mesh.StaticVirtualIP)
 		return ti.VirtualIP, false
@@ -331,8 +344,9 @@ func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, boo
 	// Update Router local IP.
 	ti.Router.SetLocalIP(newIP)
 	ti.VirtualIP = newIP
+	n.mu.Unlock()
 
-	// Update kernel: remove old IP, add new IP.
+	// Update kernel: remove old IP, add new IP (outside lock).
 	if oldIP != nil {
 		removeKernelAddr(ti.IfName, oldIP, ti.Allocator.Subnet())
 	}

@@ -68,6 +68,9 @@ func NewAllocator(subnet string) (*Allocator, error) {
 	hostBits := maskBits - maskOnes
 
 	// Total addresses in the subnet.
+	if hostBits > 63 {
+		return nil, fmt.Errorf("ipam: subnet %s too large (hostBits=%d > 63)", subnet, hostBits)
+	}
 	totalAddrs := 1 << hostBits
 	if totalAddrs < 2 {
 		return nil, fmt.Errorf("ipam: subnet %s too small (need at least 2 addresses)", subnet)
