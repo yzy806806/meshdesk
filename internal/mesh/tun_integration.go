@@ -462,7 +462,6 @@ func (n *MeshNode) SetTUNLocalVirtualIP(virtualIP string) {
 	n.mu.RLock()
 	cb := n.virtualIPBroadcaster
 	n.mu.RUnlock()
-	log.Printf("[mesh/tun] SetTUNLocalVirtualIP: vip=%s, broadcaster=%v", virtualIP, cb != nil)
 
 	if cb != nil {
 		cb(virtualIP)
