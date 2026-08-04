@@ -472,12 +472,18 @@ func (f *TunForwarder) handleInboundStream(conn net.Conn) {
 		// Validate source IP matches the peer's VirtualIP (anti-spoofing).
 		// Every inbound packet must have its src IP verified against the
 		// sending peer's NodeMeta.VirtualIP. Mismatched, unparseable, or
-		// unknown-peer packets are dropped.
-		if peerID != "" {
-			if !f.validateSourceIP(packet, peerID) {
-				f.packetsSpoofed.Add(1)
-				continue
+		// unknown-peer packets are dropped. Deny by default when peerID
+		// is empty (defense in depth — no unauthenticated TUN writes).
+		if peerID == "" {
+			f.packetsSpoofed.Add(1)
+			if isDebugLogEnabled() {
+				log.Printf("[tun-forwarder] anti-spoof: no peer identity, dropping packet")
 			}
+			continue
+		}
+		if !f.validateSourceIP(packet, peerID) {
+			f.packetsSpoofed.Add(1)
+			continue
 		}
 
 		// Write the packet to the TUN device.
@@ -579,16 +585,12 @@ func (f *TunForwarder) validateSourceIP(packet []byte, peerID string) bool {
 // writeFramedPacket writes a 4-byte big-endian length prefix followed
 // by the packet payload to the connection.
 func writeFramedPacket(w io.Writer, packet []byte) error {
-	var header [tunPacketHeaderLen]byte
-	binary.BigEndian.PutUint32(header[:], uint32(len(packet)))
-
-	if _, err := w.Write(header[:]); err != nil {
-		return err
-	}
-	if _, err := w.Write(packet); err != nil {
-		return err
-	}
-	return nil
+	// Single Write for atomicity — length prefix + payload in one call.
+	buf := make([]byte, tunPacketHeaderLen+len(packet))
+	binary.BigEndian.PutUint32(buf[:tunPacketHeaderLen], uint32(len(packet)))
+	copy(buf[tunPacketHeaderLen:], packet)
+	_, err := w.Write(buf)
+	return err
 }
 
 // readFramedPacket reads a 4-byte big-endian length prefix, then reads

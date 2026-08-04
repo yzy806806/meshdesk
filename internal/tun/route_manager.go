@@ -88,6 +88,14 @@ func (rm *RouteManager) AddPeerSubnets(pubKey, virtualIP string, subnets []strin
 				log.Printf("[route-mgr] subnet %s re-assigned from %s to %s (peer %s)",
 					cidr, existingGW, virtualIP, shortHex(pubKey))
 				rm.delKernelRoute(cidr)
+				// Remove from old peer's routes map to prevent
+				// stale deletion when the old peer leaves.
+				for _, oldSubnets := range rm.routes {
+					if oldSubnets[cidr] {
+						delete(oldSubnets, cidr)
+						break
+					}
+				}
 			}
 
 			rm.subnetToPeer[cidr] = virtualIP

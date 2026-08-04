@@ -68,6 +68,13 @@ func NewRouter(subnet *net.IPNet, localPubKey string) *Router {
 func (r *Router) SetLocalIP(ip net.IP) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Remove old self IP entry if present to prevent stale route leakage.
+	if r.localIP != nil {
+		oldStr := r.localIP.String()
+		if oldStr != ip.String() {
+			delete(r.ipToPeer, oldStr)
+		}
+	}
 	r.localIP = make(net.IP, len(ip))
 	copy(r.localIP, ip)
 	// Also add self to the routing table so lookups work.
