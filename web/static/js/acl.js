@@ -59,24 +59,35 @@
   // ─── Render rules table ───
   function renderRules(data) {
     const tbody = document.getElementById('acl-rules-tbody');
-    if (!data.rule_hits || data.rule_hits.length === 0) {
+    if (!data.rules || data.rules.length === 0) {
       tbody.innerHTML = '<tr><td colspan="10" class="muted">No rules configured. Default policy applies to all traffic.</td></tr>';
       return;
     }
-    tbody.innerHTML = data.rule_hits.map((h, i) => 
-      '<tr>' +
-      '<td>' + h.index + '</td>' +
-      '<td class="' + (h.action === 'allow' ? 'acl-allow' : 'acl-deny') + '">' + h.action + '</td>' +
-      '<td>' + escapeHtml(h.src_cidr || '*') + '</td>' +
-      '<td>' + escapeHtml(h.dst_cidr || '*') + '</td>' +
-      '<td>' + escapeHtml(h.protocol || '*') + '</td>' +
-      '<td>' + (h.src_port || '*') + '</td>' +
-      '<td>' + (h.dst_port || '*') + '</td>' +
-      '<td>' + escapeHtml(truncateKey(h.peer_id || '*')) + '</td>' +
-      '<td>' + escapeHtml(h.description || '') + '</td>' +
-      '<td><button class="small secondary" onclick="aclDeleteRule(' + i + ')">Delete</button></td>' +
-      '</tr>'
-    ).join('');
+
+    // Build a lookup from rule_hits by index for hit counts.
+    var hitMap = {};
+    if (data.rule_hits) {
+      data.rule_hits.forEach(function(h) {
+        hitMap[h.index] = h;
+      });
+    }
+
+    tbody.innerHTML = data.rules.map(function(r, i) {
+      var hit = hitMap[i];
+      var hits = hit ? hit.hits : 0;
+      return '<tr>' +
+        '<td>' + i + '</td>' +
+        '<td class="' + (r.action === 'allow' ? 'acl-allow' : 'acl-deny') + '">' + r.action + '</td>' +
+        '<td>' + escapeHtml(r.src_cidr || '*') + '</td>' +
+        '<td>' + escapeHtml(r.dst_cidr || '*') + '</td>' +
+        '<td>' + escapeHtml(r.protocol || '*') + '</td>' +
+        '<td>' + (r.src_port || '*') + '</td>' +
+        '<td>' + (r.dst_port || '*') + '</td>' +
+        '<td>' + escapeHtml(truncateKey(r.peer_id || '*')) + '</td>' +
+        '<td>' + escapeHtml(r.description || '') + '</td>' +
+        '<td><button class="small secondary" onclick="aclDeleteRule(' + i + ')">Delete</button></td>' +
+        '</tr>';
+    }).join('');
   }
 
   // ─── Save rule (add or update) ───
