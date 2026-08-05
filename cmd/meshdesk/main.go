@@ -33,6 +33,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/p2p"
 	"github.com/yzy806806/meshdesk/internal/proxy"
 	"github.com/yzy806806/meshdesk/internal/service"
+	"github.com/yzy806806/meshdesk/internal/systemd"
 	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
 	"github.com/yzy806806/meshdesk/internal/webssh"
@@ -1243,6 +1244,19 @@ func main() {
 		log.Fatalf("Failed to save config to %s: %v", configPath, err)
 	}
 
+	// --- systemd notification ---
+	// If running under systemd (Type=notify), signal readiness and start
+	// sending watchdog pings. Outside systemd this is a no-op.
+	sdNotifier := systemd.NewNotifier()
+	if sdNotifier.Enabled() {
+		log.Printf("[systemd] NOTIFY_SOCKET detected, sending READY=1")
+		if err := sdNotifier.Ready(); err != nil {
+			log.Printf("[systemd] READY notification failed: %v", err)
+		}
+		sdNotifier.StartWatchdog()
+	}
+	defer sdNotifier.Close()
+
 	// Wait for shutdown or diagnostic signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
@@ -1281,6 +1295,9 @@ func main() {
 				logWriter.SetMaxAge(newCfg.Logging.LogMaxAge)
 			}
 			log.Printf("SIGHUP: config reloaded successfully")
+			if sdNotifier.Enabled() {
+				sdNotifier.Status("config reloaded")
+			}
 
 		case syscall.SIGINT, syscall.SIGTERM:
 			log.Printf("Received %s, shutting down...", sig)
@@ -1290,6 +1307,11 @@ func main() {
 
 shutdown:
 	log.Printf("Shutting down...")
+
+	// Notify systemd that we're beginning an orderly shutdown.
+	if sdNotifier.Enabled() {
+		sdNotifier.Stopping()
+	}
 
 	// Send graceful leave notice before tearing down (§4).
 	// The gossip layer's Stop() also sends a LeaveNotice, but sending

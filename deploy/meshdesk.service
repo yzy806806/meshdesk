@@ -5,7 +5,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
 User=root
 Group=root
 
@@ -15,11 +15,18 @@ ExecStart=/usr/local/bin/meshdesk --config /etc/meshdesk/config.yaml
 # Enable web UI mode by uncommenting:
 # ExecStart=/usr/local/bin/meshdesk --config /etc/meshdesk/config.yaml --web
 
-# Restart policy
-Restart=on-failure
+# Restart policy — always restart so smux auto-reconnect has a chance
+# even if the process crashes unexpectedly.
+Restart=always
 RestartSec=5
 StartLimitBurst=10
 StartLimitIntervalSec=60
+
+# Watchdog: meshdesk sends WATCHDOG=1 pings every 15s via sd_notify.
+# If no ping arrives within 45s, systemd considers the process hung
+# and restarts it. The 3:1 ratio gives the process time to recover
+# from transient network stalls without being killed prematurely.
+WatchdogSec=45
 
 # Logging
 StandardOutput=journal
