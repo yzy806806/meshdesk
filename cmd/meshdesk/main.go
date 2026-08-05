@@ -35,9 +35,13 @@ import (
 	"github.com/yzy806806/meshdesk/internal/webssh"
 )
 
-// Version is set at build time via -ldflags "-X main.Version=...".
-// Defaults to "dev" when built without CI.
-var Version = "dev"
+// Build-time variables set via -ldflags "-X main.Version=... -X main.Commit=... -X main.BuildTime=...".
+// Defaults to "dev"/"unknown" when built without CI.
+var (
+	Version   = "dev"
+	Commit    = "unknown"
+	BuildTime = "unknown"
+)
 
 func main() {
 	// Handle "join-token" subcommand: meshdesk join-token <secret> [server-fp]
@@ -72,6 +76,8 @@ func main() {
 
 	if showVersion {
 		fmt.Printf("meshdesk %s\n", Version)
+		fmt.Printf("  commit:     %s\n", Commit)
+		fmt.Printf("  build time: %s\n", BuildTime)
 		os.Exit(0)
 	}
 
@@ -181,7 +187,7 @@ func main() {
 		log.Fatalf("Failed to start mesh node: %v", err)
 	}
 
-	log.Printf("MeshDesk %s started", Version)
+	log.Printf("MeshDesk %s started (commit=%s, built=%s)", Version, Commit, BuildTime)
 	log.Printf("  Public key: %s", node.Identity().PublicKey)
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 	log.Printf("  Peers:      %d", node.RoutingTable().PeerCount())
@@ -994,6 +1000,11 @@ func main() {
 			SOCKS5StatusProvider: node,
 			Liveness:             webLiveness,
 			ConfigPath:           configPath,
+			VersionInfo: web.VersionInfo{
+				Version:   Version,
+				Commit:    Commit,
+				BuildTime: BuildTime,
+			},
 			JoinTokenGenerator: &nodeJoinTokenGenerator{
 				cfg:      cfg,
 				identity: node.Identity(),
