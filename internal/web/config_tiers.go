@@ -230,11 +230,27 @@ var tierMap = map[string]fieldMeta{
 	// log_file changes require a restart (can't safely swap the
 	// underlying file descriptor for the standard log package
 	// mid-write without risking lost log lines).
-	"logging.log_file":       {Tier: TierNormal, Reload: ReloadRestart},
-	"logging.log_max_size":   {Tier: TierNormal, Reload: ReloadHot},
+	"logging.log_file":        {Tier: TierNormal, Reload: ReloadRestart},
+	"logging.log_max_size":    {Tier: TierNormal, Reload: ReloadHot},
 	"logging.log_max_backups": {Tier: TierNormal, Reload: ReloadHot},
-	"logging.log_max_age":    {Tier: TierNormal, Reload: ReloadHot},
-	"logging.log_compress":   {Tier: TierNormal, Reload: ReloadRestart},
+	"logging.log_max_age":     {Tier: TierNormal, Reload: ReloadHot},
+	"logging.log_compress":    {Tier: TierNormal, Reload: ReloadRestart},
+	"logging.log_level":       {Tier: TierNormal, Reload: ReloadHot},
+
+	// --- ACL (§3.14) ---
+	// ACL rules and engine settings are hot-reloadable: the ACL engine
+	// supports atomic rule replacement via UpdateRules.
+	"acl.enabled":          {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.default_policy":   {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules":            {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].action":  {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].src_cidr":   {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].dst_cidr":   {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].protocol":   {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].src_port":   {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].dst_port":   {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].peer_id":    {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].description": {Tier: TierStepUp, Reload: ReloadHot},
 }
 
 // readOnlyFields is the set of fields that are read-only on write.
@@ -285,6 +301,9 @@ var stepUpFields = []string{
 	"proxy.socks5.allowed_ports",
 	"proxy.socks5.allow_all_ports",
 	"proxy.socks5.destination_filter",
+	"acl.enabled",
+	"acl.default_policy",
+	"acl.rules",
 }
 
 // isReadOnly checks if a field path is in the read-only set.

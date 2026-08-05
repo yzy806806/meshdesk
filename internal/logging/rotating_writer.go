@@ -195,6 +195,30 @@ func (w *RotatingWriter) SetMaxAge(days int) {
 	w.mu.Unlock()
 }
 
+// SetMaxSize sets the maximum size in bytes before rotation is triggered.
+// Takes effect on the next Write call. If maxBytes <= 0, the default
+// (10 MB) is used.
+func (w *RotatingWriter) SetMaxSize(maxBytes int64) {
+	w.mu.Lock()
+	if maxBytes <= 0 {
+		maxBytes = 10 << 20
+	}
+	w.maxBytes = maxBytes
+	w.mu.Unlock()
+}
+
+// SetMaxBackups sets the maximum number of rotated backup files to retain.
+// Takes effect on the next rotation. If maxBackups <= 0, the default (5)
+// is used.
+func (w *RotatingWriter) SetMaxBackups(maxBackups int) {
+	w.mu.Lock()
+	if maxBackups <= 0 {
+		maxBackups = 5
+	}
+	w.maxBackups = maxBackups
+	w.mu.Unlock()
+}
+
 // compressFile compresses the file at src into src + ".gz" and
 // returns nil on success.
 func compressFile(src string) error {
