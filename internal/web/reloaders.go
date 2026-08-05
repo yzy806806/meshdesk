@@ -91,6 +91,9 @@ func (w *WebSSHReloader) ReloadConfig(cfg *config.Config) (applied, rejected []s
 //   - proxy.path_selection.* (read from config on next path selection)
 //   - p2p.gossip_interval / gossip_probe_interval (applied on restart)
 //   - reality.dest / server_names / short_ids (applied on restart)
+//   - logging.log_max_size / log_max_backups / log_max_age (applied by
+//     the SIGHUP handler calling SetMaxAge; size/backup count read on
+//     next rotation cycle)
 type LoggingReloader struct{}
 
 func NewLoggingReloader() *LoggingReloader { return &LoggingReloader{} }
