@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -69,6 +70,13 @@ func main() {
 	// Handle "validate" subcommand: meshdesk validate <config.yaml>
 	if len(os.Args) >= 2 && os.Args[1] == "validate" {
 		runValidateSubcommand(os.Args[2:])
+		return
+	}
+
+	// Handle "reload" subcommand: meshdesk reload [--pid <pid>]
+	// Sends SIGHUP to a running meshdesk process to trigger config reload.
+	if len(os.Args) >= 2 && os.Args[1] == "reload" {
+		runReloadSubcommand(os.Args[2:])
 		return
 	}
 
@@ -1145,6 +1153,10 @@ func main() {
 			webServer.RegisterReloader(web.NewWebSSHReloader(sshHub))
 		}
 		webServer.RegisterReloader(web.NewLoggingReloader())
+		// Register ACL reloader (uses node as ACLProvider).
+		webServer.RegisterReloader(web.NewACLReloaderFromProvider(node))
+		// Register proxy reloader (acknowledges in-memory config update).
+		webServer.RegisterReloader(web.NewProxyReloader())
 
 		if err := webServer.Start(cfg.Node.WebAddr); err != nil {
 			log.Fatalf("Failed to start web server: %v", err)
@@ -1291,8 +1303,28 @@ func main() {
 				reporter.SetInterval(newCfg.Monitoring.Interval)
 			}
 			// Re-apply logging config if changed.
-			if newCfg.Logging.LogFile != "" && logWriter != nil {
+			if logWriter != nil {
 				logWriter.SetMaxAge(newCfg.Logging.LogMaxAge)
+				if newCfg.Logging.LogMaxSize > 0 {
+					logWriter.SetMaxSize(newCfg.Logging.LogMaxSize)
+				}
+				if newCfg.Logging.LogMaxBackups > 0 {
+					logWriter.SetMaxBackups(newCfg.Logging.LogMaxBackups)
+				}
+			}
+			if newCfg.Logging.LogLevel != "" {
+				log.Printf("SIGHUP: log_level set to %s", newCfg.Logging.LogLevel)
+			}
+			// Apply ACL rules if the engine is configured.
+			if aclEngine := node.ACL(); aclEngine != nil {
+				if err := aclEngine.UpdateRules(newCfg.ACL); err != nil {
+					log.Printf("SIGHUP: ACL reload error: %v", err)
+				} else {
+					log.Printf("SIGHUP: ACL rules reloaded (%d rules, enabled=%v, default_policy=%s)",
+						len(newCfg.ACL.Rules), newCfg.ACL.Enabled, newCfg.ACL.DefaultPolicy)
+					// Broadcast updated rules via gossip.
+					node.BroadcastACLRules(mesh.EncodeACLRulesForGossip(newCfg.ACL.Rules))
+				}
 			}
 			log.Printf("SIGHUP: config reloaded successfully")
 			if sdNotifier.Enabled() {
@@ -2133,6 +2165,69 @@ func runValidateSubcommand(args []string) {
 		fmt.Fprintf(os.Stderr, "  %s\n", e.Error())
 	}
 	os.Exit(1)
+}
+
+// runReloadSubcommand handles: meshdesk reload [--pid <pid>]
+//
+// It sends SIGHUP to a running meshdesk process, triggering an
+// in-place config reload without restarting the daemon. The PID is
+// read from /var/run/meshdesk.pid by default (matching the systemd
+// unit's PIDFile directive), or specified explicitly via --pid.
+//
+// This is the CLI equivalent of clicking "Hot Reload" in the web
+// Dashboard or calling `curl -X POST /api/config/reload`. Unlike
+// the HTTP API, it works even when the web UI is not enabled (e.g.
+// agent-only nodes) — the SIGHUP handler in main.go processes the
+// reload independently of the web server.
+func runReloadSubcommand(args []string) {
+	fs := flag.NewFlagSet("reload", flag.ExitOnError)
+	pidFlag := fs.Int("pid", 0, "PID of the meshdesk process to reload (default: read from /var/run/meshdesk.pid)")
+	_ = fs.Parse(args)
+
+	pid := *pidFlag
+	if pid == 0 {
+		// Try to read PID from the default pidfile.
+		data, err := os.ReadFile("/var/run/meshdesk.pid")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: could not read /var/run/meshdesk.pid")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Usage: meshdesk reload [--pid <pid>]")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Sends SIGHUP to a running meshdesk process to trigger")
+			fmt.Fprintln(os.Stderr, "a config reload without restarting the daemon.")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "If --pid is not specified, the PID is read from")
+			fmt.Fprintln(os.Stderr, "/var/run/meshdesk.pid (set by the systemd unit).")
+			os.Exit(2)
+		}
+		// Parse PID, trimming whitespace.
+		pidStr := strings.TrimSpace(string(data))
+		pid, err = strconv.Atoi(pidStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid PID in /var/run/meshdesk.pid: %q\n", pidStr)
+			os.Exit(2)
+		}
+	}
+
+	if pid <= 0 {
+		fmt.Fprintf(os.Stderr, "Error: invalid PID %d\n", pid)
+		os.Exit(2)
+	}
+
+	// Send SIGHUP to the process.
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: could not find process %d: %v\n", pid, err)
+		os.Exit(1)
+	}
+
+	if err := proc.Signal(syscall.SIGHUP); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to send SIGHUP to process %d: %v\n", pid, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("✓ Sent SIGHUP to meshdesk (pid %d) — config reload triggered\n", pid)
+	fmt.Println("  Check the meshdesk log for reload status.")
 }
 
 // gossipDNSAdapter adapts *p2p.GossipLayer to the dns.PeerMetaProvider
