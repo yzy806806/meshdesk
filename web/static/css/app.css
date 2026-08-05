@@ -2338,3 +2338,209 @@ a:focus:not(:focus-visible) {
     grid-template-columns: 1fr;
   }
 }
+
+/* ═══ 16. Alert Bar & Alerts Page ═══════════════════════════ */
+
+/* ── Dashboard alert notification bar ── */
+.alert-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-4);
+  padding: var(--md-space-3) var(--md-space-4);
+  margin-bottom: var(--md-space-4);
+  border-radius: var(--md-radius-lg);
+  border: 1px solid var(--md-border);
+  font-size: var(--md-text-sm);
+  animation: alert-bar-slide-in 300ms ease;
+}
+
+.alert-bar-critical {
+  background: var(--md-danger-muted);
+  border-color: var(--md-danger);
+}
+
+.alert-bar-warning {
+  background: var(--md-warning-muted);
+  border-color: var(--md-warning);
+}
+
+.alert-bar-summary {
+  display: flex;
+  gap: var(--md-space-3);
+  flex-shrink: 0;
+  font-weight: var(--md-weight-semibold);
+}
+
+.alert-bar-count.status-error { color: var(--md-danger); }
+.alert-bar-count.status-warn  { color: var(--md-warning); }
+.alert-bar-count.status-ok    { color: var(--md-info); }
+
+.alert-bar-latest {
+  flex: 1;
+  color: var(--md-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alert-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-3);
+  flex-shrink: 0;
+}
+
+.alert-bar-link {
+  color: var(--md-primary);
+  text-decoration: none;
+  font-size: var(--md-text-sm);
+  white-space: nowrap;
+}
+
+.alert-bar-link:hover {
+  color: var(--md-primary-hover);
+  text-decoration: underline;
+}
+
+.alert-bar-dismiss {
+  background: transparent;
+  border: 1px solid var(--md-border);
+  color: var(--md-text-secondary);
+  cursor: pointer;
+  font-size: var(--md-text-xs);
+  padding: 2px var(--md-space-2);
+  border-radius: var(--md-radius-sm);
+}
+
+.alert-bar-dismiss:hover {
+  border-color: var(--md-text-secondary);
+  color: var(--md-text-primary);
+}
+
+@keyframes alert-bar-slide-in {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Alerts history page ── */
+.alerts-view header {
+  margin-bottom: var(--md-space-6);
+}
+
+.alerts-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: var(--md-space-4);
+  margin-bottom: var(--md-space-6);
+  flex-wrap: wrap;
+}
+
+.alerts-filter-group {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-3);
+  flex-wrap: wrap;
+}
+
+.alerts-filter-group label {
+  font-size: var(--md-text-xs);
+  color: var(--md-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: var(--md-weight-semibold);
+}
+
+.alerts-filter-group select,
+.alerts-filter-group input {
+  font-size: var(--md-text-sm);
+  padding: var(--md-space-1) var(--md-space-2);
+  background: var(--md-surface);
+  border: 1px solid var(--md-border);
+  border-radius: var(--md-radius-sm);
+  color: var(--md-text-primary);
+}
+
+.alerts-filter-group select:focus,
+.alerts-filter-group input:focus {
+  border-color: var(--md-primary);
+  outline: none;
+}
+
+.alerts-filter-group input[type="search"] {
+  min-width: 200px;
+}
+
+.alerts-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--md-space-3);
+}
+
+#alerts-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+#alerts-table th {
+  text-align: left;
+  font-size: var(--md-text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--md-text-muted);
+  padding: var(--md-space-2) var(--md-space-3);
+  border-bottom: 1px solid var(--md-border);
+  font-weight: var(--md-weight-semibold);
+}
+
+#alerts-table td {
+  padding: var(--md-space-2) var(--md-space-3);
+  border-bottom: 1px solid var(--md-border-muted);
+  font-size: var(--md-text-sm);
+  vertical-align: top;
+}
+
+#alerts-table tr:hover td {
+  background: var(--md-surface);
+}
+
+.alert-time {
+  color: var(--md-text-muted);
+  font-family: var(--md-font-mono);
+  font-size: var(--md-text-xs);
+  white-space: nowrap;
+}
+
+.alert-desc {
+  max-width: 400px;
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .alerts-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .alerts-filter-group {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .alert-bar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .alert-bar-latest {
+    white-space: normal;
+  }
+
+  #alerts-table {
+    font-size: var(--md-text-xs);
+  }
+
+  .alert-desc {
+    max-width: 200px;
+  }
+}
