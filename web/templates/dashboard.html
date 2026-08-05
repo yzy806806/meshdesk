@@ -49,6 +49,20 @@
       <label>Uptime</label>
       <span>{{humanDuration .Uptime}}</span>
     </div>
+    <div class="metric">
+      <label>Traffic</label>
+      <span class="traffic-info">↓ {{humanBytes .TrafficIn}} · ↑ {{humanBytes .TrafficOut}}</span>
+    </div>
+    <div class="metric">
+      <label>Mesh</label>
+      <span class="mesh-info">{{.PeerCount}} peers · {{.SmuxStreams}} streams{{if .RelayForwards}} · {{.RelayForwards}} relay{{end}}</span>
+    </div>
+    {{if or .TunRxPackets .TunTxPackets}}
+    <div class="metric">
+      <label>TUN</label>
+      <span class="tun-info">rx {{.TunRxPackets}} · tx {{.TunTxPackets}}</span>
+    </div>
+    {{end}}
   </div>
   <footer>
     <a href="/terminal?node={{.NodeID}}" role="button" class="small">Terminal</a>

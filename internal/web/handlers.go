@@ -750,6 +750,14 @@ func (s *Server) buildNodeCards() []NodeCardData {
 			Load5:     m.LoadAvg.Load5,
 			Load15:    m.LoadAvg.Load15,
 			Uptime:    m.Uptime,
+			// Traffic stats from monitor metrics (populated by reporter's traffic provider)
+			TrafficIn:     m.Traffic.InBytes,
+			TrafficOut:    m.Traffic.OutBytes,
+			SmuxStreams:   m.Traffic.SmuxStreams,
+			RelayForwards: m.Traffic.RelayForwards,
+			TunRxPackets:  m.Traffic.TunRxPackets,
+			TunTxPackets:  m.Traffic.TunTxPackets,
+			PeerCount:     m.Traffic.PeerCount,
 		}
 
 		if m.Memory.Total > 0 {
@@ -787,16 +795,23 @@ func (s *Server) buildDashboardJSON() string {
 	}
 
 	type jsonNode struct {
-		NodeID    string  `json:"node_id"`
-		Hostname  string  `json:"hostname"`
-		CPUUsage  float64 `json:"cpu_usage"`
-		MemUsed   uint64  `json:"mem_used"`
-		MemTotal  uint64  `json:"mem_total"`
-		Load1     float64 `json:"load1"`
-		Load5     float64 `json:"load5"`
-		Load15    float64 `json:"load15"`
-		Uptime    int64   `json:"uptime_seconds"`
-		CoreCount int     `json:"core_count"`
+		NodeID        string  `json:"node_id"`
+		Hostname      string  `json:"hostname"`
+		CPUUsage      float64 `json:"cpu_usage"`
+		MemUsed       uint64  `json:"mem_used"`
+		MemTotal      uint64  `json:"mem_total"`
+		Load1         float64 `json:"load1"`
+		Load5         float64 `json:"load5"`
+		Load15        float64 `json:"load15"`
+		Uptime        int64   `json:"uptime_seconds"`
+		CoreCount     int     `json:"core_count"`
+		TrafficIn     uint64  `json:"traffic_in"`
+		TrafficOut    uint64  `json:"traffic_out"`
+		SmuxStreams   int     `json:"smux_streams"`
+		RelayForwards int     `json:"relay_forwards"`
+		TunRxPackets  uint64  `json:"tun_rx_packets"`
+		TunTxPackets  uint64  `json:"tun_tx_packets"`
+		PeerCount     int     `json:"peer_count"`
 	}
 
 	type dashboardData struct {
@@ -813,16 +828,23 @@ func (s *Server) buildDashboardJSON() string {
 
 	for i, c := range cards {
 		data.Nodes[i] = jsonNode{
-			NodeID:    c.NodeID,
-			Hostname:  c.Hostname,
-			CPUUsage:  c.CPUUsage,
-			MemUsed:   c.MemUsed,
-			MemTotal:  c.MemTotal,
-			Load1:     c.Load1,
-			Load5:     c.Load5,
-			Load15:    c.Load15,
-			Uptime:    c.Uptime,
-			CoreCount: c.CoreCount,
+			NodeID:        c.NodeID,
+			Hostname:      c.Hostname,
+			CPUUsage:      c.CPUUsage,
+			MemUsed:       c.MemUsed,
+			MemTotal:      c.MemTotal,
+			Load1:         c.Load1,
+			Load5:         c.Load5,
+			Load15:        c.Load15,
+			Uptime:        c.Uptime,
+			CoreCount:     c.CoreCount,
+			TrafficIn:     c.TrafficIn,
+			TrafficOut:    c.TrafficOut,
+			SmuxStreams:   c.SmuxStreams,
+			RelayForwards: c.RelayForwards,
+			TunRxPackets:  c.TunRxPackets,
+			TunTxPackets:  c.TunTxPackets,
+			PeerCount:     c.PeerCount,
 		}
 	}
 
@@ -853,6 +875,14 @@ type NodeDetailData struct {
 	BootTime  string
 	Disks     []diskDetail
 	Networks  []networkDetail
+	// Traffic statistics
+	TrafficIn     uint64
+	TrafficOut    uint64
+	SmuxStreams   int
+	RelayForwards int
+	TunRxPackets  uint64
+	TunTxPackets  uint64
+	PeerCount     int
 }
 
 type diskDetail struct {
@@ -890,6 +920,14 @@ func buildNodeDetail(m *monitor.Metrics) NodeDetailData {
 		Load15:    m.LoadAvg.Load15,
 		Uptime:    m.Uptime,
 		BootTime:  m.Timestamp.Add(-time.Duration(m.Uptime) * time.Second).Format("2006-01-02 15:04"),
+		// Traffic stats
+		TrafficIn:     m.Traffic.InBytes,
+		TrafficOut:    m.Traffic.OutBytes,
+		SmuxStreams:   m.Traffic.SmuxStreams,
+		RelayForwards: m.Traffic.RelayForwards,
+		TunRxPackets:  m.Traffic.TunRxPackets,
+		TunTxPackets:  m.Traffic.TunTxPackets,
+		PeerCount:     m.Traffic.PeerCount,
 	}
 
 	if m.Memory.Total > 0 {

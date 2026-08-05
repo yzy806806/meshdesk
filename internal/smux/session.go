@@ -8,8 +8,15 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// SessionStats holds traffic counters for a smux session.
+type SessionStats struct {
+	BytesSent     uint64 // total bytes written to conn (frame headers + payloads)
+	BytesReceived uint64 // total bytes read from conn (frame headers + payloads)
+}
 
 // Session is a multiplexed session over a single underlying connection.
 // It satisfies the multipath.Session interface.
@@ -47,6 +54,10 @@ type Session struct {
 
 	// Session handshake
 	handshakeDone chan struct{}
+
+	// Traffic counters (atomic, no lock needed)
+	bytesSent     atomic.Uint64
+	bytesReceived atomic.Uint64
 }
 
 // OpenStream creates a new stream and returns it as a net.Conn.
@@ -140,6 +151,14 @@ func (s *Session) NumStreams() int {
 	return len(s.streams)
 }
 
+// Stats returns the current traffic counters for this session.
+func (s *Session) Stats() SessionStats {
+	return SessionStats{
+		BytesSent:     s.bytesSent.Load(),
+		BytesReceived: s.bytesReceived.Load(),
+	}
+}
+
 // Close shuts down the session gracefully.
 //
 // Sends a GO_AWAY frame to the remote peer, closes all open streams
@@ -230,6 +249,7 @@ func (s *Session) writer() {
 				s.abort(err)
 				return
 			}
+			s.bytesSent.Add(uint64(HeaderSize + len(f.Payload)))
 		case <-s.doneCh:
 			return
 		}
@@ -244,6 +264,9 @@ func (s *Session) reader() {
 			s.abort(err)
 			return
 		}
+
+		// Count received bytes (header + payload).
+		s.bytesReceived.Add(uint64(HeaderSize + len(f.Payload)))
 
 		// Validate version.
 		if f.Version != ProtocolVersion {
