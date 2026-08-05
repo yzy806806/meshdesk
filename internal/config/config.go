@@ -22,8 +22,47 @@ type Config struct {
 	Reality    RealityServerConfig `yaml:"reality,omitempty"`
 	Join       JoinConfig          `yaml:"join,omitempty"`
 	Tun        TunConfig           `yaml:"tun,omitempty"`
-	ACL        ACLConfig           `yaml:"acl,omitempty"`
+	ACL        ACLConfig          `yaml:"acl,omitempty"`
+	Logging    LoggingConfig      `yaml:"logging,omitempty"`
 }
+
+// LoggingConfig controls application-level log output and rotation.
+// When LogFile is empty (the default), logs go to stderr as before.
+// When LogFile is set, logs are written to that file with automatic
+// rotation when the file exceeds LogMaxSize bytes, keeping at most
+// LogMaxBackups rotated copies.
+type LoggingConfig struct {
+	// LogFile is the path to the log file. When empty, logs are
+	// written to stderr (the Go standard log default). When set,
+	// all log.Printf output is redirected to this file.
+	LogFile string `yaml:"log_file,omitempty"`
+
+	// LogMaxSize is the maximum size in bytes of the log file
+	// before it is rotated. Default: 10485760 (10 MB).
+	// Ignored when LogFile is empty.
+	LogMaxSize int64 `yaml:"log_max_size,omitempty"`
+
+	// LogMaxBackups is the maximum number of rotated backup files
+	// to retain. Older backups are deleted. Default: 5.
+	// Ignored when LogFile is empty.
+	LogMaxBackups int `yaml:"log_max_backups,omitempty"`
+
+	// LogMaxAge is the maximum number of days to retain rotated
+	// log files based on the timestamp encoded in their name.
+	// 0 means no age-based deletion. Default: 0.
+	// Ignored when LogFile is empty.
+	LogMaxAge int `yaml:"log_max_age,omitempty"`
+
+	// LogCompress determines whether rotated log files are
+	// compressed with gzip. Default: false.
+	LogCompress bool `yaml:"log_compress,omitempty"`
+}
+
+// DefaultLogMaxSize is the default maximum log file size (10 MB).
+const DefaultLogMaxSize int64 = 10 << 20
+
+// DefaultLogMaxBackups is the default number of rotated backups to keep.
+const DefaultLogMaxBackups = 5
 
 // JoinConfig holds settings for the auto-join protocol.
 // When Enabled is true on a shared node, the node runs a join server
@@ -1186,6 +1225,15 @@ func Load(path string) (*Config, error) {
 	if cfg.ACL.DefaultPolicy == "" {
 		cfg.ACL.DefaultPolicy = ACLActionAllow
 	}
+	// Logging config defaults.
+	if cfg.Logging.LogFile != "" {
+		if cfg.Logging.LogMaxSize == 0 {
+			cfg.Logging.LogMaxSize = DefaultLogMaxSize
+		}
+		if cfg.Logging.LogMaxBackups == 0 {
+			cfg.Logging.LogMaxBackups = DefaultLogMaxBackups
+		}
+	}
 	return cfg, nil
 }
 
@@ -1249,6 +1297,7 @@ var knownTopLevelKeys = map[string]bool{
 	"join":       true,
 	"tun":        true,
 	"acl":        true,
+	"logging":    true,
 }
 
 // warnUnknownTopLevelKeys unmarshals the raw YAML into a generic map

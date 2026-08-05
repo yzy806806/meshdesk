@@ -225,6 +225,16 @@ var tierMap = map[string]fieldMeta{
 	"join.server_url":               {Tier: TierNormal, Reload: ReloadHot},
 	"join.token":                    {Tier: TierMasked, Reload: ReloadHot},
 	"join.insecure_skip_tls_verify": {Tier: TierNormal, Reload: ReloadHot},
+
+	// --- Logging (§3.13) ---
+	// log_file changes require a restart (can't safely swap the
+	// underlying file descriptor for the standard log package
+	// mid-write without risking lost log lines).
+	"logging.log_file":       {Tier: TierNormal, Reload: ReloadRestart},
+	"logging.log_max_size":   {Tier: TierNormal, Reload: ReloadHot},
+	"logging.log_max_backups": {Tier: TierNormal, Reload: ReloadHot},
+	"logging.log_max_age":    {Tier: TierNormal, Reload: ReloadHot},
+	"logging.log_compress":   {Tier: TierNormal, Reload: ReloadRestart},
 }
 
 // readOnlyFields is the set of fields that are read-only on write.
@@ -499,7 +509,7 @@ func joinPath(parts []string) string {
 var validSections = map[string]bool{
 	"node": true, "mesh": true, "peers": true, "p2p": true,
 	"monitoring": true, "webssh": true, "auth": true, "transfer": true,
-	"proxy": true, "reality": true, "join": true,
+	"proxy": true, "reality": true, "join": true, "logging": true,
 }
 
 // maskSentinel is the placeholder string for masked fields.
