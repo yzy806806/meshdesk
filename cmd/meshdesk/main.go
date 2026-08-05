@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -54,6 +55,12 @@ func main() {
 	// Handle "join" subcommand: meshdesk join <bootstrap-addr>
 	if len(os.Args) >= 2 && os.Args[1] == "join" {
 		runJoinSubcommand(os.Args[2:])
+		return
+	}
+
+	// Handle "version" subcommand: meshdesk version
+	if len(os.Args) >= 2 && os.Args[1] == "version" {
+		runVersionSubcommand()
 		return
 	}
 
@@ -1216,11 +1223,48 @@ func main() {
 		log.Fatalf("Failed to save config to %s: %v", configPath, err)
 	}
 
-	// Wait for shutdown signal.
+	// Wait for shutdown or diagnostic signal.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGUSR1)
 
+	for {
+		sig := <-sigCh
+		switch sig {
+		case syscall.SIGUSR1:
+			// Dump peers/sessions/routes to the log for runtime diagnostics.
+			log.Printf("=== SIGUSR1: state dump ===")
+			node.DumpState(log.Writer())
+			log.Printf("=== end state dump ===")
+
+		case syscall.SIGHUP:
+			// Reload configuration from disk and apply hot-reloadable fields.
+			log.Printf("SIGHUP: reloading config from %s", configPath)
+			newCfg, err := config.Load(configPath)
+			if err != nil {
+				log.Printf("SIGHUP: config reload failed: %v", err)
+				continue
+			}
+			// Apply hot-reloadable fields to the running config.
+			cfg.Monitoring.Collectors = newCfg.Monitoring.Collectors
+			cfg.Monitoring.Interval = newCfg.Monitoring.Interval
+			if webServer != nil {
+				if reloadErr := webServer.ReloadConfig(newCfg); reloadErr != nil {
+					log.Printf("SIGHUP: web reload error: %v", reloadErr)
+				}
+			}
+			if reporter != nil {
+				reporter.SetCollectors(newCfg.Monitoring.Collectors)
+				reporter.SetInterval(newCfg.Monitoring.Interval)
+			}
+			log.Printf("SIGHUP: config reloaded successfully")
+
+		case syscall.SIGINT, syscall.SIGTERM:
+			log.Printf("Received %s, shutting down...", sig)
+			goto shutdown
+		}
+	}
+
+shutdown:
 	log.Printf("Shutting down...")
 
 	// Send graceful leave notice before tearing down (§4).
@@ -1999,6 +2043,21 @@ func runJoinTokenSubcommand(args []string) {
 	}
 
 	fmt.Println(token)
+}
+
+// versionInfo returns the formatted version string with version, commit,
+// build time, Go version, and platform/architecture.
+func versionInfo() string {
+	return fmt.Sprintf("meshdesk %s\n  commit:     %s\n  build time: %s\n  go version: %s\n  platform:   %s/%s\n",
+		Version, Commit, BuildTime, runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
+
+// runVersionSubcommand implements `meshdesk version`.
+// It prints the version, commit hash, build time, Go version, and
+// platform/architecture to stdout. The version, commit, and build
+// time are injected at build time via -ldflags.
+func runVersionSubcommand() {
+	fmt.Print(versionInfo())
 }
 
 // runValidateSubcommand handles: meshdesk validate <config.yaml>

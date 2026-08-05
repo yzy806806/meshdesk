@@ -487,6 +487,27 @@ func (s *Server) RegisterReloader(reloader ConfigReloader) {
 	}
 }
 
+// ReloadConfig reloads the configuration from disk and applies hot-reloadable
+// fields to all registered reloaders. This is called by the SIGHUP signal
+// handler to trigger a full config reload without restarting the process.
+// Returns an error if the config file cannot be loaded. Reload errors from
+// individual reloaders are logged but not returned (partial success is OK).
+func (s *Server) ReloadConfig(cfg *config.Config) error {
+	if s.configAPI == nil {
+		return nil
+	}
+	result := s.configAPI.reloaderRegistry.Reload(cfg)
+	configMu.Lock()
+	s.cfg = cfg
+	configMu.Unlock()
+	if !result.OK {
+		for _, e := range result.Errors {
+			log.Printf("[web] reload error: %s", e)
+		}
+	}
+	return nil
+}
+
 // --- Middleware ---
 
 // authMiddleware checks for a valid session cookie on all routes except
