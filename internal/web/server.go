@@ -1219,4 +1219,12 @@ type NodeCardData struct {
 	DiskUsage float64
 	CoreCount int
 	PerCore   []float64
+	// Traffic statistics (from monitor.TrafficMetrics)
+	TrafficIn     uint64
+	TrafficOut    uint64
+	SmuxStreams   int
+	RelayForwards int
+	TunRxPackets  uint64
+	TunTxPackets  uint64
+	PeerCount     int
 }

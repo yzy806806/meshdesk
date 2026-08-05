@@ -39,6 +39,23 @@ type Reporter struct {
 	// maxBufferAge is the maximum age of a buffered metric before it is
 	// discarded (prevents unbounded memory growth during long outages).
 	maxBufferAge time.Duration
+
+	// trafficProvider, when set, is called during each collection cycle
+	// to enrich metrics with mesh-internal traffic statistics (smux bytes,
+	// relay tunnels, TUN packets). Returns zero values if no traffic to report.
+	trafficProvider func() TrafficSnapshot
+}
+
+// TrafficSnapshot is a provider-supplied snapshot of mesh traffic stats.
+// The Reporter converts this into monitor.TrafficMetrics for push to collectors.
+type TrafficSnapshot struct {
+	InBytes       uint64
+	OutBytes      uint64
+	SmuxStreams   int
+	RelayForwards int
+	TunRxPackets  uint64
+	TunTxPackets  uint64
+	PeerCount     int
 }
 
 // MeshDialer abstracts the mesh network's dial capability. In production
@@ -199,6 +216,28 @@ func (r *Reporter) LocalStore() *Store {
 	return r.store
 }
 
+// SetTrafficProvider installs a callback that supplies mesh-internal
+// traffic statistics. When set, each collection cycle enriches the
+// metrics with traffic data before storing and pushing to collectors.
+func (r *Reporter) SetTrafficProvider(fn func() TrafficSnapshot) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.trafficProvider = fn
+}
+
+// monitorTrafficFromProvider converts a TrafficSnapshot to TrafficMetrics.
+func monitorTrafficFromProvider(ts TrafficSnapshot) TrafficMetrics {
+	return TrafficMetrics{
+		InBytes:       ts.InBytes,
+		OutBytes:      ts.OutBytes,
+		SmuxStreams:   ts.SmuxStreams,
+		RelayForwards: ts.RelayForwards,
+		TunRxPackets:  ts.TunRxPackets,
+		TunTxPackets:  ts.TunTxPackets,
+		PeerCount:     ts.PeerCount,
+	}
+}
+
 // Start begins the collection and push loop in a background goroutine.
 // The first collection happens immediately; subsequent ones at the interval.
 func (r *Reporter) Start() error {
@@ -261,6 +300,15 @@ func (r *Reporter) collectAndPush() {
 	if err != nil {
 		log.Printf("monitor: collect error: %v", err)
 		return
+	}
+
+	// Enrich with traffic stats if a provider is set.
+	r.mu.Lock()
+	provider := r.trafficProvider
+	r.mu.Unlock()
+	if provider != nil {
+		ts := provider()
+		m.Traffic = monitorTrafficFromProvider(ts)
 	}
 
 	// Always store locally (self-replica).

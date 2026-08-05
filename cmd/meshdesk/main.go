@@ -919,6 +919,43 @@ func main() {
 		gossipLayer.SeedCollectorsFromCache()
 	}
 
+	// Wire traffic stats provider: enriches each metrics push with
+	// mesh-internal traffic data (smux bytes, relay tunnels, TUN packets).
+	reporter.SetTrafficProvider(func() monitor.TrafficSnapshot {
+		ts := node.TrafficStats()
+		return monitor.TrafficSnapshot{
+			InBytes:       ts.InBytes,
+			OutBytes:      ts.OutBytes,
+			SmuxStreams:   ts.SmuxStreams,
+			RelayForwards: ts.RelayForwards,
+			TunRxPackets:  ts.TunRxPackets,
+			TunTxPackets:  ts.TunTxPackets,
+			PeerCount:     ts.PeerCount,
+		}
+	})
+
+	// Start periodic gossip broadcast of traffic stats so every node
+	// has a real-time view of every other node's traffic volume.
+	if gossipLayer != nil {
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					ts := node.TrafficStats()
+					gossipLayer.SetLocalTrafficStats(
+						ts.InBytes, ts.OutBytes,
+						ts.SmuxStreams, ts.RelayForwards,
+						ts.TunRxPackets, ts.TunTxPackets,
+					)
+				case <-node.Context().Done():
+					return
+				}
+			}
+		}()
+	}
+
 	defer reporter.Stop()
 
 	var webServer *web.Server

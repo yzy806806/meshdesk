@@ -678,11 +678,79 @@ func (n *MeshNode) ListSessions() map[string]*smux.Session {
 	return out
 }
 
+// MeshTrafficStats holds aggregated mesh traffic statistics for the local node.
+// It sums traffic across all smux sessions, relay tunnels, and TUN forwarder.
+type MeshTrafficStats struct {
+	InBytes       uint64 // total inbound bytes across all smux sessions
+	OutBytes      uint64 // total outbound bytes across all smux sessions
+	SmuxStreams   int    // total active smux streams across all peer sessions
+	RelayForwards int    // active relay tunnels (0 if relay not enabled)
+	TunRxPackets  uint64 // TUN device received packets
+	TunTxPackets  uint64 // TUN device sent packets
+	PeerCount     int    // number of connected peer sessions
+}
+
+// TrafficStats aggregates traffic statistics from all subsystems:
+// smux sessions, relay handler, and TUN forwarder.
+func (n *MeshNode) TrafficStats() MeshTrafficStats {
+	var stats MeshTrafficStats
+
+	// Aggregate smux session stats.
+	n.sessionsMu.Lock()
+	// Collect from both sessions and clientSessions (dedup by peer ID, preferring client).
+	seen := make(map[string]bool)
+	for peerID, sess := range n.clientSessions {
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		seen[peerID] = true
+		s := sess.Stats()
+		stats.InBytes += s.BytesReceived
+		stats.OutBytes += s.BytesSent
+		stats.SmuxStreams += sess.NumStreams()
+		stats.PeerCount++
+	}
+	for peerID, sess := range n.sessions {
+		if seen[peerID] {
+			continue
+		}
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		s := sess.Stats()
+		stats.InBytes += s.BytesReceived
+		stats.OutBytes += s.BytesSent
+		stats.SmuxStreams += sess.NumStreams()
+		stats.PeerCount++
+	}
+	n.sessionsMu.Unlock()
+
+	// Relay handler tunnel count.
+	if n.relayHandler != nil {
+		stats.RelayForwards = n.relayHandler.TunnelCount()
+	}
+
+	// TUN forwarder packet stats.
+	if n.tunIntegration != nil && n.tunIntegration.Forwarder != nil {
+		tunStats := n.tunIntegration.Forwarder.Stats()
+		stats.TunRxPackets = tunStats.PacketsReceived
+		stats.TunTxPackets = tunStats.PacketsSent
+	}
+
+	return stats
+}
+
 // Listener returns the active Reality TLS listener, or nil if not started.
 func (n *MeshNode) Listener() net.Listener {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.listener
+}
+
+// Context returns the node's lifecycle context. It is cancelled when
+// Close() is called, allowing background goroutines to terminate.
+func (n *MeshNode) Context() context.Context {
+	return n.ctx
 }
 
 // SetSessionDeathHandler installs a callback that is invoked when a smux
