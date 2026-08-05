@@ -592,6 +592,21 @@ type MeshConfig struct {
 	// testing, NAT-separated nodes with no relay).
 	// Format: "10.100.0.2". The IP must be within mesh_cidr.
 	StaticVirtualIP string `yaml:"static_virtual_ip,omitempty"`
+
+	// --- Mesh DNS server ---
+
+	// DNSEnabled controls whether the built-in lightweight DNS server
+	// is started. When true, the node listens on DNSPort (UDP) and
+	// resolves <hostname>.mesh queries to the corresponding peer's
+	// VirtualIP using gossip-synchronized node metadata.
+	// Default: false. Only meaningful when both TUN and P2P gossip
+	// are enabled (DNS resolution requires VirtualIPs from gossip).
+	DNSEnabled bool `yaml:"dns_enabled,omitempty"`
+
+	// DNSPort is the UDP port for the built-in DNS server.
+	// Default: 5353. Set to 53 to act as the mesh-wide resolver
+	// (requires CAP_NET_BIND_SERVICE or root).
+	DNSPort int `yaml:"dns_port,omitempty"`
 }
 
 // P2pConfig holds settings for the P2P dynamic networking layer
@@ -843,6 +858,7 @@ func Default() *Config {
 			Port:       51820,
 			GossipPort: 7946,
 			TunMTU:     DefaultTunMTU,
+			DNSPort:    5353,
 		},
 		Monitoring: MonitoringConfig{
 			Interval: 15,
@@ -954,6 +970,10 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Mesh.TunName == "" && cfg.Mesh.TunEnabled {
 		cfg.Mesh.TunName = "mesh0"
+	}
+	// DNS config defaults.
+	if cfg.Mesh.DNSPort == 0 && cfg.Mesh.DNSEnabled {
+		cfg.Mesh.DNSPort = 5353
 	}
 	// Backward compatibility: if the top-level tun: section has fields
 	// set and the mesh.* fields don't, migrate from tun: to mesh.

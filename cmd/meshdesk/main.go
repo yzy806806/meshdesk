@@ -23,6 +23,7 @@ import (
 
 	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/config"
+	meshdns "github.com/yzy806806/meshdesk/internal/dns"
 	"github.com/yzy806806/meshdesk/internal/identity"
 	"github.com/yzy806806/meshdesk/internal/join"
 	"github.com/yzy806806/meshdesk/internal/mesh"
@@ -639,6 +640,20 @@ func main() {
 				gossipLayer.Stop()
 			}
 		}()
+	}
+
+	// Start the mesh DNS server (if enabled).
+	// The DNS server resolves <hostname>.mesh queries to VirtualIP
+	// addresses using gossip-synchronized peer metadata. It requires
+	// the gossip layer to be active for peer metadata.
+	if cfg.Mesh.DNSEnabled && gossipLayer != nil {
+		dnsProvider := &gossipDNSAdapter{gl: gossipLayer}
+		dnsServer := meshdns.NewServer(dnsProvider, cfg.Mesh.DNSPort)
+		if err := dnsServer.Start(); err != nil {
+			log.Printf("Warning: failed to start mesh DNS server: %v", err)
+		} else {
+			defer dnsServer.Stop()
+		}
 	}
 
 	// Start the remote service management server (listens on mesh).
@@ -1971,4 +1986,43 @@ func runValidateSubcommand(args []string) {
 		fmt.Fprintf(os.Stderr, "  %s\n", e.Error())
 	}
 	os.Exit(1)
+}
+
+// gossipDNSAdapter adapts *p2p.GossipLayer to the dns.PeerMetaProvider
+// interface. It converts p2p.NodeMeta to dns.NodeMeta, bridging the
+// two packages without creating an import cycle.
+type gossipDNSAdapter struct {
+	gl *p2p.GossipLayer
+}
+
+func (a *gossipDNSAdapter) LocalMeta() *meshdns.NodeMeta {
+	if a.gl == nil {
+		return nil
+	}
+	meta := a.gl.LocalMeta()
+	if meta == nil {
+		return nil
+	}
+	return &meshdns.NodeMeta{
+		Hostname:  meta.Hostname,
+		VirtualIP: meta.VirtualIP,
+	}
+}
+
+func (a *gossipDNSAdapter) KnownPeers() []*meshdns.NodeMeta {
+	if a.gl == nil {
+		return nil
+	}
+	peers := a.gl.KnownPeers()
+	result := make([]*meshdns.NodeMeta, 0, len(peers))
+	for _, p := range peers {
+		if p == nil {
+			continue
+		}
+		result = append(result, &meshdns.NodeMeta{
+			Hostname:  p.Hostname,
+			VirtualIP: p.VirtualIP,
+		})
+	}
+	return result
 }
