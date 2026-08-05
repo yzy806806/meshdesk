@@ -56,6 +56,12 @@ type LoggingConfig struct {
 	// LogCompress determines whether rotated log files are
 	// compressed with gzip. Default: false.
 	LogCompress bool `yaml:"log_compress,omitempty"`
+
+	// LogLevel controls the verbosity of log output.
+	// Supported values: "debug", "info", "warn", "error".
+	// Default: "info". When set to "debug", mesh and proxy subsystems
+	// emit additional diagnostic output.
+	LogLevel string `yaml:"log_level,omitempty"`
 }
 
 // DefaultLogMaxSize is the default maximum log file size (10 MB).

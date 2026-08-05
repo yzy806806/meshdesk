@@ -251,3 +251,100 @@ func TestRotatingWriter_ConcurrentWrite(t *testing.T) {
 		t.Fatalf("log file is empty after concurrent writes")
 	}
 }
+
+func TestRotatingWriter_SetMaxSize(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	w, err := NewRotatingWriter(path, 1<<20, 3, false)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Change max size.
+	w.SetMaxSize(100)
+	if w.maxBytes != 100 {
+		t.Fatalf("maxBytes = %d, want 100", w.maxBytes)
+	}
+
+	// Write enough to trigger rotation with the new size.
+	for i := 0; i < 5; i++ {
+		_, err := w.Write([]byte("XXXXXXXXXXXXXXXXXXXXXXXXXXX\n"))
+		if err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+
+	// A backup should exist.
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("backup .1 should exist after rotation: %v", err)
+	}
+}
+
+func TestRotatingWriter_SetMaxBackups(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	w, err := NewRotatingWriter(path, 10, 5, false)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Change max backups to 1.
+	w.SetMaxBackups(1)
+	if w.maxBackups != 1 {
+		t.Fatalf("maxBackups = %d, want 1", w.maxBackups)
+	}
+
+	// Write enough to trigger multiple rotations.
+	for i := 0; i < 20; i++ {
+		_, err := w.Write([]byte("YYYYYYYYYYYY\n"))
+		if err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+
+	// Only .1 should exist (maxBackups=1).
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Fatalf("backup .1 should exist: %v", err)
+	}
+	if _, err := os.Stat(path + ".2"); err == nil {
+		t.Fatalf("backup .2 should not exist (maxBackups=1)")
+	}
+}
+
+func TestRotatingWriter_SetMaxSizeDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	w, err := NewRotatingWriter(path, 100, 3, false)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Passing 0 should default to 10 MB.
+	w.SetMaxSize(0)
+	if w.maxBytes != 10<<20 {
+		t.Fatalf("maxBytes = %d, want %d", w.maxBytes, 10<<20)
+	}
+}
+
+func TestRotatingWriter_SetMaxBackupsDefault(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.log")
+
+	w, err := NewRotatingWriter(path, 100, 1, false)
+	if err != nil {
+		t.Fatalf("NewRotatingWriter: %v", err)
+	}
+	defer w.Close()
+
+	// Passing 0 should default to 5.
+	w.SetMaxBackups(0)
+	if w.maxBackups != 5 {
+		t.Fatalf("maxBackups = %d, want 5", w.maxBackups)
+	}
+}
