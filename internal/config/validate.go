@@ -82,6 +82,15 @@ func Validate(cfg *Config) []ValidationError {
 			})
 		}
 	}
+	// DNS port validation.
+	if cfg.Mesh.DNSEnabled {
+		if cfg.Mesh.DNSPort < 0 || cfg.Mesh.DNSPort > 65535 {
+			errs = append(errs, ValidationError{
+				Section: "mesh", Field: "dns_port",
+				Message: fmt.Sprintf("dns_port must be 0-65535, got %d", cfg.Mesh.DNSPort),
+			})
+		}
+	}
 
 	// --- peers section ---
 	seenKeys := make(map[string]bool)
@@ -427,6 +436,10 @@ func checkPortConflicts(cfg *Config) []ValidationError {
 	// Gossip port.
 	if cfg.Mesh.GossipPort > 0 {
 		entries = append(entries, portEntry{cfg.Mesh.GossipPort, "mesh", "gossip_port"})
+	}
+	// DNS port.
+	if cfg.Mesh.DNSEnabled && cfg.Mesh.DNSPort > 0 {
+		entries = append(entries, portEntry{cfg.Mesh.DNSPort, "mesh", "dns_port"})
 	}
 	// Monitoring push port.
 	if cfg.Monitoring.Port > 0 {
