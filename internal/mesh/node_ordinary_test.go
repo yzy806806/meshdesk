@@ -24,6 +24,9 @@ func TestStart_OrdinaryNodeCreatesTCPListener(t *testing.T) {
 	ln.Close()
 
 	cfg := &config.Config{
+		Node: config.NodeConfig{
+			IdentityFile: t.TempDir() + "/identity.pem",
+		},
 		Mesh: config.MeshConfig{
 			GossipPort: port,
 		},
@@ -73,6 +76,9 @@ func TestStart_OrdinaryNodeMemberlistStreamCh(t *testing.T) {
 	ln.Close()
 
 	cfg := &config.Config{
+		Node: config.NodeConfig{
+			IdentityFile: t.TempDir() + "/identity.pem",
+		},
 		Mesh: config.MeshConfig{
 			GossipPort: port,
 		},
