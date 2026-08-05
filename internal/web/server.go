@@ -82,7 +82,17 @@ type Server struct {
 	// (Slack, Discord, custom webhook). nil when AlertWebhookURL is empty.
 	webhookDispatcher *WebhookDispatcher
 
+	// versionInfo holds build-time metadata for /api/version.
+	versionInfo VersionInfo
+
 	httpServer *http.Server
+}
+
+// VersionInfo holds build-time version metadata injected via -ldflags.
+type VersionInfo struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildTime string `json:"build_time"`
 }
 
 // MeshDialer abstracts mesh-internal dialing for remote file transfer
@@ -147,6 +157,11 @@ type Deps struct {
 	// info for the one-click join Dashboard page. When nil, a default
 	// implementation is constructed from Config + Node identity.
 	JoinTokenGenerator JoinTokenGenerator
+
+	// VersionInfo holds build-time version metadata for the /api/version
+	// endpoint and dashboard display. When zero-valued, defaults to
+	// "dev"/"unknown" are used.
+	VersionInfo VersionInfo
 }
 
 // New creates a new web server from the given dependencies.
@@ -218,6 +233,7 @@ func New(deps Deps) (*Server, error) {
 		liveness:                deps.Liveness,
 		configAPI:               NewConfigAPIManager(deps.ConfigPath),
 		joinTokenGen:            deps.JoinTokenGenerator,
+		versionInfo:             normalizeVersionInfo(deps.VersionInfo),
 	}
 
 	if s.monitorStore == nil {
@@ -408,6 +424,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	// GET /api/topology/events streams real-time topology updates via SSE.
 	mux.HandleFunc("/api/topology", s.requireAuth(s.handleTopology))
 	mux.HandleFunc("/api/topology/events", s.requireAuth(s.handleTopologySSE))
+
+	// Version API (public, no auth) — build metadata for monitoring/join clients.
+	// GET /api/version returns JSON with version, commit, and build_time.
+	mux.HandleFunc("/api/version", s.handleVersion)
 
 	// Peers and monitor JSON API aliases (auth required).
 	// GET /api/peers   — peers list with endpoints, capabilities, and roles as JSON.
