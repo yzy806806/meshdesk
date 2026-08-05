@@ -27,6 +27,7 @@ import (
 	meshdns "github.com/yzy806806/meshdesk/internal/dns"
 	"github.com/yzy806806/meshdesk/internal/identity"
 	"github.com/yzy806806/meshdesk/internal/join"
+	"github.com/yzy806806/meshdesk/internal/logging"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
 	"github.com/yzy806806/meshdesk/internal/p2p"
@@ -113,6 +114,25 @@ func main() {
 			cfg = config.Default()
 		} else {
 			log.Fatalf("Failed to load config: %v", err)
+		}
+	}
+
+	// Set up log file with rotation if configured.
+	var logWriter *logging.RotatingWriter
+	if cfg.Logging.LogFile != "" {
+		logWriter, err = logging.NewRotatingWriter(
+			cfg.Logging.LogFile,
+			cfg.Logging.LogMaxSize,
+			cfg.Logging.LogMaxBackups,
+			cfg.Logging.LogCompress,
+		)
+		if err != nil {
+			log.Printf("Warning: failed to open log file %s: %v (continuing with stderr)", cfg.Logging.LogFile, err)
+		} else {
+			logWriter.SetMaxAge(cfg.Logging.LogMaxAge)
+			log.SetOutput(logWriter)
+			log.Printf("Logging to %s (max_size=%d, max_backups=%d, compress=%v)",
+				cfg.Logging.LogFile, cfg.Logging.LogMaxSize, cfg.Logging.LogMaxBackups, cfg.Logging.LogCompress)
 		}
 	}
 
@@ -1256,6 +1276,10 @@ func main() {
 				reporter.SetCollectors(newCfg.Monitoring.Collectors)
 				reporter.SetInterval(newCfg.Monitoring.Interval)
 			}
+			// Re-apply logging config if changed.
+			if newCfg.Logging.LogFile != "" && logWriter != nil {
+				logWriter.SetMaxAge(newCfg.Logging.LogMaxAge)
+			}
 			log.Printf("SIGHUP: config reloaded successfully")
 
 		case syscall.SIGINT, syscall.SIGTERM:
@@ -1280,6 +1304,11 @@ shutdown:
 
 	if webServer != nil {
 		webServer.Stop()
+	}
+
+	if logWriter != nil {
+		log.SetOutput(os.Stderr) // restore stderr before closing
+		logWriter.Close()
 	}
 }
 

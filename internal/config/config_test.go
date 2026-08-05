@@ -577,3 +577,77 @@ func TestSavePermissionDenied(t *testing.T) {
 		t.Logf("Save succeeded on write-protected dir (expected under root with CAP_DAC_OVERRIDE)")
 	}
 }
+
+func TestLoggingConfigDefaults(t *testing.T) {
+	yaml := `
+logging:
+  log_file: /var/log/meshdesk/meshdesk.log
+`
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Logging.LogFile != "/var/log/meshdesk/meshdesk.log" {
+		t.Fatalf("LogFile = %q, want /var/log/meshdesk/meshdesk.log", cfg.Logging.LogFile)
+	}
+	if cfg.Logging.LogMaxSize != DefaultLogMaxSize {
+		t.Fatalf("LogMaxSize = %d, want %d", cfg.Logging.LogMaxSize, DefaultLogMaxSize)
+	}
+	if cfg.Logging.LogMaxBackups != DefaultLogMaxBackups {
+		t.Fatalf("LogMaxBackups = %d, want %d", cfg.Logging.LogMaxBackups, DefaultLogMaxBackups)
+	}
+}
+
+func TestLoggingConfigExplicit(t *testing.T) {
+	yaml := `
+logging:
+  log_file: /tmp/meshdesk.log
+  log_max_size: 5242880
+  log_max_backups: 10
+  log_max_age: 30
+  log_compress: true
+`
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Logging.LogFile != "/tmp/meshdesk.log" {
+		t.Fatalf("LogFile = %q, want /tmp/meshdesk.log", cfg.Logging.LogFile)
+	}
+	if cfg.Logging.LogMaxSize != 5242880 {
+		t.Fatalf("LogMaxSize = %d, want 5242880", cfg.Logging.LogMaxSize)
+	}
+	if cfg.Logging.LogMaxBackups != 10 {
+		t.Fatalf("LogMaxBackups = %d, want 10", cfg.Logging.LogMaxBackups)
+	}
+	if cfg.Logging.LogMaxAge != 30 {
+		t.Fatalf("LogMaxAge = %d, want 30", cfg.Logging.LogMaxAge)
+	}
+	if !cfg.Logging.LogCompress {
+		t.Fatalf("LogCompress = false, want true")
+	}
+}
+
+func TestLoggingConfigEmpty(t *testing.T) {
+	cfg := Default()
+	if cfg.Logging.LogFile != "" {
+		t.Fatalf("LogFile = %q, want empty", cfg.Logging.LogFile)
+	}
+	if cfg.Logging.LogMaxSize != 0 {
+		t.Fatalf("LogMaxSize = %d, want 0", cfg.Logging.LogMaxSize)
+	}
+}
