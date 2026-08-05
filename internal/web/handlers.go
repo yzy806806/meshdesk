@@ -1042,6 +1042,19 @@ func (s *Server) handleProxyPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, "proxy.html", data)
 }
 
+// handleAlertsPage renders the security alerts history page.
+// The page displays all security-relevant events (login failures, unauthorized
+// joins, capability denials, node joins/leaves, proxy security events) with
+// filtering by severity, status, and text search. Data is loaded client-side
+// via the existing GET /api/alerts endpoint.
+func (s *Server) handleAlertsPage(w http.ResponseWriter, r *http.Request) {
+	data := PageData{
+		Title:      "Security Alerts",
+		ActivePage: "alerts",
+	}
+	s.renderPage(w, "alerts.html", data)
+}
+
 // --- Misc helpers ---
 
 func getHostname() (string, error) {

@@ -1,5 +1,8 @@
 {{define "content"}}
 <div class="dashboard">
+  <!-- Alert notification bar -->
+  <div id="alert-bar" class="alert-bar" style="display:none;"></div>
+
   <header>
     <h2>{{if eq .Title "Nodes"}}Nodes{{else}}Mesh Overview{{end}}</h2>
     <div class="cluster-stats" aria-label="Cluster statistics">
@@ -13,6 +16,11 @@
     {{template "node-cards" .}}
   </div>
 </div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/dashboard.js"></script>
+<script src="/static/js/alerts.js"></script>
 {{end}}
 
 {{define "node-cards"}}

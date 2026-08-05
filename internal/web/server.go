@@ -193,6 +193,7 @@ func New(deps Deps) (*Server, error) {
 		"files.html", "services.html", "login.html", "login_2fa.html",
 		"peers.html", "topology.html", "error.html",
 		"config.html", "join.html", "proxy.html", "acl.html",
+		"alerts.html",
 	}
 
 	pages := make(map[string]*template.Template, len(pageNames))
@@ -464,6 +465,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/config", s.requireAuth(s.handleConfigPage))
 	mux.HandleFunc("/proxy", s.requireAuth(s.handleProxyPage))
 	mux.HandleFunc("/acl", s.requireAuth(s.handleACLPage))
+	mux.HandleFunc("/alerts", s.requireAuth(s.handleAlertsPage))
 
 	// ACL API endpoints (session required).
 	// GET    /api/acl/status  — returns ACL engine status + rules + hit stats.

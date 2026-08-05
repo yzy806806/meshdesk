@@ -1,0 +1,61 @@
+{{define "content"}}
+<div class="alerts-view">
+  <header>
+    <h2>Security Alerts</h2>
+    <p class="muted">Security-relevant events: login failures, unauthorized join attempts, capability denials, node joins/leaves, and proxy security events.</p>
+  </header>
+
+  <!-- Toolbar -->
+  <div class="alerts-toolbar">
+    <div class="alerts-filter-group">
+      <label for="alerts-filter-severity">Severity</label>
+      <select id="alerts-filter-severity">
+        <option value="">All</option>
+        <option value="critical">Critical</option>
+        <option value="warning">Warning</option>
+        <option value="info">Info</option>
+      </select>
+      <label for="alerts-filter-dismissed">Status</label>
+      <select id="alerts-filter-dismissed">
+        <option value="">All</option>
+        <option value="active">Active</option>
+        <option value="dismissed">Dismissed</option>
+      </select>
+      <input type="search" id="alerts-filter-search" placeholder="Search description, type, IP...">
+    </div>
+    <div class="alerts-actions">
+      <span class="badge" id="alerts-count-badge">0 alerts</span>
+      <button type="button" class="secondary" onclick="AlertsPage.refresh()">↻ Refresh</button>
+      <button type="button" class="warning" id="alerts-dismiss-btn" onclick="AlertsPage.dismissAll()">Dismiss All</button>
+    </div>
+  </div>
+
+  <!-- Loading placeholder -->
+  <div id="alerts-loading">
+    <p class="placeholder">Loading alerts...</p>
+  </div>
+
+  <!-- Main content (hidden until loaded) -->
+  <div id="alerts-content" style="display:none;">
+    <table id="alerts-table">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Severity</th>
+          <th>Type</th>
+          <th>Source</th>
+          <th>Description</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="alerts-tbody">
+      </tbody>
+    </table>
+    <p id="alerts-empty" class="placeholder" style="display:none;">No alerts match the current filter.</p>
+  </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script src="/static/js/alerts.js"></script>
+{{end}}
