@@ -15,6 +15,7 @@ package mesh
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -676,6 +677,88 @@ func (n *MeshNode) ListSessions() map[string]*smux.Session {
 		out[k] = v
 	}
 	return out
+}
+
+// DumpState writes a comprehensive snapshot of the node's runtime state to the
+// given writer. It includes routing table peers, active smux sessions (both
+// client and server), and TUN routes/subnet proxies. This is primarily used
+// by the SIGUSR1 signal handler for runtime diagnostics, but can also be
+// called from tests or the web dashboard.
+func (n *MeshNode) DumpState(w io.Writer) {
+	// --- Routing table peers ---
+	rt := n.RoutingTable()
+	peers := rt.AllPeers()
+	fmt.Fprintf(w, "=== Routing Table (%d peers) ===\n", len(peers))
+	for _, p := range peers {
+		fmt.Fprintf(w, "  peer %s  endpoint=%s  allowedIPs=%v\n", p.ID, p.Endpoint, p.AllowedIPs)
+	}
+
+	// --- Active smux sessions ---
+	n.sessionsMu.Lock()
+	fmt.Fprintf(w, "\n=== Sessions (server=%d, client=%d) ===\n", len(n.sessions), len(n.clientSessions))
+	seen := make(map[string]bool)
+	for peerID, sess := range n.clientSessions {
+		seen[peerID] = true
+		if sess == nil || sess.IsClosed() {
+			fmt.Fprintf(w, "  [client] peer %s  CLOSED\n", peerID)
+			continue
+		}
+		stats := sess.Stats()
+		established := ""
+		if t, ok := n.sessionEstablishedAt[peerID]; ok {
+			established = t.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "  [client] peer %s  streams=%d  rx=%d  tx=%d  established=%s\n",
+			peerID, sess.NumStreams(), stats.BytesReceived, stats.BytesSent, established)
+	}
+	for peerID, sess := range n.sessions {
+		if seen[peerID] {
+			continue
+		}
+		if sess == nil || sess.IsClosed() {
+			fmt.Fprintf(w, "  [server] peer %s  CLOSED\n", peerID)
+			continue
+		}
+		stats := sess.Stats()
+		established := ""
+		if t, ok := n.sessionEstablishedAt[peerID]; ok {
+			established = t.Format(time.RFC3339)
+		}
+		fmt.Fprintf(w, "  [server] peer %s  streams=%d  rx=%d  tx=%d  established=%s\n",
+			peerID, sess.NumStreams(), stats.BytesReceived, stats.BytesSent, established)
+	}
+	n.sessionsMu.Unlock()
+
+	// --- TUN routes ---
+	if n.tunIntegration != nil {
+		if n.tunIntegration.Router != nil {
+			routes := n.tunIntegration.Router.AllRoutes()
+			fmt.Fprintf(w, "\n=== TUN VirtualIP Routes (%d) ===\n", len(routes))
+			for ip, pk := range routes {
+				fmt.Fprintf(w, "  %s -> %s\n", ip, pk)
+			}
+		}
+		if n.tunIntegration.RouteManager != nil {
+			proxies := n.tunIntegration.RouteManager.AllSubnetProxies()
+			fmt.Fprintf(w, "\n=== TUN Subnet Proxy Routes (%d) ===\n", len(proxies))
+			for cidr, gw := range proxies {
+				fmt.Fprintf(w, "  %s via %s\n", cidr, gw)
+			}
+		}
+		if n.tunIntegration.VirtualIP != nil {
+			fmt.Fprintf(w, "\n=== TUN Local VirtualIP ===\n  %s (iface=%s)\n",
+				n.tunIntegration.VirtualIP, n.tunIntegration.IfName)
+		}
+	} else {
+		fmt.Fprintf(w, "\n=== TUN: disabled ===\n")
+	}
+
+	// --- Relay handler ---
+	if n.relayHandler != nil {
+		fmt.Fprintf(w, "\n=== Relay: active (tunnels=%d) ===\n", n.relayHandler.TunnelCount())
+	} else {
+		fmt.Fprintf(w, "\n=== Relay: disabled ===\n")
+	}
 }
 
 // MeshTrafficStats holds aggregated mesh traffic statistics for the local node.
