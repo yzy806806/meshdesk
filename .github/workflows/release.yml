@@ -72,6 +72,7 @@ jobs:
           file ${{ matrix.asset_name }}
           ls -lh ${{ matrix.asset_name }}
           ./${{ matrix.asset_name }} --version
+          ./${{ matrix.asset_name }} version
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
