@@ -56,6 +56,12 @@ func main() {
 		return
 	}
 
+	// Handle "validate" subcommand: meshdesk validate <config.yaml>
+	if len(os.Args) >= 2 && os.Args[1] == "validate" {
+		runValidateSubcommand(os.Args[2:])
+		return
+	}
+
 	var (
 		configPath     string
 		webMode        bool
@@ -1941,4 +1947,28 @@ func runJoinTokenSubcommand(args []string) {
 	}
 
 	fmt.Println(token)
+}
+
+// runValidateSubcommand handles: meshdesk validate <config.yaml>
+// It checks the config file for YAML syntax errors, missing required
+// fields, invalid field types/values, and port conflicts across subsystems.
+func runValidateSubcommand(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "Usage: meshdesk validate <config.yaml>")
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "Validates a meshdesk config file for syntax errors,")
+		fmt.Fprintln(os.Stderr, "missing required fields, invalid values, and port conflicts.")
+		os.Exit(2)
+	}
+	configPath := args[0]
+	errs := config.ValidateFile(configPath)
+	if len(errs) == 0 {
+		fmt.Printf("✓ %s: config is valid\n", configPath)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "✗ %s: %d error(s):\n\n", configPath, len(errs))
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "  %s\n", e.Error())
+	}
+	os.Exit(1)
 }
