@@ -2,7 +2,9 @@
 
 **Decentralized server mesh — VPN + monitoring + WebSSH + SOCKS5 proxy + TUN virtual network, in a single Go binary.**
 
-[中文文档](./README_CN.md)
+[中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md)
+
+> **Current release: v1.2.0** (`4dc3f7a`, 2026-08-06) — 10 new features including systemd integration, version command, log rotation, config validation, Mesh DNS, traffic stats, alert UI, signal handling, config hot-reload, and CI pipeline. See [release notes](docs/RELEASE_NOTES.md) for details and [known issues](https://github.com/yzy806806/meshdesk/issues/1).
 
 ---
 

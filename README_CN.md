@@ -2,7 +2,9 @@
 
 **去中心化服务器 mesh 网络 + 监控 + WebSSH + SOCKS5 代理 — 单一二进制。**
 
-[English](./README.md)
+[English](./README.md) | [发布说明](docs/RELEASE_NOTES.md)
+
+> **当前版本: v1.2.0** (`4dc3f7a`, 2026-08-06) — 10 项新功能：systemd 集成、version 命令、日志轮转、配置校验、Mesh DNS、流量统计、告警 UI、信号处理、配置热重载、CI 流水线。详见[发布说明](docs/RELEASE_NOTES.md)和[已知问题](https://github.com/yzy806806/meshdesk/issues/1)。
 
 ---
 

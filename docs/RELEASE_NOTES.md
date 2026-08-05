@@ -1,5 +1,44 @@
 # Release Notes
 
+## v1.2.0 — 2026-08-06
+
+Second feature release. Commit: `4dc3f7a`
+
+### Features
+
+- **Systemd Integration + Auto-Reconnect** — systemd unit file with `Type=notify` + `WatchdogSec` support; smux session auto-reconnect with exponential backoff; SIGTERM graceful shutdown (save `peers.cache`, close sessions, delete TUN device)
+- **Version Command** — `meshdesk version` outputs version, commit hash, build time, Go version, and platform architecture. Build info injected at compile time via `-ldflags`
+- **Log Rotation** — Configurable log rotation: `log_file` / `log_max_size` (default 100MB) / `log_max_backups` (default 3). Defaults to stdout for systemd journald capture
+- **Config Validation** — `meshdesk validate <config.yaml>` checks syntax, field types, required fields, and port conflicts with specific error locations and fix suggestions. Runs automatically at startup
+- **Mesh DNS** — Embedded lightweight DNS server (Go stdlib). `<hostname>.mesh` resolution via gossip-synced hostname→VirtualIP mapping. Optional `dns_enabled` + `dns_port` config
+- **Traffic Statistics** — Per-node metrics: smux bytes/streams, relay forwards, TUN rx/tx packets. Gossip-propagated and displayed on Dashboard node cards
+- **Alert UI** — Dashboard alert notification bar + alerts history page. Node offline alerts auto-generated when threshold exceeded
+- **Signal Handling** — SIGTERM/SIGINT: graceful shutdown. SIGHUP: config hot-reload. SIGUSR1: dump current state (peers, sessions, routes) to log
+- **Config Hot-Reload** — `meshdesk reload` command or SIGHUP triggers reload of ACL rules, monitoring interval, proxy config, and log level. Non-reloadable fields (port, identity) produce clear restart guidance
+- **CI Pipeline** — GitHub Actions CI workflow; test identity PEMs use temp directories for non-root CI environments
+
+### Verified
+
+- All unit tests pass across 10 feature packages
+- Three-node join end-to-end verified (txcloud → aliyun → N1)
+- Version command outputs complete build metadata
+- Alert UI renders offline/online events correctly
+- Config hot-reload applies ACL and log level without restart
+
+### Known Issues
+
+- **#1 — N1-join /api/monitor metrics gap (cpu=0/mem=0)**: Reporter.pushToCollectors silently fails when collector list is empty on freshly joined nodes. Collector discovery via gossip propagation lags behind first push cycles. Root cause traced to 6 code locations (reporter.go, aggregator.go, gossip.go, events.go). Tracked at [yzy806806/meshdesk#1](https://github.com/yzy806806/meshdesk/issues/1).
+
+## v1.1.0 — 2026-08-05
+
+First feature update. Commit: `e56b22c`
+
+### Features
+
+- **ACL Guide** — Access control list documentation and configuration
+- **Systemd Deploy Guide** — Production deployment with systemd
+- **Multi-Path Optimization** — Proxy relay path selection improvements
+
 ## v1.0.0 — 2026-08-04
 
 First stable release.
