@@ -19,6 +19,41 @@ type Metrics struct {
 	Network []NetMetrics   `json:"network"`
 	LoadAvg LoadAvgMetrics `json:"load_avg"`
 	Uptime  int64          `json:"uptime_seconds"`
+
+	// Traffic holds mesh-internal traffic statistics (smux bytes, relay
+	// tunnels, TUN packets). These are populated by the reporter from
+	// the mesh node's TrafficStats() method before pushing to collectors.
+	Traffic TrafficMetrics `json:"traffic"`
+}
+
+// TrafficMetrics holds mesh-internal traffic statistics collected from
+// the local node. These are pushed alongside system metrics to collectors
+// and displayed on the Dashboard.
+type TrafficMetrics struct {
+	// InBytes is the total inbound bytes at the smux session level
+	// (sum of all peer sessions' bytesReceived).
+	InBytes uint64 `json:"in_bytes"`
+
+	// OutBytes is the total outbound bytes at the smux session level
+	// (sum of all peer sessions' bytesSent).
+	OutBytes uint64 `json:"out_bytes"`
+
+	// SmuxStreams is the total number of active smux streams across all
+	// peer sessions.
+	SmuxStreams int `json:"smux_streams"`
+
+	// RelayForwards is the number of active relay tunnels being forwarded
+	// by this node. Zero when relay mode is not enabled.
+	RelayForwards int `json:"relay_forwards"`
+
+	// TunRxPackets is the total number of packets received on the TUN device.
+	TunRxPackets uint64 `json:"tun_rx_packets"`
+
+	// TunTxPackets is the total number of packets sent through the TUN device.
+	TunTxPackets uint64 `json:"tun_tx_packets"`
+
+	// PeerCount is the number of connected peer sessions.
+	PeerCount int `json:"peer_count"`
 }
 
 // CPUMetrics holds CPU utilisation as percentages.

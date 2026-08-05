@@ -267,6 +267,33 @@ func (g *GossipLayer) SetLocalACLRules(rules []string) {
 	}
 }
 
+// SetLocalTrafficStats updates the local node's traffic statistics in
+// gossip metadata. These are propagated to all peers so every node
+// can see the traffic volume, stream count, relay load, and TUN packet
+// counts of every other node via gossip. After updating, it calls
+// memberlist.UpdateNode to re-broadcast the alive message.
+func (g *GossipLayer) SetLocalTrafficStats(inBytes, outBytes uint64, smuxStreams, relayForwards int, tunRxPackets, tunTxPackets uint64) {
+	g.delegate.updateLocalMeta(func(m *NodeMeta) {
+		m.TrafficInBytes = inBytes
+		m.TrafficOutBytes = outBytes
+		m.SmuxStreams = smuxStreams
+		m.RelayForwards = relayForwards
+		m.TunRxPackets = tunRxPackets
+		m.TunTxPackets = tunTxPackets
+		m.Seq++
+	})
+
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+
+	if ml != nil {
+		if err := ml.UpdateNode(time.Second); err != nil {
+			log.Printf("[p2p] traffic stats: UpdateNode failed: %v", err)
+		}
+	}
+}
+
 // announceLocalEndpoint proactively sets the local node's WireGuard endpoint(s)
 // so gossip propagates them to all peers. This breaks the chicken-and-egg
 // problem where reactive OnEndpointDiscovered only fires when a peer already

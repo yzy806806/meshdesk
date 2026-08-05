@@ -111,6 +111,32 @@ type NodeMeta struct {
 	// compact string encoding: "action|src_cidr|dst_cidr|protocol|src_port|dst_port|peer_id|description".
 	// Empty when ACL is disabled or no rules are configured.
 	ACLRules []string `msgpack:"ar,omitempty"`
+
+	// --- Traffic Statistics (refreshed every gossip interval) ---
+
+	// TrafficInBytes is the total inbound bytes at the smux session level
+	// (sum of all peer sessions' bytesReceived). Propagated via gossip
+	// so every node can see the ingress volume of every other node.
+	TrafficInBytes uint64 `msgpack:"tin,omitempty"`
+
+	// TrafficOutBytes is the total outbound bytes at the smux session level
+	// (sum of all peer sessions' bytesSent). Propagated via gossip
+	// so every node can see the egress volume of every other node.
+	TrafficOutBytes uint64 `msgpack:"tout,omitempty"`
+
+	// SmuxStreams is the total number of active smux streams across all
+	// peer sessions. Indicates how many concurrent mesh connections are active.
+	SmuxStreams int `msgpack:"smux_s,omitempty"`
+
+	// RelayForwards is the number of active relay tunnels being forwarded
+	// by this node (only meaningful when CapRelay is true).
+	RelayForwards int `msgpack:"rly,omitempty"`
+
+	// TunRxPackets is the total number of packets received on the TUN device.
+	TunRxPackets uint64 `msgpack:"trx,omitempty"`
+
+	// TunTxPackets is the total number of packets sent through the TUN device.
+	TunTxPackets uint64 `msgpack:"ttx,omitempty"`
 }
 
 // MarshalMeta serializes NodeMeta to MessagePack bytes.

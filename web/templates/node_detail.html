@@ -53,6 +53,33 @@
     </article>
   </div>
 
+  <h3>Mesh Traffic</h3>
+  <div class="grid">
+    <article>
+      <h4>Traffic Volume</h4>
+      <div class="big-metric">
+        <span class="big-number">↓ {{humanBytes .Node.TrafficIn}}</span>
+        <small>↑ {{humanBytes .Node.TrafficOut}}</small>
+      </div>
+    </article>
+    <article>
+      <h4>Mesh Sessions</h4>
+      <div class="big-metric">
+        <span class="big-number">{{.Node.PeerCount}} peers</span>
+        <small>{{.Node.SmuxStreams}} active streams{{if .Node.RelayForwards}} · {{.Node.RelayForwards}} relay tunnels{{end}}</small>
+      </div>
+    </article>
+    {{if or .Node.TunRxPackets .Node.TunTxPackets}}
+    <article>
+      <h4>TUN Packets</h4>
+      <div class="big-metric">
+        <span class="big-number">rx {{.Node.TunRxPackets}}</span>
+        <small>tx {{.Node.TunTxPackets}}</small>
+      </div>
+    </article>
+    {{end}}
+  </div>
+
   {{if gt (len .Node.Disks) 0}}
   <h3>Disk Usage</h3>
   <div class="grid">
