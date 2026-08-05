@@ -26,8 +26,7 @@ jobs:
         run: go vet ./...
 
       - name: Go test
-        run: go test -short -timeout 300s ./... || echo "Tests failed but continuing for release"
-        continue-on-error: true
+        run: go test -short -timeout 300s ./...
 
   build:
     name: Build ${{ matrix.goarch }}
