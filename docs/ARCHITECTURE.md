@@ -69,11 +69,12 @@ Virtual ports: 0 (generic), 2222 (WebSSH), 4191 (monitor), 4192 (RPC), 4193 (fil
 
 ### L4 — MeshNode & MuxTransport
 
-**MuxTransport** shares a single TCP port (default 52888) between three protocols:
+**MuxTransport** shares a single TCP port (default 52888) between four protocols:
 
 | First Byte | Protocol | Routing |
 |-----------|----------|---------|
 | `0x16` | TLS ClientHello | Reality TLS → acceptLoop |
+| `0x47`/`0x50`/`0x48` | HTTP | GET/POST/HEAD → HTTP listener (v1.2.1+) |
 | `0x4D` | Mesh-internal marker | Key exchange → acceptMeshLoop |
 | Other | Memberlist gossip | Gossip StreamCh |
 
@@ -152,6 +153,7 @@ Shared node exposes only one port (TCP + UDP):
 ```
 Port 52888/TCP → MuxTransport
   ├── 0x16 → Reality TLS (mesh data, GFW evasion)
+  ├── 0x47/0x50/0x48 → HTTP (Dashboard Web UI, join server) (v1.2.1+)
   ├── 0x4D → Mesh-internal (key exchange + smux, no Reality needed)
   └── other → Memberlist gossip (push/pull sync, TCP probes)
 

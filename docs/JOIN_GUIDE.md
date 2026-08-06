@@ -1,8 +1,8 @@
 # MeshDesk One-Click Join Guide
 
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Beta
-**Last updated:** 2026-08-02
+**Last updated:** 2026-08-06
 
 ## Overview
 
@@ -46,7 +46,7 @@ an attacker intercepts the token.
 
 ## Step 1: Generate Join Token on Dashboard
 
-1. Open the Dashboard: `https://<bootstrap-node>:8080`
+1. Open the Dashboard: `http://<bootstrap-node>:8080`
 2. Navigate to **Nodes** → **Add Node** → **Generate Join Token**
 3. Configure (all optional):
    - **Token expiry:** Default 1 hour. Max 24 hours.
@@ -58,7 +58,11 @@ an attacker intercepts the token.
 The Dashboard displays a one-line command:
 
 ```bash
-curl -fsSL https://<bootstrap>:8443/join?token=<base64-token> | sh
+# Legacy web port (8080)
+curl -fsSL http://<bootstrap>:8080/join?token=<base64-token> | sh
+
+# Single-port path (52888) — v1.2.1+, no separate web port needed
+curl -fsSL http://<bootstrap>:52888/join?token=<base64-token> | sh
 ```
 
 This command:
@@ -74,7 +78,11 @@ SSH into the new node and paste the command:
 
 ```bash
 ssh root@new-node
-curl -fsSL https://aliyun.example.com:8443/join?token=ZXhhbXBsZS10b2tlbg== | sh
+# Legacy web port (8080)
+curl -fsSL http://aliyun.example.com:8080/join?token=ZXhhbXBsZS10b2tlbg== | sh
+
+# Single-port path (52888) — v1.2.1+
+curl -fsSL http://aliyun.example.com:52888/join?token=ZXhhbXBsZS10b2tlbg== | sh
 ```
 
 The install script:
@@ -90,7 +98,7 @@ The install script:
 [meshdesk] Writing config to /etc/meshdesk/config.yaml
 [meshdesk] Starting meshdesk service...
 [meshdesk] Done! Node joined as 'node3'.
-[meshdesk] Dashboard: https://aliyun.example.com:8080
+[meshdesk] Dashboard: http://aliyun.example.com:52888
 ```
 
 That's it. The new node is now part of the mesh.
@@ -115,11 +123,26 @@ Generates an Ed25519 keypair. The public key becomes the node's mesh identity.
 The join client (`internal/join/client.go`) performs:
 
 ```
-POST /join/request  {"token": "<base64>", "public_key": "<hex>"}
-→  200 {"challenge": "<random-hex>"}
+POST /api/join  (step 1)  {"token": "<base64>", "joiner_pubkey": "<hex>"}
+→  200 {"success": true, "challenge": "<random-hex>"}
 
-POST /join/verify   {"token": "<base64>", "public_key": "<hex>", "signature": "<hex>"}
-→  200 {"config_bundle": {...}}
+POST /api/join  (step 2)  {"token": "<base64>", "joiner_pubkey": "<hex>", "challenge": "<hex>", "challenge_response": "<ed25519-signature>"}
+→  200 {"success": true, "bundle": {...}}
+```
+
+**v1.2.1+**: The `/api/join` endpoint (POST) serves the same two-step challenge-response protocol on the mesh port (52888) — step 1 (`token` + `joiner_pubkey`, no `challenge_response`) returns a challenge, step 2 adds the Ed25519 signature and returns the config bundle. Example (step 1):
+
+```bash
+curl -X POST http://gateway:52888/api/join \
+  -H "Content-Type: application/json" \
+  -d '{"token":"xxx","joiner_pubkey":"..."}'
+# → {"success":true,"challenge":"<hex>"}
+
+# Step 2: sign the challenge and send it back
+curl -X POST http://gateway:52888/api/join \
+  -H "Content-Type: application/json" \
+  -d '{"token":"xxx","joiner_pubkey":"...","challenge":"<hex>","challenge_response":"<ed25519-signature>"}'
+# → {"success":true,"bundle":{...}}
 ```
 
 The config bundle contains:
@@ -167,7 +190,10 @@ meshdesk --gen-key
 # Output: public_key: de52c6daa76948b1...
 
 # 3. Join
-meshdesk join https://bootstrap:8443 --token "<token-from-dashboard>"
+# NOTE: the mesh-port HTTP endpoint (52888) is plain HTTP, so --insecure-tls
+# is required (--insecure-tls also enables AllowPlainHTTP for http:// URLs).
+# In production, prefer the TLS join server at https://bootstrap:8443.
+meshdesk join --join-url http://bootstrap:52888 --join-token "<token-from-dashboard>" --insecure-tls
 # This writes /etc/meshdesk/config.yaml automatically
 
 # 4. Start
@@ -194,8 +220,7 @@ base64(version || expiry_ts || random_nonce || HMAC-SHA256(key, version || expir
   tokens and rejects replays
 - **Challenge-response:** Even if a token is stolen, the attacker cannot complete
   the join without the claimed Ed25519 private key
-- **HTTPS-only:** The join protocol requires HTTPS (Reality TLS). Plain HTTP is
-  rejected in production.
+- **Transport security:** The join protocol uses Ed25519 challenge-response for authentication, so the config bundle is cryptographically protected even over plain HTTP. When joining via the mesh port (52888), plain HTTP is supported. For production deployments, TLS (Reality TLS on port 8443, or a TLS reverse proxy) is still recommended.
 
 ## Revoking a Join Token
 
@@ -233,6 +258,12 @@ meshdesk --gen-key
 The bootstrap node's join endpoint is not running. Ensure the bootstrap node
 has `--web` flag and Reality TLS configured. The join endpoint runs on the
 same MuxTransport port as the mesh, using a dedicated virtual port.
+
+**v1.2.1+**: With single-port HTTP demux, the join endpoint is also available on port 52888 (no separate web port needed). Try:
+
+```bash
+curl http://<bootstrap>:52888/join?token=<base64-token>
+```
 
 ### "unsupported platform"
 

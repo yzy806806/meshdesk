@@ -175,7 +175,7 @@ it must dial out to a seed node first to establish connectivity.
 
 ## Dashboard Management
 
-From the Dashboard (`https://<mesh-node>:8080`):
+From the Dashboard (`http://<mesh-node>:52888`):
 
 1. Navigate to **Proxy** → **SOCKS5 Configuration**
 2. Enable/disable the SOCKS5 entry listener
