@@ -68,6 +68,19 @@ func (d *defaultJoinTokenGenerator) JoinServerURL() string {
 	if host == "" {
 		host, _ = os.Hostname()
 	}
+
+	// On shared nodes (Reality + P2P enabled), the join endpoint is served
+	// on the mux/mesh port via webServer.SetJoinHandler — not on a standalone
+	// join listener. Derive the URL from the Reality listen port.
+	if d.cfg.P2P.Enabled && d.cfg.Reality.Enabled {
+		port := d.cfg.Reality.ListenPort
+		if port == 0 {
+			port = 443
+		}
+		return fmt.Sprintf("http://%s:%d", host, port)
+	}
+
+	// Standalone join listener mode (agent-only or non-mux web node).
 	addr := d.cfg.Join.ListenAddr
 	if addr == "" {
 		addr = ":8443"
@@ -299,24 +312,36 @@ func (s *Server) installScriptURL(joinURL, token, binaryURL string) string {
 
 // webBaseURL returns the base URL of the web server (scheme://host:port).
 // It derives this from the request host header or the config.
+// On shared nodes (Reality + P2P enabled), the web UI is served on the
+// mux/mesh (Reality) port, not on cfg.Node.WebAddr.
 func (s *Server) webBaseURL() string {
+	host := ""
+	if s.cfg != nil {
+		host = s.cfg.Node.Hostname
+	}
+	if host == "" {
+		host, _ = os.Hostname()
+	}
+
+	// On shared nodes, the web UI is muxed on the Reality listen port.
+	if s.cfg != nil && s.cfg.P2P.Enabled && s.cfg.Reality.Enabled {
+		port := s.cfg.Reality.ListenPort
+		if port == 0 {
+			port = 443
+		}
+		return fmt.Sprintf("http://%s:%d", host, port)
+	}
+
+	// Regular web node: use cfg.Node.WebAddr.
 	if s.cfg != nil && s.cfg.Node.WebAddr != "" {
 		addr := s.cfg.Node.WebAddr
-		host := s.cfg.Node.Hostname
-		if host == "" {
-			host, _ = os.Hostname()
-		}
-		port := addr
-		if strings.HasPrefix(addr, ":") {
-			port = addr
-		}
 		// If addr is just a port like ":8080", prepend hostname.
 		if strings.HasPrefix(addr, ":") {
 			return fmt.Sprintf("http://%s%s", host, addr)
 		}
-		_ = port
 		return fmt.Sprintf("http://%s", addr)
 	}
+
 	// Fallback: use localhost:8080
 	return "http://localhost:8080"
 }
