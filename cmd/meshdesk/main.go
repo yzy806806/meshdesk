@@ -240,11 +240,54 @@ func main() {
 	// and bridge smux streams between peers that cannot directly connect
 	// (e.g. cross-network-family: IPv4-only ↔ IPv6-only through a
 	// dual-stack relay node). The handler is cleaned up by node.Close().
+	//
+	// OnRelayDial wiring: when this node is the relay target (the relay
+	// node forwarded a dial request to us), the callback dials the local
+	// virtual port service that the initiator wanted to reach (dial.Port),
+	// then bridges the relay stream to the local stream with bidirectional
+	// io.Copy. Without this callback, handleDial falls back to io.Copy
+	// echo — data bounces back to the sender instead of reaching the real
+	// service (collector 0x105F, TUN 0x4D, SOCKS5 0x5350, etc.).
 	if relayMode || cfg.Proxy.Relay.Enabled {
-		if _, err := node.RegisterRelayHandler(); err != nil {
+		relayHandler, err := node.RegisterRelayHandler()
+		if err != nil {
 			log.Printf("Warning: failed to register smux relay handler: %v", err)
 		} else {
-			log.Printf("  Smux relay: listening on virtual port 0x524C (maxTunnels=%d)", mesh.DefaultMaxRelayTunnels)
+			relayHandler.OnRelayDial = func(dial *mesh.MeshRelayDial, conn net.Conn) {
+				targetPort := int(dial.Port)
+				if targetPort == 0 {
+					// Legacy peer (pre-port-field): no way to know which
+					// local service to reach. Fall back to echo so the
+					// stream stays alive without crashing.
+					log.Printf("[mesh-relay] OnRelayDial: port=0 (legacy), echoing stream (tunnel=%s)", dial.TunnelID[:min(len(dial.TunnelID), 16)])
+					go func() {
+						io.Copy(conn, conn)
+						conn.Close()
+					}()
+					return
+				}
+
+				// Dial the local virtual port service. peerID is empty
+				// here because the relay's MeshRelayDial doesn't carry
+				// the original initiator's key (handleRequest sets it to
+				// ""). The local service can still identify the peer via
+				// the connWithPeer wrapper if needed.
+				localConn, dErr := node.DialLocalVirtualPort(targetPort, dial.InitiatorKey)
+				if dErr != nil {
+					log.Printf("[mesh-relay] OnRelayDial: failed to dial local virtual port %d: %v (tunnel=%s)",
+						targetPort, dErr, dial.TunnelID[:min(len(dial.TunnelID), 16)])
+					conn.Close()
+					return
+				}
+
+				log.Printf("[mesh-relay] OnRelayDial: bridging relay stream to local port %d (tunnel=%s)",
+					targetPort, dial.TunnelID[:min(len(dial.TunnelID), 16)])
+
+				// Bridge bidirectionally. RelayStream handles closing
+				// both connections when either direction completes.
+				go mesh.RelayStream(conn, localConn)
+			}
+			log.Printf("  Smux relay: listening on virtual port 0x524C (maxTunnels=%d, OnRelayDial=wired)", mesh.DefaultMaxRelayTunnels)
 		}
 	}
 

@@ -73,10 +73,14 @@ func NewRelayDialer(node *MeshNode, localKey string) *RelayDialer {
 // It returns a net.Conn that is transparently relayed — the caller can
 // read/write as if connected directly to the target.
 //
+// port is the virtual port to reach on the target (propagated through the
+// relay chain so the target's OnRelayDial callback can dial the correct
+// local service). Pass 0 for legacy/undefined behavior.
+//
 // Steps:
 //  1. Look up smux session to relayKey
 //  2. Open stream on port 0x524C
-//  3. Send MeshRelayRequest{target=targetKey}
+//  3. Send MeshRelayRequest{target=targetKey, port=port}
 //  4. Wait for MeshRelayResponse (accept/reject)
 //  5. On accept, return the stream as a net.Conn
 //  6. On reject or timeout, return error
@@ -84,6 +88,7 @@ func (d *RelayDialer) DialViaRelay(
 	ctx context.Context,
 	relayKey string,
 	targetKey string,
+	port uint16,
 ) (net.Conn, error) {
 	// Look up the smux session to the relay node.
 	d.node.sessionsMu.Lock()
@@ -116,6 +121,7 @@ func (d *RelayDialer) DialViaRelay(
 		Type:      MsgRelayRequest,
 		TunnelID:  tunnelID,
 		TargetKey: targetKey,
+		Port:      port,
 		Timestamp: nowNano(),
 	}
 	if err := writeRelayMessage(stream, req); err != nil {
@@ -251,14 +257,16 @@ func RelayStream(conn1, conn2 net.Conn) {
 // RelayDialer and calls DialViaRelay. It tries each known relay-capable
 // peer in order until one accepts.
 //
-// relayCandidates is a list of peer identity hex strings that are known
-// to have relay capability. The caller is responsible for providing
-// candidates in preference order (e.g. by RTT). If relayCandidates is
-// empty, the method returns an error.
+// port is the virtual port to reach on the target, propagated through the
+// relay chain. relayCandidates is a list of peer identity hex strings that
+// are known to have relay capability. The caller is responsible for
+// providing candidates in preference order (e.g. by RTT). If
+// relayCandidates is empty, the method returns an error.
 func (n *MeshNode) DialViaRelay(
 	ctx context.Context,
 	targetKey string,
 	relayCandidates []string,
+	port uint16,
 ) (net.Conn, error) {
 	if len(relayCandidates) == 0 {
 		return nil, fmt.Errorf("mesh relay: no relay candidates available")
@@ -278,7 +286,7 @@ func (n *MeshNode) DialViaRelay(
 			continue
 		}
 
-		conn, err := dialer.DialViaRelay(ctx, relayKey, targetKey)
+		conn, err := dialer.DialViaRelay(ctx, relayKey, targetKey, port)
 		if err != nil {
 			lastErr = err
 			log.Printf("[mesh-relay] relay %s failed: %v",
@@ -313,7 +321,7 @@ func (n *MeshNode) DialViaRelay(
 //   - The local node's own key is excluded.
 //   - Relay peers at capacity (LoadCircuits >= MaxCircuits) are skipped.
 //   - Relay peers behind symmetric NAT are skipped.
-func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string) (net.Conn, error) {
+func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port uint16) (net.Conn, error) {
 	localKey := ""
 	if n.identity != nil {
 		localKey = n.identity.PublicKey
@@ -399,7 +407,7 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string) (net.
 		log.Printf("[mesh] tryRelayFallback: %d relay-capable candidate(s) for target %s (RTT-sorted)",
 			len(candidates), targetKey[:min(len(targetKey), 16)]+"...")
 
-		return n.DialViaRelay(ctx, targetKey, candidates)
+		return n.DialViaRelay(ctx, targetKey, candidates, port)
 	}
 
 	// Legacy fallback: collect all peers we have sessions with.
@@ -429,5 +437,5 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string) (net.
 	log.Printf("[mesh] tryRelayFallback: %d candidate(s) for target %s",
 		len(candidates), targetKey[:min(len(targetKey), 16)]+"...")
 
-	return n.DialViaRelay(ctx, targetKey, candidates)
+	return n.DialViaRelay(ctx, targetKey, candidates, port)
 }
