@@ -78,6 +78,13 @@ type Server struct {
 	// implementation is constructed from cfg + node identity.
 	joinTokenGen JoinTokenGenerator
 
+	// joinHandler serves POST /api/join (challenge-response onboarding).
+	// When set, the route is registered on the web mux so the join
+	// endpoint shares the same port as the Dashboard (single-port
+	// deployment). The join protocol authenticates via token + Ed25519
+	// signature, so the route is exempt from web session auth.
+	joinHandler http.Handler
+
 	// webhookDispatcher forwards security alerts to an external endpoint
 	// (Slack, Discord, custom webhook). nil when AlertWebhookURL is empty.
 	webhookDispatcher *WebhookDispatcher
@@ -351,6 +358,16 @@ func (s *Server) ServeWithListener(ln net.Listener) error {
 	return nil
 }
 
+// SetJoinHandler attaches the join server's HTTP handler to the web mux.
+// Must be called before Start/ServeWithListener. When set, POST /api/join
+// is served on the same port as the Dashboard — enabling single-port
+// onboarding on shared nodes. The join handler carries its own
+// authentication (token + Ed25519 challenge signature), so the route is
+// exempt from web session auth (see authMiddleware).
+func (s *Server) SetJoinHandler(h http.Handler) {
+	s.joinHandler = h
+}
+
 // Stop gracefully shuts down the web server.
 func (s *Server) Stop() {
 	if s.httpServer != nil {
@@ -477,6 +494,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/join/token", s.requireAuth(s.handleJoinToken))
 	mux.HandleFunc("/api/join/install.sh", s.handleJoinInstallScript)
 	mux.HandleFunc("/join", s.handleJoinRoute)
+	// POST /api/join — challenge-response onboarding. Registered when a
+	// join server handler was attached via SetJoinHandler (single-port
+	// deployment). The route is exempt from web session auth (the join
+	// protocol carries its own token + Ed25519 signature auth).
+	if s.joinHandler != nil {
+		mux.Handle("/api/join", s.joinHandler)
+	}
 
 	// Page routes (auth required)
 	mux.HandleFunc("/", s.requireAuth(s.handleDashboard))
@@ -546,6 +570,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		// Public routes
 		if path == "/login" || path == "/logout" ||
 			path == "/join" || // /join?token=xxx serves install script (public)
+			path == "/api/join" || // challenge-response onboarding (token+signature auth)
 			strings.HasPrefix(path, "/static/") ||
 			path == "/ws/terminal" {
 			next.ServeHTTP(w, r)
