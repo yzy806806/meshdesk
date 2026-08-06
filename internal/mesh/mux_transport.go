@@ -92,6 +92,7 @@ type MuxTransport struct {
 	streamCh   chan net.Conn           // gossip streams → memberlist
 	realityCh  chan net.Conn           // Reality TLS connections → reality listener
 	meshCh     chan net.Conn           // mesh-internal connections → mesh listener
+	httpCh     chan net.Conn           // HTTP connections → Dashboard/join server
 	packetChIn chan *memberlist.Packet // UDP packets → memberlist
 
 	shutdown   atomic.Int32
@@ -164,6 +165,7 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		streamCh:      make(chan net.Conn, 64),
 		realityCh:     make(chan net.Conn, 64),
 		meshCh:        make(chan net.Conn, 64),
+		httpCh:        make(chan net.Conn, 64),
 		packetChIn:    make(chan *memberlist.Packet, 4096),
 		bindAddr:      bindAddr,
 		advertiseAddr: cfg.AdvertiseAddr,
@@ -424,6 +426,43 @@ func (t *MuxTransport) MeshListener() net.Listener {
 	}
 }
 
+// HTTPListener returns a net.Listener that receives HTTP connections
+// (GET/POST/HEAD) demuxed from the shared TCP port. Use this to serve
+// Dashboard and join server HTTP on the same port as Reality/gossip.
+func (t *MuxTransport) HTTPListener() net.Listener {
+	return &muxHTTPListener{
+		transport: t,
+		doneCh:    make(chan struct{}),
+	}
+}
+
+type muxHTTPListener struct {
+	transport *MuxTransport
+	once      sync.Once
+	doneCh    chan struct{}
+}
+
+func (l *muxHTTPListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.transport.httpCh:
+		return conn, nil
+	case <-l.doneCh:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *muxHTTPListener) Close() error {
+	l.once.Do(func() { close(l.doneCh) })
+	return nil
+}
+
+func (l *muxHTTPListener) Addr() net.Addr {
+	if l.transport.tcpListener != nil {
+		return l.transport.tcpListener.Addr()
+	}
+	return nil
+}
+
 // muxMeshListener implements net.Listener for mesh-internal connections.
 type muxMeshListener struct {
 	transport *MuxTransport
@@ -511,6 +550,19 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 		default:
 			t.logger.Printf("[WARN] mux: mesh accept queue full, dropping connection from %s", conn.RemoteAddr())
 			conn.Close()
+		}
+	} else if firstByte == 'G' || firstByte == 'P' || firstByte == 'H' {
+		// HTTP request (GET/POST/HEAD) → Dashboard/join server.
+		// HTTP methods start with 'G' (0x47), 'P' (0x50), or 'H' (0x48),
+		// which never collide with memberlist message types (0-11, 244).
+		wrapped := &bufferedConn{Reader: bufio.NewReader(io.MultiReader(bytes.NewReader(peekBuf), conn)), conn: conn}
+		select {
+		case t.httpCh <- wrapped:
+		case <-t.shutdownDone():
+			wrapped.Close()
+		default:
+			t.logger.Printf("[WARN] mux: HTTP accept queue full, dropping connection from %s", conn.RemoteAddr())
+			wrapped.Close()
 		}
 	} else {
 		// Memberlist gossip stream.
