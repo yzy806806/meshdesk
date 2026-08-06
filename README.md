@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md)
 
-> **Current release: v1.2.1** (`89e4081`, 2026-08-06) — 12 features: systemd, version, log rotation, config validation, Mesh DNS, traffic stats, alert UI, signal handling, hot-reload, CI, plus v1.2.1's single-port HTTP multiplexing and `/api/join` onboarding on port 52888. See [release notes](docs/RELEASE_NOTES.md) and [known issues](https://github.com/yzy806806/meshdesk/issues/1).
+> **Current release: v1.2.1** (`a83c9f8`, 2026-08-06) + patch `fef481a` (2026-08-07) — 12 features: systemd, version, log rotation, config validation, Mesh DNS, traffic stats, alert UI, signal handling, hot-reload, CI, plus v1.2.1's single-port HTTP multiplexing and `/api/join` onboarding on port 52888. See [release notes](docs/RELEASE_NOTES.md) and [known issues](https://github.com/yzy806806/meshdesk/issues/1).
 
 ---
 
