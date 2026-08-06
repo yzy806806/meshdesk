@@ -135,12 +135,17 @@ endpoints.
 ## 4. Operational Prerequisites
 
 No code changes are required before real-device deployment. The only
-prerequisite is **operational**:
+prerequisites are **operational**:
 
 - `proxy.relay.enabled: true` on all four nodes (config default is `false`,
   config.go:379). The relay pairs are cross-cutting — ordinary nodes relay
   for shared-node pairs and vice versa — so partial enablement silently
   breaks relay-required pairs.
+- **Config changes require a restart to take effect.** The `CapRelay` flag
+  is set during gossip initialization (`EnableRelayMode`, gossip.go:1200)
+  and broadcast only in the first gossip meta round at node startup.
+  Runtime config changes to `proxy.relay.enabled` are not dynamically
+  propagated to already-broadcast metadata.
 - Pre-deployment gate: send `SIGUSR1` to each node and confirm `CapRelay=true`
   in the state dump before proceeding to TUN-ping tests.
 

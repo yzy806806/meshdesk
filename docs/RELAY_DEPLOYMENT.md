@@ -55,6 +55,8 @@ P2P:       relay mode active (maxCircuits=1024)
 
 也可以用 `--relay` 命令行 flag（等价于 `proxy.relay.enabled: true`），但推荐写在 config 中以保证重启一致性。
 
+**重要：配置改动后必须重启 meshdesk 才生效。** `CapRelay` 标志仅在节点启动加入 gossip 集群的首轮 meta 广播中宣告（`EnableRelayMode` 在 `gossip.go:1200` 初始化阶段调用）。运行时修改 `proxy.relay.enabled` 不会动态更新已广播的 gossip metadata——新值只有在下次重启时随首轮 gossip meta 一起发出。
+
 ### 完整配置要点
 
 除 relay 外，四节点部署还需要：
@@ -128,7 +130,31 @@ SIGUSR1 dump 只显示 mesh 层状态。gossip 层的 `CapRelay` 标志通过 go
 
 ### 第五步：6 对 TUN ping 矩阵
 
-部署完成后，在每台机器上 ping 其他三台机器的 TUN VirtualIP：
+部署完成后，在每台机器上 ping 其他三台机器的 TUN VirtualIP。
+
+**测试顺序：先验证直连对，再验证中继对。** 直连对（同 IP 族、网络可达）验证通过后，中继对的测试结果才具有诊断意义——如果直连对也失败，问题可能出在基础连通性而非 relay 机制。
+
+直连对（预期 0% 丢包，较低延迟）：
+
+| 源 → 目标 | 延迟参考 |
+|-----------|---------|
+| N1 → txcloud | 108ms |
+| txcloud → N1 | 108ms |
+| N1 → Oracle ARM | 294ms |
+| Oracle ARM → N1 | 294ms |
+| 阿里云 → txcloud | IPv4 通 |
+| txcloud → 阿里云 | IPv4 通 |
+| 阿里云 → Oracle ARM | 273ms |
+| Oracle ARM → 阿里云 | 273ms |
+
+中继对（预期经 relay 中转，延迟高于直连）：
+
+| 源 → 目标 | 原因 |
+|-----------|------|
+| 阿里云 → N1 | IPv4↔IPv6 不可直连 |
+| N1 → 阿里云 | IPv4↔IPv6 不可直连 |
+| txcloud → Oracle ARM | IPv6 不通 |
+| Oracle ARM → txcloud | IPv6 不通 |
 
 ```
 节点          VirtualIP（示例，实际依公钥哈希计算）
@@ -137,21 +163,6 @@ N1           10.100.0.Y
 txcloud      10.100.0.Z
 Oracle ARM   10.100.0.W
 ```
-
-| 源 → 目标 | 预期 | 备注 |
-|-----------|------|------|
-| 阿里云 → N1 | 通（经 relay） | IPv4↔IPv6 不可直连 |
-| N1 → 阿里云 | 通（经 relay） | 同上 |
-| 阿里云 → txcloud | 通（直连或 relay） | IPv4 通 |
-| 阿里云 → Oracle ARM | 通（直连或 relay） | IPv4 通 |
-| N1 → txcloud | 通（直连） | IPv6 通，108ms |
-| N1 → Oracle ARM | 通（直连） | IPv6 通，294ms |
-| txcloud → Oracle ARM | 通（经 relay） | IPv6 不通 |
-| txcloud → 阿里云 | 通（直连或 relay） | |
-| txcloud → N1 | 通（直连） | IPv6 通，108ms |
-| Oracle ARM → 阿里云 | 通（直连或 relay） | IPv4 通 |
-| Oracle ARM → N1 | 通（直连） | IPv6 通，294ms |
-| Oracle ARM → txcloud | 通（经 relay） | IPv6 不通 |
 
 TUN ping 命令（在每台机器上替换 VirtualIP）：
 
