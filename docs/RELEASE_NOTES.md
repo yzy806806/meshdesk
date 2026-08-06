@@ -2,18 +2,36 @@
 
 ## v1.2.1 — 2026-08-06
 
-Single-port HTTP multiplexing and programmatic join endpoint. Commit: `89e4081`
+Single-port HTTP multiplexing and programmatic join endpoint. Completion commit: `a83c9f8`
+
+> **Commit chain:** `de1fe7a` (e2e wiring test) → `db96ae1` (release notes) → `a83c9f8` (join URL port derivation fix)
+>
+> **Post-release patch:** `fef481a` — race condition fix in `mockExitServer.handleConn` (see v1.2.1-patch below)
 
 ### Features
 
 - **Single-Port HTTP Demux** — Dashboard Web UI and join server now share the mesh port (52888) via MuxTransport. HTTP traffic (GET/POST/HEAD, first byte `0x47`/`0x50`/`0x48`) is demuxed onto a dedicated channel, enabling single-port deployment behind restrictive NAT — only one public port required for all mesh traffic plus web access.
 - **`/api/join` Onboarding Endpoint** — Programmatic challenge-response onboarding via `POST /api/join` on port 52888. The join server handler is attached to the Dashboard's HTTP mux, so `/api/join` rides the same port as the web UI. Exempt from web session auth; authenticated via token + Ed25519 challenge signature instead.
+- **Join URL Port Derivation** — On shared nodes with `reality.enabled: true`, the join install URL (printed on Dashboard join page) now derives its port from the Reality listener (`mesh.port`) instead of hardcoding the web port. This ensures one-click join commands work correctly when Reality TLS is active on the default mesh port. Commit `a83c9f8`.
 
 ### Verified
 
-- HTTP demux parseability tests confirm all HTTP methods (GET/POST/HEAD) are correctly routed
-- E2E wiring test verifies `POST /api/join` is served through the demux port
-- Mux demux regression fixed (HTTP channel consumer added to test harness)
+- HTTP demux parseability tests confirm all HTTP methods (GET/POST/HEAD) are correctly routed (`de1fe7a`)
+- E2E wiring test verifies `POST /api/join` is served through the demux port (`de1fe7a`)
+- Mux demux regression fixed (HTTP channel consumer added to test harness, `db96ae1`)
+- Join URL port derivation tested on shared-node topology (`a83c9f8`)
+- Motion `motion-454cda95e956` adopted: worktree clean, HEAD=a83c9f8=origin/main, all 22 packages pass
+
+### Post-Release Patch: v1.2.1-patch
+
+Date: 2026-08-07. Commit: `fef481a`
+
+**Store-after-ack race in mockExitServer.handleConn** (`internal/proxy/entry_node_test.go`):
+
+- **Root cause:** `mockExitServer.handleConn` wrote `CircuitAck` and closed the connection BEFORE storing `e2eKeys`/`circuits` in the mock map. The test (`TestEntryNodeCircuitSetup`) reads `e2eKeys` immediately after decoding the ack — triggering a store-after-ack race under `-race`.
+- **Reproduction:** `go test -race -run TestEntryNodeCircuitSetup -count=50` → 7/50 failures pre-fix.
+- **Fix:** Moved `e2eKeys`/`circuits` store before the `CircuitAck` write, with undo-on-failure cleanup.
+- **Verification:** `-race -count=200` PASS; full `internal/proxy -race` 391/391 PASS; full repo test suite 24/24 PASS. Verified by tester at HEAD `8051e88`.
 
 ## v1.2.0 — 2026-08-06
 
