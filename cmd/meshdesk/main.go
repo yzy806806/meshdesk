@@ -1158,12 +1158,24 @@ func main() {
 		// Register proxy reloader (acknowledges in-memory config update).
 		webServer.RegisterReloader(web.NewProxyReloader())
 
-		if err := webServer.Start(cfg.Node.WebAddr); err != nil {
-			log.Fatalf("Failed to start web server: %v", err)
+		// If the node has a MuxTransport (shared node mode), serve the
+		// Dashboard on the multiplexed port (52888) instead of a separate
+		// port. This allows single-port deployment: Reality + gossip + mesh
+		// + Dashboard + join all on one TCP port.
+		if muxTransport := node.MuxTransport(); muxTransport != nil {
+			httpLn := muxTransport.HTTPListener()
+			if err := webServer.ServeWithListener(httpLn); err != nil {
+				log.Fatalf("Failed to start web server on mux listener: %v", err)
+			}
+			defer webServer.Stop()
+			log.Printf("  Web UI:     muxed on mesh port (HTTP)")
+		} else {
+			if err := webServer.Start(cfg.Node.WebAddr); err != nil {
+				log.Fatalf("Failed to start web server: %v", err)
+			}
+			defer webServer.Stop()
+			log.Printf("  Web UI:     http://%s", cfg.Node.WebAddr)
 		}
-		defer webServer.Stop()
-
-		log.Printf("  Web UI:     http://%s", cfg.Node.WebAddr)
 	} else {
 		log.Printf("  Mode:       agent-only")
 	}

@@ -326,6 +326,31 @@ func (s *Server) Start(addr string) error {
 	return nil
 }
 
+// ServeWithListener starts the web server using the provided net.Listener
+// instead of binding to an address. Used for MuxTransport port multiplexing.
+func (s *Server) ServeWithListener(ln net.Listener) error {
+	mux := http.NewServeMux()
+	s.registerRoutes(mux)
+
+	s.httpServer = &http.Server{
+		Handler:      s.recoverMiddleware(s.authMiddleware(s.require2FAEnforcement(mux))),
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	go s.sseHub.Run()
+
+	log.Printf("Web UI: serving on %s (muxed)", ln.Addr())
+	go func() {
+		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("Web server error: %v", err)
+		}
+	}()
+
+	return nil
+}
+
 // Stop gracefully shuts down the web server.
 func (s *Server) Stop() {
 	if s.httpServer != nil {
