@@ -1570,6 +1570,19 @@ func (g *nodeJoinTokenGenerator) JoinServerURL() string {
 		return ""
 	}
 	host := firstAdvertiseEndpointHost(g.cfg)
+
+	// On shared nodes (Reality + P2P enabled), the join endpoint is served
+	// on the mux/mesh port via webServer.SetJoinHandler — not on a standalone
+	// join listener. Derive the URL from the Reality listen port.
+	if g.cfg.P2P.Enabled && g.cfg.Reality.Enabled {
+		port := g.cfg.Reality.ListenPort
+		if port == 0 {
+			port = 443
+		}
+		return fmt.Sprintf("http://%s:%d", host, port)
+	}
+
+	// Standalone join listener mode (agent-only or non-mux web node).
 	addr := g.cfg.Join.ListenAddr
 	if addr == "" {
 		addr = ":8443"

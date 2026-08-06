@@ -228,25 +228,6 @@ func (s *JoinServer) Start(addr string) error {
 	return nil
 }
 
-// ServeWithListener starts the join server using the provided listener.
-// Used for MuxTransport single-port deployment.
-func (s *JoinServer) ServeWithListener(ln net.Listener) error {
-	s.listener = ln
-	s.httpServer = &http.Server{
-		Handler:      s.Handler(),
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
-	}
-	go func() {
-		if err := s.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("[join] server error: %v", err)
-		}
-	}()
-	log.Printf("[join] server listening on %s (muxed)", ln.Addr())
-	return nil
-}
-
 // StartTLS starts the HTTPS server with the given TLS cert and key files.
 func (s *JoinServer) StartTLS(addr, certFile, keyFile string) error {
 	ln, err := net.Listen("tcp", addr)

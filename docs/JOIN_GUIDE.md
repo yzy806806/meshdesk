@@ -255,15 +255,23 @@ meshdesk --gen-key
 
 ### "connection refused" on port 8443
 
-The bootstrap node's join endpoint is not running. Ensure the bootstrap node
-has `--web` flag and Reality TLS configured. The join endpoint runs on the
-same MuxTransport port as the mesh, using a dedicated virtual port.
+The bootstrap node's join endpoint is not running on a standalone listener.
+This happens when the bootstrap node is a shared node (`reality.enabled: true`
++ `--web`): since v1.2.1, shared nodes serve the join endpoint on the
+mux/mesh (Reality) port via `webServer.SetJoinHandler`, not on the legacy
+`:8443` standalone join listener. The Dashboard's "Generate Install Command"
+button now derives the join URL from the Reality listen port automatically.
 
-**v1.2.1+**: With single-port HTTP demux, the join endpoint is also available on port 52888 (no separate web port needed). Try:
+**v1.2.1+**: With single-port HTTP demux, the join endpoint is available on
+the mesh/Reality port (default 443, or `reality.listen_port` if set, e.g. 52888).
+Try:
 
 ```bash
-curl http://<bootstrap>:52888/join?token=<base64-token>
+curl http://<bootstrap>:<reality-port>/join?token=<base64-token>
 ```
+
+On a regular (non-shared) web node, the join listener still runs on its own
+port (default `:8443`) as configured by `join.listen_addr`.
 
 ### "unsupported platform"
 
