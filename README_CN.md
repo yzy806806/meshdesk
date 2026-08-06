@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布说明](docs/RELEASE_NOTES.md)
 
-> **当前版本: v1.2.1** (`89e4081`, 2026-08-06) — 12 项新功能：systemd 集成、version 命令、日志轮转、配置校验、Mesh DNS、流量统计、告警 UI、信号处理、配置热重载、CI 流水线、单端口 HTTP 复用、端口 52888 上的 /api/join 入网。详见[发布说明](docs/RELEASE_NOTES.md)和[已知问题](https://github.com/yzy806806/meshdesk/issues/1)。
+> **当前版本: v1.2.1** (`a83c9f8`, 2026-08-06) + 补丁 `fef481a` (2026-08-07) — 12 项新功能：systemd 集成、version 命令、日志轮转、配置校验、Mesh DNS、流量统计、告警 UI、信号处理、配置热重载、CI 流水线、单端口 HTTP 复用、端口 52888 上的 /api/join 入网。详见[发布说明](docs/RELEASE_NOTES.md)和[已知问题](https://github.com/yzy806806/meshdesk/issues/1)。
 
 ---
 
