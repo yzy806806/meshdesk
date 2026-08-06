@@ -4,7 +4,7 @@
 **状态:** 生产就绪（零代码变更）
 **最后更新:** 2026-08-07
 **关联:** motion-fb0fdd61c936, docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md
-**代码基线:** fef481a (HEAD = origin/main)
+**代码基线:** 63ca29a (HEAD = origin/main)
 
 ---
 
@@ -158,7 +158,7 @@ targetSession := h.node.GetSession(req.TargetKey)
 ```bash
 cd /root/meshdesk
 git fetch origin
-git checkout fef481a  # 或最新 origin/main
+git checkout 63ca29a  # 或最新 origin/main
 
 # amd64 (txcloud, 阿里云)
 GOOS=linux GOARCH=amd64 go build -o /tmp/meshdesk-amd64 ./cmd/meshdesk/
@@ -680,11 +680,11 @@ p2p:
 | 字段 | 位置 | 默认值 | 说明 |
 |------|------|--------|------|
 | `proxy.relay.enabled` | config.go:379 | `false` | **必须显式设为 true**。控制 CapRelay 和 RelayHandler 注册 |
-| `p2p.relay_mode` | config.go:674 | `"auto"` | `auto`=自动选择中继, `manual`=仅手动配置, `disabled`=仅直连 |
-| `p2p.max_relay_hops` | config.go:680 | `2` | NAT 遍历探测深度（不是中继转发跳数） |
-| `proxy.relay.max_circuits` | config.go:393 | `1024` | 最大并发中继 circuit 数 |
+| `p2p.relay_mode` | config.go:678 | `"auto"` | `auto`=自动选择中继, `manual`=仅手动配置, `disabled`=仅直连 |
+| `p2p.max_relay_hops` | config.go:681 | `2` | NAT 遍历探测深度（不是中继转发跳数） |
+| `proxy.relay.max_circuits` | config.go:395 | `1024` | 最大并发中继 circuit 数 |
 | `p2p.gossip_interval` | config.go:693 | `30` | PushPull 全状态同步间隔（秒） |
-| `p2p.direct_reprobe_interval` | config.go:698 | `120` | 中继模式下直连重探间隔（秒） |
+| `p2p.direct_reprobe_interval` | config.go:699 | `120` | 中继模式下直连重探间隔（秒） |
 
 ---
 
@@ -697,7 +697,7 @@ p2p:
 | `DialViaRelay` (单候选) | `internal/mesh/relay_dialer.go` | 83 | 单个中继节点的连接流程 |
 | `RegisterRelayHandler` | `internal/mesh/relay_dialer.go` | 164 | 注册 0x524C 端口监听 |
 | `RelayHandler` | `internal/mesh/relay_handler.go` | 58 | 中继 handler 结构体 |
-| `HandleStream` | `internal/mesh/relay_handler.go` | 130 | 处理入站中继请求 |
+| `HandleStream` | `internal/mesh/relay_handler.go` | 101 | 处理入站中继请求 |
 | `GetSession` | `internal/mesh/node.go` | 661 | 查找 smux session |
 | `MeshRelayVirtualPort` | `internal/mesh/relay_protocol.go` | 14 | 0x524C 常量 |
 | `RelayPeerInfo` | `internal/mesh/relay_dialer.go` | 18 | 中继元数据结构 |
