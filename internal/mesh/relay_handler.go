@@ -215,6 +215,7 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 		Type:         MsgRelayDial,
 		TunnelID:     tunnelID,
 		InitiatorKey: "", // we don't know the initiator's key from the request
+		Port:         req.Port,
 		Timestamp:    nowNano(),
 	}
 	if err := writeRelayMessage(targetStream, dialMsg); err != nil {
