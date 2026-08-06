@@ -31,6 +31,7 @@ MeshDesk does all of it in one binary:
 - **Single port** — Everything runs on one TCP+UDP port (default 52888). MuxTransport sniffs the first byte to route Reality TLS, mesh-internal smux, SOCKS5, and memberlist gossip.
 - **Zero third-party TUN** — The TUN device is created via raw `/dev/net/tun` syscalls (~150 lines). No wireguard-go, no gVisor, no external dependencies.
 - **Deterministic IPAM** — Virtual IP = `cidr_base + (pubkey_hash % host_count)`. No DHCP server, no coordination, zero conflicts.
+- **Reactive Relay Fallback** — When nodes cannot establish a direct connection, the per-pair `NatSession` state machine automatically probes alternatives (STUN→DirectProbe→RelayFallback), selecting the best relay from gossip-advertised `CapRelay` metadata by RTT. No global routing table, no manual path configuration. Single-hop relay (A→relay→B) covers the four-node topology; multi-hop transit (A→R1→R2→B) is deferred to a future phase. See [design decision](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md).
 - **Self-evolving** — Built with the Agora multi-agent framework. AI teams implement features, write tests, review code, and deploy autonomously.
 
 ---
@@ -288,6 +289,8 @@ meshdesk --config /etc/meshdesk/config.yaml
 - [Proxy Design](docs/PROXY_DESIGN.md)
 - [Frontend](docs/FRONTEND.md)
 - [Threat Model](THREAT_MODEL.md)
+- [Design Decision: No Global Routing Table](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)
+- [Relay Deployment](docs/RELAY_DEPLOYMENT.md)
 
 ## License
 

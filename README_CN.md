@@ -114,6 +114,10 @@ Layer 0 — Ed25519 身份（PEM 文件持久化）
 - **共享节点**（`reality.enabled: true`）：监听 52888 TCP+UDP，唯一暴露公网端口的节点
 - **普通节点**（`reality.enabled: false`）：不监听 TCP，仅 UDP gossip，出站连接共享节点
 
+### 反应式中继回退
+
+当两个节点无法直连时，per-pair `NatSession` 状态机自动尝试替代路径（STUN→DirectProbe→RelayFallback），从 gossip 广播的 `CapRelay` 元数据中按 RTT 择优选择中继节点。无需全局路由表，无需手动配置路径。单跳中继（A→relay→B）覆盖四节点拓扑；多跳中继（A→R1→R2→B）列为后续阶段 backlog。详见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
+
 ### 监控自动路由
 
 - Dashboard 节点通过 gossip 广播 collector 身份
@@ -200,6 +204,8 @@ GOOS=linux GOARCH=arm64 go build -o meshdesk-arm64 ./cmd/meshdesk/
 - [代理设计](docs/PROXY_DESIGN.md)
 - [前端](docs/FRONTEND.md)
 - [威胁模型](THREAT_MODEL.md)
+- [设计决策：不建全局路由表](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)
+- [中继部署指南](docs/RELAY_DEPLOYMENT.md)
 
 ## License
 
