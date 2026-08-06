@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布说明](docs/RELEASE_NOTES.md)
 
-> **当前版本: v1.2.0** (`4dc3f7a`, 2026-08-06) — 10 项新功能：systemd 集成、version 命令、日志轮转、配置校验、Mesh DNS、流量统计、告警 UI、信号处理、配置热重载、CI 流水线。详见[发布说明](docs/RELEASE_NOTES.md)和[已知问题](https://github.com/yzy806806/meshdesk/issues/1)。
+> **当前版本: v1.2.1** (`89e4081`, 2026-08-06) — 12 项新功能：systemd 集成、version 命令、日志轮转、配置校验、Mesh DNS、流量统计、告警 UI、信号处理、配置热重载、CI 流水线、单端口 HTTP 复用、端口 52888 上的 /api/join 入网。详见[发布说明](docs/RELEASE_NOTES.md)和[已知问题](https://github.com/yzy806806/meshdesk/issues/1)。
 
 ---
 
@@ -65,7 +65,19 @@ reality:
 3. 复制命令到新节点 SSH 执行：
 
 ```bash
+# 传统 Web 端口（8080）
 curl -sSL http://dashboard:8080/join?token=xxx | sudo sh
+
+# 单端口路径（52888）— v1.2.1+
+curl -sSL http://dashboard:52888/join?token=xxx | sudo sh
+```
+
+程序化入网可使用 `/api/join` 端点（POST），支持质询-响应认证，两种端口均可：
+
+```bash
+curl -X POST http://dashboard:52888/api/join \
+  -H "Content-Type: application/json" \
+  -d '{"token":"xxx","joiner_pubkey":"..."}'
 ```
 
 自动下载二进制、生成 identity、写入配置、加入集群。
@@ -90,6 +102,7 @@ Layer 0 — Ed25519 身份（PEM 文件持久化）
 | 首字节 | 协议 | 虚拟端口 | 说明 |
 |--------|------|----------|------|
 | 0x16 | Reality TLS | — | TLS ClientHello，加密 mesh 流量 |
+| 0x47/0x50/0x48 | HTTP | — | GET/POST/HEAD — Dashboard、入网服务（v1.2.1+） |
 | 0x4D | mesh-internal | — | smux session 建立 |
 | 0x53 | SOCKS5 入口 | 0x5350 | 手机/客户端代理入口 |
 | 0x45 | SOCKS5 出口 | 0x4558 | 出口节点处理 |

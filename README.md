@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md)
 
-> **Current release: v1.2.0** (`4dc3f7a`, 2026-08-06) — 10 new features including systemd integration, version command, log rotation, config validation, Mesh DNS, traffic stats, alert UI, signal handling, config hot-reload, and CI pipeline. See [release notes](docs/RELEASE_NOTES.md) for details and [known issues](https://github.com/yzy806806/meshdesk/issues/1).
+> **Current release: v1.2.1** (`89e4081`, 2026-08-06) — 12 features: systemd, version, log rotation, config validation, Mesh DNS, traffic stats, alert UI, signal handling, hot-reload, CI, plus v1.2.1's single-port HTTP multiplexing and `/api/join` onboarding on port 52888. See [release notes](docs/RELEASE_NOTES.md) and [known issues](https://github.com/yzy806806/meshdesk/issues/1).
 
 ---
 
@@ -100,7 +100,19 @@ mesh:
 Open the Dashboard → **Join** page, click "Generate Install Command", paste on the new machine:
 
 ```bash
+# Legacy web port (8080)
 curl -sSL http://gateway:8080/join?token=xxx | sudo sh
+
+# Single-port path (52888) — v1.2.1+
+curl -sSL http://gateway:52888/join?token=xxx | sudo sh
+```
+
+For programmatic onboarding, the `/api/join` endpoint (POST) supports challenge-response authentication over either port:
+
+```bash
+curl -X POST http://gateway:52888/api/join \
+  -H "Content-Type: application/json" \
+  -d '{"token":"xxx","joiner_pubkey":"..."}'
 ```
 
 The new node auto-downloads the binary, generates identity, writes config, and joins the cluster.
@@ -143,6 +155,7 @@ Port 52888 handles all protocols via first-byte sniffing:
 | First Byte | Protocol | Target | Description |
 |:----------:|----------|--------|-------------|
 | `0x16` | Reality TLS | `realityCh` | TLS ClientHello — encrypted mesh traffic |
+| `0x47`/`0x50`/`0x48` | HTTP | `httpCh` | GET/POST/HEAD — Dashboard, join server (v1.2.1+) |
 | `0x4D` | mesh-internal | `meshCh` | smux session establishment (key exchange) |
 | `0x53` | SOCKS5 entry | — | Phone/client SOCKS5 proxy entry (`0x5350`) |
 | `0x45` | SOCKS5 exit | — | Exit node handler (`0x4558`) |
