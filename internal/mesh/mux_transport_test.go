@@ -889,6 +889,21 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 		}
 	}()
 
+	// Also accept HTTP connections (G/P/H first byte).
+	httpLn := mt.HTTPListener()
+	defer httpLn.Close()
+	httpConnCh := make(chan net.Conn, 256)
+	go func() {
+		for {
+			conn, err := httpLn.Accept()
+			if err != nil {
+				close(httpConnCh)
+				return
+			}
+			httpConnCh <- conn
+		}
+	}()
+
 	for b := 0; b < 256; b++ {
 		firstByte := byte(b)
 
@@ -901,6 +916,7 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 
 		isTLS := firstByte == tlsHandshakeRecordType
 		isMesh := firstByte == meshInternalMarker
+		isHTTP := firstByte == 'G' || firstByte == 'P' || firstByte == 'H'
 
 		select {
 		case conn := <-mt.StreamCh():
@@ -911,6 +927,10 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 			if isMesh {
 				conn.Close()
 				t.Fatalf("byte 0x%02x (mesh) was routed to StreamCh instead of MeshCh", firstByte)
+			}
+			if isHTTP {
+				conn.Close()
+				t.Fatalf("byte 0x%02x (HTTP) was routed to StreamCh instead of HTTPCh", firstByte)
 			}
 			buf := make([]byte, 2)
 			n, _ := io.ReadFull(conn, buf)
@@ -940,6 +960,19 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 			buf := make([]byte, 1)
 			n, _ := io.ReadFull(conn, buf)
 			if n != 1 || buf[0] != 0x01 {
+				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
+			}
+			conn.Close()
+		case conn := <-httpConnCh:
+			if !isHTTP {
+				conn.Close()
+				t.Fatalf("byte 0x%02x was routed to HTTPCh instead of StreamCh", firstByte)
+			}
+			// HTTP path: the first byte is replayed via bufferedConn, so
+			// both the first byte and 0x01 are readable.
+			buf := make([]byte, 2)
+			n, _ := io.ReadFull(conn, buf)
+			if n != 2 || buf[0] != firstByte {
 				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
 			}
 			conn.Close()
