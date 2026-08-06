@@ -1,5 +1,20 @@
 # Release Notes
 
+## v1.2.1 — 2026-08-06
+
+Single-port HTTP multiplexing and programmatic join endpoint. Commit: `89e4081`
+
+### Features
+
+- **Single-Port HTTP Demux** — Dashboard Web UI and join server now share the mesh port (52888) via MuxTransport. HTTP traffic (GET/POST/HEAD, first byte `0x47`/`0x50`/`0x48`) is demuxed onto a dedicated channel, enabling single-port deployment behind restrictive NAT — only one public port required for all mesh traffic plus web access.
+- **`/api/join` Onboarding Endpoint** — Programmatic challenge-response onboarding via `POST /api/join` on port 52888. The join server handler is attached to the Dashboard's HTTP mux, so `/api/join` rides the same port as the web UI. Exempt from web session auth; authenticated via token + Ed25519 challenge signature instead.
+
+### Verified
+
+- HTTP demux parseability tests confirm all HTTP methods (GET/POST/HEAD) are correctly routed
+- E2E wiring test verifies `POST /api/join` is served through the demux port
+- Mux demux regression fixed (HTTP channel consumer added to test harness)
+
 ## v1.2.0 — 2026-08-06
 
 Second feature release. Commit: `4dc3f7a`
