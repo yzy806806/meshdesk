@@ -994,6 +994,74 @@ func main() {
 
 	defer reporter.Stop()
 
+	// Start the auto-join server (if enabled on this shared node).
+	// The join server accepts join requests from new nodes, validates
+	// tokens (HMAC signature + expiration + replay protection), and
+	// distributes the config bundle (identity, REALITY keys, collector list).
+	// Only meaningful on shared nodes with Reality TLS enabled.
+	//
+	// On shared nodes (MuxTransport present) the join endpoint is served
+	// on the multiplexed port via the Dashboard mux (single-port
+	// deployment) — no separate listener is opened. Otherwise it listens
+	// on join.listen_addr (plain HTTP or TLS).
+	var joinServer *join.JoinServer
+	if cfg.Join.Enabled && cfg.Reality.Enabled {
+		// Derive the X25519 public key from the server's private key.
+		// The joiner needs the PUBLIC key to connect via Reality TLS.
+		realityPubHex := ""
+		if privBytes, err := hex.DecodeString(cfg.Reality.PrivateKey); err == nil && len(privBytes) == 32 {
+			if realityPriv, err := ecdh.X25519().NewPrivateKey(privBytes); err == nil {
+				realityPubHex = hex.EncodeToString(realityPriv.PublicKey().Bytes())
+			}
+		}
+		if realityPubHex == "" {
+			log.Printf("Warning: invalid reality.private_key — join server disabled")
+		} else {
+			joinServerCfg := join.ServerConfig{
+				Secret:            []byte(cfg.Join.Secret),
+				ServerIdentity:    node.Identity(),
+				BootstrapEndpoint: firstAdvertiseEndpoint(cfg),
+				GossipPort:        cfg.Mesh.GossipPort,
+				RealityPublicKey:  realityPubHex, // Derived X25519 public key
+				RealityShortID:    firstShortID(cfg.Reality.ShortIDs),
+				RealityServerName: firstServerName(cfg.Reality.ServerNames),
+				Collectors:        cfg.Monitoring.Collectors,
+				TokenLifetime:     time.Duration(cfg.Join.TokenLifetime) * time.Second,
+			}
+
+			// If the join secret is empty, generate a random one and log a warning.
+			if cfg.Join.Secret == "" {
+				randomSecret := make([]byte, 32)
+				if _, err := rand.Read(randomSecret); err != nil {
+					log.Printf("Warning: failed to generate random join secret: %v — join server disabled", err)
+				} else {
+					cfg.Join.Secret = hex.EncodeToString(randomSecret)
+					log.Printf("WARNING: join.secret not set — generated random secret: %s", cfg.Join.Secret)
+					log.Printf("  Use this secret with `meshdesk join-token` to generate tokens.")
+				}
+			}
+			joinServerCfg.Secret = []byte(cfg.Join.Secret)
+
+			joinServer = join.NewJoinServer(joinServerCfg)
+
+			// Wire the known-peers provider if gossip is active.
+			if gossipLayer != nil {
+				joinServer.SetKnownPeersFunc(func() []join.PeerInfo {
+					peers := gossipLayer.KnownPeers()
+					result := make([]join.PeerInfo, 0, len(peers))
+					for _, p := range peers {
+						result = append(result, join.PeerInfo{
+							PublicKey: p.PublicKey,
+							Hostname:  p.Hostname,
+							Role:      p.Role,
+						})
+					}
+					return result
+				})
+			}
+		}
+	}
+
 	var webServer *web.Server
 	if webMode {
 		// Create the auth capability engine first, so it can be wired
@@ -1158,6 +1226,14 @@ func main() {
 		// Register proxy reloader (acknowledges in-memory config update).
 		webServer.RegisterReloader(web.NewProxyReloader())
 
+		// Attach the join server handler to the web mux so POST /api/join
+		// is served on the same port as the Dashboard. This happens
+		// regardless of mux mode: on shared nodes the join endpoint rides
+		// the multiplexed port; on regular web nodes it rides the web port.
+		if joinServer != nil {
+			webServer.SetJoinHandler(joinServer.Handler())
+		}
+
 		// If the node has a MuxTransport (shared node mode), serve the
 		// Dashboard on the multiplexed port (52888) instead of a separate
 		// port. This allows single-port deployment: Reality + gossip + mesh
@@ -1169,6 +1245,9 @@ func main() {
 			}
 			defer webServer.Stop()
 			log.Printf("  Web UI:     muxed on mesh port (HTTP)")
+			if joinServer != nil {
+				log.Printf("  Join:       muxed on mesh port (/api/join)")
+			}
 		} else {
 			if err := webServer.Start(cfg.Node.WebAddr); err != nil {
 				log.Fatalf("Failed to start web server: %v", err)
@@ -1180,82 +1259,23 @@ func main() {
 		log.Printf("  Mode:       agent-only")
 	}
 
-	// Start the auto-join server (if enabled on this shared node).
-	// The join server accepts join requests from new nodes, validates
-	// tokens (HMAC signature + expiration + replay protection), and
-	// distributes the config bundle (identity, REALITY keys, collector list).
-	// Only meaningful on shared nodes with Reality TLS enabled.
-	var joinServer *join.JoinServer
-	if cfg.Join.Enabled && cfg.Reality.Enabled {
-		// Derive the X25519 public key from the server's private key.
-		// The joiner needs the PUBLIC key to connect via Reality TLS.
-		realityPubHex := ""
-		if privBytes, err := hex.DecodeString(cfg.Reality.PrivateKey); err == nil && len(privBytes) == 32 {
-			if realityPriv, err := ecdh.X25519().NewPrivateKey(privBytes); err == nil {
-				realityPubHex = hex.EncodeToString(realityPriv.PublicKey().Bytes())
-			}
-		}
-		if realityPubHex == "" {
-			log.Printf("Warning: invalid reality.private_key — join server disabled")
-		} else {
-			joinServerCfg := join.ServerConfig{
-				Secret:            []byte(cfg.Join.Secret),
-				ServerIdentity:    node.Identity(),
-				BootstrapEndpoint: firstAdvertiseEndpoint(cfg),
-				GossipPort:        cfg.Mesh.GossipPort,
-				RealityPublicKey:  realityPubHex, // Derived X25519 public key
-				RealityShortID:    firstShortID(cfg.Reality.ShortIDs),
-				RealityServerName: firstServerName(cfg.Reality.ServerNames),
-				Collectors:        cfg.Monitoring.Collectors,
-				TokenLifetime:     time.Duration(cfg.Join.TokenLifetime) * time.Second,
-			}
-
-			// If the join secret is empty, generate a random one and log a warning.
-			if cfg.Join.Secret == "" {
-				randomSecret := make([]byte, 32)
-				if _, err := rand.Read(randomSecret); err != nil {
-					log.Printf("Warning: failed to generate random join secret: %v — join server disabled", err)
-				} else {
-					cfg.Join.Secret = hex.EncodeToString(randomSecret)
-					log.Printf("WARNING: join.secret not set — generated random secret: %s", cfg.Join.Secret)
-					log.Printf("  Use this secret with `meshdesk join-token` to generate tokens.")
-				}
-			}
-			joinServerCfg.Secret = []byte(cfg.Join.Secret)
-
-			joinServer = join.NewJoinServer(joinServerCfg)
-
-			// Wire the known-peers provider if gossip is active.
-			if gossipLayer != nil {
-				joinServer.SetKnownPeersFunc(func() []join.PeerInfo {
-					peers := gossipLayer.KnownPeers()
-					result := make([]join.PeerInfo, 0, len(peers))
-					for _, p := range peers {
-						result = append(result, join.PeerInfo{
-							PublicKey: p.PublicKey,
-							Hostname:  p.Hostname,
-							Role:      p.Role,
-						})
-					}
-					return result
-				})
-			}
-
-			if cfg.Join.TLSCertFile != "" && cfg.Join.TLSKeyFile != "" {
-				if err := joinServer.StartTLS(cfg.Join.ListenAddr, cfg.Join.TLSCertFile, cfg.Join.TLSKeyFile); err != nil {
-					log.Printf("Warning: failed to start join TLS server: %v", err)
-				} else {
-					log.Printf("  Join:       TLS server on %s", cfg.Join.ListenAddr)
-				}
+	// In agent-only mode (no web server), the join server still needs a
+	// standalone listener if enabled.
+	if webServer == nil && joinServer != nil {
+		if cfg.Join.TLSCertFile != "" && cfg.Join.TLSKeyFile != "" {
+			if err := joinServer.StartTLS(cfg.Join.ListenAddr, cfg.Join.TLSCertFile, cfg.Join.TLSKeyFile); err != nil {
+				log.Printf("Warning: failed to start join TLS server: %v", err)
 			} else {
-				if err := joinServer.Start(cfg.Join.ListenAddr); err != nil {
-					log.Printf("Warning: failed to start join server: %v", err)
-				} else {
-					log.Printf("  Join:       server on %s (WARNING: no TLS — use tls_cert_file/tls_key_file for production)", cfg.Join.ListenAddr)
-				}
+				log.Printf("  Join:       TLS server on %s", cfg.Join.ListenAddr)
 			}
-			defer joinServer.Stop()
+		} else {
+			if err := joinServer.Start(cfg.Join.ListenAddr); err != nil {
+				log.Printf("Warning: failed to start join server: %v", err)
+			} else {
+				log.Printf("  Join:       server on %s (WARNING: no TLS — use tls_cert_file/tls_key_file for production)", cfg.Join.ListenAddr)
+			}
 		}
+		defer joinServer.Stop()
 	}
 
 	// Save config (in case identity was auto-generated).
