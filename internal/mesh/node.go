@@ -1177,6 +1177,49 @@ func (n *MeshNode) ListenVirtualPort(port int) (net.Listener, error) {
 	return n.portMux.register(uint16(port))
 }
 
+// DialLocalVirtualPort dials a virtual port listener registered on this
+// node (i.e. locally, without going over a smux session). It creates a
+// net.Pipe, dispatches one end to the local portMux as if it were an
+// inbound stream, and returns the other end to the caller.
+//
+// This is the production wiring point for relay OnRelayDial callbacks:
+// when a relay node forwards a dial request to this node, the OnRelayDial
+// callback calls DialLocalVirtualPort to reach the local service
+// listening on the target port (e.g. collector 0x105F, TUN 0x4D, SOCKS5
+// 0x5350), then bridges the relay stream to the local stream with
+// bidirectional io.Copy.
+//
+// peerID is the mesh identity of the peer that initiated the relay
+// request (used for authorization in the portMux dispatch wrapper).
+// If empty, the dispatch uses an empty peerID (non-mesh source).
+func (n *MeshNode) DialLocalVirtualPort(port int, peerID string) (net.Conn, error) {
+	if port < 0 || port > 65535 {
+		return nil, fmt.Errorf("mesh: virtual port %d out of range", port)
+	}
+	if port == 0 {
+		return nil, fmt.Errorf("mesh: virtual port 0 is reserved")
+	}
+
+	// Check that a listener is actually registered for this port.
+	n.portMux.mu.RLock()
+	_, exists := n.portMux.listeners[uint16(port)]
+	n.portMux.mu.RUnlock()
+	if !exists {
+		return nil, fmt.Errorf("mesh: no listener registered for local virtual port %d", port)
+	}
+
+	// Create a pipe: the "remote" end is dispatched to the local listener,
+	// the "local" end is returned to the caller.
+	localConn, remoteConn := net.Pipe()
+
+	// Dispatch the remote end to the local port mux. This is synchronous
+	// (non-blocking via the acceptCh buffer), so the listener's Accept()
+	// will pick it up.
+	n.portMux.dispatch(uint16(port), remoteConn, peerID)
+
+	return localConn, nil
+}
+
 // DialVirtualPort opens a smux stream to a peer's virtual port.
 //
 // peerIdentityHex identifies the peer (the key in the sessions map).
@@ -1222,7 +1265,7 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 		// peers are known. This enables cross-network-family
 		// communication (e.g. IPv4-only → IPv6-only) through a
 		// dual-stack relay node.
-		if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex); relayErr == nil {
+		if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex, uint16(port)); relayErr == nil {
 			return conn, nil
 		} else {
 			log.Printf("[mesh] DialVirtualPort: relay fallback for peer %s failed: %v",

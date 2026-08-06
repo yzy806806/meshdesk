@@ -171,7 +171,7 @@ func TestRelayHandler_HandleDial_ProductionPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestRelayHandler_HandleDial_WithCallback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestRelayHandler_BidirectionalDataFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}
