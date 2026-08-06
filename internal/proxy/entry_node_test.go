@@ -140,6 +140,20 @@ func (m *mockExitServer) handleConn(conn net.Conn) {
 		return
 	}
 
+	// Store the circuit state BEFORE sending the ack.
+	// This eliminates the store-after-ack race: the test reads e2eKeys/circuits
+	// right after decoding the ack, so the store must be visible by then.
+	state := &exitCircuitState{
+		circuitID:   setup.CircuitID,
+		e2eKey:      e2eKey,
+		targetConn:  targetConn,
+		reassembler: NewExitReassembler(DefaultChunkerConfig()),
+	}
+	m.mu.Lock()
+	m.circuits[circuitIDHex] = state
+	m.e2eKeys[circuitIDHex] = e2eKey
+	m.mu.Unlock()
+
 	// Send acceptance ack.
 	ack := &CircuitAck{
 		CircuitID:  setup.CircuitID,
@@ -148,6 +162,12 @@ func (m *mockExitServer) handleConn(conn net.Conn) {
 	}
 	ackData, _ := ack.Encode()
 	if _, err := conn.Write(ackData); err != nil {
+		// Ack write failed — undo the store so we don't leak state for a
+		// circuit the entry node will never use.
+		m.mu.Lock()
+		delete(m.circuits, circuitIDHex)
+		delete(m.e2eKeys, circuitIDHex)
+		m.mu.Unlock()
 		conn.Close()
 		targetConn.Close()
 		return
@@ -155,19 +175,6 @@ func (m *mockExitServer) handleConn(conn net.Conn) {
 
 	// Close the control connection — data will come through relay paths.
 	conn.Close()
-
-	// Store the circuit state.
-	state := &exitCircuitState{
-		circuitID:   setup.CircuitID,
-		e2eKey:      e2eKey,
-		targetConn:  targetConn,
-		reassembler: NewExitReassembler(DefaultChunkerConfig()),
-	}
-
-	m.mu.Lock()
-	m.circuits[circuitIDHex] = state
-	m.e2eKeys[circuitIDHex] = e2eKey
-	m.mu.Unlock()
 
 	// Signal that a circuit is ready (non-blocking: skip if closed or full).
 	m.mu.Lock()
