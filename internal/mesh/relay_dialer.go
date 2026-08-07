@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -118,11 +119,12 @@ func (d *RelayDialer) DialViaRelay(
 	// Send the MeshRelayRequest.
 	tunnelID := newTunnelID()
 	req := &MeshRelayRequest{
-		Type:      MsgRelayRequest,
-		TunnelID:  tunnelID,
-		TargetKey: targetKey,
-		Port:      port,
-		Timestamp: nowNano(),
+		Type:         MsgRelayRequest,
+		TunnelID:     tunnelID,
+		TargetKey:    targetKey,
+		InitiatorKey: d.localKey, // propagate initiator identity for target-side auth
+		Port:         port,
+		Timestamp:    nowNano(),
 	}
 	if err := writeRelayMessage(stream, req); err != nil {
 		stream.Close()
@@ -134,8 +136,17 @@ func (d *RelayDialer) DialViaRelay(
 		relayKey[:min(len(relayKey), 16)]+"...",
 		targetKey[:min(len(targetKey), 16)]+"...")
 
+	// Wrap the stream in a bufferedConn so the msgpack Decoder's
+	// internal bufio doesn't swallow coalesced bytes. After decoding
+	// the response, any leftover buffered bytes are replayed on
+	// subsequent reads via the bufferedConn.
+	bufConn := &bufferedConn{
+		Reader: bufio.NewReader(stream),
+		conn:   stream,
+	}
+
 	// Wait for the relay's response with a timeout.
-	resp, err := readRelayMessageWithContext(stream, relayResponseTimeout)
+	resp, err := readRelayMessageWithContext(bufConn, relayResponseTimeout)
 	if err != nil {
 		stream.Close()
 		return nil, fmt.Errorf("mesh relay: read response: %w", err)
@@ -153,8 +164,10 @@ func (d *RelayDialer) DialViaRelay(
 	}
 
 	// Tunnel accepted. The stream is now a transparent data pipe to the target.
+	// Return bufConn (not raw stream) so any bytes the msgpack Decoder's
+	// bufio consumed beyond the response are replayed to the caller.
 	log.Printf("[mesh-relay] dialer: tunnel=%s accepted", tunnelID[:16])
-	return stream, nil
+	return bufConn, nil
 }
 
 // relayResponseTimeout is the maximum time to wait for a relay response.

@@ -1,6 +1,7 @@
 package mesh
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -18,7 +19,10 @@ const DefaultMaxRelayTunnels = 64
 // DefaultRelayIdleTimeout is the default idle timeout for relay tunnels.
 const DefaultRelayIdleTimeout = 5 * time.Minute
 
-// DefaultRelayHeartbeatInterval is the default heartbeat interval for relay tunnels.
+// DefaultRelayHeartbeatInterval is the legacy heartbeat interval for relay
+// tunnels. The heartbeat mechanism has been removed (it polluted the data
+// plane by writing msgpack bytes into raw data streams). This constant is
+// retained for backward compatibility but is no longer used.
 const DefaultRelayHeartbeatInterval = 30 * time.Second
 
 // staleHalfOpenTimeout is how long a half-open tunnel (TargetConn still
@@ -42,6 +46,12 @@ type relayTunnel struct {
 
 	CreatedAt    time.Time
 	LastActivity atomic.Int64 // UnixNano
+
+	// started ensures startBridge is only called once per tunnel,
+	// preventing double io.Copy / heartbeat goroutines if both
+	// handleRequest (same-stream response) and handleDialBack (new
+	// stream) trigger for the same tunnel.
+	started atomic.Bool
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -69,7 +79,7 @@ type RelayHandler struct {
 	mu                sync.RWMutex
 	maxTunnels        int
 	idleTimeout       time.Duration
-	heartbeatInterval time.Duration
+	heartbeatInterval time.Duration // deprecated: heartbeat removed, field retained for compat
 
 	// OnRelayDial is called when a MeshRelayDial is received from a relay
 	// node. The callback receives the dial message and the stream conn
@@ -111,8 +121,18 @@ func (h *RelayHandler) HandleStream(conn net.Conn) {
 		return
 	}
 
+	// Wrap conn in a bufferedConn so the msgpack Decoder's internal
+	// bufio doesn't swallow coalesced bytes. The bufferedConn replays
+	// any leftover buffered bytes on subsequent reads, preserving data
+	// that was coalesced into the same TCP segment as the handshake
+	// message (e.g. service banner, TUN frame, SOCKS5 greeting).
+	bufConn := &bufferedConn{
+		Reader: bufio.NewReader(conn),
+		conn:   conn,
+	}
+
 	// Read the relay handshake message (msgpack-encoded).
-	msg, err := readRelayMessage(conn)
+	msg, err := readRelayMessage(bufConn)
 	if err != nil {
 		log.Printf("[mesh-relay] failed to read handshake: %v", err)
 		conn.Close()
@@ -121,15 +141,15 @@ func (h *RelayHandler) HandleStream(conn net.Conn) {
 
 	switch m := msg.(type) {
 	case *MeshRelayRequest:
-		h.handleRequest(conn, m)
+		h.handleRequest(bufConn, m)
 	case *MeshRelayResponse:
 		// This is a dial-back response from the target — it accepted
 		// our RelayDial and is now ready to be bridged.
-		h.handleDialBack(conn, m)
+		h.handleDialBack(bufConn, m)
 	case *MeshRelayDial:
-		h.handleDial(conn, m)
+		h.handleDial(bufConn, m)
 	case *MeshRelayTeardown:
-		h.handleTeardown(conn, m)
+		h.handleTeardown(bufConn, m)
 	default:
 		log.Printf("[mesh-relay] unexpected message type %T on relay port", msg)
 		conn.Close()
@@ -177,7 +197,7 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	// Create the tunnel entry.
 	tunnel := &relayTunnel{
 		ID:            tunnelID,
-		InitiatorKey:  "", // unknown from request; could be inferred from peer
+		InitiatorKey:  req.InitiatorKey, // propagated from the initiator's request
 		TargetKey:     req.TargetKey,
 		InitiatorConn: initiatorConn,
 		CreatedAt:     time.Now(),
@@ -229,7 +249,7 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	dialMsg := &MeshRelayDial{
 		Type:         MsgRelayDial,
 		TunnelID:     tunnelID,
-		InitiatorKey: "", // we don't know the initiator's key from the request
+		InitiatorKey: req.InitiatorKey, // propagate initiator identity for target-side auth
 		Port:         req.Port,
 		Timestamp:    nowNano(),
 	}
@@ -249,7 +269,17 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	// However, in the simpler case, the target's response arrives on the
 	// SAME stream we just opened (target writes back on the same stream).
 	// Let's read the response from the target stream.
-	resp, err := readRelayMessage(targetStream)
+	//
+	// Wrap targetStream in a bufferedConn so the msgpack Decoder's
+	// internal bufio doesn't swallow coalesced bytes (e.g. if the
+	// target writes accept response + first data bytes in one TCP
+	// segment). The bufferedConn replays leftover bytes on subsequent
+	// reads during the io.Copy bridge.
+	bufTargetStream := &bufferedConn{
+		Reader: bufio.NewReader(targetStream),
+		conn:   targetStream,
+	}
+	resp, err := readRelayMessage(bufTargetStream)
 	if err != nil {
 		log.Printf("[mesh-relay] failed to read target response: %v", err)
 		targetStream.Close()
@@ -279,8 +309,10 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	}
 
 	// Target accepted. Store the target stream and start bridging.
+	// Use bufTargetStream so the io.Copy bridge reads through the
+	// bufio.Reader, replaying any leftover bytes from the msgpack decode.
 	h.mu.Lock()
-	tunnel.TargetConn = targetStream
+	tunnel.TargetConn = bufTargetStream
 	h.mu.Unlock()
 
 	// Send accept to the initiator.
@@ -378,9 +410,24 @@ func (h *RelayHandler) handleTeardown(conn net.Conn, td *MeshRelayTeardown) {
 //
 // LastActivity is updated on each successful data transfer so that
 // cleanupIdleTunnels does not reap tunnels with active traffic.
-// A heartbeat goroutine sends MsgRelayHeartbeat at heartbeatInterval
-// to both peers, keeping the tunnel alive during idle periods.
+//
+// The bridge is guarded by tunnel.started (atomic) to prevent double
+// invocation from the handleRequest (same-stream response) and
+// handleDialBack (new-stream response) paths.
+//
+// NOTE: A previous version sent MsgRelayHeartbeat via writeRelayMessage
+// directly into the data streams. That polluted the data plane — peers
+// treat the stream as a raw byte pipe and do not parse msgpack, so
+// heartbeat bytes were delivered as garbage business data. The heartbeat
+// has been removed. Tunnel liveness now relies on smux session-level
+// keepalive and the idle timeout (cleanupIdleTunnels, default 5 min).
 func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
+	// Guard against double invocation.
+	if !tunnel.started.CompareAndSwap(false, true) {
+		log.Printf("[mesh-relay] startBridge already called for tunnel %s, skipping", tunnel.ID[:16])
+		return
+	}
+
 	initiator := tunnel.InitiatorConn
 	target := tunnel.TargetConn
 
@@ -392,33 +439,6 @@ func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
 
 	go func() {
 		defer h.removeTunnel(tunnel.ID)
-
-		// Start heartbeat goroutine.
-		heartbeatDone := make(chan struct{})
-		go func() {
-			if h.heartbeatInterval <= 0 {
-				return
-			}
-			ticker := time.NewTicker(h.heartbeatInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					hb := &MeshRelayHeartbeat{
-						Type:      MsgRelayHeartbeat,
-						TunnelID:  tunnel.ID,
-						Timestamp: nowNano(),
-					}
-					// Best-effort heartbeat — write errors are non-fatal.
-					_ = writeRelayMessage(initiator, hb)
-					_ = writeRelayMessage(target, hb)
-					tunnel.LastActivity.Store(nowNano())
-				case <-heartbeatDone:
-					return
-				}
-			}
-		}()
-		defer close(heartbeatDone)
 
 		// Two goroutines: initiator → target, target → initiator.
 		// Each uses an activity-tracking writer to update LastActivity.
