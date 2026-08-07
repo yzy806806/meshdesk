@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 
 	"github.com/hashicorp/memberlist"
 	"github.com/vmihailenco/msgpack/v5"
@@ -163,33 +164,75 @@ type relayMsgHandler func(msg *RelayMessage) error
 // incoming data is a join message and dispatches it to this handler.
 type joinMsgHandler func(msg *JoinMessage) error
 
+// metaSnapshot is an immutable snapshot of the local node metadata,
+// stored atomically.  It holds a deep copy of NodeMeta together with
+// its pre-marshaled bytes so that memberlist Delegate callbacks
+// (LocalState, NodeMeta) can return the bytes without holding any lock
+// or performing serialization under pressure.
+//
+// This design eliminates the RWMutex reader-starvation cascade that
+// caused DEFECT-A: under relay-tunnel load, frequent updateLocalMeta
+// write-lock acquisitions starved RLock waiters in LocalState/NodeMeta,
+// which in turn blocked memberlist's push/pull goroutines and cascaded
+// into nodeLock contention (UpdateNode, Members, probe/reap).
+type metaSnapshot struct {
+	meta  *NodeMeta
+	bytes []byte // pre-marshaled; safe to return directly
+}
+
 // meshDelegate implements memberlist.Delegate to carry NodeMeta through gossip.
 type meshDelegate struct {
-	mu        sync.RWMutex
-	localMeta *NodeMeta
+	// snapshot holds the current metadata snapshot atomically.
+	// Readers (LocalState, NodeMeta, getLocalMeta) do a lock-free
+	// atomic load and return a copy — no mutex acquisition, no
+	// marshaling, O(1) hold time.
+	snapshot atomic.Pointer[metaSnapshot]
+
+	// mu serializes writers (updateLocalMeta, SetRelayMessageHandler,
+	// SetJoinMessageHandler) so that the snapshot is never updated
+	// concurrently.  Readers never contend on this lock.
+	mu sync.Mutex
 
 	// relayHandler is called when a relay control message is received
 	// via NotifyMsg. If nil, relay messages are silently ignored.
+	// Protected by handlerMu.
 	relayHandler relayMsgHandler
 
 	// joinHandler is called when a join-protocol message is received
 	// via NotifyMsg. If nil, join messages are silently ignored.
+	// Protected by handlerMu.
 	joinHandler joinMsgHandler
+
+	// handlerMu protects relayHandler and joinHandler.
+	handlerMu sync.RWMutex
 }
 
 // newMeshDelegate creates a new delegate with the given local metadata.
 func newMeshDelegate(localMeta *NodeMeta) *meshDelegate {
-	return &meshDelegate{
-		localMeta: localMeta,
+	d := &meshDelegate{}
+	d.storeSnapshot(localMeta)
+	return d
+}
+
+// storeSnapshot creates a metaSnapshot from the given NodeMeta and
+// atomically stores it.  The caller must hold d.mu or be in a
+// single-threaded context (construction).
+func (d *meshDelegate) storeSnapshot(meta *NodeMeta) {
+	data, err := meta.MarshalMeta()
+	if err != nil {
+		// Marshal failure is unexpected for our compact encoding;
+		// store empty bytes so LocalState still returns something.
+		data = nil
 	}
+	d.snapshot.Store(&metaSnapshot{meta: meta, bytes: data})
 }
 
 // SetRelayMessageHandler installs a callback for processing relay control
 // messages received via gossip. The RelaySessionManager calls this during
 // initialization to receive circuit setup/teardown/ping messages.
 func (d *meshDelegate) SetRelayMessageHandler(h relayMsgHandler) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.handlerMu.Lock()
+	defer d.handlerMu.Unlock()
 	d.relayHandler = h
 }
 
@@ -197,21 +240,23 @@ func (d *meshDelegate) SetRelayMessageHandler(h relayMsgHandler) {
 // messages received via gossip. The JoinProtocol calls this during
 // initialization to receive JoinRequest/JoinAccept/JoinReject/LeaveNotice.
 func (d *meshDelegate) SetJoinMessageHandler(h joinMsgHandler) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.handlerMu.Lock()
+	defer d.handlerMu.Unlock()
 	d.joinHandler = h
 }
 
 // NodeMeta is called by memberlist to get the local node's metadata.
 // The returned bytes are distributed to all other nodes via gossip.
+//
+// Lock-free: returns the pre-marshaled bytes from the atomic snapshot.
+// This is O(1) and never blocks, even under heavy updateLocalMeta
+// contention — the key fix for DEFECT-A.
 func (d *meshDelegate) NodeMeta(limit int) []byte {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	data, err := d.localMeta.MarshalMeta()
-	if err != nil {
-		return nil // memberlist tolerates nil (empty metadata)
+	snap := d.snapshot.Load()
+	if snap == nil {
+		return nil
 	}
+	data := snap.bytes
 	if len(data) > limit {
 		// Truncate if exceeds limit — should not happen with our compact encoding
 		return data[:limit]
@@ -241,9 +286,9 @@ func (d *meshDelegate) NotifyMsg(data []byte) {
 			return
 		}
 
-		d.mu.RLock()
+		d.handlerMu.RLock()
 		handler := d.relayHandler
-		d.mu.RUnlock()
+		d.handlerMu.RUnlock()
 
 		if handler != nil {
 			if err := handler(msg); err != nil {
@@ -261,9 +306,9 @@ func (d *meshDelegate) NotifyMsg(data []byte) {
 			return
 		}
 
-		d.mu.RLock()
+		d.handlerMu.RLock()
 		handler := d.joinHandler
-		d.mu.RUnlock()
+		d.handlerMu.RUnlock()
 
 		if handler != nil {
 			if err := handler(msg); err != nil {
@@ -286,15 +331,16 @@ func (d *meshDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 
 // LocalState is called during state sync (push/pull). Returns local
 // state for full state transfer on join/reconcile.
+//
+// Lock-free: returns the pre-marshaled bytes from the atomic snapshot.
+// This is O(1) and never blocks — the key fix for DEFECT-A where
+// RLock contention under relay load starved memberlist push/pull.
 func (d *meshDelegate) LocalState(join bool) []byte {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	data, err := d.localMeta.MarshalMeta()
-	if err != nil {
+	snap := d.snapshot.Load()
+	if snap == nil {
 		return nil
 	}
-	return data
+	return snap.bytes
 }
 
 // MergeRemoteState is called to merge remote state received during push/pull.
@@ -309,29 +355,55 @@ func (d *meshDelegate) MergeRemoteState(data []byte, join bool) {
 	}
 
 	// If this is our own state echoed back, ignore it.
-	d.mu.RLock()
-	if d.localMeta.PublicKey == remoteMeta.PublicKey {
-		d.mu.RUnlock()
+	// Lock-free atomic load — no contention with writers.
+	snap := d.snapshot.Load()
+	if snap != nil && snap.meta.PublicKey == remoteMeta.PublicKey {
 		return
 	}
-	d.mu.RUnlock()
 
 	// Actual caching of remote node metadata happens in the event delegate.
 }
 
 // updateLocalMeta updates the local node's metadata (e.g., refreshed load metrics).
+//
+// This is the only writer path.  It holds d.mu (a plain Mutex, not RWMutex)
+// only long enough to copy the current meta, apply the mutation, and store
+// a new atomic snapshot.  The expensive marshaling happens inside
+// storeSnapshot while holding the lock, but the lock is a writer-only
+// Mutex — readers never contend on it.  This eliminates the reader/writer
+// contention that caused DEFECT-A.
+//
+// The critical insight: readers (LocalState, NodeMeta, getLocalMeta) are
+// completely lock-free via atomic.Pointer, so no amount of writer
+// activity can starve them.
 func (d *meshDelegate) updateLocalMeta(fn func(*NodeMeta)) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	fn(d.localMeta)
+
+	// Copy current meta, apply mutation, store new snapshot.
+	snap := d.snapshot.Load()
+	var current *NodeMeta
+	if snap != nil {
+		// Shallow copy is sufficient — NodeMeta fields are value types
+		// or slices that are replaced, not mutated in-place.
+		copyMeta := *snap.meta
+		current = &copyMeta
+	} else {
+		current = &NodeMeta{}
+	}
+	fn(current)
+	d.storeSnapshot(current)
 }
 
 // getLocalMeta returns a copy of the local metadata.
+//
+// Lock-free: atomic load + shallow copy.  Never blocks.
 func (d *meshDelegate) getLocalMeta() *NodeMeta {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	// Return a shallow copy — callers should not mutate
-	copy := *d.localMeta
+	snap := d.snapshot.Load()
+	if snap == nil {
+		return &NodeMeta{}
+	}
+	copy := *snap.meta
 	return &copy
 }
 
