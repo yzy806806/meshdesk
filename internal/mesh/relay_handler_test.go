@@ -140,11 +140,24 @@ func createTripleNodes(t *testing.T) (*MeshNode, *MeshNode, *MeshNode, string, s
 }
 
 // TestRelayHandler_HandleDial_ProductionPath verifies that the
-// RelayHandler→RelayHandler relay works end-to-end: both the relay node
-// and the target node use HandleStream (via RegisterRelayHandler), not
-// a custom virtual port listener. This tests the production code path
-// that was previously broken because HandleStream had no case for
-// MeshRelayDial.
+// RelayHandler→RelayHandler relay delivers data to the target's real
+// virtual port service — NOT an io.Copy echo back to the sender.
+//
+// This is the regression test for the "echo illusion" defect identified
+// in motion-0d35888afae6. The original version of this test dialed with
+// port=0 and no OnRelayDial callback, so handleDial fell back to its
+// io.Copy(conn, conn) echo branch. The test then asserted that A received
+// its own bytes back and called that "pass" — codifying the broken
+// behavior as correct. Real services (collector 0x105F, TUN 0x4D,
+// SOCKS5 0x5350) never received any data.
+//
+// The fixed test mirrors the production wiring in main.go: B registers a
+// real virtual port service that responds with a fixed payload, and wires
+// OnRelayDial to DialLocalVirtualPort + RelayStream. A dials via relay
+// with a non-zero port. The test asserts A receives the service's
+// payload, NOT its own echo. It also explicitly fails if an echo is
+// detected, so a regression that re-introduces the echo fallback cannot
+// silently pass.
 func TestRelayHandler_HandleDial_ProductionPath(t *testing.T) {
 	nodeA, relayNode, nodeB, peerA, peerB := createTripleNodes(t)
 
@@ -155,45 +168,213 @@ func TestRelayHandler_HandleDial_ProductionPath(t *testing.T) {
 	}
 	defer relayHandler.Close()
 
-	// Register the relay handler on the target node (B). This is the
-	// key difference from TestRelayHandler_BidirectionalDataFlow: B
-	// uses the production RelayHandler.HandleStream, not a custom
-	// listener. The default OnRelayDial (nil) echoes data via io.Copy.
+	// Register the relay handler on the target node (B). B uses the
+	// production RelayHandler.HandleStream path, same as main.go.
 	targetHandler, err := nodeB.RegisterRelayHandler()
 	if err != nil {
 		t.Fatalf("nodeB RegisterRelayHandler: %v", err)
 	}
 	defer targetHandler.Close()
 
-	// Node A dials via relay to reach B.
+	// Register a real virtual port service on B. The service reads the
+	// request and responds with a fixed payload — it is NOT an echo.
+	const servicePort = 0x2222
+	const serviceResponse = "HELLO_FROM_SERVICE_2222"
+
+	svcLn, err := nodeB.ListenVirtualPort(servicePort)
+	if err != nil {
+		t.Fatalf("nodeB ListenVirtualPort(%d): %v", servicePort, err)
+	}
+	defer svcLn.Close()
+
+	serviceReceived := make(chan []byte, 1)
+	go func() {
+		conn, err := svcLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		n, _ := conn.Read(buf)
+		serviceReceived <- buf[:n]
+		conn.Write([]byte(serviceResponse))
+	}()
+
+	// Wire OnRelayDial on B — this mirrors the production wiring in
+	// main.go (cmd/meshdesk/main.go:256). The callback dials the local
+	// virtual port service and bridges the relay stream to it with
+	// bidirectional io.Copy via RelayStream.
+	targetHandler.OnRelayDial = func(dial *MeshRelayDial, conn net.Conn) {
+		if dial.Port == 0 {
+			t.Error("OnRelayDial: dial.Port is 0 — port was lost in the relay chain")
+			conn.Close()
+			return
+		}
+		localConn, dErr := nodeB.DialLocalVirtualPort(int(dial.Port), dial.InitiatorKey)
+		if dErr != nil {
+			t.Errorf("OnRelayDial: DialLocalVirtualPort(%d): %v", dial.Port, dErr)
+			conn.Close()
+			return
+		}
+		go RelayStream(conn, localConn)
+	}
+
+	// Node A dials via relay to reach B's service on port 0x2222.
 	dialer := NewRelayDialer(nodeA, peerA)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, servicePort)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}
 	defer conn.Close()
 
 	// Write test data from A → B (through relay).
-	// B echoes data back via io.Copy(conn, conn) in handleDial's default path.
 	msgA := []byte("hello from A through relay production path")
 	if _, err := conn.Write(msgA); err != nil {
 		t.Fatalf("A write: %v", err)
 	}
 
-	// Read the echo back.
-	buf := make([]byte, len(msgA))
-	if _, err := io.ReadFull(conn, buf); err != nil {
-		t.Fatalf("A read echo: %v", err)
+	// Read the response from B's service.
+	respBuf := make([]byte, 256)
+	n, err := conn.Read(respBuf)
+	if err != nil {
+		t.Fatalf("A read response: %v", err)
 	}
-	if string(buf) != string(msgA) {
-		t.Errorf("data mismatch: got %q, want %q", buf, msgA)
+	resp := string(respBuf[:n])
+
+	// Regression guard: if we receive our own data back, the echo
+	// fallback path was taken instead of the real service.
+	if resp == string(msgA) {
+		t.Fatalf("ECHO ILLUSION: received own data echoed back (handleDial fell back to io.Copy instead of dispatching to the real service via OnRelayDial). got %q", resp)
+	}
+
+	if resp != serviceResponse {
+		t.Errorf("response mismatch: got %q, want %q", resp, serviceResponse)
+	}
+
+	// Verify the service actually received A's request bytes.
+	select {
+	case got := <-serviceReceived:
+		if string(got) != string(msgA) {
+			t.Errorf("service received %q, want %q", got, msgA)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout: target service never received A's request — data did not reach the real listener")
 	}
 
 	// Verify relay has one active tunnel.
+	if count := relayHandler.TunnelCount(); count != 1 {
+		t.Errorf("relay tunnel count = %d, want 1", count)
+	}
+}
+
+// TestRelayHandler_HandleDial_NoEchoRegression is a dedicated regression
+// test for the "echo illusion" defect (motion-0d35888afae6). It verifies
+// that when OnRelayDial is wired to a real service, the data A sends
+// reaches the service and A receives the service's response — NOT an
+// echo of its own data.
+//
+// This test is intentionally minimal and focused: it isolates the
+// handleDial → OnRelayDial → DialLocalVirtualPort → RelayStream path
+// and asserts three independent invariants:
+//  1. A does NOT receive its own request bytes back (echo guard)
+//  2. A receives the service's distinct response payload
+//  3. The service listener actually received A's request bytes
+//
+// If any of these fail, the relay path has regressed to the echo
+// fallback. The test is designed to fail loudly, not silently pass.
+func TestRelayHandler_HandleDial_NoEchoRegression(t *testing.T) {
+	nodeA, relayNode, nodeB, peerA, peerB := createTripleNodes(t)
+
+	relayHandler, err := relayNode.RegisterRelayHandler()
+	if err != nil {
+		t.Fatalf("relay RegisterRelayHandler: %v", err)
+	}
+	defer relayHandler.Close()
+
+	targetHandler, err := nodeB.RegisterRelayHandler()
+	if err != nil {
+		t.Fatalf("nodeB RegisterRelayHandler: %v", err)
+	}
+	defer targetHandler.Close()
+
+	const servicePort = 0x3333
+	const requestPayload = "REGRESSION_TEST_REQUEST"
+	const responsePayload = "REGRESSION_TEST_RESPONSE"
+
+	svcLn, err := nodeB.ListenVirtualPort(servicePort)
+	if err != nil {
+		t.Fatalf("nodeB ListenVirtualPort(%d): %v", servicePort, err)
+	}
+	defer svcLn.Close()
+
+	serviceGotRequest := make(chan struct{}, 1)
+	go func() {
+		conn, err := svcLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 256)
+		n, _ := conn.Read(buf)
+		if n > 0 {
+			serviceGotRequest <- struct{}{}
+		}
+		conn.Write([]byte(responsePayload))
+	}()
+
+	// Production wiring: OnRelayDial → DialLocalVirtualPort + RelayStream.
+	targetHandler.OnRelayDial = func(dial *MeshRelayDial, conn net.Conn) {
+		localConn, dErr := nodeB.DialLocalVirtualPort(int(dial.Port), dial.InitiatorKey)
+		if dErr != nil {
+			conn.Close()
+			return
+		}
+		go RelayStream(conn, localConn)
+	}
+
+	dialer := NewRelayDialer(nodeA, peerA)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, servicePort)
+	if err != nil {
+		t.Fatalf("DialViaRelay: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte(requestPayload)); err != nil {
+		t.Fatalf("A write: %v", err)
+	}
+
+	respBuf := make([]byte, 256)
+	n, err := conn.Read(respBuf)
+	if err != nil {
+		t.Fatalf("A read response: %v", err)
+	}
+	resp := string(respBuf[:n])
+
+	// Invariant 1: no echo.
+	if resp == requestPayload {
+		t.Fatalf("ECHO REGRESSION: A received its own request back (%q) — handleDial fell back to io.Copy echo instead of dispatching to the real service", resp)
+	}
+
+	// Invariant 2: correct service response.
+	if resp != responsePayload {
+		t.Errorf("response mismatch: got %q, want %q", resp, responsePayload)
+	}
+
+	// Invariant 3: the service actually received the request.
+	select {
+	case <-serviceGotRequest:
+		// pass
+	case <-time.After(5 * time.Second):
+		t.Fatal("REGRESSION: target service never received A's request — data did not reach the real virtual port listener")
+	}
+
 	if count := relayHandler.TunnelCount(); count != 1 {
 		t.Errorf("relay tunnel count = %d, want 1", count)
 	}
