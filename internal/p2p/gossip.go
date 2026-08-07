@@ -162,6 +162,23 @@ func (g *GossipLayer) SetLocalCapabilities(capRelay, capExit, capProxyEntry, cap
 		m.CapCollector = capCollector
 		m.Seq++
 	})
+
+	// Propagate the updated metadata through the gossip protocol.
+	// memberlist.UpdateNode re-reads Delegate.NodeMeta() (which marshals
+	// our localMeta) and broadcasts a fresh alive message to all peers.
+	// Without this, capability changes made AFTER memberlist.Create()
+	// (e.g. EnableRelayMode/DisableRelayMode at main.go:456, or runtime
+	// capability flips) are never seen by peers — the same failure mode
+	// as DEFECT-02 for endpoints (see SetLocalEndpoints).
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+
+	if ml != nil {
+		if err := ml.UpdateNode(time.Second); err != nil {
+			log.Printf("[p2p] capabilities: UpdateNode failed: %v", err)
+		}
+	}
 }
 
 // SetLocalLoadMetrics updates the local node's load metrics.
