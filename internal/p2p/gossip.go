@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hashicorp/memberlist"
@@ -52,6 +53,24 @@ type GossipLayer struct {
 	// joinProtocol handles the dynamic join/leave protocol (§4).
 	// It is always initialized when p2p is enabled.
 	joinProtocol *JoinProtocol
+
+	// --- DEFECT-A Fix B: Coalesced UpdateNode ---
+	//
+	// Multiple hot paths (SetLocalTrafficStats, SetLocalRTT,
+	// SetLocalLoadMetrics, OnEndpointDiscovered, relay updateLoadMetrics)
+	// all call memberlist.UpdateNode, which acquires memberlist's internal
+	// nodeLock write lock.  Under relay-tunnel load, concurrent UpdateNode
+	// calls contend on nodeLock, blocking Members() calls in
+	// sendRelayMessage/sendJoinMessage and memberlist's own probe/reap.
+	//
+	// The coalescer batches these requests: SetLocal* methods call
+	// scheduleUpdateNode() instead of UpdateNode directly.  A single
+	// background goroutine flushes at most once per updateNodeMinInterval
+	// (5s), so nodeLock write acquisitions are bounded regardless of how
+	// many metadata updates occur.
+	updateNodePending atomic.Bool   // set by scheduleUpdateNode, cleared by flush
+	updateNodeTimer   *time.Timer   // fires after min interval to trigger flush
+	updateNodeCh      chan struct{} // signals the coalescer goroutine to flush
 }
 
 // NewGossipLayer creates a new gossip layer from the given config, identity,
@@ -164,21 +183,9 @@ func (g *GossipLayer) SetLocalCapabilities(capRelay, capExit, capProxyEntry, cap
 	})
 
 	// Propagate the updated metadata through the gossip protocol.
-	// memberlist.UpdateNode re-reads Delegate.NodeMeta() (which marshals
-	// our localMeta) and broadcasts a fresh alive message to all peers.
-	// Without this, capability changes made AFTER memberlist.Create()
-	// (e.g. EnableRelayMode/DisableRelayMode at main.go:456, or runtime
-	// capability flips) are never seen by peers — the same failure mode
-	// as DEFECT-02 for endpoints (see SetLocalEndpoints).
-	g.mu.RLock()
-	ml := g.memberlist
-	g.mu.RUnlock()
-
-	if ml != nil {
-		if err := ml.UpdateNode(time.Second); err != nil {
-			log.Printf("[p2p] capabilities: UpdateNode failed: %v", err)
-		}
-	}
+	// Uses the coalesced UpdateNode to avoid nodeLock contention
+	// under relay load (DEFECT-A Fix B).
+	g.scheduleUpdateNode()
 }
 
 // SetLocalLoadMetrics updates the local node's load metrics.
@@ -206,18 +213,9 @@ func (g *GossipLayer) SetLocalEndpoints(endpoints []string, natType string) {
 		m.Seq++
 	})
 
-	// Propagate the updated metadata through the gossip protocol.
-	// memberlist.UpdateNode re-reads Delegate.NodeMeta() (which marshals
-	// our localMeta) and broadcasts a fresh alive message to all peers.
-	g.mu.RLock()
-	ml := g.memberlist
-	g.mu.RUnlock()
-
-	if ml != nil {
-		if err := ml.UpdateNode(time.Second); err != nil {
-			log.Printf("[p2p] endpoint learning: UpdateNode failed: %v", err)
-		}
-	}
+	// Propagate the updated metadata through the gossip protocol
+	// via coalesced UpdateNode (DEFECT-A Fix B).
+	g.scheduleUpdateNode()
 }
 
 // SetLocalVirtualIP sets the local node's TUN VirtualIP in gossip metadata.
@@ -231,15 +229,8 @@ func (g *GossipLayer) SetLocalVirtualIP(virtualIP string) {
 		m.Seq++
 	})
 
-	g.mu.RLock()
-	ml := g.memberlist
-	g.mu.RUnlock()
-
-	if ml != nil {
-		if err := ml.UpdateNode(time.Second); err != nil {
-			log.Printf("[p2p] virtual IP: UpdateNode failed: %v", err)
-		}
-	}
+	// Coalesced UpdateNode (DEFECT-A Fix B).
+	g.scheduleUpdateNode()
 }
 
 // SetLocalSubnetProxies sets the local node's advertised subnet proxies
@@ -252,15 +243,8 @@ func (g *GossipLayer) SetLocalSubnetProxies(subnets []string) {
 		m.Seq++
 	})
 
-	g.mu.RLock()
-	ml := g.memberlist
-	g.mu.RUnlock()
-
-	if ml != nil {
-		if err := ml.UpdateNode(time.Second); err != nil {
-			log.Printf("[p2p] subnet proxies: UpdateNode failed: %v", err)
-		}
-	}
+	// Coalesced UpdateNode (DEFECT-A Fix B).
+	g.scheduleUpdateNode()
 }
 
 // SetLocalACLRules sets the local node's ACL rules in gossip metadata.
@@ -273,15 +257,8 @@ func (g *GossipLayer) SetLocalACLRules(rules []string) {
 		m.Seq++
 	})
 
-	g.mu.RLock()
-	ml := g.memberlist
-	g.mu.RUnlock()
-
-	if ml != nil {
-		if err := ml.UpdateNode(time.Second); err != nil {
-			log.Printf("[p2p] ACL rules: UpdateNode failed: %v", err)
-		}
-	}
+	// Coalesced UpdateNode (DEFECT-A Fix B).
+	g.scheduleUpdateNode()
 }
 
 // SetLocalTrafficStats updates the local node's traffic statistics in
@@ -300,15 +277,8 @@ func (g *GossipLayer) SetLocalTrafficStats(inBytes, outBytes uint64, smuxStreams
 		m.Seq++
 	})
 
-	g.mu.RLock()
-	ml := g.memberlist
-	g.mu.RUnlock()
-
-	if ml != nil {
-		if err := ml.UpdateNode(time.Second); err != nil {
-			log.Printf("[p2p] traffic stats: UpdateNode failed: %v", err)
-		}
-	}
+	// Coalesced UpdateNode (DEFECT-A Fix B).
+	g.scheduleUpdateNode()
 }
 
 // announceLocalEndpoint proactively sets the local node's WireGuard endpoint(s)
@@ -636,6 +606,84 @@ func firstIPv4HostFromEndpoints(endpoints []string) string {
 	return ""
 }
 
+// updateNodeMinInterval is the minimum interval between UpdateNode calls.
+// Multiple metadata updates within this window are coalesced into a single
+// UpdateNode, reducing nodeLock write-lock contention under relay load.
+const updateNodeMinInterval = 5 * time.Second
+
+// scheduleUpdateNode requests a coalesced UpdateNode.  Instead of calling
+// memberlist.UpdateNode directly (which acquires nodeLock write lock),
+// this sets a pending flag and signals the coalescer goroutine.  The
+// goroutine flushes at most one UpdateNode per updateNodeMinInterval,
+// regardless of how many callers request it.
+//
+// This is safe to call from any goroutine — it only does an atomic store
+// and a non-blocking channel send.
+func (g *GossipLayer) scheduleUpdateNode() {
+	// Read the channel under the lock to avoid racing with Stop()
+	// which nils it.  Once we have a non-nil reference, sending is
+	// safe even if Stop() subsequently nils the field — the channel
+	// object itself is not closed (only stopCh is closed), and the
+	// coalescer goroutine exits on stopCh.
+	g.mu.RLock()
+	ch := g.updateNodeCh
+	g.mu.RUnlock()
+	if ch == nil {
+		return // coalescer not started yet (pre-Start or post-Stop)
+	}
+	g.updateNodePending.Store(true)
+	// Non-blocking signal: if the goroutine is busy, it will pick up
+	// the pending flag on its next iteration.
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// updateNodeCoalescer is the background goroutine that flushes pending
+// UpdateNode requests at a bounded rate.  Started in Start(), stopped
+// in Stop() via g.stopCh.
+func (g *GossipLayer) updateNodeCoalescer() {
+	for {
+		select {
+		case <-g.stopCh:
+			return
+		case <-g.updateNodeCh:
+			// Drain any additional signals (coalesce).
+			for {
+				select {
+				case <-g.updateNodeCh:
+				default:
+					goto flush
+				}
+			}
+		flush:
+			// Wait for the minimum interval before flushing, to
+			// batch rapid successive updates.
+			g.updateNodeTimer.Reset(updateNodeMinInterval)
+			select {
+			case <-g.stopCh:
+				return
+			case <-g.updateNodeTimer.C:
+			}
+
+			if !g.updateNodePending.Swap(false) {
+				continue // nothing to do
+			}
+
+			g.mu.RLock()
+			ml := g.memberlist
+			g.mu.RUnlock()
+			if ml == nil {
+				continue
+			}
+			if err := ml.UpdateNode(time.Second); err != nil {
+				log.Printf("[p2p] coalesced UpdateNode failed: %v", err)
+			}
+		}
+	}
+}
+
 // Start initializes memberlist and begins gossip.
 func (g *GossipLayer) Start() error {
 	g.mu.Lock()
@@ -709,7 +757,14 @@ func (g *GossipLayer) Start() error {
 	g.mu.Lock()
 	g.memberlist = ml
 	g.started = true
+	// Initialize the UpdateNode coalescer (DEFECT-A Fix B).
+	g.updateNodeCh = make(chan struct{}, 1)
+	g.updateNodeTimer = time.NewTimer(updateNodeMinInterval)
+	g.updateNodeTimer.Stop() // not running until first schedule
 	g.mu.Unlock()
+
+	// Start the coalescer goroutine.
+	go g.updateNodeCoalescer()
 
 	// Start periodic cleanup of stale metaCache entries (prevents
 	// unbounded growth from peers that left permanently).
@@ -771,9 +826,17 @@ func (g *GossipLayer) Stop() error {
 	g.started = false
 	rsm := g.relaySessionMgr
 	stopCleanup := g.stopMetaCleanup
+	// Capture the timer so we can stop it after unlock; do NOT nil the
+	// channel — the coalescer goroutine reads it without the lock and
+	// exits on stopCh.  Nil-ing here would cause a data race.
+	timer := g.updateNodeTimer
 	g.mu.Unlock()
 
 	close(g.stopCh)
+
+	if timer != nil {
+		timer.Stop()
+	}
 
 	if stopCleanup != nil {
 		stopCleanup()
@@ -933,15 +996,8 @@ func (g *GossipLayer) SetLocalRTT(rtt time.Duration) {
 		m.Seq++
 	})
 
-	g.mu.RLock()
-	ml := g.memberlist
-	g.mu.RUnlock()
-
-	if ml != nil {
-		if err := ml.UpdateNode(time.Second); err != nil {
-			log.Printf("[p2p] RTT update: UpdateNode failed: %v", err)
-		}
-	}
+	// Coalesced UpdateNode (DEFECT-A Fix B).
+	g.scheduleUpdateNode()
 }
 
 // PeerRTT returns the advertised RTT for a peer, or 0 if unknown.
