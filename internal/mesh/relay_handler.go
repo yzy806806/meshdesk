@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // DefaultMaxRelayTunnels is the default maximum number of active relay tunnels.
@@ -18,6 +20,11 @@ const DefaultRelayIdleTimeout = 5 * time.Minute
 
 // DefaultRelayHeartbeatInterval is the default heartbeat interval for relay tunnels.
 const DefaultRelayHeartbeatInterval = 30 * time.Second
+
+// staleHalfOpenTimeout is how long a half-open tunnel (TargetConn still
+// nil, waiting for target to dial back) is considered stale and eligible
+// for eviction when the relay is at capacity.
+const staleHalfOpenTimeout = 30 * time.Second
 
 // relayTunnel tracks one active relay bridge between two smux streams.
 type relayTunnel struct {
@@ -145,9 +152,17 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	tunnelCount := len(h.tunnels)
 	h.mu.RUnlock()
 	if tunnelCount >= h.maxTunnels {
-		h.sendResponse(initiatorConn, req.TunnelID, false, RelayRejectAtCapacity)
-		initiatorConn.Close()
-		return
+		// At capacity — try to evict stale half-open tunnels (TargetConn
+		// still nil, been waiting longer than staleHalfOpenTimeout).
+		// This mitigates DEFECT-B: retry storms where each attempt
+		// generates a new tunnelID, causing half-open tunnels to pile up.
+		evicted := h.evictStaleHalfOpen()
+		if evicted == 0 {
+			h.sendResponse(initiatorConn, req.TunnelID, false, RelayRejectAtCapacity)
+			initiatorConn.Close()
+			return
+		}
+		log.Printf("[mesh-relay] evicted %d stale half-open tunnels to make room", evicted)
 	}
 
 	// Check for duplicate tunnel.
@@ -297,15 +312,22 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	if resp.Type == MsgRelayReject {
 		log.Printf("[mesh-relay] target dial-back rejected: %s", resp.RejectReason)
 		conn.Close()
-
+		h.removeTunnel(resp.TunnelID)
 		return
 	}
 
-	// Target dialed back successfully.
+	// Target dialed back successfully. Store the target stream.
 	h.mu.Lock()
 	tunnel.TargetConn = conn
 	h.mu.Unlock()
 
+	log.Printf("[mesh-relay] dial-back accepted for tunnel %s, starting bridge",
+		resp.TunnelID[:min(len(resp.TunnelID), 16)])
+
+	// Start the bidirectional bridge now that both sides are connected.
+	// Previously this was dead code — TargetConn was set but startBridge
+	// was never called, leaving the tunnel hanging and leaking resources.
+	h.startBridge(tunnel)
 }
 
 // handleDial processes a MeshRelayDial received from a relay node.
@@ -353,6 +375,11 @@ func (h *RelayHandler) handleTeardown(conn net.Conn, td *MeshRelayTeardown) {
 // startBridge starts two goroutines copying bytes between the initiator
 // and target streams. When either copy returns (EOF or error), both
 // streams are closed and the tunnel is removed.
+//
+// LastActivity is updated on each successful data transfer so that
+// cleanupIdleTunnels does not reap tunnels with active traffic.
+// A heartbeat goroutine sends MsgRelayHeartbeat at heartbeatInterval
+// to both peers, keeping the tunnel alive during idle periods.
 func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
 	initiator := tunnel.InitiatorConn
 	target := tunnel.TargetConn
@@ -366,11 +393,40 @@ func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
 	go func() {
 		defer h.removeTunnel(tunnel.ID)
 
+		// Start heartbeat goroutine.
+		heartbeatDone := make(chan struct{})
+		go func() {
+			if h.heartbeatInterval <= 0 {
+				return
+			}
+			ticker := time.NewTicker(h.heartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					hb := &MeshRelayHeartbeat{
+						Type:      MsgRelayHeartbeat,
+						TunnelID:  tunnel.ID,
+						Timestamp: nowNano(),
+					}
+					// Best-effort heartbeat — write errors are non-fatal.
+					_ = writeRelayMessage(initiator, hb)
+					_ = writeRelayMessage(target, hb)
+					tunnel.LastActivity.Store(nowNano())
+				case <-heartbeatDone:
+					return
+				}
+			}
+		}()
+		defer close(heartbeatDone)
+
 		// Two goroutines: initiator → target, target → initiator.
+		// Each uses an activity-tracking writer to update LastActivity.
 		done := make(chan struct{}, 2)
 
 		go func() {
-			_, err := io.Copy(target, initiator)
+			aw := &activityWriter{dst: target, tunnel: tunnel}
+			_, err := io.Copy(aw, initiator)
 			if err != nil {
 				log.Printf("[mesh-relay] copy initiator→target: %v (tunnel=%s)", err, tunnel.ID[:16])
 			}
@@ -378,7 +434,8 @@ func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
 		}()
 
 		go func() {
-			_, err := io.Copy(initiator, target)
+			aw := &activityWriter{dst: initiator, tunnel: tunnel}
+			_, err := io.Copy(aw, target)
 			if err != nil {
 				log.Printf("[mesh-relay] copy target→initiator: %v (tunnel=%s)", err, tunnel.ID[:16])
 			}
@@ -398,6 +455,22 @@ func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
 		// Drain the second goroutine.
 		<-done
 	}()
+}
+
+// activityWriter wraps an io.Writer and updates the tunnel's LastActivity
+// timestamp on each successful Write, so cleanupIdleTunnels can
+// distinguish idle tunnels from active ones.
+type activityWriter struct {
+	dst    io.Writer
+	tunnel *relayTunnel
+}
+
+func (aw *activityWriter) Write(p []byte) (int, error) {
+	n, err := aw.dst.Write(p)
+	if n > 0 {
+		aw.tunnel.LastActivity.Store(nowNano())
+	}
+	return n, err
 }
 
 // removeTunnel removes a tunnel from the active map and closes its streams.
@@ -470,6 +543,33 @@ func (h *RelayHandler) TunnelCount() int {
 	return len(h.tunnels)
 }
 
+// evictStaleHalfOpen removes tunnels that are half-open (TargetConn is
+// still nil, meaning the target hasn't responded) and have been waiting
+// longer than staleHalfOpenTimeout. Returns the number of tunnels evicted.
+// This is called when the relay is at capacity to reclaim slots from
+// abandoned retry attempts (DEFECT-B mitigation).
+func (h *RelayHandler) evictStaleHalfOpen() int {
+	cutoff := time.Now().Add(-staleHalfOpenTimeout)
+	var evictedIDs []string
+
+	h.mu.Lock()
+	for id, t := range h.tunnels {
+		if t.TargetConn == nil && t.CreatedAt.Before(cutoff) {
+			evictedIDs = append(evictedIDs, id)
+			delete(h.tunnels, id)
+			t.closeOnce.Do(func() {
+				close(t.done)
+				if t.InitiatorConn != nil {
+					t.InitiatorConn.Close()
+				}
+			})
+		}
+	}
+	h.mu.Unlock()
+
+	return len(evictedIDs)
+}
+
 // --- Helpers for reading/writing relay messages on streams ---
 
 // writeRelayMessage encodes a relay message as msgpack and writes it to conn.
@@ -484,16 +584,20 @@ func writeRelayMessage(conn net.Conn, msg any) error {
 	return nil
 }
 
-// readRelayMessage reads msgpack bytes from conn and decodes them into
-// the appropriate relay message struct.
+// readRelayMessage reads one msgpack-encoded relay message from conn and
+// decodes it into the appropriate relay message struct.
+//
+// Uses msgpack.NewDecoder which internally buffers reads and uses Skip()
+// to consume exactly one complete msgpack value — this correctly handles
+// TCP/smux framing where a single Read may return a partial message or
+// multiple messages coalesced into one read.
 func readRelayMessage(conn net.Conn) (any, error) {
-	// Relay messages are small (< 512 bytes). Use a bounded reader.
-	buf := make([]byte, 1024)
-	n, err := conn.Read(buf)
+	dec := msgpack.NewDecoder(conn)
+	raw, err := dec.DecodeRaw()
 	if err != nil {
 		return nil, fmt.Errorf("read relay message: %w", err)
 	}
-	return unmarshalRelayMsg(buf[:n])
+	return unmarshalRelayMsg(raw)
 }
 
 // readRelayMessageWithContext reads a relay message with a timeout.
