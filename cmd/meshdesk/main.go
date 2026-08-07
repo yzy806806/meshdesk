@@ -267,11 +267,11 @@ func main() {
 					return
 				}
 
-				// Dial the local virtual port service. peerID is empty
-				// here because the relay's MeshRelayDial doesn't carry
-				// the original initiator's key (handleRequest sets it to
-				// ""). The local service can still identify the peer via
-				// the connWithPeer wrapper if needed.
+				// Dial the local virtual port service. dial.InitiatorKey
+				// carries the original initiator's identity (propagated
+				// through MeshRelayRequest → MeshRelayDial). The local
+				// service can use it for per-peer authorization (ACL,
+				// source allowlist, etc.).
 				localConn, dErr := node.DialLocalVirtualPort(targetPort, dial.InitiatorKey)
 				if dErr != nil {
 					log.Printf("[mesh-relay] OnRelayDial: failed to dial local virtual port %d: %v (tunnel=%s)",
