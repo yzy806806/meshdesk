@@ -419,8 +419,16 @@ func (h *RelayHandler) handleTeardown(conn net.Conn, td *MeshRelayTeardown) {
 // directly into the data streams. That polluted the data plane — peers
 // treat the stream as a raw byte pipe and do not parse msgpack, so
 // heartbeat bytes were delivered as garbage business data. The heartbeat
-// has been removed. Tunnel liveness now relies on smux session-level
-// keepalive and the idle timeout (cleanupIdleTunnels, default 5 min).
+// has been removed. Tunnel liveness now relies on:
+//  1. The relay idle sweep (cleanupIdleTunnels, DefaultRelayIdleTimeout = 5 min),
+//     which reaps tunnels whose LastActivity is older than the threshold.
+//  2. The activityWriter wrapper, which updates tunnel.LastActivity on
+//     every successful data transfer, keeping active tunnels from being
+//     reaped.
+//
+// Note: smux session-level keepalive (PingInterval) and StreamIdleTimeout
+// are both disabled by default (DefaultConfig sets them to 0), so they do
+// not contribute to tunnel liveness.
 func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
 	// Guard against double invocation.
 	if !tunnel.started.CompareAndSwap(false, true) {
