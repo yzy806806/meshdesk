@@ -6,6 +6,7 @@
 # Go binaries
 /meshdesk
 meshdesk-*
+meshdesk.new
 /bin/
 /dist/
 

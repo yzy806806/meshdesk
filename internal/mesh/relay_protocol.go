@@ -52,11 +52,12 @@ func (t MeshRelayMsgType) String() string {
 // target. It is propagated through the relay chain so the target's
 // OnRelayDial callback can dial the correct local virtual port service.
 type MeshRelayRequest struct {
-	Type      MeshRelayMsgType `msgpack:"t"`
-	TunnelID  string           `msgpack:"tid"` // 16-byte hex, random
-	TargetKey string           `msgpack:"tgk"` // target peer identity hex
-	Port      uint16           `msgpack:"pt"`  // target virtual port (0 = legacy/unset)
-	Timestamp int64            `msgpack:"ts"`  // UnixNano
+	Type         MeshRelayMsgType `msgpack:"t"`
+	TunnelID     string           `msgpack:"tid"` // 16-byte hex, random
+	TargetKey    string           `msgpack:"tgk"` // target peer identity hex
+	InitiatorKey string           `msgpack:"ik"`  // initiator peer identity hex (for target-side auth)
+	Port         uint16           `msgpack:"pt"`  // target virtual port (0 = legacy/unset)
+	Timestamp    int64            `msgpack:"ts"`  // UnixNano
 }
 
 // MeshRelayResponse is sent by the relay node back to the initiator
@@ -75,6 +76,11 @@ type MeshRelayResponse struct {
 // Port carries the virtual port the initiator wants to reach on the
 // target, propagated from MeshRelayRequest. The target's OnRelayDial
 // callback uses it to dial the correct local virtual port service.
+//
+// InitiatorKey carries the identity hex of the original initiator,
+// propagated from MeshRelayRequest.InitiatorKey. The target's
+// OnRelayDial callback passes it to DialLocalVirtualPort for
+// per-peer authorization (ACL, source allowlist, etc.).
 type MeshRelayDial struct {
 	Type         MeshRelayMsgType `msgpack:"t"`
 	TunnelID     string           `msgpack:"tid"` // matches the initiator's tunnel
