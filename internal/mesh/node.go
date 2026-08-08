@@ -156,6 +156,15 @@ type MeshNode struct {
 	// trying all peers with active sessions.
 	relayMetaProvider func() []RelayPeerInfo
 
+	// peerEndpointResolver returns the STABLE endpoint (advertised
+	// address, not the ephemeral source port of an inbound session)
+	// for a peer identity hex. Set by main.go to query the gossip
+	// layer's KnownPeers, which carries advertise_endpoints. Used by
+	// the reconnect watcher to avoid dialing dead NAT mappings.
+	// If nil, resolvePeerEndpoint falls back to config peers and the
+	// routing table.
+	peerEndpointResolver func(string) string
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -856,6 +865,17 @@ func (n *MeshNode) SetSessionReconnectHandler(h func(string)) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.sessionReconnectHandler = h
+}
+
+// SetPeerEndpointResolver installs a callback that resolves a peer's
+// STABLE advertised endpoint by identity hex. main.go wires this to the
+// gossip layer's KnownPeers (which carries advertise_endpoints). The
+// reconnect watcher uses it to avoid dialing the ephemeral source port
+// of a dead inbound session (a NAT mapping that no longer exists).
+func (n *MeshNode) SetPeerEndpointResolver(f func(string) string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.peerEndpointResolver = f
 }
 
 // ACL returns the TUN ACL engine, or nil when ACL is not configured.
