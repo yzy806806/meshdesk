@@ -20,6 +20,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -47,6 +48,13 @@ var (
 	Commit    = "unknown"
 	BuildTime = "unknown"
 )
+
+// autoDialInFlight tracks peers for which an auto-dial (NotifyJoin →
+// DialPeerByEndpoint) is currently in progress, preventing duplicate
+// concurrent dials when memberlist flaps and re-fires NotifyJoin for
+// the same peer. Entries are removed when the dial attempt completes.
+var autoDialMu sync.Mutex
+var autoDialInFlight = make(map[string]bool)
 
 func main() {
 	// Handle "join-token" subcommand: meshdesk join-token <secret> [server-fp]
@@ -226,6 +234,24 @@ func main() {
 		return result
 	})
 
+	// Wire the peer endpoint resolver so the reconnect watcher dials
+	// the peer's STABLE advertised endpoint (from gossip NodeMeta)
+	// instead of the ephemeral source port of a dead inbound session.
+	// Without this, a node behind NAT that restarts (or whose NAT
+	// mapping expires) can never be reconnected — the cached ephemeral
+	// port no longer exists, and reconnect loops forever.
+	node.SetPeerEndpointResolver(func(peerKey string) string {
+		if gossipLayer == nil {
+			return ""
+		}
+		for _, meta := range gossipLayer.KnownPeers() {
+			if meta.PublicKey == peerKey && len(meta.Endpoints) > 0 {
+				return meta.Endpoints[0]
+			}
+		}
+		return ""
+	})
+
 	if err := node.Start(); err != nil {
 		log.Fatalf("Failed to start mesh node: %v", err)
 	}
@@ -248,47 +274,51 @@ func main() {
 	// io.Copy. Without this callback, handleDial falls back to io.Copy
 	// echo — data bounces back to the sender instead of reaching the real
 	// service (collector 0x105F, TUN 0x4D, SOCKS5 0x5350, etc.).
-	if relayMode || cfg.Proxy.Relay.Enabled {
-		relayHandler, err := node.RegisterRelayHandler()
-		if err != nil {
-			log.Printf("Warning: failed to register smux relay handler: %v", err)
-		} else {
-			relayHandler.OnRelayDial = func(dial *mesh.MeshRelayDial, conn net.Conn) {
-				targetPort := int(dial.Port)
-				if targetPort == 0 {
-					// Legacy peer (pre-port-field): no way to know which
-					// local service to reach. Fall back to echo so the
-					// stream stays alive without crashing.
-					log.Printf("[mesh-relay] OnRelayDial: port=0 (legacy), echoing stream (tunnel=%s)", dial.TunnelID[:min(len(dial.TunnelID), 16)])
-					go func() {
-						io.Copy(conn, conn)
-						conn.Close()
-					}()
-					return
-				}
-
-				// Dial the local virtual port service. dial.InitiatorKey
-				// carries the original initiator's identity (propagated
-				// through MeshRelayRequest → MeshRelayDial). The local
-				// service can use it for per-peer authorization (ACL,
-				// source allowlist, etc.).
-				localConn, dErr := node.DialLocalVirtualPort(targetPort, dial.InitiatorKey)
-				if dErr != nil {
-					log.Printf("[mesh-relay] OnRelayDial: failed to dial local virtual port %d: %v (tunnel=%s)",
-						targetPort, dErr, dial.TunnelID[:min(len(dial.TunnelID), 16)])
+	// The stream relay handler is ALWAYS registered: every node may be
+	// the relay target for peers that cannot connect directly (e.g.
+	// IPv4-only ↔ IPv6-only). Without it, a discovered-but-unreachable
+	// peer can never be reached via relay ("relay rejected:
+	// no_session_to_target"). --relay and proxy.relay.enabled keep
+	// enabling the circuit-level RelaySessionManager (line ~469).
+	relayHandler, err := node.RegisterRelayHandler()
+	if err != nil {
+		log.Printf("Warning: failed to register smux relay handler: %v", err)
+	} else {
+		relayHandler.OnRelayDial = func(dial *mesh.MeshRelayDial, conn net.Conn) {
+			targetPort := int(dial.Port)
+			if targetPort == 0 {
+				// Legacy peer (pre-port-field): no way to know which
+				// local service to reach. Fall back to echo so the
+				// stream stays alive without crashing.
+				log.Printf("[mesh-relay] OnRelayDial: port=0 (legacy), echoing stream (tunnel=%s)", dial.TunnelID[:min(len(dial.TunnelID), 16)])
+				go func() {
+					io.Copy(conn, conn)
 					conn.Close()
-					return
-				}
-
-				log.Printf("[mesh-relay] OnRelayDial: bridging relay stream to local port %d (tunnel=%s)",
-					targetPort, dial.TunnelID[:min(len(dial.TunnelID), 16)])
-
-				// Bridge bidirectionally. RelayStream handles closing
-				// both connections when either direction completes.
-				go mesh.RelayStream(conn, localConn)
+				}()
+				return
 			}
-			log.Printf("  Smux relay: listening on virtual port 0x524C (maxTunnels=%d, OnRelayDial=wired)", mesh.DefaultMaxRelayTunnels)
+
+			// Dial the local virtual port service. dial.InitiatorKey
+			// carries the original initiator's identity (propagated
+			// through MeshRelayRequest → MeshRelayDial). The local
+			// service can use it for per-peer authorization (ACL,
+			// source allowlist, etc.).
+			localConn, dErr := node.DialLocalVirtualPort(targetPort, dial.InitiatorKey)
+			if dErr != nil {
+				log.Printf("[mesh-relay] OnRelayDial: failed to dial local virtual port %d: %v (tunnel=%s)",
+					targetPort, dErr, dial.TunnelID[:min(len(dial.TunnelID), 16)])
+				conn.Close()
+				return
+			}
+
+			log.Printf("[mesh-relay] OnRelayDial: bridging relay stream to local port %d (tunnel=%s)",
+				targetPort, dial.TunnelID[:min(len(dial.TunnelID), 16)])
+
+			// Bridge bidirectionally. RelayStream handles closing
+			// both connections when either direction completes.
+			go mesh.RelayStream(conn, localConn)
 		}
+		log.Printf("  Smux relay: listening on virtual port 0x524C (maxTunnels=%d, OnRelayDial=wired)", mesh.DefaultMaxRelayTunnels)
 	}
 
 	// Register the SOCKS5 proxy handler if SOCKS5 is enabled in config.
@@ -582,6 +612,52 @@ func main() {
 					}
 					node.AddPeerVirtualIPRoute(meta.PublicKey, meta.VirtualIP)
 				}
+				// Auto-establish a smux session with the new peer.
+				// NotifyJoin only adds routing state; without an active
+				// session the data plane (TUN, monitor, relay) reports
+				// "no session for peer" and traffic dies. Dial the peer's
+				// advertised endpoint outbound (mesh-internal 0x4D path)
+				// so the mesh is connected as soon as gossip discovers it
+				// — the same "discover → dial" model EasyTier uses.
+				if node.HasActiveSession(meta.PublicKey) {
+					return
+				}
+				if len(meta.Endpoints) == 0 {
+					// No advertised endpoint; the peer may be behind
+					// NAT. The NAT traversal layer handles it.
+					return
+				}
+				peerKey := meta.PublicKey
+				endpoints := append([]string(nil), meta.Endpoints...)
+
+				// Deduplicate concurrent auto-dials for the same peer
+				// (memberlist may re-fire NotifyJoin during flaps).
+				autoDialMu.Lock()
+				if autoDialInFlight[peerKey] {
+					autoDialMu.Unlock()
+					return
+				}
+				autoDialInFlight[peerKey] = true
+				autoDialMu.Unlock()
+
+				go func() {
+					defer func() {
+						autoDialMu.Lock()
+						delete(autoDialInFlight, peerKey)
+						autoDialMu.Unlock()
+					}()
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					for _, ep := range endpoints {
+						stream, err := node.DialPeerByEndpoint(ctx, ep)
+						if err == nil {
+							stream.Close() // close port-0 stream; session stays
+							log.Printf("[mesh] auto-connected to new peer %s at %s", peerKey[:8], ep)
+							return
+						}
+						log.Printf("[mesh] auto-dial %s at %s failed: %v", peerKey[:8], ep, err)
+					}
+				}()
 			})
 			gl.Events().SetLeaveHandler(func(peerKey string) {
 				// NAT traversal cleanup (if enabled).
