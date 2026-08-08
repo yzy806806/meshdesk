@@ -164,6 +164,17 @@ func (n *MeshNode) reconnectLoop(
 }
 
 func (n *MeshNode) tryReconnect(ctx context.Context, peerIdentityHex, endpoint string, isClientSession bool) error {
+	// Prefer the peer's STABLE endpoint (config peers or routing table)
+	// over the passed-in address. The passed-in endpoint may be the
+	// remote source address of an inbound session — an ephemeral NAT
+	// port that is invalid once the connection drops (reconnect loop
+	// against a dead NAT mapping). resolvePeerEndpoint returns the
+	// advertised endpoint which stays valid across reconnects.
+	if stable := n.resolvePeerEndpoint(peerIdentityHex); stable != "" && stable != endpoint {
+		log.Printf("[mesh] reconnect: using stable endpoint %s for peer %s (was %s)",
+			stable, shortPeerID(peerIdentityHex), endpoint)
+		endpoint = stable
+	}
 	if endpoint == "" {
 		endpoint = n.resolvePeerEndpoint(peerIdentityHex)
 	}
@@ -229,6 +240,18 @@ func (n *MeshNode) cleanupDeadSession(peerIdentityHex string, deadSess *smux.Ses
 }
 
 func (n *MeshNode) resolvePeerEndpoint(peerIdentityHex string) string {
+	// Prefer the gossip-advertised endpoint (stable, survives NAT
+	// remapping). The routing table may hold the ephemeral source
+	// address of an inbound session, which is invalid after the
+	// connection drops.
+	n.mu.RLock()
+	resolver := n.peerEndpointResolver
+	n.mu.RUnlock()
+	if resolver != nil {
+		if ep := resolver(peerIdentityHex); ep != "" {
+			return ep
+		}
+	}
 	for i := range n.cfg.Peers {
 		if n.cfg.Peers[i].PublicKey == peerIdentityHex {
 			return n.cfg.Peers[i].Endpoint
