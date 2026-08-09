@@ -363,6 +363,18 @@ func (c *PeerCache) CachedVirtualIPs() map[string]string {
 	return out
 }
 
+// CachedVirtualIP returns the persisted VirtualIP for a single peer
+// ("" if unknown). Used by the session reconnect handler to restore
+// TUN routes when gossip meta hasn't propagated (degraded memberlist).
+func (c *PeerCache) CachedVirtualIP(peerKey string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if p, ok := c.peers[peerKey]; ok {
+		return p.VirtualIP
+	}
+	return ""
+}
+
 // CachedCollectors returns the public keys of all cached peers that have
 // CapCollector=true. This is used at startup to seed the reporter's
 // collector list from persisted state, so that monitor routing is
