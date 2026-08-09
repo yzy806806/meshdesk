@@ -46,8 +46,8 @@ type FileRequest struct {
 	Size int64  `json:"size"`
 }
 
-// fileResponse is the JSON envelope sent before any raw payload.
-type fileResponse struct {
+// FileResponse is the JSON envelope sent before any raw payload.
+type FileResponse struct {
 	OK      bool        `json:"ok"`
 	Error   string      `json:"error,omitempty"`
 	Entries []FileEntry `json:"entries,omitempty"`
@@ -130,13 +130,13 @@ func (fs *FileServer) handle(conn net.Conn) {
 	dec := json.NewDecoder(io.LimitReader(br, 64<<10))
 	var req FileRequest
 	if err := dec.Decode(&req); err != nil {
-		writeFileResp(conn, fileResponse{OK: false, Error: "bad request: " + err.Error()})
+		writeFileResp(conn, FileResponse{OK: false, Error: "bad request: " + err.Error()})
 		return
 	}
 
 	resolved, err := fs.resolvePath(req.Path)
 	if err != nil {
-		writeFileResp(conn, fileResponse{OK: false, Error: err.Error()})
+		writeFileResp(conn, FileResponse{OK: false, Error: err.Error()})
 		return
 	}
 
@@ -144,18 +144,18 @@ func (fs *FileServer) handle(conn net.Conn) {
 	case "list":
 		entries, err := listDir(resolved)
 		if err != nil {
-			writeFileResp(conn, fileResponse{OK: false, Error: err.Error()})
+			writeFileResp(conn, FileResponse{OK: false, Error: err.Error()})
 			return
 		}
-		writeFileResp(conn, fileResponse{OK: true, Entries: entries})
+		writeFileResp(conn, FileResponse{OK: true, Entries: entries})
 
 	case "stat":
 		info, err := os.Stat(resolved)
 		if err != nil {
-			writeFileResp(conn, fileResponse{OK: false, Error: err.Error()})
+			writeFileResp(conn, FileResponse{OK: false, Error: err.Error()})
 			return
 		}
-		writeFileResp(conn, fileResponse{
+		writeFileResp(conn, FileResponse{
 			OK:    true,
 			Name:  info.Name(),
 			Size:  info.Size(),
@@ -173,42 +173,42 @@ func (fs *FileServer) handle(conn net.Conn) {
 		written, werr := fs.serveWrite(br, resolved, req.Size)
 		log.Printf("[FSDBG] write result written=%d err=%v", written, werr)
 		if werr != nil {
-			writeFileResp(conn, fileResponse{OK: false, Error: werr.Error()})
+			writeFileResp(conn, FileResponse{OK: false, Error: werr.Error()})
 		} else {
-			writeFileResp(conn, fileResponse{OK: true, Written: written})
+			writeFileResp(conn, FileResponse{OK: true, Written: written})
 		}
 
 	case "delete":
 		if err := os.RemoveAll(resolved); err != nil {
-			writeFileResp(conn, fileResponse{OK: false, Error: err.Error()})
+			writeFileResp(conn, FileResponse{OK: false, Error: err.Error()})
 			return
 		}
-		writeFileResp(conn, fileResponse{OK: true})
+		writeFileResp(conn, FileResponse{OK: true})
 
 	default:
-		writeFileResp(conn, fileResponse{OK: false, Error: "unknown op: " + req.Op})
+		writeFileResp(conn, FileResponse{OK: false, Error: "unknown op: " + req.Op})
 	}
 }
 
 func (fs *FileServer) serveRead(conn net.Conn, path string) error {
 	f, err := os.Open(path)
 	if err != nil {
-		writeFileResp(conn, fileResponse{OK: false, Error: err.Error()})
+		writeFileResp(conn, FileResponse{OK: false, Error: err.Error()})
 		return err
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		writeFileResp(conn, fileResponse{OK: false, Error: err.Error()})
+		writeFileResp(conn, FileResponse{OK: false, Error: err.Error()})
 		return err
 	}
 	if info.IsDir() {
-		writeFileResp(conn, fileResponse{OK: false, Error: "is a directory"})
+		writeFileResp(conn, FileResponse{OK: false, Error: "is a directory"})
 		return fmt.Errorf("read: %s is a directory", path)
 	}
 
-	writeFileResp(conn, fileResponse{OK: true, Size: info.Size()})
+	writeFileResp(conn, FileResponse{OK: true, Size: info.Size()})
 	_, err = io.Copy(conn, f)
 	return err
 }
@@ -293,6 +293,6 @@ func listDir(dir string) ([]FileEntry, error) {
 	return out, nil
 }
 
-func writeFileResp(w io.Writer, resp fileResponse) {
+func writeFileResp(w io.Writer, resp FileResponse) {
 	json.NewEncoder(w).Encode(resp)
 }
