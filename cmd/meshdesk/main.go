@@ -1172,6 +1172,21 @@ func main() {
 	} else {
 		monitorStore = reporter.LocalStore()
 		log.Printf("  Monitor:   reporter active (interval=%ds)", cfg.Monitoring.Interval)
+		// Persist monitoring history (T4.2): restore on start, dump
+		// every 5 minutes so recent samples survive restarts.
+		histPath := "/var/lib/meshdesk/monitor-history.json"
+		if monitorStore.Load(histPath) == nil {
+			log.Printf("  Monitor:   restored %d node(s) from history", len(monitorStore.NodeIDs()))
+		}
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := monitorStore.Persist(histPath); err != nil {
+					log.Printf("[monitor] history persist failed: %v", err)
+				}
+			}
+		}()
 	}
 
 	// Wire collector auto-discovery: when a peer with CapCollector=true is

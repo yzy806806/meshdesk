@@ -176,3 +176,25 @@ func (rb *RingBuffer) Clear() {
 	rb.lowResLen = 0
 	rb.lastHighResTS = time.Time{}
 }
+
+// Snapshot returns a copy of buffered samples (for persistence):
+// high-res tier + low-res tier merged.
+func (rb *RingBuffer) Snapshot() []*Metrics {
+	rb.mu.RLock()
+	defer rb.mu.RUnlock()
+	seen := make(map[int64]bool)
+	out := make([]*Metrics, 0, rb.highResLen+rb.lowResLen)
+	for _, m := range rb.highRes {
+		if m != nil && !seen[m.Timestamp.Unix()] {
+			seen[m.Timestamp.Unix()] = true
+			out = append(out, m)
+		}
+	}
+	for _, m := range rb.lowRes {
+		if m != nil && !seen[m.Timestamp.Unix()] {
+			seen[m.Timestamp.Unix()] = true
+			out = append(out, m)
+		}
+	}
+	return out
+}
