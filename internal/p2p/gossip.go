@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -882,6 +883,12 @@ func (g *GossipLayer) Stop() error {
 
 // JoinSeeds joins the gossip cluster via the given seed addresses.
 // Each address should be in "meshIP:port" format.
+//
+// Unlike a single batch memberlist.Join (which succeeds if ANY seed is
+// reachable), this joins each seed independently so a failed seed is
+// reported. Callers (retryJoinSeeds) use the per-seed failures to keep
+// retrying unreachable seeds instead of giving up because one seed
+// succeeded.
 func (g *GossipLayer) JoinSeeds(ctx context.Context, seeds []string) (int, error) {
 	g.mu.RLock()
 	ml := g.memberlist
@@ -905,20 +912,45 @@ func (g *GossipLayer) JoinSeeds(ctx context.Context, seeds []string) (int, error
 		return 0, fmt.Errorf("no valid seed addresses")
 	}
 
-	// memberlist.Join blocks until contact is made or timeout.
-	contacted, err := ml.Join(validSeeds)
-	if err != nil {
-		return contacted, fmt.Errorf("join seeds: %w", err)
+	// Join each seed individually. memberlist.Join is batched and returns
+	// success if ANY seed responds — which hides a permanently-failed seed
+	// (e.g. an IPv6-only seed from an IPv4-only node) behind an overall
+	// success. Joining per-seed surfaces each failure so the retry loop
+	// can keep trying the unreachable ones.
+	contacted := 0
+	var errs []string
+	for _, seed := range validSeeds {
+		if ctx.Err() != nil {
+			break
+		}
+		// memberlist.Join with a single address returns 1 on contact.
+		n, err := ml.Join([]string{seed})
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", seed, err))
+			continue
+		}
+		if n > 0 {
+			contacted++
+		}
 	}
 
-	log.Printf("[p2p] joined gossip cluster via %d/%d seeds", contacted, len(validSeeds))
+	if contacted == 0 && len(errs) > 0 {
+		return 0, fmt.Errorf("join seeds: %s", strings.Join(errs, "; "))
+	}
+
+	log.Printf("[p2p] joined gossip cluster via %d/%d seeds (failures: %s)",
+		contacted, len(validSeeds), strings.Join(errs, "; "))
 	return contacted, nil
 }
 
 // retryJoinSeeds retries joining seeds with exponential backoff.
+// Retries continue until ALL configured seeds have been contacted at
+// least once — a partially-successful join (e.g. IPv6 seed unreachable
+// from an IPv4-only node) must keep retrying the failed seeds so the
+// node eventually discovers every peer.
 func (g *GossipLayer) retryJoinSeeds() {
 	backoff := 5 * time.Second
-	maxBackoff := 60 * time.Second
+	maxBackoff := 30 * time.Second
 
 	for {
 		select {
@@ -928,15 +960,20 @@ func (g *GossipLayer) retryJoinSeeds() {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, err := g.JoinSeeds(ctx, g.cfg.Seeds)
+		contacted, err := g.JoinSeeds(ctx, g.cfg.Seeds)
 		cancel()
 
-		if err == nil {
-			log.Printf("[p2p] successfully joined seeds after retry")
+		total := len(g.cfg.Seeds)
+		allJoined := contacted >= total
+		if err == nil && allJoined {
+			log.Printf("[p2p] successfully joined all %d seed(s)", contacted)
 			return
 		}
-
-		log.Printf("[p2p] seed join retry failed: %v (next in %v)", err, backoff*2)
+		if contacted > 0 {
+			log.Printf("[p2p] partial seed join: %d/%d (next retry in %v)", contacted, total, backoff)
+		} else {
+			log.Printf("[p2p] seed join retry failed: %v (next in %v)", err, backoff)
+		}
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff
