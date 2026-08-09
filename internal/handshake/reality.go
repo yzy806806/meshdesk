@@ -180,16 +180,17 @@ func (h *RealityHandshake) dialReality(ctx context.Context, addr string) (net.Co
 	shortIDBytes, _ := decodeHexKey(h.cfg.RealityShortID)
 	copy(hello.SessionId[8:], shortIDBytes)
 
-	// CRITICAL: hello.Raw contains the marshalled ClientHello bytes with the
-	// ORIGINAL uTLS-generated SessionId at offset 39. The REALITY server
-	// zeros the ENTIRE sessionId in the raw bytes before using them as AAD
-	// for AES-GCM Open:
-	//   plainText := make([]byte, 32)           // 32 zero bytes
-	//   copy(sessionId, plainText)              // zero sessionId in raw[39:]
-	//   aead.Open(dst, nonce, ciphertext, original)  // AAD = raw with sessionId=zero
-	//
-	// The client must match: zero the sessionId in hello.Raw BEFORE using
-	// it as AAD for Seal. The plaintext (SessionId[:16]) carries our custom
+	// CRITICAL: The REALITY server authenticates with AAD = the original
+	// ClientHello bytes AFTER zeroing the sessionId. In the patched server
+	// (third_party/reality-patched/tls.go:236-239) the clientHello.sessionId
+	// slice points INTO original[39:], so `copy(sessionId, plainText)` zeroes
+	// original[39:71] in place, and then `aead.Open(..., original)` uses the
+	// ZEROED bytes as AAD:
+	//   copy(ciphertext, hs.clientHello.sessionId)
+	//   copy(hs.clientHello.sessionId, plainText)   // zeroes original[39:71] in place
+	//   aead.Open(plainText[:0], nonce, ciphertext, hs.clientHello.original) // AAD = zeroed
+	// The client must match: zero the sessionId in hello.Raw BEFORE using it
+	// as AAD for Seal. The plaintext (SessionId[:16]) carries our custom
 	// version+timestamp+shortId, but the AAD must have sessionId=ZEROED.
 	copy(hello.Raw[39:71], make([]byte, 32))
 
@@ -216,7 +217,8 @@ func (h *RealityHandshake) dialReality(ctx context.Context, addr string) (net.Co
 			fmt.Errorf("HKDF derive auth key: %w", err), false)
 	}
 
-	// AES-GCM seal: seal SessionId[:16] with nonce=Random[20:] and AAD=hello.Raw
+	// AES-GCM seal: seal SessionId[:16] with nonce=Random[20:] and
+	// AAD=the ORIGINAL raw ClientHello (sessionId NOT zeroed).
 	aead, err := newAESGCM(authKey)
 	if err != nil {
 		rawConn.Close()
