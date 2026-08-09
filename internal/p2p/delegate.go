@@ -164,6 +164,10 @@ type relayMsgHandler func(msg *RelayMessage) error
 // incoming data is a join message and dispatches it to this handler.
 type joinMsgHandler func(msg *JoinMessage) error
 
+// peerLinkMsgHandler is the callback for processing peer-link messages
+// (global topology link-state). Set via SetPeerLinkMessageHandler.
+type peerLinkMsgHandler func(msg *PeerLinkMessage) error
+
 // metaSnapshot is an immutable snapshot of the local node metadata,
 // stored atomically.  It holds a deep copy of NodeMeta together with
 // its pre-marshaled bytes so that memberlist Delegate callbacks
@@ -202,6 +206,10 @@ type meshDelegate struct {
 	// via NotifyMsg. If nil, join messages are silently ignored.
 	// Protected by handlerMu.
 	joinHandler joinMsgHandler
+
+	// peerLinkHandler is called when a peer-link (topology) message is
+	// received via NotifyMsg. Protected by handlerMu.
+	peerLinkHandler peerLinkMsgHandler
 
 	// handlerMu protects relayHandler and joinHandler.
 	handlerMu sync.RWMutex
@@ -243,6 +251,13 @@ func (d *meshDelegate) SetJoinMessageHandler(h joinMsgHandler) {
 	d.handlerMu.Lock()
 	defer d.handlerMu.Unlock()
 	d.joinHandler = h
+}
+
+// SetPeerLinkMessageHandler installs the peer-link (topology) handler.
+func (d *meshDelegate) SetPeerLinkMessageHandler(h peerLinkMsgHandler) {
+	d.handlerMu.Lock()
+	defer d.handlerMu.Unlock()
+	d.peerLinkHandler = h
 }
 
 // NodeMeta is called by memberlist to get the local node's metadata.
@@ -293,6 +308,26 @@ func (d *meshDelegate) NotifyMsg(data []byte) {
 		if handler != nil {
 			if err := handler(msg); err != nil {
 				log.Printf("[p2p] relay message handler error: %v", err)
+			}
+		}
+		return
+	}
+
+	// Check if this is a peer-link (topology) message.
+	if IsPeerLinkMessage(data) {
+		msg, err := UnmarshalPeerLinkMessage(data)
+		if err != nil {
+			log.Printf("[p2p] failed to unmarshal peer-link message: %v", err)
+			return
+		}
+
+		d.handlerMu.RLock()
+		handler := d.peerLinkHandler
+		d.handlerMu.RUnlock()
+
+		if handler != nil {
+			if err := handler(msg); err != nil {
+				log.Printf("[p2p] peer-link message handler error: %v", err)
 			}
 		}
 		return
