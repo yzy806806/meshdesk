@@ -86,7 +86,7 @@ func TestNewACLEngine_DestIPAsSingleIP(t *testing.T) {
 		Enabled: true,
 		Rules: []config.ACLRule{
 			{
-				Action:  config.ACLActionDeny,
+				Action:   config.ACLActionDeny,
 				DestCIDR: "10.10.0.5",
 			},
 		},
@@ -203,8 +203,8 @@ func TestACLEngine_PeerIDMatch(t *testing.T) {
 		DefaultPolicy: config.ACLActionAllow,
 		Rules: []config.ACLRule{
 			{
-				Action:  config.ACLActionDeny,
-				PeerID:  "abcdef123456",
+				Action: config.ACLActionDeny,
+				PeerID: "abcdef123456",
 			},
 		},
 	})
@@ -299,8 +299,8 @@ func TestACLEngine_Stats(t *testing.T) {
 		DefaultPolicy: config.ACLActionAllow,
 		Rules: []config.ACLRule{
 			{
-				Action:   config.ACLActionDeny,
-				DestCIDR: "10.0.0.1/32",
+				Action:      config.ACLActionDeny,
+				DestCIDR:    "10.0.0.1/32",
 				Description: "test deny",
 			},
 		},
@@ -783,7 +783,7 @@ func TestACLEngine_UpdateRulesResetsHits(t *testing.T) {
 		DefaultPolicy: config.ACLActionAllow,
 		Rules: []config.ACLRule{
 			{
-				Action: config.ACLActionDeny,
+				Action:   config.ACLActionDeny,
 				DestCIDR: "10.0.0.1/32",
 			},
 		},
@@ -804,7 +804,7 @@ func TestACLEngine_UpdateRulesResetsHits(t *testing.T) {
 		DefaultPolicy: config.ACLActionDeny,
 		Rules: []config.ACLRule{
 			{
-				Action: config.ACLActionAllow,
+				Action:   config.ACLActionAllow,
 				DestCIDR: "10.0.0.0/8",
 			},
 		},
@@ -902,10 +902,10 @@ func TestACLEngine_ConcurrentCheck(t *testing.T) {
 func makeIPv4PacketACL(srcIP, dstIP string, protocol byte, srcPort, dstPort int) []byte {
 	pkt := make([]byte, 28) // minimum for TCP/UDP with ports
 	// IPv4 header
-	pkt[0] = 0x45 // version 4, IHL 5
-	pkt[1] = 0x00 // DSCP/ECN
+	pkt[0] = 0x45                            // version 4, IHL 5
+	pkt[1] = 0x00                            // DSCP/ECN
 	binary.BigEndian.PutUint16(pkt[2:4], 28) // total length
-	pkt[9] = protocol                          // protocol
+	pkt[9] = protocol                        // protocol
 	src := net.ParseIP(srcIP).To4()
 	dst := net.ParseIP(dstIP).To4()
 	copy(pkt[12:16], src)
