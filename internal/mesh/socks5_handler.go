@@ -489,11 +489,21 @@ func (h *SOCKS5Handler) ActiveConnections() int64 {
 // The returned handler should be Closed when no longer needed. It is also
 // closed automatically when the node's Close() is called.
 func (n *MeshNode) RegisterSOCKS5ExitHandler(cfg SOCKS5Config) (*SOCKS5Handler, error) {
-	// Wire CheckMeshPeer from routing table if needed.
+	// Wire CheckMeshPeer from routing table if needed. Also accept
+	// relay-reached peers via gossip membership (see RegisterSOCKS5Handler).
 	if cfg.RequireMeshPeer && cfg.CheckMeshPeer == nil {
 		cfg.CheckMeshPeer = func(peerID string) bool {
-			_, ok := n.routes.GetPeer(peerID)
-			return ok
+			if _, ok := n.routes.GetPeer(peerID); ok {
+				return true
+			}
+			if n.relayMetaProvider != nil {
+				for _, rp := range n.relayMetaProvider() {
+					if rp.PeerKey == peerID {
+						return true
+					}
+				}
+			}
+			return false
 		}
 	}
 	handler := NewSOCKS5Handler(cfg)
@@ -535,10 +545,28 @@ func (n *MeshNode) RegisterSOCKS5Handler(cfg SOCKS5Config) (*SOCKS5Handler, erro
 	// locally-generated Ed25519 keys are rejected because their key is
 	// not in the routing table — only join-protocol-authenticated peers
 	// are present there.
+	//
+	// Note: a peer reached only via relay (no direct smux session) may be
+	// absent from the routing table even though it is a legitimate mesh
+	// member. The membership check therefore ALSO accepts peers known to
+	// gossip (memberlist) — the relay path already authenticated the
+	// InitiatorKey through the smux session chain, so accepting
+	// memberlist-known peers is safe.
 	if cfg.RequireMeshPeer && cfg.CheckMeshPeer == nil {
 		cfg.CheckMeshPeer = func(peerID string) bool {
-			_, ok := n.routes.GetPeer(peerID)
-			return ok
+			if _, ok := n.routes.GetPeer(peerID); ok {
+				return true
+			}
+			// Fall back to mesh-membership (gossip) check for
+			// relay-reached peers.
+			if n.relayMetaProvider != nil {
+				for _, rp := range n.relayMetaProvider() {
+					if rp.PeerKey == peerID {
+						return true
+					}
+				}
+			}
+			return false
 		}
 	}
 	handler := NewSOCKS5Handler(cfg)
