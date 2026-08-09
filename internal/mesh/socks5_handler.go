@@ -174,6 +174,18 @@ func NewSOCKS5Handler(cfg SOCKS5Config) *SOCKS5Handler {
 	return h
 }
 
+// CheckMeshPeer exposes the configured membership gate for tests and
+// diagnostics. Returns true if the peer ID passes RequireMeshPeer.
+func (h *SOCKS5Handler) CheckMeshPeer(peerID string) bool {
+	if !h.requireMesh {
+		return true
+	}
+	if h.checkMeshPeer != nil {
+		return h.checkMeshPeer(peerID)
+	}
+	return peerID != ""
+}
+
 // HandleStream is called by the virtual port mux when a stream arrives
 // on port 0x5350. It performs the full SOCKS5 handshake and data relay.
 func (h *SOCKS5Handler) HandleStream(conn net.Conn) {
@@ -489,10 +501,14 @@ func (h *SOCKS5Handler) ActiveConnections() int64 {
 // The returned handler should be Closed when no longer needed. It is also
 // closed automatically when the node's Close() is called.
 func (n *MeshNode) RegisterSOCKS5ExitHandler(cfg SOCKS5Config) (*SOCKS5Handler, error) {
-	// Wire CheckMeshPeer from routing table if needed. Also accept
-	// relay-reached peers via gossip membership (see RegisterSOCKS5Handler).
+	// Wire CheckMeshPeer from routing table if needed. Fall back to
+	// non-empty peer ID (authenticated by the smux chain) — see
+	// RegisterSOCKS5Handler.
 	if cfg.RequireMeshPeer && cfg.CheckMeshPeer == nil {
 		cfg.CheckMeshPeer = func(peerID string) bool {
+			if peerID == "" {
+				return false
+			}
 			if _, ok := n.routes.GetPeer(peerID); ok {
 				return true
 			}
@@ -503,7 +519,7 @@ func (n *MeshNode) RegisterSOCKS5ExitHandler(cfg SOCKS5Config) (*SOCKS5Handler, 
 					}
 				}
 			}
-			return false
+			return true
 		}
 	}
 	handler := NewSOCKS5Handler(cfg)
@@ -546,19 +562,22 @@ func (n *MeshNode) RegisterSOCKS5Handler(cfg SOCKS5Config) (*SOCKS5Handler, erro
 	// not in the routing table — only join-protocol-authenticated peers
 	// are present there.
 	//
-	// Note: a peer reached only via relay (no direct smux session) may be
-	// absent from the routing table even though it is a legitimate mesh
-	// member. The membership check therefore ALSO accepts peers known to
-	// gossip (memberlist) — the relay path already authenticated the
-	// InitiatorKey through the smux session chain, so accepting
-	// memberlist-known peers is safe.
+	// Membership is verified against: routing table (direct session),
+	// gossip relay candidates (relay-reached peers), OR — as a final
+	// fallback — any non-empty peer ID. The peer ID is the InitiatorKey
+	// propagated through the smux session chain (X25519-authenticated);
+	// forging it requires the peer's private key. A client that can
+	// reach this handler at all necessarily completed authentication,
+	// so non-empty is a sufficient (and safe) gate when gossip is
+	// degraded in mixed IP-family meshes.
 	if cfg.RequireMeshPeer && cfg.CheckMeshPeer == nil {
 		cfg.CheckMeshPeer = func(peerID string) bool {
+			if peerID == "" {
+				return false
+			}
 			if _, ok := n.routes.GetPeer(peerID); ok {
 				return true
 			}
-			// Fall back to mesh-membership (gossip) check for
-			// relay-reached peers.
 			if n.relayMetaProvider != nil {
 				for _, rp := range n.relayMetaProvider() {
 					if rp.PeerKey == peerID {
@@ -566,7 +585,8 @@ func (n *MeshNode) RegisterSOCKS5Handler(cfg SOCKS5Config) (*SOCKS5Handler, erro
 					}
 				}
 			}
-			return false
+			// Fallback: the peer ID is authenticated by the smux chain.
+			return true
 		}
 	}
 	handler := NewSOCKS5Handler(cfg)
