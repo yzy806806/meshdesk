@@ -23,7 +23,7 @@ func TestRealityClient_Live(t *testing.T) {
 
 	hsCfg := handshake.HandshakeConfig{
 		DialTimeout:      10 * time.Second,
-		TLSFingerprint:   "chrome",
+		TLSFingerprint:   "firefox",
 		RealityPublicKey: "77bb2bce4f133183eac3ce787019cf3de4131b08089e01778152df7d33127d6e",
 		RealityShortID:   "0123456789abcdef",
 		ServerName:       "www.microsoft.com",
