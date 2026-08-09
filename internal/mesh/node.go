@@ -1065,6 +1065,13 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 		return nil, fmt.Errorf("mesh: write port frame to %s: %w", address, err)
 	}
 
+	// Start the stream accept loop for this outbound client session.
+	// Without it, the peer cannot open inbound streams on our session
+	// (e.g. relay dials to this node's 0x524C/0x5350 virtual ports) —
+	// they'd hit EOF. Inbound (server) sessions get this in
+	// handleConnection; client sessions need it here too.
+	go n.handleSessionStreams(peerIdentityHex, smuxSession)
+
 	// Start auto-reconnect watcher for this outbound client session.
 	n.startSessionWatcher(peerIdentityHex, address, true)
 
