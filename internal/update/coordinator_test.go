@@ -16,12 +16,14 @@ import (
 )
 
 // mockSvc implements FileSvc + CommandSvc against a fake node that
-// "executes" commands in-process and stores written files.
+// "executes" commands in-process and stores written files. Storage is
+// keyed by nodeID so concurrent node updates don't collide on the
+// shared staging path.
 type mockSvc struct {
 	mu      sync.Mutex
-	files   map[string][]byte // staging path → content
-	install map[string][]byte // installed binary path → content
-	backup  map[string][]byte
+	files   map[string][]byte // nodeID|path → content
+	install map[string][]byte // nodeID|path → installed binary
+	backup  map[string][]byte // nodeID|path → backup
 	health  bool
 	logs    []string
 }
@@ -35,6 +37,8 @@ func newMockSvc() *mockSvc {
 	}
 }
 
+func (m *mockSvc) fkey(nodeID, path string) string { return nodeID + "|" + path }
+
 // DialFile handles a FileServer write by capturing the payload.
 func (m *mockSvc) DialFile(ctx context.Context, nodeID string) (io.ReadWriteCloser, error) {
 	client, server := net.Pipe()
@@ -46,7 +50,7 @@ func (m *mockSvc) DialFile(ctx context.Context, nodeID string) (io.ReadWriteClos
 		payload := make([]byte, size)
 		io.ReadFull(server, payload)
 		m.mu.Lock()
-		m.files[path] = payload
+		m.files[m.fkey(nodeID, path)] = payload
 		m.mu.Unlock()
 		json.NewEncoder(server).Encode(map[string]any{"ok": true, "written": size})
 		server.Close()
@@ -61,7 +65,7 @@ func (m *mockSvc) DialCommand(ctx context.Context, nodeID string) (io.ReadWriteC
 		var req map[string]any
 		json.NewDecoder(server).Decode(&req)
 		cmd := req["cmd"].(string)
-		out, exit := m.exec(cmd)
+		out, exit := m.exec(nodeID, cmd)
 		json.NewEncoder(server).Encode(map[string]any{
 			"ok": true, "stdout": out, "exit": exit,
 		})
@@ -71,7 +75,7 @@ func (m *mockSvc) DialCommand(ctx context.Context, nodeID string) (io.ReadWriteC
 }
 
 // exec simulates shell commands on the fake node (split on &&).
-func (m *mockSvc) exec(cmd string) (string, int) {
+func (m *mockSvc) exec(nodeID, cmd string) (string, int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.logs = append(m.logs, cmd)
@@ -82,24 +86,26 @@ func (m *mockSvc) exec(cmd string) (string, int) {
 		switch {
 		case strings.HasPrefix(sub, "md5sum"):
 			p := strings.Fields(sub)[1]
-			data := m.files[p]
+			data := m.files[m.fkey(nodeID, p)]
 			return fmt.Sprintf("%x", md5.Sum(data)), 0
 		case strings.HasPrefix(sub, "cp -f"):
 			parts := strings.Fields(sub)
 			src, dst := parts[2], parts[3]
+			fk, dk := m.fkey(nodeID, src), m.fkey(nodeID, dst)
 			if strings.Contains(dst, ".bak") {
-				m.backup[dst] = m.install[src]
-			} else if data, ok := m.backup[src]; ok {
+				m.backup[dk] = m.install[fk]
+			} else if data, ok := m.backup[fk]; ok {
 				// rollback: restore from backup
-				m.install[dst] = data
+				m.install[dk] = data
 			} else {
-				m.install[dst] = m.files[src]
+				m.install[dk] = m.files[fk]
 			}
 		case strings.HasPrefix(sub, "mv -f"):
 			parts := strings.Fields(sub)
 			src, dst := parts[2], parts[3]
-			m.install[dst] = m.files[src]
-			delete(m.files, src)
+			fk, dk := m.fkey(nodeID, src), m.fkey(nodeID, dst)
+			m.install[dk] = m.files[fk]
+			delete(m.files, fk)
 		case strings.HasPrefix(sub, "chmod"):
 			// no-op
 		case sub == "sync":
@@ -110,7 +116,7 @@ func (m *mockSvc) exec(cmd string) (string, int) {
 			}
 			return "DOWN", 1
 		case strings.HasPrefix(sub, "rm -f"):
-			delete(m.files, strings.Fields(sub)[2])
+			delete(m.files, m.fkey(nodeID, strings.Fields(sub)[2]))
 		case strings.HasPrefix(sub, "systemctl restart"):
 			// no-op
 		default:
@@ -124,7 +130,8 @@ func (m *mockSvc) exec(cmd string) (string, int) {
 func TestCoordinator_EndToEnd(t *testing.T) {
 	svc := newMockSvc()
 	svc.mu.Lock()
-	svc.install["/usr/local/bin/meshdesk"] = []byte("old-binary")
+	svc.install[svc.fkey("node-a", "/usr/local/bin/meshdesk")] = []byte("old-binary")
+	svc.install[svc.fkey("node-b", "/usr/local/bin/meshdesk")] = []byte("old-binary")
 	svc.mu.Unlock()
 
 	local := filepath.Join(t.TempDir(), "meshdesk")
@@ -150,8 +157,8 @@ func TestCoordinator_EndToEnd(t *testing.T) {
 	}
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if string(svc.install["/usr/local/bin/meshdesk"]) != "new-binary-v2" {
-		t.Fatalf("installed binary wrong: %q", svc.install["/usr/local/bin/meshdesk"])
+	if string(svc.install[svc.fkey("node-a", "/usr/local/bin/meshdesk")]) != "new-binary-v2" {
+		t.Fatalf("installed binary wrong: %q", svc.install[svc.fkey("node-a", "/usr/local/bin/meshdesk")])
 	}
 }
 
@@ -159,7 +166,8 @@ func TestCoordinator_EndToEnd(t *testing.T) {
 func TestCoordinator_RollbackOnHealthFail(t *testing.T) {
 	svc := newMockSvc()
 	svc.mu.Lock()
-	svc.install["/usr/local/bin/meshdesk"] = []byte("old-binary")
+	svc.install[svc.fkey("node-a", "/usr/local/bin/meshdesk")] = []byte("old-binary")
+	svc.install[svc.fkey("node-b", "/usr/local/bin/meshdesk")] = []byte("old-binary")
 	svc.health = false // health check will fail
 	svc.mu.Unlock()
 
@@ -181,8 +189,8 @@ func TestCoordinator_RollbackOnHealthFail(t *testing.T) {
 	}
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
-	if string(svc.install["/usr/local/bin/meshdesk"]) != "old-binary" {
-		t.Fatalf("rollback did not restore: %q", svc.install["/usr/local/bin/meshdesk"])
+	if string(svc.install[svc.fkey("node-a", "/usr/local/bin/meshdesk")]) != "old-binary" {
+		t.Fatalf("rollback did not restore: %q", svc.install[svc.fkey("node-a", "/usr/local/bin/meshdesk")])
 	}
 }
 
