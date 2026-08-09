@@ -1444,6 +1444,16 @@ func main() {
 				rt.SetJoinCallback(alertStore.HandlePeerJoin)
 				rt.SetLeaveCallback(alertStore.HandlePeerLeave)
 			}
+			// Threshold rules (T4.1): CPU/mem/offline alerts from monitor data.
+			if monitorStore != nil {
+				evaluator := web.NewRuleEvaluator(monitorStore, alertStore)
+				evaluator.SetRules([]web.AlertRule{
+					{Metric: "cpu", Threshold: 90, DurationSec: 120, Severity: web.AlertWarning, Description: "high CPU usage on {node}"},
+					{Metric: "mem", Threshold: 90, DurationSec: 120, Severity: web.AlertWarning, Description: "high memory usage on {node}"},
+					{Metric: "offline", DurationSec: 180, Severity: web.AlertCritical, Description: "node offline"},
+				})
+				evaluator.Start()
+			}
 			// Wire proxy security events into the alert store.
 			if proxySecSink != nil {
 				proxySecSink.SetCallback(func(event proxy.SecurityEvent) {
