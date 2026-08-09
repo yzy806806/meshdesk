@@ -1821,3 +1821,55 @@ func firstShortID(ids []string) string {
 	}
 	return ""
 }
+
+// PeerTrafficStat is per-peer traffic detail.
+type PeerTrafficStat struct {
+	PeerID      string `json:"peer_id"`
+	InBytes     uint64 `json:"in_bytes"`
+	OutBytes    uint64 `json:"out_bytes"`
+	Streams     int    `json:"streams"`
+	Established string `json:"established,omitempty"`
+}
+
+// PerPeerTrafficStats returns per-peer session traffic (T3.3).
+func (n *MeshNode) PerPeerTrafficStats() []PeerTrafficStat {
+	out := make([]PeerTrafficStat, 0)
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+
+	seen := make(map[string]bool)
+	for peerID, sess := range n.clientSessions {
+		if sess == nil || sess.IsClosed() {
+			continue
+		}
+		seen[peerID] = true
+		st := sess.Stats()
+		ps := PeerTrafficStat{
+			PeerID:   peerID,
+			InBytes:  st.BytesReceived,
+			OutBytes: st.BytesSent,
+			Streams:  sess.NumStreams(),
+		}
+		if t, ok := n.sessionEstablishedAt[peerID]; ok {
+			ps.Established = t.Format("2006-01-02T15:04:05Z07:00")
+		}
+		out = append(out, ps)
+	}
+	for peerID, sess := range n.sessions {
+		if seen[peerID] || sess == nil || sess.IsClosed() {
+			continue
+		}
+		st := sess.Stats()
+		ps := PeerTrafficStat{
+			PeerID:   peerID,
+			InBytes:  st.BytesReceived,
+			OutBytes: st.BytesSent,
+			Streams:  sess.NumStreams(),
+		}
+		if t, ok := n.sessionEstablishedAt[peerID]; ok {
+			ps.Established = t.Format("2006-01-02T15:04:05Z07:00")
+		}
+		out = append(out, ps)
+	}
+	return out
+}
