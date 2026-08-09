@@ -71,8 +71,15 @@ jobs:
         run: |
           file ${{ matrix.asset_name }}
           ls -lh ${{ matrix.asset_name }}
-          ./${{ matrix.asset_name }} --version
-          ./${{ matrix.asset_name }} version
+          # Only run the binary on its native arch — arm64 can't execute
+          # on amd64 runners (Exec format error). For arm64, verify the
+          # format instead.
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            ./${{ matrix.asset_name }} --version
+            ./${{ matrix.asset_name }} version
+          else
+            echo "Skipping execution on ${{ matrix.goarch }} (cross-arch); format verified above."
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
