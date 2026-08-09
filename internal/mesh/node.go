@@ -503,6 +503,19 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 	// that accepts inbound streams on the session.
 	go n.handleSessionStreams(peerIdentityHex, smuxSession)
 
+	// Restore TUN routes for this peer if it reconnected via an inbound
+	// session. If the peer's session died earlier, the death handler
+	// removed its TUN routes; a new inbound session means the peer is
+	// reachable again and the routes must be re-added. The reconnect
+	// handler looks up the peer's VirtualIP from gossip KnownPeers —
+	// idempotent if routes already exist.
+	n.mu.RLock()
+	reconnectHdl := n.sessionReconnectHandler
+	n.mu.RUnlock()
+	if reconnectHdl != nil {
+		reconnectHdl(peerIdentityHex)
+	}
+
 	// Start auto-reconnect watcher. For inbound (server-mode) sessions,
 	// we pass isClientSession=false so the reconnect logic knows to try
 	// the mesh-internal dial path. The endpoint is the remote address.
