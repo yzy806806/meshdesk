@@ -340,6 +340,15 @@ func main() {
 		log.Printf("  Smux relay: listening on virtual port 0x524C (maxTunnels=%d, OnRelayDial=wired)", mesh.DefaultMaxRelayTunnels)
 	}
 
+	// Register the cluster FileServer (T1.1): lets the Dashboard (or any
+	// peer) browse/read/write files on this node over the mesh channel.
+	// Restricted to configured file_transfer_paths roots.
+	if _, err := node.RegisterFileServer(mesh.FileServerConfig{
+		AllowedPaths: cfg.Mesh.FileTransferPaths,
+	}); err != nil {
+		log.Printf("Warning: failed to register cluster file server: %v", err)
+	}
+
 	// Register the SOCKS5 proxy handler if SOCKS5 is enabled in config.
 	// This allows mesh peers to route SOCKS5 CONNECT requests through
 	// this node to reach arbitrary internet destinations. The handler

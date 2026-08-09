@@ -22,8 +22,8 @@ type Config struct {
 	Reality    RealityServerConfig `yaml:"reality,omitempty"`
 	Join       JoinConfig          `yaml:"join,omitempty"`
 	Tun        TunConfig           `yaml:"tun,omitempty"`
-	ACL        ACLConfig          `yaml:"acl,omitempty"`
-	Logging    LoggingConfig      `yaml:"logging,omitempty"`
+	ACL        ACLConfig           `yaml:"acl,omitempty"`
+	Logging    LoggingConfig       `yaml:"logging,omitempty"`
 }
 
 // LoggingConfig controls application-level log output and rotation.
@@ -652,6 +652,11 @@ type MeshConfig struct {
 	// Default: 5353. Set to 53 to act as the mesh-wide resolver
 	// (requires CAP_NET_BIND_SERVICE or root).
 	DNSPort int `yaml:"dns_port,omitempty"`
+
+	// FileTransferPaths restricts the cluster FileServer (0x1F4) to
+	// these directory prefixes. Empty = serve any path (peer
+	// authorization still applies via ACL).
+	FileTransferPaths []string `yaml:"file_transfer_paths,omitempty"`
 }
 
 // P2pConfig holds settings for the P2P dynamic networking layer
