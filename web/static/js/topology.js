@@ -34,23 +34,38 @@
     },
     // Node visual parameters
     node: {
-      radius: 8,
-      segments: 16,
+      radius: 14,
+      segments: 24,
       maxNodes: 200,       // Safety cap
     },
     // Edge/line parameters
     edge: {
       maxEdges: 500,
-      baseOpacity: 0.4,
-      lowLatencyOpacity: 0.7,
+      baseOpacity: 0.85,
+      lowLatencyOpacity: 1.0,
+      glowOpacity: 0.25,
+    },
+    // Node label parameters
+    label: {
+      fontSize: 28,
+      yOffset: 34,         // Above the node
+      color: '#e6edf3',
+      haloColor: '#000000',
     },
     // Particle animation along edges
     particles: {
-      perEdge: 5,           // Particles per active edge
-      size: 1.5,
-      speed: 0.3,           // 0..1 per tick along the edge
-      color: 0x58a6ff,      // --md-primary
+      perEdge: 8,           // Particles per active edge
+      size: 2.2,
+      speed: 0.45,          // 0..1 per tick along the edge
+      color: 0x79c0ff,      // brighter blue
       maxTotal: 2000,       // Total particle cap
+    },
+    // Background stars
+    stars: {
+      count: 600,
+      size: 1.6,
+      spread: 1200,
+      color: 0x9db9e8,
     },
     // SSE reconnection
     sse: {
@@ -119,7 +134,45 @@
 
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0d1117);  // --md-bg
-    scene.fog = new THREE.Fog(0x0d1117, 800, 2500);
+    scene.fog = new THREE.Fog(0x0d1117, 1200, 3000);
+
+    // Radial gradient background via a large sphere with shader-less trick:
+    // use a big BackSide sphere with a canvas gradient texture.
+    var bgCanvas = document.createElement('canvas');
+    bgCanvas.width = 512;
+    bgCanvas.height = 512;
+    var bgCtx = bgCanvas.getContext('2d');
+    var bgGrad = bgCtx.createRadialGradient(256, 256, 60, 256, 256, 360);
+    bgGrad.addColorStop(0, '#1a2436');
+    bgGrad.addColorStop(0.5, '#0f1522');
+    bgGrad.addColorStop(1, '#0d1117');
+    bgCtx.fillStyle = bgGrad;
+    bgCtx.fillRect(0, 0, 512, 512);
+    var bgTex = new THREE.CanvasTexture(bgCanvas);
+    var bgGeo = new THREE.SphereGeometry(3400, 24, 24);
+    var bgMat = new THREE.MeshBasicMaterial({ map: bgTex, side: THREE.BackSide, fog: false });
+    var bgSphere = new THREE.Mesh(bgGeo, bgMat);
+    scene.add(bgSphere);
+
+    // Starfield
+    var starGeo = new THREE.BufferGeometry();
+    var starPos = new Float32Array(CONFIG.stars.count * 3);
+    for (var i = 0; i < CONFIG.stars.count; i++) {
+      starPos[i * 3] = (Math.random() - 0.5) * CONFIG.stars.spread;
+      starPos[i * 3 + 1] = (Math.random() - 0.5) * CONFIG.stars.spread;
+      starPos[i * 3 + 2] = (Math.random() - 0.5) * CONFIG.stars.spread;
+    }
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+    var starMat = new THREE.PointsMaterial({
+      color: CONFIG.stars.color,
+      size: CONFIG.stars.size,
+      transparent: true,
+      opacity: 0.7,
+      sizeAttenuation: true,
+      fog: false,
+    });
+    var stars = new THREE.Points(starGeo, starMat);
+    scene.add(stars);
 
     camera = new THREE.PerspectiveCamera(CONFIG.camera.fov, w / h, CONFIG.camera.near, CONFIG.camera.far);
     camera.position.set(0, 0, CONFIG.camera.initialZ);
@@ -163,9 +216,9 @@
     scene.add(nodeGroup);
     scene.add(labelGroup);
 
-    // Grid for spatial reference
-    var gridHelper = new THREE.GridHelper(1000, 20, 0x21262d, 0x161b22);
-    gridHelper.position.y = -200;
+    // Grid for spatial reference — finer and slightly brighter
+    var gridHelper = new THREE.GridHelper(1200, 30, 0x2d333d, 0x1c2230);
+    gridHelper.position.y = -220;
     scene.add(gridHelper);
 
     // Raycaster for hover
@@ -187,25 +240,26 @@
     var color = roleColor(data.role);
     var radius = data.status === 'offline' ? CONFIG.node.radius * 0.7 : CONFIG.node.radius;
 
-    // Core sphere
+    // Core sphere — gradient-ish look via higher emissive + fresnel feel
     var geo = new THREE.SphereGeometry(radius, CONFIG.node.segments, CONFIG.node.segments);
     var mat = new THREE.MeshPhongMaterial({
       color: color,
       emissive: color,
-      emissiveIntensity: 0.3,
-      shininess: 60,
+      emissiveIntensity: 0.55,
+      shininess: 90,
+      specular: 0xffffff,
       transparent: data.status === 'offline',
       opacity: data.status === 'offline' ? 0.4 : 1.0,
     });
     var mesh = new THREE.Mesh(geo, mat);
 
     // Wireframe overlay for visual distinction
-    var wireGeo = new THREE.SphereGeometry(radius * 1.15, 12, 12);
+    var wireGeo = new THREE.SphereGeometry(radius * 1.18, 16, 16);
     var wireMat = new THREE.MeshBasicMaterial({
       color: color,
       wireframe: true,
       transparent: true,
-      opacity: 0.15,
+      opacity: 0.3,
     });
     var wireframe = new THREE.Mesh(wireGeo, wireMat);
     mesh.add(wireframe);
@@ -217,16 +271,19 @@
         map: glowTex,
         blending: THREE.AdditiveBlending,
         transparent: true,
-        opacity: 0.5,
+        opacity: 0.8,
         depthWrite: false,
       });
       var glow = new THREE.Sprite(glowMat);
-      glow.scale.set(radius * 4, radius * 4, 1);
+      glow.scale.set(radius * 6, radius * 6, 1);
       mesh.add(glow);
     }
 
     // Position from API data
     mesh.position.set(data.x || 0, data.y || 0, data.z || 0);
+
+    // Always-visible hostname label
+    var label = createLabel(data.hostname || data.id.substring(0, 8));
 
     var node = {
       id: data.id,
@@ -236,6 +293,7 @@
       mem: data.mem || 0,
       status: data.status || 'online',
       mesh: mesh,
+      label: label,
       wireframe: wireframe,
       velocity: new THREE.Vector3(0, 0, 0),
       // Store initial position for layout
@@ -243,7 +301,36 @@
     };
 
     nodeGroup.add(mesh);
+    labelGroup.add(label);
     return node;
+  }
+
+  // createLabel builds a canvas-text sprite that always shows the
+  // node's hostname above it.
+  function createLabel(text) {
+    var canvas = document.createElement('canvas');
+    var ctx = canvas.getContext('2d');
+    var fs = CONFIG.label.fontSize;
+    canvas.width = 512;
+    canvas.height = 128;
+    ctx.font = '600 ' + fs + 'px "JetBrains Mono", Consolas, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // Halo
+    ctx.shadowColor = CONFIG.label.haloColor;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = CONFIG.label.color;
+    ctx.fillText(text, 256, 64);
+    var tex = new THREE.CanvasTexture(canvas);
+    var mat = new THREE.SpriteMaterial({
+      map: tex,
+      transparent: true,
+      depthTest: false,
+      sizeAttenuation: true,
+    });
+    var sprite = new THREE.Sprite(mat);
+    sprite.scale.set(180, 45, 1);
+    return sprite;
   }
 
   function createGlowTexture(color) {
@@ -304,8 +391,9 @@
     ]);
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
+    // Bright core line
     var material = new THREE.LineBasicMaterial({
-      color: 0x58a6ff,
+      color: 0x79c0ff,
       transparent: true,
       opacity: opacity,
       linewidth: 1,
@@ -314,12 +402,27 @@
     var line = new THREE.Line(geometry, material);
     edgeGroup.add(line);
 
+    // Soft glow line (same geometry, wider feel via additive blending)
+    var glowGeo = new THREE.BufferGeometry();
+    var glowPos = new Float32Array(positions);
+    glowGeo.setAttribute('position', new THREE.BufferAttribute(glowPos, 3));
+    var glowMat = new THREE.LineBasicMaterial({
+      color: 0x58a6ff,
+      transparent: true,
+      opacity: CONFIG.edge.glowOpacity,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    var glowLine = new THREE.Line(glowGeo, glowMat);
+    edgeGroup.add(glowLine);
+
     var edge = {
       source: edgeData.source,
       target: edgeData.target,
       latency: lat,
       bandwidth: edgeData.bandwidth_mbps || -1,
       line: line,
+      glowLine: glowLine,
       srcNode: src,
       dstNode: dst,
       particles: [],
@@ -365,6 +468,12 @@
       pos.array[0] = src.x; pos.array[1] = src.y; pos.array[2] = src.z;
       pos.array[3] = dst.x; pos.array[4] = dst.y; pos.array[5] = dst.z;
       pos.needsUpdate = true;
+      if (edge.glowLine) {
+        var gpos = edge.glowLine.geometry.attributes.position;
+        gpos.array[0] = src.x; gpos.array[1] = src.y; gpos.array[2] = src.z;
+        gpos.array[3] = dst.x; gpos.array[4] = dst.y; gpos.array[5] = dst.z;
+        gpos.needsUpdate = true;
+      }
     });
   }
 
@@ -461,6 +570,15 @@
 
       // Apply
       node.mesh.position.add(node.velocity);
+
+      // Keep the hostname label above the node
+      if (node.label) {
+        node.label.position.set(
+          node.mesh.position.x,
+          node.mesh.position.y + CONFIG.node.radius + CONFIG.label.yOffset,
+          node.mesh.position.z
+        );
+      }
 
       // Update glow sprite scale based on CPU
       var pulse = 1.0 + (node.cpu / 100) * 0.15;
@@ -822,6 +940,12 @@
       if (mesh.geometry) mesh.geometry.dispose();
       if (mesh.material) mesh.material.dispose();
       nodeGroup.remove(mesh);
+    }
+    // Remove all labels
+    while (labelGroup.children.length > 0) {
+      var lbl = labelGroup.children[0];
+      if (lbl.material) lbl.material.dispose();
+      labelGroup.remove(lbl);
     }
     // Remove all edges
     while (edgeGroup.children.length > 0) {
