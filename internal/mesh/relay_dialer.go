@@ -378,10 +378,12 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port 
 			}
 			// Must have relay capability.
 			if !rp.CapRelay {
+				log.Printf("[mesh] relay candidate %s: no CapRelay", rp.PeerKey[:min(len(rp.PeerKey), 8)])
 				continue
 			}
 			// Skip relays at capacity.
 			if rp.MaxCircuits > 0 && rp.LoadCircuits >= rp.MaxCircuits {
+				log.Printf("[mesh] relay candidate %s: at capacity %d/%d", rp.PeerKey[:min(len(rp.PeerKey), 8)], rp.LoadCircuits, rp.MaxCircuits)
 				continue
 			}
 			// NOTE: symmetric-NAT relays are NOT filtered out. Relay
@@ -393,6 +395,7 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port 
 			// perfectly well.
 			// Must have an active session to the relay.
 			if !sessionOK(rp.PeerKey) {
+				log.Printf("[mesh] relay candidate %s: no active session", rp.PeerKey[:min(len(rp.PeerKey), 8)])
 				continue
 			}
 			eligible = append(eligible, candidate{key: rp.PeerKey, rtt: rp.RTT})

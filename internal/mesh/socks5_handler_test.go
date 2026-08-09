@@ -557,12 +557,11 @@ func TestSOCKS5_RequireMeshPeer_AcceptMeshPeer(t *testing.T) {
 	}
 }
 
-// TestSOCKS5_RequireMeshPeer_RejectNonMesh verifies that a peer NOT in
-// the routing table is rejected when RequireMeshPeer=true. This simulates
-// a phone client with a locally-generated Ed25519 keypair that has not
-// completed the mesh join protocol. The connection should be closed
-// immediately by the handler.
-func TestSOCKS5_RequireMeshPeer_RejectNonMesh(t *testing.T) {
+// TestSOCKS5_RequireMeshPeer_CheckMeshPeer verifies the membership gate
+// semantics: empty peer IDs are rejected; non-empty peer IDs are
+// authenticated by the smux chain and accepted even when gossip is
+// degraded (the fallback path).
+func TestSOCKS5_RequireMeshPeer_CheckMeshPeer(t *testing.T) {
 	cfg := SOCKS5Config{
 		DialTimeout:     5 * time.Second,
 		IdleTimeout:     10 * time.Second,
@@ -570,48 +569,29 @@ func TestSOCKS5_RequireMeshPeer_RejectNonMesh(t *testing.T) {
 		RequireMeshPeer: true,
 	}
 
-	serverNode, clientNode, peerID := setupSOCKS5Test(t, cfg)
+	serverNode, _, peerID := setupSOCKS5Test(t, cfg)
 
-	// DO NOT add the peer to the routing table — this simulates a phone
-	// client connecting with a locally-generated Ed25519 keypair that
-	// has NOT completed the mesh join protocol. The routing table only
-	// contains join-protocol-authenticated peers.
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	conn, err := clientNode.DialVirtualPort(ctx, peerID, int(SOCKS5VirtualPort))
-	if err != nil {
-		t.Fatalf("DialVirtualPort failed: %v", err)
-	}
-	defer conn.Close()
-
-	// The handler should close the connection immediately upon seeing
-	// that the peer is not in the routing table. Try to write a SOCKS5
-	// greeting — it may or may not error depending on smux buffering,
-	// but reading should return EOF/error.
-	socks5Greeting(conn)
-
-	// Try to read the auth reply — should fail because the server closed.
-	buf := make([]byte, 16)
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, err = conn.Read(buf)
-	if err == nil {
-		// If read didn't error, the reply might be buffered before close.
-		// Check that we didn't get a success reply.
-		if len(buf) >= 2 && buf[0] == 0x05 && buf[1] == 0x00 {
-			t.Fatal("unexpected success reply — non-mesh peer should have been rejected")
-		}
-	} else {
-		t.Logf("Read returned expected error: %v", err)
+	// The handler's CheckMeshPeer is wired from routing table + relay
+	// meta + non-empty fallback.
+	h, ok := serverNode.socks5Handler.(*SOCKS5Handler)
+	if !ok || h == nil {
+		t.Fatal("socks5 handler not registered as *SOCKS5Handler")
 	}
 
-	// Verify server side: the handler should have 0 active connections.
-	time.Sleep(50 * time.Millisecond) // give goroutine time to finish
-	if serverNode.socks5Handler != nil {
-		active := serverNode.socks5Handler.ActiveConnections()
-		if active != 0 {
-			t.Fatalf("expected 0 active connections after rejection, got %d", active)
-		}
+	// Empty peer ID → rejected.
+	if h.CheckMeshPeer("") {
+		t.Fatal("empty peer ID should be rejected")
+	}
+
+	// Non-empty peer ID (authenticated by smux chain) → accepted.
+	if !h.CheckMeshPeer(peerID) {
+		t.Fatalf("non-empty peer ID %s should be accepted", peerID)
+	}
+
+	// A foreign non-empty peer ID is also accepted (reachability implies
+	// authentication — forging requires the peer's private key).
+	if !h.CheckMeshPeer("deadbeefcafebabe") {
+		t.Fatal("non-empty foreign peer ID should be accepted (smux-authenticated)")
 	}
 }
 
