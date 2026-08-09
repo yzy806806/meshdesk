@@ -157,23 +157,24 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 	// addresses that some NATs mishandle — so we keep a dedicated IPv4
 	// socket for IPv4 traffic and a dedicated IPv6 socket for IPv6.
 	// Explicit single-address binds (e.g. "127.0.0.1", "::1") stay as-is.
+	// Create the UDP listener. For wildcard binds ("0.0.0.0" or "::"),
+	// use a single [::] socket. On Linux with IPV6_V6ONLY=0 (default)
+	// it accepts BOTH IPv4 and IPv6 packets, and WriteTo from it to an
+	// IPv4 destination works (Go sends with an IPv4 source). This is
+	// essential for mixed IP-family meshes: an IPv6-only node (e.g. N1
+	// behind CGNAT) must receive UDP probes from IPv4 peers and send
+	// UDP to IPv6 peers. Explicit single-address binds (e.g. "127.0.0.1",
+	// "::1") stay as-is.
 	var udpConns []*net.UDPConn
 	udpBinds := []string{bindAddr}
 	if bindAddr == "0.0.0.0" || bindAddr == "::" {
-		udpBinds = []string{"0.0.0.0", "::"}
+		udpBinds = []string{"::"}
 	}
 	for _, bind := range udpBinds {
 		udpAddr := &net.UDPAddr{IP: net.ParseIP(bind), Port: udpPort}
 		conn, err := net.ListenUDP("udp", udpAddr)
 		if err != nil {
-			// If the second family fails (e.g. no IPv6 support on this
-			// host), keep the first socket — better than failing startup.
-			if len(udpConns) == 0 {
-				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
-			}
-			logger.Printf("[WARN] mux: failed to listen UDP on %s:%d: %v (continuing with %d socket(s))",
-				bind, udpPort, err, len(udpConns))
-			continue
+			return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
 		}
 		if err := setMuxUDPRecvBuf(conn); err != nil {
 			logger.Printf("[WARN] mux: failed to resize UDP recv buffer on %s: %v (continuing)", bind, err)
