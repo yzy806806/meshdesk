@@ -733,6 +733,10 @@ func main() {
 					log.Printf("[tun] restored %d TUN route(s) from peer cache", restored)
 				}
 				log.Printf("[tun] re-broadcast: %d known peers", len(peerIPs))
+				// Debug: confirm our own VirtualIP is set in the local meta.
+				if lm := gossipLayer.LocalMeta(); lm != nil {
+					log.Printf("[tun] local meta: vip=%q seq=%d", lm.VirtualIP, lm.Seq)
+				}
 				// Re-allocate if there's a conflict.
 				node.ReallocateAfterGossip(peerIPs)
 				// Re-broadcast (may have changed due to re-allocation).
