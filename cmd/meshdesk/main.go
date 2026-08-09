@@ -349,6 +349,13 @@ func main() {
 		log.Printf("Warning: failed to register cluster file server: %v", err)
 	}
 
+	// Register the remote command executor (T2.1): non-interactive
+	// commands over the mesh channel — the backbone of one-click node
+	// updates (md5, systemctl, binary swap).
+	if _, err := node.RegisterCommandServer(); err != nil {
+		log.Printf("Warning: failed to register command server: %v", err)
+	}
+
 	// Register the SOCKS5 proxy handler if SOCKS5 is enabled in config.
 	// This allows mesh peers to route SOCKS5 CONNECT requests through
 	// this node to reach arbitrary internet destinations. The handler
