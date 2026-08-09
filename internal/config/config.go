@@ -909,6 +909,7 @@ func Default() *Config {
 			GossipPort: 7946,
 			TunMTU:     DefaultTunMTU,
 			DNSPort:    5353,
+			DNSEnabled: true, // hostname.mesh → VirtualIP resolution
 		},
 		Monitoring: MonitoringConfig{
 			Interval: 15,
