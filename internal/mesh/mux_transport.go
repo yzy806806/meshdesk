@@ -92,6 +92,7 @@ type MuxTransport struct {
 	streamCh   chan net.Conn           // gossip streams → memberlist
 	realityCh  chan net.Conn           // Reality TLS connections → reality listener
 	meshCh     chan net.Conn           // mesh-internal connections → mesh listener
+	udpMesh    *udpMeshManager         // per-remote UDP ARQ streams (0x4D routing)
 	httpCh     chan net.Conn           // HTTP connections → Dashboard/join server
 	packetChIn chan *memberlist.Packet // UDP packets → memberlist
 
@@ -194,6 +195,7 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		bindAddr:      bindAddr,
 		advertiseAddr: cfg.AdvertiseAddr,
 		advertisePort: cfg.AdvertisePort,
+		udpMesh:       newUDPMeshManager(),
 	}
 
 	if t.advertisePort == 0 {
@@ -663,7 +665,7 @@ func (t *MuxTransport) udpListenLoop() {
 	defer t.wg.Done()
 
 	// One reader goroutine per UDP socket (IPv4 + IPv6), all feeding
-	// the same packetChIn channel.
+	// the same packetChIn channel (or the mesh manager for 0x4D).
 	var readers sync.WaitGroup
 	for _, conn := range t.udpConns {
 		conn := conn
@@ -685,9 +687,16 @@ func (t *MuxTransport) udpListenLoop() {
 					t.logger.Printf("[WARN] mux: UDP packet too short (%d bytes) from %s", n, addr)
 					continue
 				}
+				pkt := buf[:n]
+				// Route mesh-marked datagrams to the ARQ stream manager.
+				if udpAddr, ok := addr.(*net.UDPAddr); ok && t.udpMesh != nil {
+					if t.udpMesh.routeUDPPacket(conn, udpAddr, pkt, t.meshCh) {
+						continue
+					}
+				}
 				select {
 				case t.packetChIn <- &memberlist.Packet{
-					Buf:       buf[:n],
+					Buf:       pkt,
 					From:      addr,
 					Timestamp: ts,
 				}:
