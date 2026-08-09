@@ -556,6 +556,23 @@ func (nt *NatTraversal) handleDirectProbe(session *NatSession) {
 		result := nt.puncher.AttemptPunch(ctx, peerKey, ep)
 		lastResult = result
 		if result.Success {
+			// Hole punch succeeded — establish the mesh session over
+			// the punched UDP path (T0.5). Use the punched remote
+			// endpoint (the NAT-mapped address) so the ARQ stream
+			// targets the hole.
+			if nd := nt.wgDelegate.Node(); nd != nil {
+				punchEP := result.RemoteEndpoint
+				if punchEP == "" {
+					punchEP = ep
+				}
+				if stream, err := nd.DialUDPPeer(ctx, punchEP); err == nil {
+					log.Printf("[p2p/nat] peer %s: UDP session established over hole-punched path (%s)",
+						safeShortKey(peerKey), punchEP)
+					stream.Close()
+				} else {
+					log.Printf("[p2p/nat] peer %s: UDP session over hole failed: %v", safeShortKey(peerKey), err)
+				}
+			}
 			break
 		}
 	}
@@ -744,6 +761,23 @@ func (nt *NatTraversal) handleDirectReprobe(session *NatSession) {
 		result := nt.puncher.AttemptPunch(ctx, peerKey, ep)
 		lastResult = result
 		if result.Success {
+			// Hole punch succeeded — establish the mesh session over
+			// the punched UDP path (T0.5). Use the punched remote
+			// endpoint (the NAT-mapped address) so the ARQ stream
+			// targets the hole.
+			if nd := nt.wgDelegate.Node(); nd != nil {
+				punchEP := result.RemoteEndpoint
+				if punchEP == "" {
+					punchEP = ep
+				}
+				if stream, err := nd.DialUDPPeer(ctx, punchEP); err == nil {
+					log.Printf("[p2p/nat] peer %s: UDP session established over hole-punched path (%s)",
+						safeShortKey(peerKey), punchEP)
+					stream.Close()
+				} else {
+					log.Printf("[p2p/nat] peer %s: UDP session over hole failed: %v", safeShortKey(peerKey), err)
+				}
+			}
 			break
 		}
 	}

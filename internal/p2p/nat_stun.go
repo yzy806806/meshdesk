@@ -3,6 +3,7 @@ package p2p
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/pion/stun/v3"
@@ -35,6 +36,10 @@ type EndpointDiscovery struct {
 
 	// LocalAddr is the local socket address used for the STUN query.
 	LocalAddr string
+
+	// NatMapping describes the mapping behavior (endpoint-independent /
+	// endpoint-dependent) discovered by probing multiple destinations.
+	NatMapping string
 }
 
 // StunClient queries STUN servers to discover the node's public endpoint
@@ -70,54 +75,140 @@ func NewStunClient(servers []string, timeout time.Duration) *StunClient {
 }
 
 // Discover queries STUN servers to find the node's public endpoint.
-// It returns the first successful response. The NAT type is determined
-// by querying a second STUN server and comparing mapped addresses.
+// Discover performs NAT discovery and type classification (T0.4).
+//
+// Mapping-behavior probe: one UDP socket sends Binding Requests to
+// MULTIPLE distinct STUN targets. If the NAT maps the same local
+// (IP,port) to the same public port regardless of destination, the
+// mapping is endpoint-independent (full-cone/restricted candidates).
+// Different mapped ports per destination ⇒ endpoint-dependent mapping
+// (symmetric or port-restricted behavior).
 func (sc *StunClient) Discover() (*EndpointDiscovery, error) {
 	if len(sc.servers) == 0 {
 		return nil, fmt.Errorf("no STUN servers configured")
 	}
 
-	// Query the first server.
-	first, err := sc.queryServer(sc.servers[0])
+	// Open ONE socket and query all servers through it.
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
-		// Try remaining servers.
-		for i := 1; i < len(sc.servers); i++ {
-			first, err = sc.queryServer(sc.servers[i])
-			if err == nil {
-				break
-			}
+		return nil, fmt.Errorf("stun: listen: %w", err)
+	}
+	defer conn.Close()
+
+	var results []*EndpointDiscovery
+	for _, srv := range sc.servers {
+		d, err := sc.queryServerConn(conn, srv)
+		if err == nil && d != nil {
+			results = append(results, d)
 		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("all STUN servers unreachable: %w", err)
+	if len(results) == 0 {
+		return nil, fmt.Errorf("all STUN servers unreachable")
 	}
 
-	// If we have a second server, query it to classify NAT type.
-	natType := NatTypeFullCone // assume full-cone if we can't classify
-	if len(sc.servers) > 1 {
-		second, err2 := sc.queryServer(sc.servers[1])
-		if err2 == nil && second != nil {
-			natType = classifyNat(first, second)
-		}
-	} else {
-		natType = NatTypeUnknown
-	}
-
-	// Check if the node has a public IP (no NAT).
-	if first.MappedAddress != "" {
-		host, _, _ := net.SplitHostPort(first.MappedAddress)
-		if host != "" && isPublicIP(host) {
-			// Could still be behind NAT but with a public IP on the
-			// router. Conservative: keep the STUN-classified type.
-			// Only set "none" if the local addr matches the mapped addr.
-			if first.LocalAddr == first.MappedAddress {
-				natType = NatTypeNone
+	first := results[0]
+	natType := NatTypeUnknown
+	if len(results) >= 2 {
+		// Same local socket → compare mapped ports across destinations.
+		mappedPorts := make(map[int]bool)
+		for _, r := range results {
+			if _, p, err := net.SplitHostPort(r.MappedAddress); err == nil {
+				if port, err2 := strconv.Atoi(p); err2 == nil {
+					mappedPorts[port] = true
+				}
 			}
 		}
+		if len(mappedPorts) == 1 {
+			// Same mapped port for all destinations: endpoint-independent
+			// mapping. Not symmetric (symmetric maps different ports per
+			// destination). Distinguish full-cone vs restricted requires
+			// an RFC5780 filtering probe (CHANGE-REQUEST) which most
+			// public STUN servers don't support — classify as restricted
+			// (conservative) unless we can prove otherwise.
+			natType = NatTypeRestricted
+		} else {
+			// Different mapped ports per destination → endpoint-dependent
+			// mapping (symmetric behavior).
+			natType = NatTypeSymmetric
+		}
+	}
+
+	// No NAT (public IP, local == mapped).
+	if first.LocalAddr == first.MappedAddress {
+		natType = NatTypeNone
 	}
 
 	first.NatType = natType
+	first.NatMapping = classifyMapping(results)
 	return first, nil
+}
+
+// classifyMapping returns a human-readable mapping-behavior label.
+func classifyMapping(results []*EndpointDiscovery) string {
+	if len(results) < 2 {
+		return "unknown"
+	}
+	ports := make(map[int]bool)
+	for _, r := range results {
+		if _, p, err := net.SplitHostPort(r.MappedAddress); err == nil {
+			if port, err2 := strconv.Atoi(p); err2 == nil {
+				ports[port] = true
+			}
+		}
+	}
+	if len(ports) == 1 {
+		return "endpoint-independent"
+	}
+	return "endpoint-dependent"
+}
+
+// queryServerConn sends a Binding Request through the given socket to
+// the server and returns the mapped address.
+func (sc *StunClient) queryServerConn(conn *net.UDPConn, serverAddr string) (*EndpointDiscovery, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", serverAddr)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", serverAddr, err)
+	}
+
+	conn.SetDeadline(time.Now().Add(sc.timeout))
+
+	msg, err := stun.Build(stun.BindingRequest, stun.TransactionID)
+	if err != nil {
+		return nil, fmt.Errorf("build STUN request: %w", err)
+	}
+	if _, err := conn.WriteToUDP(msg.Raw, udpAddr); err != nil {
+		return nil, fmt.Errorf("write STUN request: %w", err)
+	}
+
+	buf := make([]byte, 1500)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, fmt.Errorf("read STUN response: %w", err)
+	}
+
+	var resp stun.Message
+	if err := stun.Decode(buf[:n], &resp); err != nil {
+		return nil, fmt.Errorf("decode STUN response: %w", err)
+	}
+
+	var xorAddr stun.XORMappedAddress
+	var mappedAddr stun.MappedAddress
+	var publicAddr string
+	if err := xorAddr.GetFrom(&resp); err == nil {
+		publicAddr = fmt.Sprintf("%s:%d", xorAddr.IP, xorAddr.Port)
+	} else if err := mappedAddr.GetFrom(&resp); err == nil {
+		publicAddr = fmt.Sprintf("%s:%d", mappedAddr.IP, mappedAddr.Port)
+	} else {
+		return nil, fmt.Errorf("no mapped address in STUN response from %s", serverAddr)
+	}
+
+	localAddr := conn.LocalAddr().String()
+	return &EndpointDiscovery{
+		Server:        serverAddr,
+		LocalAddr:     localAddr,
+		MappedAddress: publicAddr,
+		NatType:       NatTypeUnknown,
+	}, nil
 }
 
 // queryServer sends a STUN Binding Request to the given server and
