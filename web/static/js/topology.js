@@ -22,15 +22,16 @@
   // ═══════════════════════════════════════════════════════════════
 
   var CONFIG = {
-    // Force-directed layout parameters
+    // Force-directed layout parameters — tuned so nodes spread across
+    // the whole viewport instead of clustering in the center.
     layout: {
-      repulsion: 800,       // Coulomb repulsion constant
-      springLength: 150,   // Rest length of springs (edges)
-      springStrength: 0.05, // Hooke's spring constant
-      damping: 0.85,       // Velocity damping per tick
-      centerGravity: 0.001, // Gravity pulling nodes to center
-      maxVelocity: 10,     // Max velocity per tick
-      ticks: 300,          // Total layout ticks before settling
+      repulsion: 4500,      // Coulomb repulsion constant
+      springLength: 420,    // Rest length of springs (edges) — wide spacing
+      springStrength: 0.02, // Hooke's spring constant (weak → nodes roam)
+      damping: 0.85,        // Velocity damping per tick
+      centerGravity: 0.0002, // Gravity pulling nodes to center (weak)
+      maxVelocity: 14,      // Max velocity per tick
+      ticks: 500,           // Total layout ticks before settling
     },
     // Node visual parameters
     node: {
@@ -77,7 +78,7 @@
       fov: 60,
       near: 0.1,
       far: 5000,
-      initialZ: 600,
+      initialZ: 900,
     },
     // Mock data (used when API returns empty and ?mock=1 not set)
     mockMode: null, // Will be auto-detected
@@ -99,6 +100,17 @@
   function roleColor(role) {
     if (role && ROLE_COLORS[role] !== undefined) return ROLE_COLORS[role];
     return 0x8b949e;
+  }
+
+  // hashString returns a stable 0..1 hash of a string (for seeding
+  // deterministic pseudo-random node positions).
+  function hashString(str) {
+    var h = 2166136261;
+    for (var i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return ((h >>> 0) % 100000) / 100000;
   }
 
   // ═══════════════════════════════════════════════════════════════
@@ -637,6 +649,23 @@
       var node = createNode(n);
       nodes.push(node);
       nodeMap[n.id] = node;
+    });
+
+    // Scatter nodes at random initial positions so the force layout
+    // spreads them across the whole viewport instead of starting from
+    // the origin (where the API may report x/y/z = 0).
+    var spread = CONFIG.layout.springLength * Math.sqrt(nodes.length) * 1.2;
+    nodes.forEach(function(node) {
+      var seed = hashString(node.id);
+      var theta = seed * Math.PI * 2;
+      var phi = (seed * 7.13) % Math.PI; // pseudo-random but stable per node
+      var r = spread * (0.35 + ((seed * 3.7) % 1) * 0.65);
+      node.mesh.position.set(
+        r * Math.sin(phi) * Math.cos(theta),
+        r * Math.cos(phi) * 0.7,
+        r * Math.sin(phi) * Math.sin(theta)
+      );
+      node.initialPos.copy(node.mesh.position);
     });
 
     // Create edges
