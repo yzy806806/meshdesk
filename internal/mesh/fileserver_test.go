@@ -14,7 +14,7 @@ import (
 // net.Pipe, bypassing the mesh layer. A writer goroutine sends the
 // request (and optional write payload); the main goroutine reads the
 // response — avoiding net.Pipe's synchronous read/write deadlock.
-func runFileServerConn(t *testing.T, cfg FileServerConfig, req FileRequest, writePayload []byte) (fileResponse, []byte) {
+func runFileServerConn(t *testing.T, cfg FileServerConfig, req FileRequest, writePayload []byte) (FileResponse, []byte) {
 	t.Helper()
 	client, server := net.Pipe()
 	defer client.Close()
@@ -42,7 +42,7 @@ func runFileServerConn(t *testing.T, cfg FileServerConfig, req FileRequest, writ
 		werr <- nil
 	}()
 
-	var resp fileResponse
+	var resp FileResponse
 	if err := json.NewDecoder(io.LimitReader(client, 64<<10)).Decode(&resp); err != nil {
 		t.Fatalf("decode resp: %v", err)
 	}
