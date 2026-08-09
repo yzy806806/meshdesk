@@ -490,6 +490,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/update/start", s.requireAuth(s.requireStepUp(OpFileUpload, s.handleUpdateStart)))
 	mux.HandleFunc("/api/update/status", s.requireAuth(s.handleUpdateStatus))
 	mux.HandleFunc("/api/services/list", s.requireAuth(s.handleServiceList))
+	mux.HandleFunc("/api/stats", s.requireAuth(s.handleStats))
 	mux.HandleFunc("/api/services/start", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("start"))))
 	mux.HandleFunc("/api/services/stop", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("stop"))))
 	mux.HandleFunc("/api/services/restart", s.requireAuth(s.requireStepUp(OpServiceManage, s.handleServiceAction("restart"))))
