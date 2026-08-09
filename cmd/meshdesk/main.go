@@ -90,13 +90,14 @@ func main() {
 	}
 
 	var (
-		configPath     string
-		webMode        bool
-		genKey         bool
-		relayMode      bool
-		socks5Listen   string
-		socks5ExitNode string
-		showVersion    bool
+		configPath      string
+		webMode         bool
+		genKey          bool
+		relayMode       bool
+		socks5Listen    string
+		socks5ExitNode  string
+		socks5ExitNodes string
+		showVersion     bool
 	)
 	flag.StringVar(&configPath, "config", "/etc/meshdesk/config.yaml", "path to config file")
 	flag.BoolVar(&webMode, "web", false, "enable web UI mode")
@@ -104,6 +105,7 @@ func main() {
 	flag.BoolVar(&relayMode, "relay", false, "enable relay mode (accept relay circuits from peers)")
 	flag.StringVar(&socks5Listen, "socks5-listen", "", "SOCKS5 client listen address (e.g. 127.0.0.1:1080)")
 	flag.StringVar(&socks5ExitNode, "socks5-exit-node", "", "exit node public key for SOCKS5 client mode")
+	flag.StringVar(&socks5ExitNodes, "socks5-exit-nodes", "", "comma-separated exit node public keys (load-balanced, health-checked)")
 	flag.BoolVar(&showVersion, "version", false, "print version and exit")
 	flag.Parse()
 
@@ -386,7 +388,19 @@ func main() {
 
 	// Start SOCKS5 client listener (bridges local SOCKS5 to mesh exit node).
 	if socks5Listen != "" && socks5ExitNode != "" {
-		go runSOCKS5Client(node, socks5Listen, socks5ExitNode)
+		go runSOCKS5Client(node, socks5Listen, []string{socks5ExitNode})
+	}
+	if socks5Listen != "" && socks5ExitNodes != "" {
+		parts := strings.Split(socks5ExitNodes, ",")
+		var nodes []string
+		for _, p := range parts {
+			if p = strings.TrimSpace(p); p != "" {
+				nodes = append(nodes, p)
+			}
+		}
+		if len(nodes) > 0 {
+			go runSOCKS5Client(node, socks5Listen, nodes)
+		}
 	}
 
 	// Attempt to connect statically configured peers with Reality TLS.
@@ -2210,14 +2224,18 @@ func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPa
 // connections through the mesh to a remote SOCKS5 exit handler.
 // Each SOCKS5 CONNECT from a local client (e.g., curl) is forwarded
 // via DialVirtualPort to the exit node's virtual port 0x5350.
-func runSOCKS5Client(node *mesh.MeshNode, listenAddr, exitNodeID string) {
+func runSOCKS5Client(node *mesh.MeshNode, listenAddr string, exitNodes []string) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Printf("SOCKS5 client: failed to listen on %s: %v", listenAddr, err)
 		return
 	}
 	defer ln.Close()
-	log.Printf("SOCKS5 client: listening on %s, exit node %s...", listenAddr, exitNodeID[:16])
+	log.Printf("SOCKS5 client: listening on %s, exit nodes %v", listenAddr, exitNodes[:min(len(exitNodes), 8)])
+
+	// Health monitor: probe each exit's SOCKS5 virtual port every 30s.
+	health := newExitHealth(node, exitNodes)
+	go health.run()
 
 	for {
 		conn, err := ln.Accept()
@@ -2277,14 +2295,22 @@ func runSOCKS5Client(node *mesh.MeshNode, listenAddr, exitNodeID string) {
 			targetPort := binary.BigEndian.Uint16(portBuf)
 			targetAddr := net.JoinHostPort(targetHost, fmt.Sprintf("%d", targetPort))
 
+			// Phase 3: pick a healthy exit (round-robin) and dial its
+			// SOCKS5 virtual port.
+			exitNodeID := health.pick()
+			if exitNodeID == "" {
+				log.Printf("SOCKS5 client: no healthy exit nodes available")
+				socks5Reply(c, 0x04)
+				return
+			}
 			log.Printf("SOCKS5 client: CONNECT %s via exit %s...", targetAddr, exitNodeID[:16])
 
-			// Phase 3: Dial the exit node's SOCKS5 virtual port.
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			meshConn, err := node.DialVirtualPort(ctx, exitNodeID, int(mesh.SOCKS5VirtualPort))
 			if err != nil {
 				log.Printf("SOCKS5 client: DialVirtualPort: %v", err)
+				health.markDown(exitNodeID)
 				socks5Reply(c, 0x04)
 				return
 			}
@@ -2560,6 +2586,78 @@ func systemResolver() string {
 				ip = "[" + ip + "]"
 			}
 			return ip + ":53"
+		}
+	}
+	return ""
+}
+
+// exitHealth tracks SOCKS5 exit node health and does round-robin
+// selection (T3.2). Each exit is probed by dialing its SOCKS5 virtual
+// port every 30s; failed probes mark it down until the next success.
+type exitHealth struct {
+	node  *mesh.MeshNode
+	mu    sync.Mutex
+	state map[string]bool // exitID → healthy
+	order []string
+	rr    int
+}
+
+func newExitHealth(node *mesh.MeshNode, exits []string) *exitHealth {
+	h := &exitHealth{
+		node:  node,
+		state: make(map[string]bool),
+		order: exits,
+	}
+	for _, e := range exits {
+		h.state[e] = true
+	}
+	return h
+}
+
+func (h *exitHealth) run() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		for _, e := range h.order {
+			h.probe(e)
+		}
+	}
+}
+
+func (h *exitHealth) probe(exitID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := h.node.DialVirtualPort(ctx, exitID, int(mesh.SOCKS5VirtualPort))
+	if err != nil {
+		h.markDown(exitID)
+		return
+	}
+	conn.Close()
+	h.markUp(exitID)
+}
+
+func (h *exitHealth) markUp(exitID string) {
+	h.mu.Lock()
+	h.state[exitID] = true
+	h.mu.Unlock()
+}
+
+func (h *exitHealth) markDown(exitID string) {
+	h.mu.Lock()
+	h.state[exitID] = false
+	h.mu.Unlock()
+}
+
+// pick returns the next healthy exit (round-robin), or "" if none.
+func (h *exitHealth) pick() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i := 0; i < len(h.order); i++ {
+		idx := (h.rr + i) % len(h.order)
+		id := h.order[idx]
+		if h.state[id] {
+			h.rr = (idx + 1) % len(h.order)
+			return id
 		}
 	}
 	return ""
