@@ -384,10 +384,13 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port 
 			if rp.MaxCircuits > 0 && rp.LoadCircuits >= rp.MaxCircuits {
 				continue
 			}
-			// Skip symmetric NAT relays (can't relay reliably).
-			if rp.NatType == "symmetric" {
-				continue
-			}
+			// NOTE: symmetric-NAT relays are NOT filtered out. Relay
+			// circuits here are smux-stream bridges over already-established
+			// TCP sessions — the relay node dials out to the shared node,
+			// so its own NAT type is irrelevant (no inbound hole-punching
+			// needed). This matters for shared nodes behind CGNAT (e.g. N1:
+			// IPv6 public + IPv4 CGNAT, STUN reports symmetric) which relay
+			// perfectly well.
 			// Must have an active session to the relay.
 			if !sessionOK(rp.PeerKey) {
 				continue
