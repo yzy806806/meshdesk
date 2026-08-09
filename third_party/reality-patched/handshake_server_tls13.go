@@ -102,6 +102,9 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 		hs.suite = cipherSuiteTLS13ByID(hs.hello.cipherSuite)
 		c.cipherSuite = hs.suite.id
 		hs.transcript = hs.suite.hash.New()
+		if c.config.Show {
+			fmt.Printf("REALITY debug: handshake suite=%x\n", hs.suite.id)
+		}
 
 		var peerData []byte
 		for _, keyShare := range hs.clientHello.keyShares {
@@ -120,6 +123,10 @@ func (hs *serverHandshakeStateTLS13) handshake() error {
 		copy(hs.hello.serverShare.data, key.PublicKey().Bytes())
 		peerKey, _ := key.Curve().NewPublicKey(peerPub)
 		hs.sharedKey, _ = key.ECDH(peerKey)
+		if c.config.Show {
+			fmt.Printf("REALITY debug: handshake ECDH done, sharedKey=%d bytes, serverShare grp=%d len=%d\n",
+				len(hs.sharedKey), hs.hello.serverShare.group, len(hs.hello.serverShare.data))
+		}
 
 		if hs.hello.serverShare.group == X25519MLKEM768 {
 			k, _ := mlkem.NewEncapsulationKey768(peerData[:mlkem.EncapsulationKeySize768])

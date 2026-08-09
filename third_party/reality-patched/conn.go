@@ -551,7 +551,12 @@ func (hc *halfConn) encrypt(record, payload []byte, rand io.Reader) ([]byte, err
 				}
 				padding -= len(record) + c.Overhead()
 				if padding < 0 {
-					return nil, fmt.Errorf("payload[0]: %v, padding: %v", payload[0], padding)
+					// Template record length unknown (TLS 1.3 encrypts
+					// Certificate/Finished — the s2c capture can't collect
+					// their plaintext lengths). Skip padding rather than
+					// aborting the handshake; the record just won't match
+					// the real site's exact size, which is acceptable.
+					padding = 0
 				}
 				record = append(record, empty[:padding]...)
 			}

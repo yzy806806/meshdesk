@@ -33,12 +33,7 @@ func TestRealityClient_Live(t *testing.T) {
 	defer cancel()
 	c, err := hs.Connect(ctx, addr)
 	if err != nil {
-		// KNOWN ISSUE: the self-implemented uTLS client authenticates
-		// (AAD fix, see reality.go) but the TLS 1.3 handshake detail
-		// compatibility with the patched Go TLS server is unresolved —
-		// auth passes (no reset), handshake times out. Skip rather than
-		// fail CI; tracked as an open item.
-		t.Skipf("Reality handshake incomplete (known compat issue): %v", err)
+		t.Fatalf("Reality connect failed: %v", err)
 	}
 	defer c.Close()
 	t.Logf("Reality TLS connected to %s (authenticated)", addr)
