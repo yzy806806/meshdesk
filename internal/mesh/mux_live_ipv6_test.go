@@ -19,6 +19,15 @@ import (
 func TestMuxTransport_JoinIPv6Peer_Live(t *testing.T) {
 	addr := "[2409:8a30:3451:1d90:4e11:4e16:7fa5:c703]:52888"
 
+	// Live-network test: requires the real N1 meshdesk node to be
+	// reachable. Skip when it isn't (e.g. CI runners without route to
+	// the test lab). Check TCP reachability first.
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		t.Skipf("live N1 node not reachable (%v) — skipping live IPv6 join test", err)
+	}
+	conn.Close()
+
 	// Build MuxTransport client (production BindAddr: 0.0.0.0 → dual-stack).
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
