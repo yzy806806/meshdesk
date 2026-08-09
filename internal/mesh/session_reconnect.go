@@ -126,6 +126,18 @@ func (n *MeshNode) reconnectLoop(
 		if n.hasActiveSession(peerIdentityHex) {
 			log.Printf("[mesh] peer %s already reconnected via another path, cancelling reconnect",
 				shortPeerID(peerIdentityHex))
+			// The session was restored by another path (auto-connect
+			// from NotifyJoin, or an inbound session). Fire the
+			// reconnect handler so TUN routes removed by the session
+			// death handler are restored — no new NotifyJoin fires for
+			// a peer that stayed in memberlist, so the join handler
+			// never re-runs.
+			n.mu.RLock()
+			reconnectHdl := n.sessionReconnectHandler
+			n.mu.RUnlock()
+			if reconnectHdl != nil {
+				reconnectHdl(peerIdentityHex)
+			}
 			n.removeReconnectTracker(peerIdentityHex)
 			return
 		}
