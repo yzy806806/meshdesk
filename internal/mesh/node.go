@@ -1078,6 +1078,77 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	return stream, nil
 }
 
+// DialUDPPeer dials a peer over the UDP data plane (T0.3). It opens a
+// reliable ARQ stream, sends the 0x4D marker, then runs the standard
+// v2 stack: X25519 ECDH → SecureConn → smux session. Used by the
+// hole-punch direct path. Falls back to TCP DialPeerByEndpoint when the
+// UDP stream cannot be established.
+func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, error) {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return nil, fmt.Errorf("mesh: no mux transport for UDP dial")
+	}
+	sc, err := mt.DialUDP(address)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: udp dial %s: %w", address, err)
+	}
+
+	// DialUDP already sent the 0x4D marker frame; the stream is ready
+	// for key exchange.
+	sc.SetDeadline(time.Now().Add(30 * time.Second))
+
+	keys, peerIdentityHex, err := session.ClientKeyExchange(sc, n.identity)
+	if err != nil {
+		sc.Close()
+		return nil, fmt.Errorf("mesh: udp key exchange with %s: %w", address, err)
+	}
+	sc.SetDeadline(time.Time{})
+
+	log.Printf("[mesh] udp key exchange complete with %s (peer=%s)", address, peerIdentityHex[:16]+"...")
+
+	secureConn, err := crypto.NewSecureConn(sc, keys.SendKey[:], keys.RecvKey[:])
+	if err != nil {
+		sc.Close()
+		return nil, fmt.Errorf("mesh: udp create SecureConn with %s: %w", address, err)
+	}
+
+	smuxSession, err := smux.Client(secureConn, smux.DefaultConfig())
+	if err != nil {
+		secureConn.Close()
+		return nil, fmt.Errorf("mesh: udp smux handshake with %s: %w", address, err)
+	}
+
+	n.sessionsMu.Lock()
+	oldSession, exists := n.sessions[peerIdentityHex]
+	n.sessions[peerIdentityHex] = smuxSession
+	n.clientSessions[peerIdentityHex] = smuxSession
+	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
+	n.sessionsMu.Unlock()
+
+	if exists {
+		oldSession.Close()
+	}
+
+	log.Printf("[mesh] udp session established with %s (peer=%s)", address, peerIdentityHex[:16]+"...")
+
+	n.routes.AddPeer(&PeerEntry{
+		ID:       peerIdentityHex,
+		Endpoint: address,
+	})
+	go n.handleSessionStreams(peerIdentityHex, smuxSession)
+	n.startSessionWatcher(peerIdentityHex, address, true)
+
+	stream, err := smuxSession.OpenStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: udp open stream to %s: %w", address, err)
+	}
+	if err := writePortFrame(stream, 0); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("mesh: udp write port frame to %s: %w", address, err)
+	}
+	return stream, nil
+}
+
 // findPeerConfigByAddress searches the node's config Peers list for a
 // peer whose Endpoint matches the given address (host:port).
 func (n *MeshNode) findPeerConfigByAddress(address string) (*config.PeerConfig, bool) {
