@@ -261,6 +261,43 @@ func (m *PeerLinkMap) NextHop(target string) string {
 	return mh[target]
 }
 
+// PeerLatencyMs returns the measured RTT between two peers in
+// milliseconds (-1 if no direct link known).
+func (m *PeerLinkMap) PeerLatencyMs(from, to string) float64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if inner, ok := m.links[from]; ok {
+		if li, ok := inner[to]; ok && li.RTTUs > 0 {
+			return float64(li.RTTUs) / 1000.0
+		}
+	}
+	return -1
+}
+
+// HasLink reports whether a direct link from → to is known.
+func (m *PeerLinkMap) HasLink(from, to string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	inner, ok := m.links[from]
+	if !ok {
+		return false
+	}
+	_, ok = inner[to]
+	return ok
+}
+
+// LinkAge returns how long ago the from → to link was last updated.
+func (m *PeerLinkMap) LinkAge(from, to string) time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if inner, ok := m.links[from]; ok {
+		if li, ok := inner[to]; ok {
+			return time.Since(li.LastSeen)
+		}
+	}
+	return time.Hour
+}
+
 // RouteTable returns the full next-hop table (target → nextHop).
 func (m *PeerLinkMap) RouteTable() map[string]string {
 	return m.nextHopMap(100_000)
