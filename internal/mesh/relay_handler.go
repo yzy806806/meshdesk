@@ -14,10 +14,18 @@ import (
 )
 
 // DefaultMaxRelayTunnels is the default maximum number of active relay tunnels.
-const DefaultMaxRelayTunnels = 64
+// 256 gives headroom for per-request tunnels (SOCKS5, TUN, monitor) without
+// exhausting on a busy relay. Zombie tunnels are reaped by the idle sweep
+// (DefaultRelayIdleTimeout=30s) and half-open ones by evictStaleHalfOpen.
+const DefaultMaxRelayTunnels = 256
 
 // DefaultRelayIdleTimeout is the default idle timeout for relay tunnels.
-const DefaultRelayIdleTimeout = 5 * time.Minute
+// Tunnels with no traffic for this duration are reaped. Kept short (30s)
+// because relay tunnels are typically short-lived (per-request): a SOCKS5
+// or TUN request opens a tunnel, streams data, and closes. A tunnel that
+// stays idle this long is a zombie (e.g. a half-finished handshake) and
+// must not consume capacity.
+const DefaultRelayIdleTimeout = 30 * time.Second
 
 // DefaultRelayHeartbeatInterval is the legacy heartbeat interval for relay
 // tunnels. The heartbeat mechanism has been removed (it polluted the data
@@ -207,8 +215,9 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	h.tunnels[tunnelID] = tunnel
 	h.mu.Unlock()
 
-	log.Printf("[mesh-relay] relay request: tunnel=%s target=%s",
-		tunnelID[:min(len(tunnelID), 16)], req.TargetKey[:min(len(req.TargetKey), 16)]+"...")
+	log.Printf("[mesh-relay] relay request: tunnel=%s target=%s initiator=%s",
+		tunnelID[:min(len(tunnelID), 16)], req.TargetKey[:min(len(req.TargetKey), 16)]+"...",
+		req.InitiatorKey[:min(len(req.InitiatorKey), 16)]+"...")
 
 	// Try to open a stream to the target peer.
 	targetSession := h.node.GetSession(req.TargetKey)
@@ -569,6 +578,24 @@ func (h *RelayHandler) TunnelCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.tunnels)
+}
+
+// DumpTunnels writes a per-tunnel breakdown to w for diagnostics.
+func (h *RelayHandler) DumpTunnels(w io.Writer) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for id, t := range h.tunnels {
+		age := time.Since(t.CreatedAt).Round(time.Second)
+		last := time.Unix(0, t.LastActivity.Load())
+		idle := time.Since(last).Round(time.Second)
+		status := "active"
+		if t.TargetConn == nil {
+			status = "half-open"
+		}
+		fmt.Fprintf(w, "  tunnel=%s init=%s target=%s status=%s age=%s idle=%s\n",
+			id[:min(len(id), 16)], t.InitiatorKey[:min(len(t.InitiatorKey), 16)]+"...",
+			t.TargetKey[:min(len(t.TargetKey), 16)]+"...", status, age, idle)
+	}
 }
 
 // evictStaleHalfOpen removes tunnels that are half-open (TargetConn is
