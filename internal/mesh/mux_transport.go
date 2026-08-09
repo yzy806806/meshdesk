@@ -85,8 +85,8 @@ type MuxTransportConfig struct {
 //
 // All methods are safe for concurrent use.
 type MuxTransport struct {
-	tcpListener net.Listener // shared TCP listener
-	udpConn     *net.UDPConn // separate UDP for memberlist packets
+	tcpListener net.Listener   // shared TCP listener
+	udpConns    []*net.UDPConn // UDP sockets for memberlist packets (IPv4 + IPv6 dual-stack)
 	logger      *log.Logger
 
 	streamCh   chan net.Conn           // gossip streams → memberlist
@@ -148,19 +148,33 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 	// for testing, though production deployments should set UDPPort
 	// explicitly so the advertised port is stable across restarts.
 
-	// Create the UDP listener.
-	udpAddr := &net.UDPAddr{IP: net.ParseIP(bindAddr), Port: udpPort}
-	udpConn, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bindAddr, udpPort, err)
+	// Create the UDP listener(s). For wildcard binds ("0.0.0.0" or "::"),
+	// use a single [::] socket — on Linux with IPV6_V6ONLY=0 (default) it
+	// accepts BOTH IPv4 and IPv6 packets, which is essential for mixed
+	// IP-family meshes (an IPv6-only node must receive UDP probes from
+	// IPv4 peers and vice versa). Explicit single-address binds (e.g.
+	// "127.0.0.1", "::1") stay as-is.
+	var udpConns []*net.UDPConn
+	udpBinds := []string{bindAddr}
+	if bindAddr == "0.0.0.0" || bindAddr == "::" {
+		// Single dual-stack socket: [::] covers both families.
+		udpBinds = []string{"::"}
 	}
-	if err := setMuxUDPRecvBuf(udpConn); err != nil {
-		logger.Printf("[WARN] mux: failed to resize UDP recv buffer: %v (continuing)", err)
+	for _, bind := range udpBinds {
+		udpAddr := &net.UDPAddr{IP: net.ParseIP(bind), Port: udpPort}
+		conn, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
+		}
+		if err := setMuxUDPRecvBuf(conn); err != nil {
+			logger.Printf("[WARN] mux: failed to resize UDP recv buffer on %s: %v (continuing)", bind, err)
+		}
+		udpConns = append(udpConns, conn)
 	}
 
 	t := &MuxTransport{
 		tcpListener:   cfg.TCPListener,
-		udpConn:       udpConn,
+		udpConns:      udpConns,
 		logger:        logger,
 		streamCh:      make(chan net.Conn, 64),
 		realityCh:     make(chan net.Conn, 64),
@@ -176,10 +190,10 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		t.advertisePort = tcpPort
 	}
 	// In UDP-only mode (no TCP listener), advertisePort is still 0.
-	// Extract the actual bound port from the UDP socket so memberlist
-	// can advertise a valid port for TCP push/pull sync.
-	if t.advertisePort == 0 && udpConn != nil {
-		if addr, ok := udpConn.LocalAddr().(*net.UDPAddr); ok && addr != nil {
+	// Extract the actual bound port from the first UDP socket so
+	// memberlist can advertise a valid port for TCP push/pull sync.
+	if t.advertisePort == 0 && len(udpConns) > 0 {
+		if addr, ok := udpConns[0].LocalAddr().(*net.UDPAddr); ok && addr != nil {
 			t.advertisePort = addr.Port
 		}
 	}
@@ -262,7 +276,34 @@ func (t *MuxTransport) WriteTo(b []byte, addr string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, fmt.Errorf("mux: resolve UDP addr %q: %w", addr, err)
 	}
-	_, err = t.udpConn.WriteTo(b, udpAddr)
+	// Pick the socket matching the destination's IP family. If the
+	// address is not an IP (hostname), fall back to the first socket.
+	var target *net.UDPConn
+	if udpAddr.IP != nil && udpAddr.IP.To4() == nil {
+		// IPv6 destination — find the IPv6 socket.
+		for _, conn := range t.udpConns {
+			if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() == nil {
+				target = conn
+				break
+			}
+		}
+	}
+	if target == nil {
+		// IPv4 destination, or fallback.
+		for _, conn := range t.udpConns {
+			if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() != nil {
+				target = conn
+				break
+			}
+		}
+	}
+	if target == nil && len(t.udpConns) > 0 {
+		target = t.udpConns[0]
+	}
+	if target == nil {
+		return time.Time{}, fmt.Errorf("mux: no UDP socket available")
+	}
+	_, err = target.WriteTo(b, udpAddr)
 	return time.Now(), err
 }
 
@@ -306,7 +347,9 @@ func (t *MuxTransport) Shutdown() error {
 	if t.tcpListener != nil {
 		_ = t.tcpListener.Close()
 	}
-	_ = t.udpConn.Close()
+	for _, conn := range t.udpConns {
+		_ = conn.Close()
+	}
 
 	t.wg.Wait()
 	return nil
@@ -607,27 +650,42 @@ func (t *MuxTransport) shutdownDone() <-chan struct{} {
 func (t *MuxTransport) udpListenLoop() {
 	defer t.wg.Done()
 
-	for {
-		buf := make([]byte, muxUDPPacketBufSize)
-		n, addr, err := t.udpConn.ReadFrom(buf)
-		ts := time.Now()
-		if err != nil {
-			if t.shutdown.Load() == 1 {
-				return
+	// One reader goroutine per UDP socket (IPv4 + IPv6), all feeding
+	// the same packetChIn channel.
+	var readers sync.WaitGroup
+	for _, conn := range t.udpConns {
+		conn := conn
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			buf := make([]byte, muxUDPPacketBufSize)
+			for {
+				n, addr, err := conn.ReadFrom(buf)
+				ts := time.Now()
+				if err != nil {
+					if t.shutdown.Load() == 1 {
+						return
+					}
+					t.logger.Printf("[ERR] mux: UDP read error: %v", err)
+					continue
+				}
+				if n < 1 {
+					t.logger.Printf("[WARN] mux: UDP packet too short (%d bytes) from %s", n, addr)
+					continue
+				}
+				select {
+				case t.packetChIn <- &memberlist.Packet{
+					Buf:       buf[:n],
+					From:      addr,
+					Timestamp: ts,
+				}:
+				case <-t.shutdownDone():
+					return
+				}
 			}
-			t.logger.Printf("[ERR] mux: UDP read error: %v", err)
-			continue
-		}
-		if n < 1 {
-			t.logger.Printf("[WARN] mux: UDP packet too short (%d bytes) from %s", n, addr)
-			continue
-		}
-		t.packetChIn <- &memberlist.Packet{
-			Buf:       buf[:n],
-			From:      addr,
-			Timestamp: ts,
-		}
+		}()
 	}
+	readers.Wait()
 }
 
 // setMuxUDPRecvBuf attempts to set the UDP receive buffer to a large size.
