@@ -36,6 +36,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/proxy"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/systemd"
+	"github.com/yzy806806/meshdesk/internal/topology"
 	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
 	"github.com/yzy806806/meshdesk/internal/webssh"
@@ -849,7 +850,17 @@ func main() {
 						return
 					}
 				}
-				log.Printf("[mesh] reconnect: peer %s not found in gossip KnownPeers, skipping TUN route restoration", peerKey[:8])
+				// Fallback to the peer cache: in degraded memberlist
+				// (mixed IP-family meshes) the peer's NodeMeta may not
+				// have propagated, but its VirtualIP was persisted when
+				// the session last worked. Restoring from cache keeps
+				// the TUN route alive across reconnects.
+				if vip := peerCache.CachedVirtualIP(peerKey); vip != "" {
+					log.Printf("[mesh] reconnect: restoring TUN route for peer %s from cache (vip=%s)", peerKey[:8], vip)
+					node.AddPeerVirtualIPRoute(peerKey, vip)
+					return
+				}
+				log.Printf("[mesh] reconnect: peer %s not found in gossip KnownPeers or cache, skipping TUN route restoration", peerKey[:8])
 			})
 
 			log.Printf("  TUN:        gossip integration active (VirtualIP routing + subnet proxy)")
@@ -1337,6 +1348,13 @@ func main() {
 			}
 		}
 
+		// Wire the 3D topology edges to the global link map (P1):
+		// edges = measured direct links between nodes.
+		var topoPaths topology.TopologyPathInfo
+		if gossipLayer != nil {
+			topoPaths = &linkMapTopologyPaths{lm: gossipLayer.LinkMap()}
+		}
+
 		webServer, err = web.New(web.Deps{
 			Config:               cfg,
 			Node:                 node,
@@ -1346,6 +1364,7 @@ func main() {
 			ServiceMgr:           svcMgr,
 			MeshDialer:           web.NewPeerMeshDialer(node),
 			ProxyStatusProvider:  &entryNodeStatusAdapter{entryNode: proxyEntryNode},
+			TopologyPaths:        topoPaths,
 			SOCKS5StatusProvider: node,
 			Liveness:             webLiveness,
 			ConfigPath:           configPath,
