@@ -899,6 +899,11 @@ func main() {
 	if cfg.Mesh.DNSEnabled && gossipLayer != nil {
 		dnsProvider := &gossipDNSAdapter{gl: gossipLayer}
 		dnsServer := meshdns.NewServer(dnsProvider, cfg.Mesh.DNSPort)
+		// Forward non-.mesh queries to the system resolver so the mesh
+		// DNS can act as a general-purpose resolver (T3.1).
+		if up := systemResolver(); up != "" {
+			dnsServer.SetUpstream(up)
+		}
 		if err := dnsServer.Start(); err != nil {
 			log.Printf("Warning: failed to start mesh DNS server: %v", err)
 		} else {
@@ -2534,4 +2539,28 @@ func (a *gossipDNSAdapter) KnownPeers() []*meshdns.NodeMeta {
 		})
 	}
 	return result
+}
+
+// systemResolver reads the first nameserver from /etc/resolv.conf.
+// Returns "ip:53" or "" if none found.
+func systemResolver() string {
+	data, err := os.ReadFile("/etc/resolv.conf")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "nameserver ") {
+			ip := strings.TrimSpace(strings.TrimPrefix(line, "nameserver "))
+			if ip == "" {
+				continue
+			}
+			// Handle IPv6 (add brackets for the port form).
+			if strings.Contains(ip, ":") && !strings.HasPrefix(ip, "[") {
+				ip = "[" + ip + "]"
+			}
+			return ip + ":53"
+		}
+	}
+	return ""
 }

@@ -21,6 +21,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -56,6 +57,16 @@ type Server struct {
 	mu       sync.Mutex
 	started  bool
 	stopCh   chan struct{}
+	// upstream is an optional recursive resolver ("ip:port") for
+	// non-.mesh queries. Empty = NXDOMAIN for everything outside .mesh.
+	upstream string
+}
+
+// SetUpstream enables recursive forwarding for non-.mesh queries.
+func (s *Server) SetUpstream(upstream string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upstream = upstream
 }
 
 // NewServer creates a new mesh DNS server.
@@ -206,10 +217,24 @@ func (s *Server) handleMeshQuery(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(m)
 }
 
-// handleNonMeshQuery handles queries for names outside the .mesh domain.
-// It always returns NXDOMAIN — the mesh DNS server does not forward
-// recursive queries.
+// handleNonMeshQuery handles names outside .mesh. If recursive
+// forwarding is enabled (Upstream != ""), the query is forwarded to the
+// upstream resolver; otherwise NXDOMAIN is returned.
 func (s *Server) handleNonMeshQuery(w dns.ResponseWriter, r *dns.Msg) {
+	if s.upstream != "" {
+		m := new(dns.Msg)
+		m.SetReply(r)
+		m.RecursionDesired = true
+		client := &dns.Client{Timeout: 3 * time.Second}
+		resp, _, err := client.Exchange(r, s.upstream)
+		if err != nil {
+			m.SetRcode(r, dns.RcodeServerFailure)
+			w.WriteMsg(m)
+			return
+		}
+		w.WriteMsg(resp)
+		return
+	}
 	m := new(dns.Msg)
 	m.SetReply(r)
 	m.SetRcode(r, dns.RcodeNameError) // NXDOMAIN
