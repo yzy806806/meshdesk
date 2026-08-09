@@ -213,22 +213,40 @@ func main() {
 	// using gossip-propagated NodeMeta. The closure captures gossipLayer
 	// by reference; it will be nil until gossip starts.
 	node.SetRelayMetaProvider(func() []mesh.RelayPeerInfo {
-		if gossipLayer == nil {
-			return nil
-		}
 		var result []mesh.RelayPeerInfo
-		for _, meta := range gossipLayer.KnownPeers() {
-			var rtt time.Duration
-			if meta.RTTUs > 0 {
-				rtt = time.Duration(meta.RTTUs) * time.Microsecond
+		seen := make(map[string]bool)
+		if gossipLayer != nil {
+			for _, meta := range gossipLayer.KnownPeers() {
+				var rtt time.Duration
+				if meta.RTTUs > 0 {
+					rtt = time.Duration(meta.RTTUs) * time.Microsecond
+				}
+				seen[meta.PublicKey] = true
+				result = append(result, mesh.RelayPeerInfo{
+					PeerKey:      meta.PublicKey,
+					RTT:          rtt,
+					CapRelay:     meta.CapRelay,
+					MaxCircuits:  meta.MaxCircuits,
+					LoadCircuits: meta.LoadCircuits,
+					NatType:      meta.NatType,
+				})
 			}
+		}
+		// Supplement with statically-configured peers. These are
+		// deterministically part of the mesh (join protocol or static
+		// config), even when memberlist/gossip is degraded (e.g. seed
+		// join failing due to the mixed IP-family transport issues).
+		// The relay handler is registered unconditionally on every node,
+		// so assume CapRelay=true; tryRelayFallback still requires an
+		// active session, which is the real gate.
+		for _, pc := range cfg.Peers {
+			if pc.PublicKey == "" || seen[pc.PublicKey] {
+				continue
+			}
+			seen[pc.PublicKey] = true
 			result = append(result, mesh.RelayPeerInfo{
-				PeerKey:      meta.PublicKey,
-				RTT:          rtt,
-				CapRelay:     meta.CapRelay,
-				MaxCircuits:  meta.MaxCircuits,
-				LoadCircuits: meta.LoadCircuits,
-				NatType:      meta.NatType,
+				PeerKey:  pc.PublicKey,
+				CapRelay: true,
 			})
 		}
 		return result
