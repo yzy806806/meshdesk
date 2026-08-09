@@ -203,7 +203,13 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 
 	go func() {
 		for {
+			if config.Show {
+				fmt.Printf("REALITY debug: goroutine1 trying mutex.Lock at %v\n", time.Now().Format("15:04:05.000"))
+			}
 			mutex.Lock()
+			if config.Show {
+				fmt.Printf("REALITY debug: goroutine1 got mutex, reading client hello at %v\n", time.Now().Format("15:04:05.000"))
+			}
 			hs.clientHello, _, err = hs.c.readClientHello(context.Background()) // TODO: Change some rules in this function.
 			if copying || err != nil || hs.c.vers != VersionTLS13 || !config.ServerNames[hs.clientHello.serverName] {
 				break
@@ -317,9 +323,13 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				if i == 1 && handshakeLen > 0 && handshakeLen != 6 {
 					break f
 				}
-				if i == 2 && handshakeLen > 512 {
+				if i == 2 {
+					// TLS 1.3 encrypts EncryptedExtensions/Certificate/Finished
+					// as ApplicationData records — there are no more plaintext
+					// handshake records to collect. The ServerHello + CCS +
+					// first encrypted record are sufficient template; break
+					// so hs.handshake() can drive the rest.
 					hs.c.out.handshakeLen[i] = handshakeLen
-					hs.c.out.handshakeBuf = buf[:0]
 					break
 				}
 				if i == 6 && handshakeLen > 0 {
