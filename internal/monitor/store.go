@@ -1,6 +1,8 @@
 package monitor
 
 import (
+	"encoding/json"
+	"os"
 	"sync"
 	"time"
 )
@@ -147,4 +149,51 @@ func (s *Store) NodeCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.buffers)
+}
+
+// Persist writes all buffered metrics to a JSON file (T4.2). Used for
+// keeping monitoring history across restarts.
+func (s *Store) Persist(path string) error {
+	s.mu.RLock()
+	snapshot := make(map[string][]*Metrics, len(s.buffers))
+	for id, buf := range s.buffers {
+		snapshot[id] = buf.Snapshot()
+	}
+	s.mu.RUnlock()
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// Load restores buffered metrics from a JSON file produced by Persist.
+func (s *Store) Load(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var snapshot map[string][]*Metrics
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, samples := range snapshot {
+		buf := NewRingBuffer()
+		for _, m := range samples {
+			if m != nil {
+				buf.Append(m)
+			}
+		}
+		if buf.Len() > 0 {
+			s.buffers[id] = buf
+			s.lastSeen[id] = time.Now()
+		}
+	}
+	return nil
 }
