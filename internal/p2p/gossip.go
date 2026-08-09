@@ -787,10 +787,14 @@ func (g *GossipLayer) Start() error {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			_, err := g.JoinSeeds(ctx, g.cfg.Seeds)
-			if err != nil {
-				log.Printf("[p2p] failed to join seeds: %v (will retry)", err)
-				// Retry with backoff.
+			contacted, err := g.JoinSeeds(ctx, g.cfg.Seeds)
+			total := len(g.cfg.Seeds)
+			// Retry unless EVERY configured seed was contacted. A partial
+			// success (some seeds unreachable — e.g. IPv6 seed from an
+			// IPv4-only node) must keep retrying so the failed seeds
+			// eventually join.
+			if err != nil || contacted < total {
+				log.Printf("[p2p] partial seed join: %d/%d (will retry)", contacted, total)
 				g.retryJoinSeeds()
 			}
 		}()
