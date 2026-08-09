@@ -1,10 +1,28 @@
 {{define "content"}}
 <div class="files-view">
-  <h2>File Transfer</h2>
-  <p>Upload files to the web server node, then push them to a target mesh node.</p>
+  <h2>Cluster Files</h2>
+  <p>Browse and transfer files on any mesh node over the encrypted mesh channel.</p>
 
   <article class="upload-card">
-    <h4>New Upload</h4>
+    <h4>File Browser</h4>
+    <div class="form-inline">
+      <label for="fb-node">Node
+        <select id="fb-node" onchange="filesBrowse()">
+          {{range .Nodes}}
+          <option value="{{.NodeID}}">{{.Hostname}} ({{.ShortID}})</option>
+          {{end}}
+        </select>
+      </label>
+      <label for="fb-path">Path
+        <input type="text" id="fb-path" value="/etc" placeholder="/etc" style="width:60%">
+      </label>
+      <button onclick="filesBrowse()">Browse</button>
+    </div>
+    <div id="fb-result" style="margin-top:8px"></div>
+  </article>
+
+  <article class="upload-card">
+    <h4>Upload & Distribute</h4>
     <form id="upload-form" class="form-inline" hx-post="/api/files/upload" hx-encoding="multipart/form-data" hx-swap="innerHTML" hx-target="#upload-result">
       <label for="file-input">Choose file
         <input type="file" id="file-input" name="file" required>
@@ -33,4 +51,46 @@
     <div class="skeleton skeleton-card"></div>
   </div>
 </div>
+
+<script>
+function filesBrowse() {
+  var node = document.getElementById('fb-node').value;
+  var path = document.getElementById('fb-path').value;
+  var el = document.getElementById('fb-result');
+  el.innerHTML = '<div class="skeleton skeleton-card"></div>';
+  fetch('/api/files/browse?node=' + encodeURIComponent(node) + '&path=' + encodeURIComponent(path))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (!d.entries) { el.innerHTML = '<p class="error">' + (d.error || 'no data') + '</p>'; return; }
+      var html = '<table><thead><tr><th>Name</th><th>Size</th><th>Actions</th></tr></thead><tbody>';
+      // Parent dir
+      if (path != '/') {
+        var parent = path.replace(/\/[^\/]*$/, '') || '/';
+        html += '<tr><td><a href="#" onclick="fbNav(\'' + parent + '\')">..</a></td><td></td><td></td></tr>';
+      }
+      d.entries.forEach(function(e) {
+        var name = e.name;
+        var size = e.dir ? '&mdash;' : humanBytes(e.size);
+        var nav = e.dir ? '<a href="#" onclick="fbNav(\'' + path + '/' + name + '\')">' + name + '</a>' : name;
+        var dl = e.dir ? '' : '<a href="/api/files/read?node=' + encodeURIComponent(node) + '&path=' + encodeURIComponent(path + '/' + name) + '">Download</a>';
+        html += '<tr><td>' + nav + '</td><td>' + size + '</td><td>' + dl + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+    })
+    .catch(function(e) { el.innerHTML = '<p class="error">' + e + '</p>'; });
+}
+
+function fbNav(path) {
+  document.getElementById('fb-path').value = path;
+  filesBrowse();
+}
+
+function humanBytes(n) {
+  if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+  if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+  if (n >= 1024) return (n / 1024).toFixed(1) + ' KB';
+  return n + ' B';
+}
+</script>
 {{end}}
