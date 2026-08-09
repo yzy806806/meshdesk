@@ -791,8 +791,8 @@ func TestHandleFilesPage(t *testing.T) {
 	}
 
 	body := rr.Body.String()
-	if !strings.Contains(body, "File Transfer") {
-		t.Error("body doesn't contain 'File Transfer'")
+	if !strings.Contains(body, "Cluster Files") {
+		t.Error("body doesn't contain 'Cluster Files'")
 	}
 }
 
