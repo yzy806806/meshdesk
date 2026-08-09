@@ -778,6 +778,7 @@ func (n *MeshNode) DumpState(w io.Writer) {
 	// --- Relay handler ---
 	if n.relayHandler != nil {
 		fmt.Fprintf(w, "\n=== Relay: active (tunnels=%d) ===\n", n.relayHandler.TunnelCount())
+		n.relayHandler.DumpTunnels(w)
 	} else {
 		fmt.Fprintf(w, "\n=== Relay: disabled ===\n")
 	}
