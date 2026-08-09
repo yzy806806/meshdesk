@@ -31,9 +31,10 @@ type CachedPeer struct {
 	Hostname     string   `json:"hn,omitempty"`
 	Role         string   `json:"role,omitempty"`
 	Endpoints    []string `json:"eps"`
-	FirstSeen    int64    `json:"fs"`           // Unix timestamp
-	LastSeen     int64    `json:"ls"`           // Unix timestamp
-	CapCollector bool     `json:"cc,omitempty"` // persisted collector capability
+	VirtualIP    string   `json:"vip,omitempty"` // persisted TUN VirtualIP for route restoration
+	FirstSeen    int64    `json:"fs"`            // Unix timestamp
+	LastSeen     int64    `json:"ls"`            // Unix timestamp
+	CapCollector bool     `json:"cc,omitempty"`  // persisted collector capability
 }
 
 // peerCacheFile is the JSON representation of the on-disk cache file.
@@ -182,6 +183,7 @@ func (c *PeerCache) OnPeerJoin(meta *NodeMeta) {
 		existing.Hostname = meta.Hostname
 		existing.Role = meta.Role
 		existing.Endpoints = meta.Endpoints
+		existing.VirtualIP = meta.VirtualIP
 		existing.LastSeen = now
 		existing.CapCollector = meta.CapCollector
 	} else {
@@ -190,6 +192,7 @@ func (c *PeerCache) OnPeerJoin(meta *NodeMeta) {
 			Hostname:     meta.Hostname,
 			Role:         meta.Role,
 			Endpoints:    meta.Endpoints,
+			VirtualIP:    meta.VirtualIP,
 			FirstSeen:    now,
 			LastSeen:     now,
 			CapCollector: meta.CapCollector,
@@ -222,6 +225,7 @@ func (c *PeerCache) OnPeerUpdate(meta *NodeMeta) {
 		existing.Hostname = meta.Hostname
 		existing.Role = meta.Role
 		existing.Endpoints = meta.Endpoints
+		existing.VirtualIP = meta.VirtualIP
 		existing.LastSeen = now
 		existing.CapCollector = meta.CapCollector
 	} else {
@@ -230,6 +234,7 @@ func (c *PeerCache) OnPeerUpdate(meta *NodeMeta) {
 			Hostname:     meta.Hostname,
 			Role:         meta.Role,
 			Endpoints:    meta.Endpoints,
+			VirtualIP:    meta.VirtualIP,
 			FirstSeen:    now,
 			LastSeen:     now,
 			CapCollector: meta.CapCollector,
@@ -339,6 +344,23 @@ func (c *PeerCache) CachedEndpointsAsSeeds() []string {
 		}
 	}
 	return seeds
+}
+
+// CachedVirtualIPs returns a map of peer public key → persisted TUN
+// VirtualIP. Used at startup to restore TUN /32 routes before gossip has
+// propagated peer metadata (which may take minutes in mixed IP-family
+// meshes). Only peers with both an endpoint and a VirtualIP are included.
+func (c *PeerCache) CachedVirtualIPs() map[string]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	out := make(map[string]string)
+	for pk, p := range c.peers {
+		if p.VirtualIP != "" && len(p.Endpoints) > 0 {
+			out[pk] = p.VirtualIP
+		}
+	}
+	return out
 }
 
 // CachedCollectors returns the public keys of all cached peers that have
