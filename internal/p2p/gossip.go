@@ -55,6 +55,10 @@ type GossipLayer struct {
 	// It is always initialized when p2p is enabled.
 	joinProtocol *JoinProtocol
 
+	// linkMap holds the global topology (direct link state) for
+	// Dijkstra-based route selection. Lazily created on first use.
+	linkMap *PeerLinkMap
+
 	// --- DEFECT-A Fix B: Coalesced UpdateNode ---
 	//
 	// Multiple hot paths (SetLocalTrafficStats, SetLocalRTT,
@@ -1446,4 +1450,75 @@ func (g *GossipLayer) SendRelayMessage(peerKey string, msg *RelayMessage) error 
 
 	g.sendRelayMessage(peerKey, msg)
 	return nil
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Peer Link Map (global topology) integration
+// ──────────────────────────────────────────────────────────────────────────
+
+// LinkMap returns the global topology link map. Lazily created.
+func (g *GossipLayer) LinkMap() *PeerLinkMap {
+	g.mu.RLock()
+	lm := g.linkMap
+	g.mu.RUnlock()
+	if lm != nil {
+		return lm
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.linkMap == nil {
+		g.linkMap = NewPeerLinkMap(g.localKey())
+	}
+	return g.linkMap
+}
+
+// BroadcastPeerLink broadcasts a PeerLinkMessage to all members.
+func (g *GossipLayer) BroadcastPeerLink(msg *PeerLinkMessage) {
+	g.mu.RLock()
+	ml := g.memberlist
+	g.mu.RUnlock()
+	if ml == nil {
+		return
+	}
+	data, err := MarshalPeerLinkMessage(msg)
+	if err != nil {
+		return
+	}
+	// Send to each member reliably (TCP). Link state is low-frequency
+	// (periodic), so per-member reliable sends are fine.
+	for _, n := range ml.Members() {
+		if n.Name == g.localNodeName() {
+			continue
+		}
+		ml.SendReliable(n, data)
+	}
+}
+
+// localNodeName returns this node's memberlist name (first 16 hex chars
+// of the public key), best-effort.
+func (g *GossipLayer) localNodeName() string {
+	key := g.localKey()
+	if len(key) >= 16 {
+		return key[:16]
+	}
+	return key
+}
+
+// SetPeerLinkHandler wires the delegate's peer-link message dispatch to
+// the link map ingestion.
+func (g *GossipLayer) SetPeerLinkHandler() {
+	g.delegate.SetPeerLinkMessageHandler(func(msg *PeerLinkMessage) error {
+		g.LinkMap().OnLinkMessage(msg)
+		return nil
+	})
+}
+
+// localKey returns this node's public key (best-effort).
+func (g *GossipLayer) localKey() string {
+	if g.identity != nil && len(g.identity) >= 32 {
+		// identity is the ed25519 private key bytes; derive pubkey hex.
+		pub := g.identity[32:]
+		return fmt.Sprintf("%x", pub)
+	}
+	return ""
 }

@@ -486,6 +486,33 @@ func main() {
 			log.Printf("Warning: failed to start P2P gossip layer: %v", err)
 		} else {
 			gossipLayer = gl
+			// Wire the peer-link (global topology) handler and start
+			// periodic link-state broadcast. Each node advertises its
+			// DIRECT sessions with measured RTTs; all nodes converge on
+			// the same topology map and pick optimal next hops.
+			gl.SetPeerLinkHandler()
+			go func() {
+				// Advertise direct links: for every peer with an active
+				// session, publish (localKey → peerKey, RTT).
+				direct := func() map[string]int64 {
+					links := make(map[string]int64)
+					if node == nil {
+						return links
+					}
+					for _, meta := range gl.KnownPeers() {
+						if sess := node.GetSession(meta.PublicKey); sess != nil && !sess.IsClosed() {
+							links[meta.PublicKey] = int64(meta.RTTUs)
+						}
+					}
+					return links
+				}
+				bcast := func(m *p2p.PeerLinkMessage) {
+					gl.BroadcastPeerLink(m)
+				}
+				stop := gl.LinkMap().PeriodicBroadcaster(30*time.Second, direct, bcast)
+				<-node.Context().Done()
+				stop()
+			}()
 			// TODO(v2): endpoint notifier will be wired via the new protocol layer.
 			// v1 used node.ObfuscatingBind().SetEndpointNotifier(gossipLayer).
 			log.Printf("  P2P:       gossip active (port %d, %d seeds)",
