@@ -1,6 +1,10 @@
 package p2p
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/yzy806806/meshdesk/internal/mesh"
+)
 
 // mockPeerManager is a test-only PeerManager that records v2 interface calls.
 type mockPeerManager struct {
@@ -225,4 +229,9 @@ func (m *mockPeerManager) WasRelayTargetRemoved(targetKey string) bool {
 		}
 	}
 	return false
+}
+
+// Node returns nil — mock has no mesh node.
+func (m *mockPeerManager) Node() *mesh.MeshNode {
+	return nil
 }

@@ -41,6 +41,10 @@ type PeerManager interface {
 	// RemoveRelayTarget removes a relay target from this node.
 	// Called on the RELAY node when a circuit is torn down.
 	RemoveRelayTarget(targetKey string) error
+
+	// Node returns the underlying mesh node (for establishing sessions
+	// over hole-punched UDP paths). May be nil.
+	Node() *mesh.MeshNode
 }
 
 // Compile-time check that WireGuardDelegate satisfies PeerManager.
@@ -202,6 +206,12 @@ func (d *WireGuardDelegate) IsConnected(peerKey string) bool {
 	}
 
 	return time.Since(h.LastHandshake) < 2*time.Minute
+}
+
+// Node returns the underlying mesh node (for establishing sessions
+// over hole-punched UDP paths). May be nil.
+func (d *WireGuardDelegate) Node() *mesh.MeshNode {
+	return d.node
 }
 
 // AddRelayTarget adds a remote peer as a relay target on this node.
