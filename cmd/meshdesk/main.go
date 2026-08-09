@@ -714,6 +714,24 @@ func main() {
 						peerIPs[meta.PublicKey] = net.ParseIP(meta.VirtualIP)
 					}
 				}
+				// Restore TUN /32 routes from the peer cache BEFORE gossip
+				// has propagated VirtualIPs (which can take minutes in
+				// mixed IP-family meshes). Without this, a restarted node
+				// drops TUN packets for peers whose meta hasn't arrived
+				// yet — the forwarder's ResolveIP finds no route.
+				if cachedVIPs := peerCache.CachedVirtualIPs(); len(cachedVIPs) > 0 {
+					restored := 0
+					for pk, vip := range cachedVIPs {
+						if _, ok := peerIPs[pk]; !ok {
+							peerIPs[pk] = net.ParseIP(vip)
+						}
+						if net.ParseIP(vip) != nil {
+							node.AddPeerVirtualIPRoute(pk, vip)
+							restored++
+						}
+					}
+					log.Printf("[tun] restored %d TUN route(s) from peer cache", restored)
+				}
 				log.Printf("[tun] re-broadcast: %d known peers", len(peerIPs))
 				// Re-allocate if there's a conflict.
 				node.ReallocateAfterGossip(peerIPs)
