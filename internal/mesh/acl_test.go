@@ -943,3 +943,79 @@ func makeIPv6PacketACL(srcIP, dstIP string, protocol byte, srcPort, dstPort int)
 	}
 	return pkt
 }
+
+// TestACLEngine_PeerDeny verifies a deny rule matching a specific peer.
+func TestACLEngine_PeerDeny(t *testing.T) {
+	e, err := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action:   config.ACLActionDeny,
+				PeerID:   "badpeer123",
+				Protocol: "tcp",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	pkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 1234, 80)
+	if e.Check(pkt, "badpeer123") {
+		t.Fatal("badpeer should be denied")
+	}
+	if !e.Check(pkt, "goodpeer456") {
+		t.Fatal("other peer should be allowed (default allow)")
+	}
+}
+
+// TestACLEngine_PortDeny verifies a deny rule matching a dest port.
+func TestACLEngine_PortDeny(t *testing.T) {
+	e, err := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionAllow,
+		Rules: []config.ACLRule{
+			{
+				Action:   config.ACLActionDeny,
+				DstPort:  22,
+				Protocol: "tcp",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	sshPkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 1234, 22)
+	if e.Check(sshPkt, "anypeer") {
+		t.Fatal("port 22 should be denied")
+	}
+	webPkt := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 1234, 80)
+	if !e.Check(webPkt, "anypeer") {
+		t.Fatal("port 80 should be allowed")
+	}
+}
+
+// TestACLEngine_DefaultDeny verifies default-policy deny.
+func TestACLEngine_DefaultDeny(t *testing.T) {
+	e, err := NewACLEngine(config.ACLConfig{
+		Enabled:       true,
+		DefaultPolicy: config.ACLActionDeny,
+		Rules: []config.ACLRule{
+			{
+				Action:   config.ACLActionAllow,
+				Protocol: "icmp",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("engine: %v", err)
+	}
+	ping := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 1, 0, 0)
+	if !e.Check(ping, "peer") {
+		t.Fatal("icmp should be allowed by rule")
+	}
+	tcp := makeIPv4PacketACL("10.0.0.1", "10.0.0.2", 6, 1234, 80)
+	if e.Check(tcp, "peer") {
+		t.Fatal("tcp should be denied by default")
+	}
+}
