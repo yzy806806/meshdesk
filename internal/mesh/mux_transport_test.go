@@ -285,7 +285,7 @@ func TestMuxTransport_WriteToAndReceivePacket(t *testing.T) {
 	defer mt.Shutdown()
 
 	// Determine the UDP address.
-	udpAddr := mt.udpConns[0].LocalAddr().String()
+	udpAddr := mt.udpConn.LocalAddr().String()
 
 	// Write a packet to our own UDP listener.
 	payload := []byte("hello-gossip")
@@ -501,7 +501,7 @@ func TestMuxTransport_ShutdownIsIdempotent(t *testing.T) {
 
 func TestMuxTransport_ShutdownClosesUDP(t *testing.T) {
 	mt, _, _ := newTestMuxTransport(t)
-	udpAddr := mt.udpConns[0].LocalAddr().String()
+	udpAddr := mt.udpConn.LocalAddr().String()
 
 	mt.Shutdown()
 
@@ -734,7 +734,7 @@ func TestMuxTransport_UDPPortAutoAssigned(t *testing.T) {
 	}
 	defer mt.Shutdown()
 
-	udpAddr, ok := mt.udpConns[0].LocalAddr().(*net.UDPAddr)
+	udpAddr, ok := mt.udpConn.LocalAddr().(*net.UDPAddr)
 	if !ok {
 		t.Fatal("expected *net.UDPAddr")
 	}
