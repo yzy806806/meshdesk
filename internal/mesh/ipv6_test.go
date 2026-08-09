@@ -77,7 +77,7 @@ func TestIPv6_MuxTransportBindLoopback(t *testing.T) {
 	defer mt.Shutdown()
 
 	// Verify the transport binds on IPv6.
-	if mt.udpConn.LocalAddr().(*net.UDPAddr).IP.To4() != nil {
+	if mt.udpConns[0].LocalAddr().(*net.UDPAddr).IP.To4() != nil {
 		t.Log("UDP bound on IPv4 (may fallback when IPv6 dual-stack)")
 	} else {
 		t.Log("UDP bound on IPv6")
@@ -433,7 +433,7 @@ func TestIPv6_UDPPacketOnLoopback(t *testing.T) {
 	}
 	defer mt.Shutdown()
 
-	udpAddr := mt.udpConn.LocalAddr().String()
+	udpAddr := mt.udpConns[0].LocalAddr().String()
 	t.Logf("UDP addr: %s", udpAddr)
 
 	payload := []byte("hello-ipv6")

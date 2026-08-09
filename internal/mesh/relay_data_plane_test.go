@@ -35,7 +35,7 @@ func TestRelayHeartbeat_NoDataPlanePollution(t *testing.T) {
 		localKey:          "localkey",
 		tunnels:           make(map[string]*relayTunnel),
 		maxTunnels:        DefaultMaxRelayTunnels,
-		idleTimeout:       30 * time.Second, // long enough to not kill the tunnel
+		idleTimeout:       30 * time.Second,      // long enough to not kill the tunnel
 		heartbeatInterval: 50 * time.Millisecond, // would have fired ~20 times in 1s
 	}
 	go handler.cleanupIdleTunnels()

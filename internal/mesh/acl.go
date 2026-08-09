@@ -41,23 +41,23 @@ type ACLEngine struct {
 
 // compiledACLRule is a pre-parsed ACL rule with compiled CIDR matchers.
 type compiledACLRule struct {
-	action    config.ACLAction
-	srcNet    *net.IPNet // nil = match any
-	dstNet    *net.IPNet // nil = match any
-	protocol  string     // "", "*", "tcp", "udp", "icmp"
-	srcPort   int        // 0 = any
-	dstPort   int        // 0 = any
-	peerID    string     // "", "*", or specific hex key
-	desc      string
+	action   config.ACLAction
+	srcNet   *net.IPNet // nil = match any
+	dstNet   *net.IPNet // nil = match any
+	protocol string     // "", "*", "tcp", "udp", "icmp"
+	srcPort  int        // 0 = any
+	dstPort  int        // 0 = any
+	peerID   string     // "", "*", or specific hex key
+	desc     string
 }
 
 // ACLStats holds a snapshot of ACL engine statistics.
 type ACLStats struct {
-	Enabled       bool                 `json:"enabled"`
-	DefaultPolicy config.ACLAction     `json:"default_policy"`
-	AllowCount    uint64               `json:"allow_count"`
-	DenyCount     uint64               `json:"deny_count"`
-	RuleHits      []ACLRuleHitStats    `json:"rule_hits"`
+	Enabled       bool              `json:"enabled"`
+	DefaultPolicy config.ACLAction  `json:"default_policy"`
+	AllowCount    uint64            `json:"allow_count"`
+	DenyCount     uint64            `json:"deny_count"`
+	RuleHits      []ACLRuleHitStats `json:"rule_hits"`
 }
 
 // ACLRuleHitStats holds hit statistics for a single rule.
@@ -191,11 +191,11 @@ func (e *ACLEngine) Check(packet []byte, peerID string) bool {
 
 // packetInfo holds parsed IP packet fields used for ACL matching.
 type packetInfo struct {
-	srcIP     net.IP
-	dstIP     net.IP
-	protocol  string // "tcp", "udp", "icmp", or ""
-	srcPort   int
-	dstPort   int
+	srcIP    net.IP
+	dstIP    net.IP
+	protocol string // "tcp", "udp", "icmp", or ""
+	srcPort  int
+	dstPort  int
 }
 
 // parsePacketInfo extracts source IP, dest IP, protocol, and ports
