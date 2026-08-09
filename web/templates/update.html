@@ -1,0 +1,77 @@
+{{define "content"}}
+<div class="update-view">
+  <h2>One-Click Node Update</h2>
+  <p>Upload a meshdesk binary and push it to selected nodes over the encrypted mesh channel — with automatic backup and rollback.</p>
+
+  <article class="upload-card">
+    <h4>New Update</h4>
+    <form id="update-form" onsubmit="return updateStart(event)">
+      <label for="update-file">Binary
+        <input type="file" id="update-file" name="file" required>
+      </label>
+      <label for="update-nodes">Target Nodes (comma-separated peer IDs)
+        <input type="text" id="update-nodes" name="nodes" style="width:70%" placeholder="peer-id-1,peer-id-2">
+      </label>
+      <label for="update-install">Install Path
+        <input type="text" id="update-install" name="install_path" value="/usr/local/bin/meshdesk" style="width:70%">
+      </label>
+      <div class="button-group">
+        <button type="submit">Start Update</button>
+      </div>
+    </form>
+  </article>
+
+  <article class="upload-card">
+    <h4>Version Check</h4>
+    <div class="form-inline">
+      <label for="plan-nodes">Nodes
+        <input type="text" id="plan-nodes" style="width:70%" placeholder="peer-id-1,peer-id-2">
+      </label>
+      <button onclick="updatePlan()">Check Versions</button>
+    </div>
+    <div id="plan-result" style="margin-top:8px"></div>
+  </article>
+
+  <div id="update-result" aria-live="polite"></div>
+</div>
+
+<script>
+function updatePlan() {
+  var nodes = document.getElementById('plan-nodes').value;
+  var el = document.getElementById('plan-result');
+  el.innerHTML = '<div class="skeleton skeleton-card"></div>';
+  fetch('/api/update/plan?nodes=' + encodeURIComponent(nodes))
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var html = '<table><thead><tr><th>Node</th><th>Version</th></tr></thead><tbody>';
+      d.plan.forEach(function(p) {
+        html += '<tr><td>' + (p.node || '').substring(0, 16) + '</td><td>' + (p.version || '<span class="error">' + (p.error || '?') + '</span>') + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+    })
+    .catch(function(e) { el.innerHTML = '<p class="error">' + e + '</p>'; });
+}
+
+function updateStart(ev) {
+  ev.preventDefault();
+  var form = document.getElementById('update-form');
+  var el = document.getElementById('update-result');
+  el.innerHTML = '<div class="skeleton skeleton-card"></div><p>Updating… (this can take a minute per node)</p>';
+  var fd = new FormData(form);
+  fetch('/api/update/start', { method: 'POST', body: fd })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var html = '<h4>Update Results</h4><table><thead><tr><th>Node</th><th>Phase</th><th>Result</th><th>Message</th></tr></thead><tbody>';
+      d.results.forEach(function(r) {
+        var cls = r.ok ? '' : 'error';
+        html += '<tr><td>' + (r.node_id || '').substring(0, 16) + '</td><td>' + r.phase + '</td><td class="' + cls + '">' + (r.ok ? 'OK' : 'FAIL') + '</td><td>' + r.message + '</td></tr>';
+      });
+      html += '</tbody></table>';
+      el.innerHTML = html;
+    })
+    .catch(function(e) { el.innerHTML = '<p class="error">' + e + '</p>'; });
+  return false;
+}
+</script>
+{{end}}
