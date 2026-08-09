@@ -458,7 +458,7 @@ func main() {
 		}
 		gl.SetLocalIdentity(hostname, role)
 		gl.SetLocalCapabilities(
-			cfg.Proxy.Relay.Enabled,
+			true, // stream relay handler is always registered — any node can relay
 			len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
 			cfg.Proxy.SS.Port != 0,
 			webMode,
@@ -2017,7 +2017,7 @@ func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPa
 	}
 	gl.SetLocalIdentity(hostname, "agent")
 	gl.SetLocalCapabilities(
-		cfg.Proxy.Relay.Enabled,
+		true, // stream relay handler is always registered — any node can relay
 		len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
 		cfg.Proxy.SS.Port != 0,
 		false,
