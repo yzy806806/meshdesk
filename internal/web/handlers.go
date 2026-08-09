@@ -303,6 +303,18 @@ func (s *Server) handleFilesPage(w http.ResponseWriter, r *http.Request) {
 	s.renderPage(w, "files.html", data)
 }
 
+func (s *Server) handleUpdatePage(w http.ResponseWriter, r *http.Request) {
+	nodes := s.buildNodeCards()
+	data := struct {
+		PageData
+		Nodes []NodeCardData
+	}{
+		PageData: PageData{Title: "Update", ActivePage: "update"},
+		Nodes:    nodes,
+	}
+	s.renderPage(w, "update.html", data)
+}
+
 func (s *Server) handleFileUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
