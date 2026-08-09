@@ -741,6 +741,7 @@ func main() {
 				node.ReallocateAfterGossip(peerIPs)
 				// Re-broadcast (may have changed due to re-allocation).
 				if vip := node.GetTUNVirtualIP(); vip != nil {
+					log.Printf("[tun] re-broadcast: setting local vip=%s", vip)
 					node.SetTUNLocalVirtualIP(vip.String())
 					if len(cfg.Mesh.SubnetProxy) > 0 {
 						node.SetTUNSubnetProxies(cfg.Mesh.SubnetProxy)
