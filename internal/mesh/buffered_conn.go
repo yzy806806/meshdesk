@@ -61,3 +61,13 @@ func (b *bufferedConn) SetReadDeadline(t time.Time) error {
 func (b *bufferedConn) SetWriteDeadline(t time.Time) error {
 	return b.conn.SetWriteDeadline(t)
 }
+
+// CloseWrite implements CloseWriteConn (needed by the Reality server's
+// fallback path, which type-asserts the connection to CloseWriteConn).
+// Closes the write half of the underlying connection; reads remain open.
+func (b *bufferedConn) CloseWrite() error {
+	if cw, ok := b.conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
