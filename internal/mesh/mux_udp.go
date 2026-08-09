@@ -86,6 +86,59 @@ func (m *udpMeshManager) routeMeshPacket(conn *net.UDPConn, addr *net.UDPAddr, d
 	return true
 }
 
+// DialUDPStream initiates a UDP mesh stream to a remote address.
+// Sends the 0x4D-marker first frame and registers the stream so the
+// remote's replies are fed to its ARQ state machine. The caller then
+// runs the mesh key exchange + smux over the returned conn.
+func (m *udpMeshManager) DialUDPStream(local *net.UDPConn, remote *net.UDPAddr) (*udpStreamConn, error) {
+	key := remote.String()
+
+	m.mu.Lock()
+	if existing, ok := m.streams[key]; ok {
+		m.mu.Unlock()
+		return existing, nil
+	}
+	sc := newUDPStreamConn(local, remote)
+	m.streams[key] = sc
+	m.mu.Unlock()
+
+	// Send the first frame: ARQ DATA with payload = 0x4D marker.
+	payload := []byte{meshInternalMarker}
+	frame := make([]byte, udpFrameHeaderLen+len(payload))
+	frame[0] = udpFrameTypeData
+	binary.BigEndian.PutUint32(frame[1:5], 0)
+	binary.BigEndian.PutUint32(frame[5:9], 0)
+	binary.BigEndian.PutUint16(frame[9:11], uint16(len(payload)))
+	copy(frame[udpFrameHeaderLen:], payload)
+	if _, err := local.WriteToUDP(frame, remote); err != nil {
+		m.mu.Lock()
+		delete(m.streams, key)
+		m.mu.Unlock()
+		sc.Close()
+		return nil, err
+	}
+
+	// Clean up when the stream closes.
+	go func(s *udpStreamConn, k string) {
+		<-s.done
+		m.mu.Lock()
+		if cur, ok := m.streams[k]; ok && cur == s {
+			delete(m.streams, k)
+		}
+		m.mu.Unlock()
+	}(sc, key)
+
+	return sc, nil
+}
+
+// HasStream reports whether a UDP mesh stream exists for the address.
+func (m *udpMeshManager) HasStream(addr *net.UDPAddr) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.streams[addr.String()]
+	return ok
+}
+
 // routeUDPPacket dispatches a datagram by first byte. Returns true if
 // consumed (mesh data), false if it should go to gossip.
 //

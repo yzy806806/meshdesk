@@ -326,6 +326,36 @@ func (t *MuxTransport) PacketCh() <-chan *memberlist.Packet {
 	return t.packetChIn
 }
 
+// DialUDP initiates a UDP mesh stream to the given remote address
+// (host:port). Returns a reliable ARQ conn ready for key exchange.
+// nil if no UDP socket or manager available.
+func (t *MuxTransport) DialUDP(remoteAddr string) (*udpStreamConn, error) {
+	if t.udpMesh == nil {
+		return nil, fmt.Errorf("mux: udp mesh manager not initialized")
+	}
+	udpAddr, err := net.ResolveUDPAddr("udp", remoteAddr)
+	if err != nil {
+		return nil, fmt.Errorf("mux: resolve %s: %w", remoteAddr, err)
+	}
+	// Pick a local UDP socket matching the remote family.
+	var local *net.UDPConn
+	for _, conn := range t.udpConns {
+		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			if (la.IP.To4() != nil) == (udpAddr.IP.To4() != nil) {
+				local = conn
+				break
+			}
+		}
+	}
+	if local == nil && len(t.udpConns) > 0 {
+		local = t.udpConns[0]
+	}
+	if local == nil {
+		return nil, fmt.Errorf("mux: no UDP socket available")
+	}
+	return t.udpMesh.DialUDPStream(local, udpAddr)
+}
+
 // DialTimeout creates an outbound TCP connection to the given address
 // with the specified timeout. This is used by memberlist for anti-entropy
 // syncs and fallback probes. The dialed connection arrives at the remote
