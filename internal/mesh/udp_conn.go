@@ -166,6 +166,17 @@ func (sc *udpStreamConn) Read(p []byte) (int, error) {
 		}
 		// Peek next in-order frame.
 		if data, ok := sc.recvBuf[sc.recvNext]; ok {
+			if len(data) == 0 {
+				// Zero-length frame (e.g. the TUN UDP auth
+				// handshake frame). Consume it and continue —
+				// returning (0, nil) violates io.Reader and
+				// would make callers treat it as EOF-ish.
+				delete(sc.recvBuf, sc.recvNext)
+				sc.recvNext = (sc.recvNext + 1) % udpMaxSeq
+				sc.recvMu.Unlock()
+				sc.signalReady()
+				continue
+			}
 			n := copy(p, data)
 			if n < len(data) {
 				sc.readBuf = data[n:]
