@@ -1156,8 +1156,8 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 // that silently break direct paths until a dial attempts cleanup.
 func smuxCfg() smux.Config {
 	cfg := smux.DefaultConfig()
-	cfg.PingInterval = 10 * time.Second
-	cfg.PingTimeout = 40 * time.Second
+	cfg.PingInterval = 30 * time.Second
+	cfg.PingTimeout = 90 * time.Second
 	return cfg
 }
 
