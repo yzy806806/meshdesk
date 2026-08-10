@@ -215,9 +215,9 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	h.tunnels[tunnelID] = tunnel
 	h.mu.Unlock()
 
-	log.Printf("[mesh-relay] relay request: tunnel=%s target=%s initiator=%s",
+	log.Printf("[mesh-relay] relay request: tunnel=%s target=%s initiator=%s port=0x%x",
 		tunnelID[:min(len(tunnelID), 16)], req.TargetKey[:min(len(req.TargetKey), 16)]+"...",
-		req.InitiatorKey[:min(len(req.InitiatorKey), 16)]+"...")
+		req.InitiatorKey[:min(len(req.InitiatorKey), 16)]+"...", req.Port)
 
 	// Try to open a stream to the target peer.
 	targetSession := h.node.GetSession(req.TargetKey)
