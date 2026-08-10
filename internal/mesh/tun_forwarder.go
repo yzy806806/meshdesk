@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -718,5 +719,5 @@ func shortKey(key string) string {
 // isDebugLogEnabled returns true if debug-level logging is enabled.
 // Currently always false to avoid noise; can be wired to a debug flag.
 func isDebugLogEnabled() bool {
-	return false
+	return os.Getenv("MESHDESK_TUN_DEBUG") == "1"
 }
