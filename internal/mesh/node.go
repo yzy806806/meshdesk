@@ -1554,7 +1554,24 @@ func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 		return n.addPeerWithConnection(cfg)
 	}
 
-	// Non-TLS path: routing table only.
+	// Plain peer (no Reality block): dial via the mesh-internal 0x4D
+	// path to establish a persistent session. This is the fallback for
+	// NAT'd / mixed-family topologies where gossip auto-connect never
+	// fires (memberlist degraded) — a static peer entry is a reliable
+	// connect target.
+	if cfg.Endpoint != "" {
+		ctx, cancel := context.WithTimeout(n.ctx, 30*time.Second)
+		stream, err := n.DialPeerByEndpoint(ctx, cfg.Endpoint)
+		cancel()
+		if err == nil {
+			stream.Close() // persistent session lives on in n.sessions
+			log.Printf("[mesh] AddPeer: 0x4D session established with %s (%s)", cfg.Endpoint, cfg.PublicKey[:min(len(cfg.PublicKey), 16)]+"...")
+		} else {
+			log.Printf("[mesh] AddPeer: 0x4D dial to %s failed: %v", cfg.Endpoint, err)
+		}
+	}
+
+	// Routing table entry regardless (gossip/routing still benefit).
 	entry := &PeerEntry{
 		ID:         cfg.PublicKey,
 		Endpoint:   cfg.Endpoint,
