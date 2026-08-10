@@ -956,9 +956,17 @@ func (g *GossipLayer) JoinSeeds(ctx context.Context, seeds []string) (int, error
 // least once — a partially-successful join (e.g. IPv6 seed unreachable
 // from an IPv4-only node) must keep retrying the failed seeds so the
 // node eventually discovers every peer.
+//
+// Once a seed has been joined successfully it is dropped from the
+// retry set: memberlist's own gossip handles ongoing discovery, so
+// re-joining an already-known seed only adds connection pressure.
+// A low-frequency (5 min) re-check of the full seed list keeps the
+// node resilient to topology changes (e.g. a seed that restarts with
+// a fresh memberlist).
 func (g *GossipLayer) retryJoinSeeds() {
 	backoff := 5 * time.Second
-	maxBackoff := 30 * time.Second
+	maxBackoff := 300 * time.Second // 5min cap — was 30s, too aggressive for unreachable seeds (B fix)
+	joined := make(map[string]bool)
 
 	for {
 		select {
@@ -967,15 +975,41 @@ func (g *GossipLayer) retryJoinSeeds() {
 		case <-time.After(backoff):
 		}
 
+		// Build the pending set: seeds never successfully joined.
+		var pending []string
+		for _, s := range g.cfg.Seeds {
+			if !joined[s] {
+				pending = append(pending, s)
+			}
+		}
+		if len(pending) == 0 {
+			// All seeds joined at least once. Re-check the full list
+			// occasionally at a fixed long interval.
+			select {
+			case <-g.stopCh:
+				return
+			case <-time.After(5 * time.Minute):
+				for _, s := range g.cfg.Seeds {
+					joined[s] = false
+				}
+				backoff = 5 * time.Second
+			}
+			continue
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		contacted, err := g.JoinSeeds(ctx, g.cfg.Seeds)
+		contacted, err := g.JoinSeeds(ctx, pending)
 		cancel()
 
-		total := len(g.cfg.Seeds)
+		total := len(pending)
 		allJoined := contacted >= total
 		if err == nil && allJoined {
-			log.Printf("[p2p] successfully joined all %d seed(s)", contacted)
-			return
+			log.Printf("[p2p] successfully joined all %d pending seed(s)", contacted)
+			for _, s := range pending {
+				joined[s] = true
+			}
+			backoff = 5 * time.Second
+			continue
 		}
 		if contacted > 0 {
 			log.Printf("[p2p] partial seed join: %d/%d (next retry in %v)", contacted, total, backoff)

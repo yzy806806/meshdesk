@@ -9,6 +9,7 @@ import (
 	"math"
 	"net"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -46,6 +47,51 @@ type RelayPeerInfo struct {
 // with active sessions.
 func (n *MeshNode) SetRelayMetaProvider(cb func() []RelayPeerInfo) {
 	n.relayMetaProvider = cb
+}
+
+// relayBackoffWindow is how long a failed (target, relay) attempt is
+// remembered before the dialer tries that path again. Prevents dial
+// storms against unreachable targets: previously every connection
+// attempt to a dead peer (socks5 exit, monitor probe) fired multiple
+// relay requests per second, and the slow failed connections
+// accumulated on shared nodes — saturating memberlist's 128-slot
+// push/pull queue and rejecting legitimate seed joins with EOF.
+const relayBackoffWindow = 30 * time.Second
+
+// relayBackoff tracks per-(target, relay) cooldowns for relay dials.
+type relayBackoff struct {
+	mu      sync.Mutex
+	nextTry map[string]time.Time
+}
+
+func newRelayBackoff() *relayBackoff {
+	return &relayBackoff{nextTry: make(map[string]time.Time)}
+}
+
+func relayBackoffKey(targetKey, relayKey string) string {
+	return targetKey[:min(len(targetKey), 16)] + "|" + relayKey[:min(len(relayKey), 16)]
+}
+
+// allowed reports whether a relay attempt to target via relay may
+// proceed (false while a failure cooldown is active).
+func (b *relayBackoff) allowed(targetKey, relayKey string) bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return time.Now().After(b.nextTry[relayBackoffKey(targetKey, relayKey)])
+}
+
+// markFailed records a failed attempt, starting a cooldown window
+// during which the (target, relay) path is skipped.
+func (b *relayBackoff) markFailed(targetKey, relayKey string) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.nextTry[relayBackoffKey(targetKey, relayKey)] = time.Now().Add(relayBackoffWindow)
 }
 
 // RelayDialer provides DialViaRelay — a method to open a data stream
@@ -293,22 +339,35 @@ func (n *MeshNode) DialViaRelay(
 	dialer := NewRelayDialer(n, localKey)
 
 	var lastErr error
+	skipped := 0
 	for _, relayKey := range relayCandidates {
 		// Skip self.
 		if relayKey == localKey {
 			continue
 		}
 
+		// Cooldown check: skip paths that failed recently (A1 —
+		// prevents relay dial storms against unreachable targets).
+		if !n.relayBackoff.allowed(targetKey, relayKey) {
+			skipped++
+			continue
+		}
+
 		conn, err := dialer.DialViaRelay(ctx, relayKey, targetKey, port)
 		if err != nil {
 			lastErr = err
-			log.Printf("[mesh-relay] relay %s failed: %v",
-				relayKey[:min(len(relayKey), 16)]+"...", err)
+			n.relayBackoff.markFailed(targetKey, relayKey)
+			log.Printf("[mesh-relay] relay %s failed: %v (backoff %s)",
+				relayKey[:min(len(relayKey), 16)]+"...", err, relayBackoffWindow)
 			continue
 		}
 		return conn, nil
 	}
 
+	if skipped > 0 && lastErr == nil {
+		return nil, fmt.Errorf("mesh relay: all %d candidate(s) in cooldown for target %s",
+			skipped, targetKey[:min(len(targetKey), 16)]+"...")
+	}
 	if lastErr != nil {
 		return nil, fmt.Errorf("mesh relay: all candidates failed, last error: %w", lastErr)
 	}

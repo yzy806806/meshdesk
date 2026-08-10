@@ -168,6 +168,11 @@ type joinMsgHandler func(msg *JoinMessage) error
 // (global topology link-state). Set via SetPeerLinkMessageHandler.
 type peerLinkMsgHandler func(msg *PeerLinkMessage) error
 
+// memberlistDefaultMetaLimit is memberlist's default MetaMaxSize.
+// NodeMeta must never exceed it; when the full meta does, we fall back
+// to the pre-computed compact encoding (see marshalCompactMeta).
+const memberlistDefaultMetaLimit = 512
+
 // metaSnapshot is an immutable snapshot of the local node metadata,
 // stored atomically.  It holds a deep copy of NodeMeta together with
 // its pre-marshaled bytes so that memberlist Delegate callbacks
@@ -181,7 +186,12 @@ type peerLinkMsgHandler func(msg *PeerLinkMessage) error
 // into nodeLock contention (UpdateNode, Members, probe/reap).
 type metaSnapshot struct {
 	meta  *NodeMeta
-	bytes []byte // pre-marshaled; safe to return directly
+	bytes []byte // pre-marshaled; safe to return directly (LocalState)
+	// compact is a pre-marshaled encoding guaranteed to fit within
+	// memberlist's NodeMeta limit (512 bytes). Used by NodeMeta(limit)
+	// when the full bytes exceed the limit — truncating the msgpack
+	// stream would corrupt it (byte misalignment defect).
+	compact []byte
 }
 
 // meshDelegate implements memberlist.Delegate to carry NodeMeta through gossip.
@@ -232,7 +242,78 @@ func (d *meshDelegate) storeSnapshot(meta *NodeMeta) {
 		// store empty bytes so LocalState still returns something.
 		data = nil
 	}
-	d.snapshot.Store(&metaSnapshot{meta: meta, bytes: data})
+	// Pre-compute a compact variant that fits memberlist's NodeMeta
+	// limit (default 512 bytes). NodeMeta(limit) must NEVER truncate
+	// the msgpack stream mid-structure — that corrupts the document
+	// and the receiver decodes misaligned fields (the "byte
+	// misalignment" defect behind seed-join failures).
+	var compact []byte
+	if len(data) > memberlistDefaultMetaLimit {
+		compact = marshalCompactMeta(meta, memberlistDefaultMetaLimit)
+	}
+	d.snapshot.Store(&metaSnapshot{meta: meta, bytes: data, compact: compact})
+}
+
+// marshalCompactMeta produces a valid (non-truncated) msgpack encoding
+// of meta that fits within limit bytes. It drops progressively less
+// critical fields until the document fits: traffic/load stats first,
+// then ACL rules, subnet proxies, then endpoints (keeping the first
+// two). Identity, VIP, capabilities and Seq are always kept.
+func marshalCompactMeta(meta *NodeMeta, limit int) []byte {
+	// Level 1: drop statistics and load metrics.
+	c := *meta
+	c.TrafficInBytes = 0
+	c.TrafficOutBytes = 0
+	c.SmuxStreams = 0
+	c.RelayForwards = 0
+	c.TunRxPackets = 0
+	c.TunTxPackets = 0
+	c.LoadCPU = 0
+	c.LoadMem = 0
+	c.LoadCircuits = 0
+	c.LoadBW = 0
+	c.MaxCircuits = 0
+	c.RTTUs = 0
+	if data, err := c.MarshalMeta(); err == nil && len(data) <= limit {
+		return data
+	}
+
+	// Level 2: drop ACL rules.
+	c.ACLRules = nil
+	if data, err := c.MarshalMeta(); err == nil && len(data) <= limit {
+		return data
+	}
+
+	// Level 3: drop subnet proxies.
+	c.SubnetProxies = nil
+	if data, err := c.MarshalMeta(); err == nil && len(data) <= limit {
+		return data
+	}
+
+	// Level 4: keep at most 2 endpoints.
+	if len(c.Endpoints) > 2 {
+		c.Endpoints = c.Endpoints[:2]
+	}
+	if data, err := c.MarshalMeta(); err == nil && len(data) <= limit {
+		return data
+	}
+
+	// Level 5: identity only — must fit (64-char key + hostname + VIP
+	// + seq ≈ 120-160 bytes, always within 512).
+	c.Endpoints = nil
+	c.NatType = ""
+	c.CapProxyEntry = false
+	c.CapCollector = false
+	if data, err := c.MarshalMeta(); err == nil && len(data) <= limit {
+		return data
+	}
+
+	// Absolute last resort: strip hostname too.
+	c.Hostname = ""
+	if data, err := c.MarshalMeta(); err == nil && len(data) <= limit {
+		return data
+	}
+	return nil
 }
 
 // SetRelayMessageHandler installs a callback for processing relay control
@@ -272,11 +353,19 @@ func (d *meshDelegate) NodeMeta(limit int) []byte {
 		return nil
 	}
 	data := snap.bytes
-	if len(data) > limit {
-		// Truncate if exceeds limit — should not happen with our compact encoding
-		return data[:limit]
+	if len(data) <= limit {
+		return data
 	}
-	return data
+	// Full meta exceeds the limit. Return the pre-computed compact
+	// encoding — a VALID msgpack document, never a truncation. (The
+	// old `return data[:limit]` corrupted the stream and the receiver
+	// decoded misaligned fields — the byte-misalignment defect.)
+	if len(snap.compact) > 0 && len(snap.compact) <= limit {
+		return snap.compact
+	}
+	// Defensive: compact should always fit; if it somehow doesn't,
+	// return nil rather than corrupt bytes.
+	return nil
 }
 
 // NotifyMsg is called when a user-level gossip message is received.
