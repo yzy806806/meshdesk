@@ -36,6 +36,15 @@ import (
 	"time"
 )
 
+// safeShortKey returns the first 8 chars of a key, or the full key if
+// shorter (no slice-bounds panic on short/malformed values).
+func safeShortKey(key string) string {
+	if len(key) > 8 {
+		return key[:8]
+	}
+	return key
+}
+
 // PathProbeResult holds the measured RTT and metadata for a probed
 // relay candidate. Used by the path selector to rank candidates.
 type PathProbeResult struct {
@@ -429,7 +438,7 @@ func (ps *PathSelector) probeRelay(ctx context.Context, c CandidateRelay) (time.
 	conn, err := dialer.DialContext(probeCtx, "tcp", c.MeshAddr)
 	rtt := time.Since(start)
 	if err != nil {
-		return 0, fmt.Errorf("probe relay %s: %w", c.NodeID[:8], err)
+		return 0, fmt.Errorf("probe relay %s: %w", safeShortKey(c.NodeID), err)
 	}
 	conn.Close()
 	return rtt, nil

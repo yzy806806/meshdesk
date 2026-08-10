@@ -394,8 +394,13 @@ func (r *Relay) ForwardStream(ctx context.Context, circuitID string, inbound io.
 		}
 
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+			if errors.Is(err, io.EOF) {
 				return nil
+			}
+			// Context cancellation is a real signal — propagate it
+			// instead of swallowing it as EOF.
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return ctx.Err()
 			}
 			// Check if the context was cancelled.
 			select {
@@ -452,8 +457,11 @@ func (r *Relay) readWireChunkCtx(ctx context.Context, dr interface {
 			return wc, nil
 		}
 
-		// Check if it's a timeout (deadline exceeded).
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		// Check if it's a timeout (deadline exceeded). ReadWireChunk
+		// wraps errors with fmt.Errorf("%w") — a type assertion on the
+		// returned error would always fail; use errors.As to unwrap.
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
 			// Continue polling.
 			continue
 		}

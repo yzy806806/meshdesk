@@ -382,8 +382,16 @@ func (m *CFTunnelManager) Stop() error {
 			// If SIGINT fails, force kill.
 			_ = m.cmd.Process.Kill()
 		}
-		// Wait for the process to exit.
-		_ = m.cmd.Wait()
+		// Wait for the process to exit — bounded: a stuck cloudflared
+		// must not block Stop (which holds m.mu) forever.
+		done := make(chan struct{})
+		go func() { _ = m.cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			_ = m.cmd.Process.Kill()
+			<-done
+		}
 	}
 
 	m.cmd = nil

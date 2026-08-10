@@ -36,6 +36,9 @@ import (
 	"time"
 )
 
+// entryHandshakeTimeout bounds the entry→exit circuit-setup handshake.
+const entryHandshakeTimeout = 10 * time.Second
+
 // EntryNodeConfig holds configuration for the EntryNode orchestrator.
 type EntryNodeConfig struct {
 	// SSConfig configures the Shadowsocks listener.
@@ -509,6 +512,10 @@ func (e *EntryNode) setupCircuit(conn net.Conn, targetAddr string) (*session, er
 	if err != nil {
 		return nil, fmt.Errorf("dial exit node %s: %w", e.cfg.ExitAddr, err)
 	}
+	// Bound the handshake: a dead/stalled exit that accepts TCP but
+	// never responds would otherwise block ReadFull forever, leaking
+	// a goroutine + fd per attempt.
+	exitConn.SetDeadline(time.Now().Add(entryHandshakeTimeout))
 
 	// Send CircuitSetup.
 	setupData, err := setup.Encode()
@@ -621,6 +628,10 @@ func (e *EntryNode) setupCircuitViaManager(conn net.Conn, targetAddr string) (*s
 	if err != nil {
 		return nil, fmt.Errorf("dial exit node %s: %w", e.cfg.ExitAddr, err)
 	}
+	// Bound the handshake: a dead/stalled exit that accepts TCP but
+	// never responds would otherwise block ReadFull forever, leaking
+	// a goroutine + fd per attempt.
+	exitConn.SetDeadline(time.Now().Add(entryHandshakeTimeout))
 
 	// Send CircuitSetup.
 	setupData, err := setup.Encode()
