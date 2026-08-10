@@ -68,14 +68,20 @@ type udpMeshManager struct {
 	tunAuthValidator func(pubKeyHex string, data []byte, sigHex string) (string, bool)
 	// tunAuthFails tracks per-source auth failure state (DoS guard).
 	tunAuthFails map[string]*tunAuthFailState
+	// meshCreateGuard throttles unauthenticated UDP mesh stream
+	// creation per source (key-exchange streams are created BEFORE
+	// any authentication — a forger must not spawn unbounded
+	// 2-goroutine streams).
+	meshCreateGuard map[string]*tunAuthFailState
 }
 
 func newUDPMeshManager() *udpMeshManager {
 	return &udpMeshManager{
-		streams:      make(map[string]*udpStreamConn),
-		tunStreams:   make(map[string]*udpStreamConn),
-		tunCh:        make(chan net.Conn, 64),
-		tunAuthFails: make(map[string]*tunAuthFailState),
+		streams:         make(map[string]*udpStreamConn),
+		tunStreams:      make(map[string]*udpStreamConn),
+		tunCh:           make(chan net.Conn, 64),
+		tunAuthFails:    make(map[string]*tunAuthFailState),
+		meshCreateGuard: make(map[string]*tunAuthFailState),
 	}
 }
 
@@ -99,8 +105,15 @@ func (m *udpMeshManager) routeMeshPacket(conn *net.UDPConn, addr *net.UDPAddr, d
 	m.mu.Lock()
 	sc, exists := m.streams[key]
 	if !exists {
+		// Throttle unauthenticated stream creation per source: a
+		// forger must not spawn unbounded 2-goroutine streams.
+		if st := m.meshCreateGuard[key]; st != nil && time.Now().Before(st.blockUntil) {
+			m.mu.Unlock()
+			return true
+		}
 		sc = newUDPStreamConn(conn, addr)
 		m.streams[key] = sc
+		m.recordMeshCreateLocked(key)
 	}
 	m.mu.Unlock()
 
@@ -269,7 +282,10 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 
 	// First frame: [marker][pubkey 64][ts 10][sig 128] — auth only.
 	plen := int(binary.BigEndian.Uint16(data[9:11]))
-	if plen < 1+tunUDPAuthLen {
+	// Both bounds are attacker-controlled wire values: reject undersized
+	// auth headers AND oversized length claims (a 12-byte datagram lying
+	// that plen=203 would slice out of range → panic → process crash).
+	if plen < 1+tunUDPAuthLen || plen > len(data)-udpFrameHeaderLen {
 		m.recordTUNAuthFail(key)
 		return true // malformed first frame; drop quietly (consumed)
 	}
@@ -364,6 +380,35 @@ func (m *udpMeshManager) recordTUNAuthFail(key string) {
 		for k, s := range m.tunAuthFails {
 			if now.After(s.windowStart.Add(tunAuthFailWindow)) && now.After(s.blockUntil) {
 				delete(m.tunAuthFails, k)
+			}
+		}
+	}
+}
+
+// recordMeshCreateLocked counts an unauthenticated mesh stream creation
+// for a source and throttles it after the threshold within the window.
+// Caller MUST hold m.mu.
+func (m *udpMeshManager) recordMeshCreateLocked(key string) {
+	now := time.Now()
+	st := m.meshCreateGuard[key]
+	if st == nil {
+		st = &tunAuthFailState{}
+		m.meshCreateGuard[key] = st
+	}
+	if now.Sub(st.windowStart) > tunAuthFailWindow {
+		st.count = 0
+		st.windowStart = now
+	}
+	st.count++
+	if st.count >= tunAuthFailMax {
+		st.blockUntil = now.Add(tunAuthFailCooldown)
+		st.count = 0
+	}
+	// Opportunistic cleanup.
+	if len(m.meshCreateGuard) > 1024 {
+		for k, s := range m.meshCreateGuard {
+			if now.After(s.windowStart.Add(tunAuthFailWindow)) && now.After(s.blockUntil) {
+				delete(m.meshCreateGuard, k)
 			}
 		}
 	}

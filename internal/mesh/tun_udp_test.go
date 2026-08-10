@@ -160,6 +160,58 @@ func TestTUNUDPStream_RejectsUnauthenticated(t *testing.T) {
 	}
 }
 
+// TestTUNUDPStream_OversizedLengthNoPanic reproduces the critical
+// crash: a tiny datagram (12 bytes) whose length field claims a large
+// payload must be dropped — NOT sliced (slice bounds panic would kill
+// the whole process).
+func TestTUNUDPStream_OversizedLengthNoPanic(t *testing.T) {
+	sb, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer sb.Close()
+
+	mgrB := newUDPMeshManager()
+	mgrB.SetTUNUDPAuthValidator(func(pubKeyHex string, data []byte, sigHex string) (string, bool) {
+		return "", false
+	})
+	pumped := make(chan struct{}, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, addr, err := sb.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			cp := make([]byte, n)
+			copy(cp, buf[:n])
+			// A panic here would propagate to the test process.
+			mgrB.routeUDPPacket(sb, addr, cp, nil)
+			select {
+			case pumped <- struct{}{}:
+			default:
+			}
+		}
+	}()
+
+	// 12-byte datagram: header + marker only, but plen claims 203.
+	frame := make([]byte, udpFrameHeaderLen+1)
+	frame[0] = udpFrameTypeData
+	binary.BigEndian.PutUint16(frame[9:11], 1+tunUDPAuthLen) // 203
+	frame[udpFrameHeaderLen] = tunUDPMarker
+	remote := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sb.LocalAddr().(*net.UDPAddr).Port}
+	if _, err := sb.WriteToUDP(frame, remote); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	select {
+	case <-pumped:
+		t.Log("oversized-length datagram dropped without panic")
+	case <-time.After(2 * time.Second):
+		t.Fatal("packet was not processed")
+	}
+}
+
 func buildTestAuthHeader(t *testing.T, id *identity.Identity) []byte {
 	t.Helper()
 	now := time.Now().Unix()

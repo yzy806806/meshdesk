@@ -203,14 +203,19 @@ func (s *RemoteServer) handleConn(conn net.Conn) {
 	}
 
 	// If auth is enabled, wrap the backend in an AuthorizedServiceManager
-	// scoped to the caller's PeerID for per-request capability enforcement.
+	// scoped to the CALLER's authenticated identity. The identity comes
+	// from the mesh connection itself (connWithPeer), NEVER from the
+	// request JSON — a peer must not be able to impersonate another
+	// peer's PeerID to gain its capabilities (e.g. remote service
+	// control on a root backend).
 	mgr := s.mgr
 	if s.authEngine != nil {
-		if req.PeerID == "" {
-			writeFramedJSON(conn, &ServiceResponse{OK: false, Message: "unauthorized: missing peer_id in request"})
+		callerID := peerIDFromConn(conn)
+		if callerID == "" {
+			writeFramedJSON(conn, &ServiceResponse{OK: false, Message: "unauthorized: connection carries no authenticated peer identity"})
 			return
 		}
-		mgr = NewAuthorizedServiceManager(s.mgr, s.authEngine, req.PeerID)
+		mgr = NewAuthorizedServiceManager(s.mgr, s.authEngine, callerID)
 	}
 
 	// Execute the request
@@ -271,6 +276,18 @@ func writeFramedJSON(w io.Writer, v any) error {
 	}
 	_, err = w.Write(data)
 	return err
+}
+
+// peerIDFromConn extracts the authenticated mesh peer identity from a
+// connection. Mesh virtual-port connections are wrapped with the peer's
+// verified identity (connWithPeer); anything else (plain TCP, test
+// doubles) has no identity and must not be trusted for authz.
+func peerIDFromConn(conn net.Conn) string {
+	type peerIDProvider interface{ PeerID() string }
+	if p, ok := conn.(peerIDProvider); ok {
+		return p.PeerID()
+	}
+	return ""
 }
 
 func readFramedSvcJSON[T any](r io.Reader) (*T, error) {

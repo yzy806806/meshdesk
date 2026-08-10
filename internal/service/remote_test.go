@@ -36,8 +36,10 @@ func (m *inProcServiceMesh) DialMesh(ctx context.Context, peerID string, port in
 		return nil, errServiceNoListener
 	}
 	c1, c2 := net.Pipe()
+	// Wrap the server-side conn with the peer identity so the authz
+	// path (peerIDFromConn) sees an authenticated caller.
 	select {
-	case ch <- c2:
+	case ch <- &peerIDConn{Conn: c2, peerID: peerID}:
 		return c1, nil
 	case <-ctx.Done():
 		c1.Close()
@@ -45,6 +47,15 @@ func (m *inProcServiceMesh) DialMesh(ctx context.Context, peerID string, port in
 		return nil, ctx.Err()
 	}
 }
+
+// peerIDConn wraps a net.Conn with an authenticated peer identity,
+// mimicking mesh's connWithPeer.
+type peerIDConn struct {
+	net.Conn
+	peerID string
+}
+
+func (c *peerIDConn) PeerID() string { return c.peerID }
 
 type inProcServiceListener struct {
 	mesh *inProcServiceMesh
