@@ -950,15 +950,27 @@ func TestTunIntegration_HandleInboundStream_UnknownPeer(t *testing.T) {
 		f.handleInboundStream(wrappedConn)
 	}()
 
-	// Send 4 valid-looking packets — but all from unknown peer.
+	// Send 4 packets with a NON-mesh-subnet source — these must be
+	// dropped (unknown peer, unverifiable source).
 	for i := 0; i < 4; i++ {
 		packet := makeIPv4Packet(
-			net.ParseIP("10.200.0.5"),
+			net.ParseIP("192.168.99.5"), // outside the mesh subnet
 			net.ParseIP("10.200.0.1"),
 		)
 		if err := writeFramedPacket(sendEnd, packet); err != nil {
 			t.Fatalf("write packet %d: %v", i, err)
 		}
+	}
+
+	// Then 1 packet with a mesh-subnet source — accepted (arrived over
+	// the authenticated smux chain even though the peer's VIP is
+	// unknown in degraded gossip).
+	meshPacket := makeIPv4Packet(
+		net.ParseIP("10.200.0.9"),
+		net.ParseIP("10.200.0.1"),
+	)
+	if err := writeFramedPacket(sendEnd, meshPacket); err != nil {
+		t.Fatalf("write mesh packet: %v", err)
 	}
 
 	time.Sleep(100 * time.Millisecond)
@@ -971,12 +983,13 @@ func TestTunIntegration_HandleInboundStream_UnknownPeer(t *testing.T) {
 	}
 
 	stats := f.Stats()
-	// All 4 should be dropped as spoofed (unknown peer can't pass validation).
+	// The 4 non-subnet packets are dropped as spoofed; the mesh-subnet
+	// one is accepted (authenticated smux chain).
 	if stats.PacketsSpoofed != 4 {
-		t.Fatalf("PacketsSpoofed = %d, want 4 (unknown peer)", stats.PacketsSpoofed)
+		t.Fatalf("PacketsSpoofed = %d, want 4 (non-subnet sources from unknown peer)", stats.PacketsSpoofed)
 	}
-	if stats.PacketsReceived != 0 {
-		t.Fatalf("PacketsReceived = %d, want 0 (unknown peer should not receive)", stats.PacketsReceived)
+	if stats.PacketsReceived < 1 {
+		t.Fatalf("PacketsReceived = %d, want >= 1 (mesh-subnet source accepted)", stats.PacketsReceived)
 	}
 }
 
