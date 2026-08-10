@@ -55,6 +55,7 @@ type MeshNode struct {
 	// from an inbound connection has replaced the entry in sessions.
 	clientSessions       map[string]*smux.Session
 	sessionEstablishedAt map[string]time.Time
+	sessionEstablished   map[string]func(peerKey string) // hook registry
 	// peerManagers tracks per-peer PeerManager instances for outbound
 	// connections (one per peer). Inbound sessions from handleConnection
 	// do not create a PeerManager — they reuse the session directly.
@@ -187,6 +188,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		sessions:             make(map[string]*smux.Session),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
+		sessionEstablished:   make(map[string]func(peerKey string)),
 		peerManagers:         make(map[string]*PeerManager),
 		portMux:              newVirtualPortMux(),
 		reconnectState:       make(map[string]*reconnectTracker),
@@ -492,6 +494,7 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 
 	log.Printf("[mesh] session established with %s (peer=%s, addr=%s)",
 		remoteAddr, peerIdentityHex[:16]+"...", remoteAddr)
+	n.fireSessionEstablished(peerIdentityHex)
 
 	// Add the peer to the routing table.
 	n.routes.AddPeer(&PeerEntry{
@@ -1044,6 +1047,7 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	}
 
 	log.Printf("[mesh] session established with %s (peer=%s)", address, peerIdentityHex[:16]+"...")
+	n.fireSessionEstablished(peerIdentityHex)
 
 	// 10. Add/update the peer in the routing table.
 	n.routes.AddPeer(&PeerEntry{
@@ -1130,6 +1134,7 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 	}
 
 	log.Printf("[mesh] udp session established with %s (peer=%s)", address, peerIdentityHex[:16]+"...")
+	n.fireSessionEstablished(peerIdentityHex)
 
 	n.routes.AddPeer(&PeerEntry{
 		ID:       peerIdentityHex,
@@ -1239,6 +1244,7 @@ func (n *MeshNode) DialPeerByEndpoint(ctx context.Context, address string) (net.
 	}
 
 	log.Printf("[mesh] session established with %s (peer=%s, addr=%s)", address, peerIdentityHex[:16]+"...", address)
+	n.fireSessionEstablished(peerIdentityHex)
 
 	n.routes.AddPeer(&PeerEntry{
 		ID:       peerIdentityHex,
@@ -1931,4 +1937,88 @@ func (n *MeshNode) PerPeerTrafficStats() []PeerTrafficStat {
 		out = append(out, ps)
 	}
 	return out
+}
+
+// SetSessionEstablishedHandler registers a callback fired whenever a
+// smux session is established with a peer (any path: server accept,
+// client dial, UDP, reconnect). Used by the meta exchanger to push
+// VirtualIP knowledge over the session graph.
+func (n *MeshNode) SetSessionEstablishedHandler(h func(peerKey string)) {
+	n.mu.Lock()
+	n.sessionEstablished["main"] = h
+	n.mu.Unlock()
+}
+
+// fireSessionEstablished invokes the registered handler.
+func (n *MeshNode) fireSessionEstablished(peerKey string) {
+	n.mu.RLock()
+	h := n.sessionEstablished["main"]
+	n.mu.RUnlock()
+	if h != nil {
+		go h(peerKey)
+	}
+}
+
+// SessionPeerKeys returns the public keys of all peers with active
+// smux sessions (client + server).
+func (n *MeshNode) SessionPeerKeys() []string {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+	seen := map[string]bool{}
+	out := []string{}
+	add := func(id string) {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	for id := range n.clientSessions {
+		add(id)
+	}
+	for id := range n.sessions {
+		add(id)
+	}
+	return out
+}
+
+// LocalPublicKey returns this node's identity public key (hex).
+func (n *MeshNode) LocalPublicKey() string {
+	if n.identity == nil {
+		return ""
+	}
+	return n.identity.PublicKey
+}
+
+// LocalHostname returns the configured node hostname.
+func (n *MeshNode) LocalHostname() string {
+	if n.cfg == nil {
+		return ""
+	}
+	return n.cfg.Node.Hostname
+}
+
+// LocalVirtualIP returns this node's VirtualIP as a string ("" if none).
+func (n *MeshNode) LocalVirtualIP() string {
+	n.mu.RLock()
+	ti := n.tunIntegration
+	n.mu.RUnlock()
+	if ti == nil || ti.VirtualIP == nil {
+		return ""
+	}
+	return ti.VirtualIP.String()
+}
+
+// PeerVirtualIP returns the VirtualIP known for a peer ("" if unknown).
+func (n *MeshNode) PeerVirtualIP(peerKey string) string {
+	n.mu.RLock()
+	ti := n.tunIntegration
+	n.mu.RUnlock()
+	if ti == nil {
+		return ""
+	}
+	ip, ok := ti.Router.ResolvePeer(peerKey)
+	if !ok {
+		return ""
+	}
+	return ip.String()
 }
