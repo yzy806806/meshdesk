@@ -311,9 +311,13 @@ func (r *Reporter) collectAndPush() {
 		m.Traffic = monitorTrafficFromProvider(ts)
 	}
 
-	// Always store locally (self-replica).
+	// Always store locally (self-replica). sequence is read under
+	// r.mu elsewhere (FlushBuffer) — increment it under the lock to
+	// avoid a data race.
+	r.mu.Lock()
 	r.sequence++
 	r.store.Append(r.collector.nodeID, m)
+	r.mu.Unlock()
 
 	// Check if we have any collectors (snapshot under lock).
 	r.mu.Lock()
