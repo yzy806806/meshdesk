@@ -345,6 +345,20 @@ func main() {
 	// Register the cluster FileServer (T1.1): lets the Dashboard (or any
 	// peer) browse/read/write files on this node over the mesh channel.
 	// Restricted to configured file_transfer_paths roots.
+	// Session-based meta exchange (P1): VirtualIP knowledge floods the
+	// smux session graph — works even when memberlist is degraded.
+	var metaExchanger *mesh.MetaExchanger
+	if me, err := node.RegisterMetaExchanger(); err == nil {
+		metaExchanger = me
+		node.SetSessionEstablishedHandler(func(peerKey string) {
+			me.NotifyPeerJoined(peerKey)
+		})
+		log.Printf("  Meta:       session meta exchange active (virtual port 0x%x)", mesh.MetaVirtualPort)
+	} else {
+		log.Printf("Warning: meta exchange failed to start: %v", err)
+	}
+	_ = metaExchanger
+
 	if _, err := node.RegisterFileServer(mesh.FileServerConfig{
 		AllowedPaths: cfg.Mesh.FileTransferPaths,
 	}); err != nil {
