@@ -1158,6 +1158,10 @@ func smuxCfg() smux.Config {
 	cfg := smux.DefaultConfig()
 	cfg.PingInterval = 30 * time.Second
 	cfg.PingTimeout = 90 * time.Second
+	// Frame size: 16KB (default) is the reliable choice on lossy
+	// high-latency links — 32KB+ frames abort mid-transfer over both
+	// the 0x4D and Reality paths through the link's middleboxes.
+	cfg.MaxFrameSize = 16384
 	return cfg
 }
 
