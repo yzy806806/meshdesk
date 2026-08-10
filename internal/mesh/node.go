@@ -1468,7 +1468,33 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 				}
 			}
 		} else {
-			return nil, fmt.Errorf("mesh: open stream to peer %s: %w", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+			// No known endpoint to re-dial. The session is likely dead
+			// (TCP half-close that smux hasn't detected — IsClosed stays
+			// false while reads block on the half-closed conn). Clean it
+			// up so subsequent dials don't keep finding the zombie, then
+			// try the relay fallback path (the target may be reachable
+			// via a relay even when the direct session is gone).
+			log.Printf("[mesh] DialVirtualPort: cleaning zombie session for peer %s (open stream: %v)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
+			n.sessionsMu.Lock()
+			if s, ok := n.clientSessions[peerIdentityHex]; ok {
+				delete(n.clientSessions, peerIdentityHex)
+				if !s.IsClosed() {
+					s.Close()
+				}
+			}
+			if s, ok := n.sessions[peerIdentityHex]; ok {
+				delete(n.sessions, peerIdentityHex)
+				if !s.IsClosed() {
+					s.Close()
+				}
+			}
+			n.sessionsMu.Unlock()
+
+			if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex, uint16(port)); relayErr == nil {
+				log.Printf("[mesh] DialVirtualPort: zombie session cleaned, relay fallback for peer %s succeeded", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...")
+				return conn, nil
+			}
+			return nil, fmt.Errorf("mesh: open stream to peer %s: %w (no endpoint to re-dial, relay fallback failed)", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...", err)
 		}
 	}
 
