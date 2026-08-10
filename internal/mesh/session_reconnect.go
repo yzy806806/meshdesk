@@ -245,6 +245,13 @@ func (n *MeshNode) hasActiveSession(peerIdentityHex string) bool {
 	return false
 }
 
+// HasPeerSession reports whether an active smux session exists to the
+// given peer (client or server side, not closed). Used by NAT probing
+// to judge real connectivity.
+func (n *MeshNode) HasPeerSession(peerIdentityHex string) bool {
+	return n.hasActiveSession(peerIdentityHex)
+}
+
 func (n *MeshNode) cleanupDeadSession(peerIdentityHex string, deadSess *smux.Session) {
 	n.sessionsMu.Lock()
 	defer n.sessionsMu.Unlock()

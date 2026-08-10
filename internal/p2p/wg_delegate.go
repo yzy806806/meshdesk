@@ -202,6 +202,14 @@ func (d *WireGuardDelegate) IsConnected(peerKey string) bool {
 
 	// If we haven't seen a handshake, check if the peer was recently added.
 	if h.LastHandshake.IsZero() {
+		// mesh does not produce WireGuard handshakes — the "recently
+		// added" grace is a stale heuristic that reported DIRECT for
+		// any peer added < 2min ago even when no connection existed
+		// (NAT probing misjudged failures as success). Judge real
+		// connectivity via the mesh session instead.
+		if d.node != nil {
+			return d.node.HasPeerSession(peerKey)
+		}
 		return time.Since(h.AddedAt) < 2*time.Minute
 	}
 

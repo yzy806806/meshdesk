@@ -23,12 +23,12 @@ import (
 type RotatingWriter struct {
 	mu sync.Mutex
 
-	dir       string
-	baseName  string
-	maxBytes  int64
+	dir        string
+	baseName   string
+	maxBytes   int64
 	maxBackups int
-	maxAge    int    // days; 0 = no age-based deletion
-	compress  bool
+	maxAge     int // days; 0 = no age-based deletion
+	compress   bool
 
 	currentFile *os.File
 	currentSize int64
@@ -155,6 +155,17 @@ func (w *RotatingWriter) rotateLocked() {
 	// Open a fresh current file.
 	f, err := os.OpenFile(current, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
+		// Roll back: restore the just-rotated .1 so logging continues
+		// on the old file instead of silently dropping all future
+		// writes (currentFile stays nil otherwise → "no file open").
+		if rerr := os.Rename(rotated, current); rerr == nil {
+			if rf, oerr := os.OpenFile(current, os.O_APPEND|os.O_WRONLY, 0644); oerr == nil {
+				w.currentFile = rf
+				w.currentSize = 0
+				fmt.Fprintf(os.Stderr, "rotating writer: open failed (%v); rolled back to previous log\n", err)
+				return
+			}
+		}
 		// This is bad — we can't open the log file. Write to stderr
 		// as a fallback and hope the operator notices.
 		fmt.Fprintf(os.Stderr, "rotating writer: failed to open new log file: %v\n", err)

@@ -186,13 +186,14 @@ func (sc *SecureConn) Read(p []byte) (int, error) {
 	//    The nonce is a big-endian uint96. We only check the first 8 bytes
 	//    (the counter portion) for sequential ordering.
 	nonce := nonceToUint64(nonceBuf)
-	sc.recvNonce++
-	if nonce != sc.recvNonce-1 {
-		// Nonce out of order — possible replay attack.
-		// We still attempt to decrypt (the counter value is in the nonce
-		// not in our state), but the tag will almost certainly fail.
-		// If it somehow passes, the connection is compromised.
+	if nonce != sc.recvNonce {
+		// Replay or desync: a replayed frame would otherwise decrypt
+		// successfully (GCM tag verifies with the same nonce+ciphertext)
+		// and inject stale data. The old code only commented about the
+		// attack and decrypted anyway.
+		return 0, fmt.Errorf("secure conn: replay/desync detected (nonce %d, expected %d)", nonce, sc.recvNonce)
 	}
+	sc.recvNonce++
 
 	// 4. Read the ciphertext (including 16-byte GCM tag).
 	ciphertext := make([]byte, ciphertextLen)
