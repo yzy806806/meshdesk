@@ -48,6 +48,10 @@ import (
 	"time"
 )
 
+// exitTargetWriteTimeout bounds target-conn writes done while holding
+// circuit.mu (TCP backpressure must not wedge the exit's circuit lock).
+const exitTargetWriteTimeout = 5 * time.Second
+
 // ExitConfig holds configuration for the exit node module.
 // This mirrors the proxy.CircuitConfig but is exposed at the exit level
 // for operator configuration.
@@ -518,8 +522,15 @@ func (e *ExitNode) HandleWireChunk(circuitID string, wc *WireChunk, pathIdx int)
 	// Write any newly-delivered contiguous data to the target connection.
 	// This delivers data incrementally as chunks arrive in order,
 	// reducing latency for interactive protocols.
+	//
+	// The write happens while holding circuit.mu — bound it with a
+	// deadline so a stalled target (TCP backpressure) cannot hold the
+	// lock forever and wedge the whole exit.
 	if len(delivered) > 0 {
-		if _, werr := circuit.targetConn.Write(delivered); werr != nil {
+		circuit.targetConn.SetWriteDeadline(time.Now().Add(exitTargetWriteTimeout))
+		_, werr := circuit.targetConn.Write(delivered)
+		circuit.targetConn.SetWriteDeadline(time.Time{})
+		if werr != nil {
 			return nil, fmt.Errorf("write to target: %w", werr)
 		}
 	}
@@ -670,6 +681,12 @@ func (e *ExitNode) HandleTeardown(td *TeardownMsg) error {
 	if circuit.targetConn != nil {
 		circuit.targetConn.Close()
 	}
+	// Wipe the E2E key (spec AC-SE-04 key destruction): a stale key
+	// must not linger in memory after teardown.
+	for i := range circuit.e2eKey {
+		circuit.e2eKey[i] = 0
+	}
+	circuit.e2eKey = nil
 	circuit.state = CircuitClosed
 
 	return nil
@@ -1032,7 +1049,12 @@ func (e *ExitNode) ForwardTargetToEntry(ctx context.Context, circuitID string, e
 					Sequence: seq,
 					Type:     ChunkStreamEnd,
 				}
-				wc, _ := EncodeChunk(endChunk, e2eKey, relayKey, nextHop, circuit.circuitIDBytes)
+				wc, cerr := EncodeChunk(endChunk, e2eKey, relayKey, nextHop, circuit.circuitIDBytes)
+				if cerr != nil {
+					// Encode failure — do NOT send a nil chunk
+					// (sendChunk/WriteWireChunk would dereference it).
+					return fmt.Errorf("encode stream end: %w", cerr)
+				}
 				pathIdx := circuit.pathTracker.FastestPath()
 				sendChunk(pathIdx, wc)
 				return nil
