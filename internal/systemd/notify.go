@@ -22,12 +22,12 @@ import (
 // Notifier sends sd_notify messages to systemd via NOTIFY_SOCKET.
 // A zero-value Notifier is inert (all methods are no-ops).
 type Notifier struct {
-	mu       sync.Mutex
-	socket   string
-	conn     net.Conn
-	enabled  bool
-	stopCh   chan struct{}
-	wg       sync.WaitGroup
+	mu      sync.Mutex
+	socket  string
+	conn    net.Conn
+	enabled bool
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
 }
 
 // NewNotifier creates a Notifier from the NOTIFY_SOCKET environment variable.
@@ -78,6 +78,12 @@ func (n *Notifier) Notify(state string) error {
 	}
 
 	_, err := n.conn.Write([]byte(state))
+	if err != nil {
+		// The systemd daemon may have restarted (NOTIFY_SOCKET peer
+		// gone) — drop the dead conn so the next Notify reconnects.
+		n.conn.Close()
+		n.conn = nil
+	}
 	return err
 }
 

@@ -662,6 +662,11 @@ func (jp *JoinProtocol) RequestJoin(ctx context.Context, bootstrapKey string) (*
 
 	select {
 	case resp := <-resultCh:
+		if resp == nil {
+			// resultCh was closed by Stop() (shutdown race) — treat
+			// as a clean stop instead of dereferencing nil.
+			return nil, fmt.Errorf("join protocol stopped")
+		}
 		if resp.Type == MsgJoinAccept {
 			return &RequestJoinResult{
 				Accepted:   true,

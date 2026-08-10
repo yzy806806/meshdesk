@@ -115,7 +115,7 @@ func (s *Server) Start() error {
 	select {
 	case err := <-errCh:
 		return fmt.Errorf("dns server failed to start on %s: %w", addr, err)
-	default:
+	case <-time.After(100 * time.Millisecond):
 		// Server appears to be starting (no immediate error).
 		// Give it a moment to bind.
 	}

@@ -141,7 +141,7 @@ func (rpb *RelayPathBuilderImpl) OnNATPeerDiscovered(meta *NodeMeta) {
 	rpb.mu.Unlock()
 
 	log.Printf("[p2p/relay] NAT peer %s discovered (no endpoints), selecting relay...",
-		meta.PublicKey[:8])
+		safeShortKey(meta.PublicKey))
 
 	// Select top-K=2 relay candidates.
 	rpb.mu.Lock()
@@ -151,7 +151,7 @@ func (rpb *RelayPathBuilderImpl) OnNATPeerDiscovered(meta *NodeMeta) {
 	candidates := rpb.selector.SelectRelays(2, 3, rttFunc)
 	if len(candidates) == 0 {
 		log.Printf("[p2p/relay] no relay candidates available for NAT peer %s — will retry on next reconciliation",
-			meta.PublicKey[:8])
+			safeShortKey(meta.PublicKey))
 		return
 	}
 
@@ -202,12 +202,12 @@ func (rpb *RelayPathBuilderImpl) OnPeerLeft(peerKey string) {
 	if rpb.wg != nil {
 		if err := rpb.wg.RemoveRelayTarget(circuit.targetKey); err != nil {
 			log.Printf("[p2p/relay] failed to remove relay target for %s: %v",
-				peerKey[:8], err)
+				safeShortKey(peerKey), err)
 		}
 	}
 
 	log.Printf("[p2p/relay] cleaned up circuit for peer %s (left mesh)",
-		peerKey[:8])
+		safeShortKey(peerKey))
 }
 
 // sendCircuitSetup sends a circuit_setup message to the relay.
@@ -232,7 +232,7 @@ func (rpb *RelayPathBuilderImpl) sendCircuitSetup(circuit *relayCircuit) {
 	rpb.gossip.SendRelayMessage(circuit.relayKey, msg)
 
 	log.Printf("[p2p/relay] sent circuit_setup to relay %s for target %s (circuit %s)",
-		circuit.relayKey[:8], circuit.targetKey[:8], circuit.circuitID[:8])
+		safeShortKey(circuit.relayKey), safeShortKey(circuit.targetKey), safeShortKey(circuit.circuitID))
 }
 
 // sendCircuitTeardown sends a circuit_teardown message to the relay.
@@ -265,7 +265,7 @@ func (rpb *RelayPathBuilderImpl) HandleAccept(msg *RelayMessage) {
 	rpb.mu.Unlock()
 
 	if circuit == nil {
-		log.Printf("[p2p/relay] received accept for unknown circuit %s", msg.CircuitID[:8])
+		log.Printf("[p2p/relay] received accept for unknown circuit %s", safeShortKey(msg.CircuitID))
 		return
 	}
 
@@ -281,10 +281,10 @@ func (rpb *RelayPathBuilderImpl) HandleAccept(msg *RelayMessage) {
 	if rpb.wg != nil && previousState != circuitActive {
 		if err := rpb.wg.AddRelayTarget(circuit.targetKey, circuit.targetEndpoints); err != nil {
 			log.Printf("[p2p/relay] failed to add relay target for %s via relay %s: %v",
-				circuit.targetKey[:8], circuit.relayKey[:8], err)
+				safeShortKey(circuit.targetKey), safeShortKey(circuit.relayKey), err)
 		} else {
 			log.Printf("[p2p/relay] circuit %s active: target %s routed via relay %s",
-				circuit.circuitID[:8], circuit.targetKey[:8], circuit.relayKey[:8])
+				safeShortKey(circuit.circuitID), safeShortKey(circuit.targetKey), safeShortKey(circuit.relayKey))
 		}
 	}
 }
@@ -306,7 +306,7 @@ func (rpb *RelayPathBuilderImpl) HandleReject(msg *RelayMessage) {
 	}
 
 	log.Printf("[p2p/relay] circuit %s rejected by relay %s: %s",
-		circuit.circuitID[:8], msg.FromKey[:8], msg.RejectReason)
+		safeShortKey(circuit.circuitID), safeShortKey(msg.FromKey), msg.RejectReason)
 
 	// Try fallback relay.
 	rpb.tryFallback(circuit)
@@ -341,7 +341,7 @@ func (rpb *RelayPathBuilderImpl) tryFallback(circuit *relayCircuit) {
 	if fallbackKey == "" || circuit.state == circuitFailingOver {
 		circuit.mu.Unlock()
 		log.Printf("[p2p/relay] no fallback relay available for target %s",
-			circuit.targetKey[:8])
+			safeShortKey(circuit.targetKey))
 		return
 	}
 
@@ -354,7 +354,7 @@ func (rpb *RelayPathBuilderImpl) tryFallback(circuit *relayCircuit) {
 	circuit.mu.Unlock()
 
 	log.Printf("[p2p/relay] failing over to secondary relay %s for target %s",
-		fallbackKey[:8], circuit.targetKey[:8])
+		safeShortKey(fallbackKey), safeShortKey(circuit.targetKey))
 
 	// Send circuit_setup to the fallback relay.
 	rpb.sendCircuitSetup(circuit)
@@ -377,11 +377,17 @@ func (rpb *RelayPathBuilderImpl) healthCheckLoop(circuit *relayCircuit) {
 		rpb.mu.Lock()
 		c, ok := rpb.circuits[circuit.targetKey]
 		rpb.mu.Unlock()
-		if !ok || c.state == circuitClosed {
+		if !ok {
 			return
 		}
 
 		c.mu.Lock()
+		// state is written under c.mu elsewhere — reading it here without
+		// the lock is a data race. Read it inside the lock.
+		if c.state == circuitClosed {
+			c.mu.Unlock()
+			return
+		}
 		if c.state != circuitActive && c.state != circuitSetupSent {
 			c.mu.Unlock()
 			continue
@@ -394,7 +400,7 @@ func (rpb *RelayPathBuilderImpl) healthCheckLoop(circuit *relayCircuit) {
 
 		if c.pingFailures >= 3 {
 			log.Printf("[p2p/relay] relay %s unresponsive (3 missed PONGs), failing over",
-				c.relayKey[:8])
+				safeShortKey(c.relayKey))
 			c.mu.Unlock()
 			rpb.tryFallback(c)
 			continue
@@ -428,7 +434,7 @@ func (rpb *RelayPathBuilderImpl) ReconcileNATPeers() {
 
 			if !hasCircuit || (circuit != nil && circuit.state == circuitClosed) {
 				log.Printf("[p2p/relay] reconciliation: establishing circuit for NAT peer %s",
-					meta.PublicKey[:8])
+					safeShortKey(meta.PublicKey))
 				rpb.OnNATPeerDiscovered(meta)
 			}
 		}
