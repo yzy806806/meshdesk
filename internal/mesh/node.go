@@ -457,7 +457,7 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 	}
 
 	// Step 3: Create smux server session.
-	smuxSession, err := smux.Server(secureConn, smux.DefaultConfig())
+	smuxSession, err := smux.Server(secureConn, smuxCfg())
 	if err != nil {
 		log.Printf("[mesh] smux handshake failed with %s: %v", remoteAddr, err)
 		secureConn.Close()
@@ -1023,7 +1023,7 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	}
 
 	// 8. Create smux client session (Layer 3).
-	smuxSession, err := smux.Client(secureConn, smux.DefaultConfig())
+	smuxSession, err := smux.Client(secureConn, smuxCfg())
 	if err != nil {
 		secureConn.Close()
 		return nil, fmt.Errorf("mesh: smux handshake with %s: %w", address, err)
@@ -1112,7 +1112,7 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 		return nil, fmt.Errorf("mesh: udp create SecureConn with %s: %w", address, err)
 	}
 
-	smuxSession, err := smux.Client(secureConn, smux.DefaultConfig())
+	smuxSession, err := smux.Client(secureConn, smuxCfg())
 	if err != nil {
 		secureConn.Close()
 		return nil, fmt.Errorf("mesh: udp smux handshake with %s: %w", address, err)
@@ -1147,6 +1147,18 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 		return nil, fmt.Errorf("mesh: udp write port frame to %s: %w", address, err)
 	}
 	return stream, nil
+}
+
+// smuxCfg returns the smux config with keepalive enabled. The
+// keepalive pings + timeout detect TCP half-closes (FIN-WAIT-2 /
+// CLOSE-WAIT) that would otherwise leave session reads blocked
+// forever with IsClosed() false — the root cause of zombie sessions
+// that silently break direct paths until a dial attempts cleanup.
+func smuxCfg() smux.Config {
+	cfg := smuxCfg()
+	cfg.PingInterval = 10 * time.Second
+	cfg.PingTimeout = 40 * time.Second
+	return cfg
 }
 
 // findPeerConfigByAddress searches the node's config Peers list for a
@@ -1204,7 +1216,7 @@ func (n *MeshNode) DialPeerByEndpoint(ctx context.Context, address string) (net.
 	}
 
 	// Create smux client session (Layer 3).
-	smuxSession, err := smux.Client(secureConn, smux.DefaultConfig())
+	smuxSession, err := smux.Client(secureConn, smuxCfg())
 	if err != nil {
 		secureConn.Close()
 		return nil, fmt.Errorf("mesh: smux handshake with %s: %w", address, err)
