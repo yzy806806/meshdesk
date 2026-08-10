@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync"
 	"sync/atomic"
 
 	"github.com/yzy806806/meshdesk/internal/config"
@@ -20,23 +19,24 @@ import (
 // a RWMutex. Per-rule hit counts are tracked with atomic counters for
 // lock-free statistics collection.
 type ACLEngine struct {
-	mu sync.RWMutex
-
-	// enabled controls whether ACL checking is active.
-	enabled bool
-
-	// defaultPolicy is the action when no rule matches.
-	defaultPolicy config.ACLAction
-
-	// compiledRules are the pre-compiled rule set.
-	compiledRules []compiledACLRule
-
-	// hitCounts tracks per-rule hit counts (indexed by rule position).
-	hitCounts []atomic.Uint64
+	// snapshot is the immutable rule set + policy, swapped atomically
+	// by UpdateRules. Check reads it lock-free — this removes both the
+	// unsynchronized `enabled` read and the rules/hitCounts index
+	// mismatch (a concurrent UpdateRules replacing hitCounts with a
+	// shorter slice used to panic Check's hitCounts[i]).
+	snapshot atomic.Pointer[aclSnapshot]
 
 	// allowCount / denyCount track aggregate decisions.
 	allowCount atomic.Uint64
 	denyCount  atomic.Uint64
+}
+
+// aclSnapshot is an immutable rule-set snapshot.
+type aclSnapshot struct {
+	enabled       bool
+	defaultPolicy config.ACLAction
+	rules         []compiledACLRule
+	hitCounts     []atomic.Uint64
 }
 
 // compiledACLRule is a pre-parsed ACL rule with compiled CIDR matchers.
@@ -71,23 +71,27 @@ type ACLRuleHitStats struct {
 // NewACLEngine creates a new ACL engine from config. If ACL is disabled,
 // the engine returns allow for all packets (no-op).
 func NewACLEngine(cfg config.ACLConfig) (*ACLEngine, error) {
-	e := &ACLEngine{
-		enabled:       cfg.Enabled,
-		defaultPolicy: cfg.DefaultPolicy,
+	e := &ACLEngine{}
+
+	dp := cfg.DefaultPolicy
+	if dp == "" {
+		dp = config.ACLActionAllow
 	}
 
-	if e.defaultPolicy == "" {
-		e.defaultPolicy = config.ACLActionAllow
-	}
-
+	var compiled []compiledACLRule
 	for i, rule := range cfg.Rules {
-		compiled, err := compileRule(rule)
+		c, err := compileRule(rule)
 		if err != nil {
 			return nil, fmt.Errorf("acl: rule %d: %w", i, err)
 		}
-		e.compiledRules = append(e.compiledRules, compiled)
+		compiled = append(compiled, c)
 	}
-	e.hitCounts = make([]atomic.Uint64, len(e.compiledRules))
+	e.snapshot.Store(&aclSnapshot{
+		enabled:       cfg.Enabled,
+		defaultPolicy: dp,
+		rules:         compiled,
+		hitCounts:     make([]atomic.Uint64, len(compiled)),
+	})
 
 	return e, nil
 }
@@ -147,20 +151,16 @@ func compileRule(rule config.ACLRule) (compiledACLRule, error) {
 // Returns true if the packet is allowed, false if denied.
 // When ACL is disabled, always returns true.
 func (e *ACLEngine) Check(packet []byte, peerID string) bool {
-	if !e.enabled {
+	snap := e.snapshot.Load()
+	if snap == nil || !snap.enabled {
 		return true
 	}
-
-	e.mu.RLock()
-	rules := e.compiledRules
-	defaultPolicy := e.defaultPolicy
-	e.mu.RUnlock()
 
 	// Parse packet info once.
 	pktInfo, ok := parsePacketInfo(packet)
 	if !ok {
 		// Can't parse — fall back to default policy.
-		if defaultPolicy == config.ACLActionAllow {
+		if snap.defaultPolicy == config.ACLActionAllow {
 			e.allowCount.Add(1)
 			return true
 		}
@@ -168,9 +168,9 @@ func (e *ACLEngine) Check(packet []byte, peerID string) bool {
 		return false
 	}
 
-	for i, rule := range rules {
+	for i, rule := range snap.rules {
 		if ruleMatches(rule, pktInfo, peerID) {
-			e.hitCounts[i].Add(1)
+			snap.hitCounts[i].Add(1)
 			if rule.action == config.ACLActionAllow {
 				e.allowCount.Add(1)
 				return true
@@ -181,7 +181,7 @@ func (e *ACLEngine) Check(packet []byte, peerID string) bool {
 	}
 
 	// No rule matched — apply default policy.
-	if defaultPolicy == config.ACLActionAllow {
+	if snap.defaultPolicy == config.ACLActionAllow {
 		e.allowCount.Add(1)
 		return true
 	}
@@ -317,9 +317,6 @@ func ruleMatches(rule compiledACLRule, info packetInfo, peerID string) bool {
 
 // UpdateRules atomically replaces the ACL rule set.
 func (e *ACLEngine) UpdateRules(cfg config.ACLConfig) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	var compiled []compiledACLRule
 	for i, rule := range cfg.Rules {
 		c, err := compileRule(rule)
@@ -329,34 +326,39 @@ func (e *ACLEngine) UpdateRules(cfg config.ACLConfig) error {
 		compiled = append(compiled, c)
 	}
 
-	e.enabled = cfg.Enabled
-	e.defaultPolicy = cfg.DefaultPolicy
-	if e.defaultPolicy == "" {
-		e.defaultPolicy = config.ACLActionAllow
+	dp := cfg.DefaultPolicy
+	if dp == "" {
+		dp = config.ACLActionAllow
 	}
-	e.compiledRules = compiled
-	e.hitCounts = make([]atomic.Uint64, len(compiled))
+	e.snapshot.Store(&aclSnapshot{
+		enabled:       cfg.Enabled,
+		defaultPolicy: dp,
+		rules:         compiled,
+		hitCounts:     make([]atomic.Uint64, len(compiled)),
+	})
 
 	return nil
 }
 
 // Stats returns a snapshot of ACL engine statistics.
 func (e *ACLEngine) Stats() ACLStats {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	snap := e.snapshot.Load()
 
 	stats := ACLStats{
-		Enabled:       e.enabled,
-		DefaultPolicy: e.defaultPolicy,
-		AllowCount:    e.allowCount.Load(),
-		DenyCount:     e.denyCount.Load(),
+		AllowCount: e.allowCount.Load(),
+		DenyCount:  e.denyCount.Load(),
 	}
+	if snap == nil {
+		return stats
+	}
+	stats.Enabled = snap.enabled
+	stats.DefaultPolicy = snap.defaultPolicy
 
-	for i, rule := range e.compiledRules {
+	for i, rule := range snap.rules {
 		stats.RuleHits = append(stats.RuleHits, ACLRuleHitStats{
 			Index:  i,
 			Action: string(rule.action),
-			Hits:   e.hitCounts[i].Load(),
+			Hits:   snap.hitCounts[i].Load(),
 			Desc:   rule.desc,
 		})
 	}
@@ -366,26 +368,29 @@ func (e *ACLEngine) Stats() ACLStats {
 
 // IsEnabled returns whether ACL checking is currently active.
 func (e *ACLEngine) IsEnabled() bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.enabled
+	snap := e.snapshot.Load()
+	return snap != nil && snap.enabled
 }
 
 // DefaultPolicy returns the current default policy action.
 func (e *ACLEngine) DefaultPolicy() config.ACLAction {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.defaultPolicy
+	snap := e.snapshot.Load()
+	if snap == nil {
+		return config.ACLActionAllow
+	}
+	return snap.defaultPolicy
 }
 
 // CurrentRules returns the current ACL rules as config.ACLRule slice.
 // This is used by the web Dashboard to display and manage rules.
 func (e *ACLEngine) CurrentRules() []config.ACLRule {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	snap := e.snapshot.Load()
+	if snap == nil {
+		return nil
+	}
 
-	rules := make([]config.ACLRule, 0, len(e.compiledRules))
-	for _, c := range e.compiledRules {
+	rules := make([]config.ACLRule, 0, len(snap.rules))
+	for _, c := range snap.rules {
 		r := config.ACLRule{
 			Action:      c.action,
 			Protocol:    c.protocol,

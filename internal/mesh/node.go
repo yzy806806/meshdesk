@@ -168,6 +168,12 @@ type MeshNode struct {
 	// routing table.
 	peerEndpointResolver func(string) string
 
+	// peersMu guards n.cfg.Peers: AddPeer appends at runtime while
+	// Dial/findPeerConfigByAddress/isKnownPeer iterate concurrently.
+	// A separate mutex avoids lock-order interaction with n.mu /
+	// sessionsMu.
+	peersMu sync.RWMutex
+
 	// relayBackoff tracks failed (target, relay) relay attempts so the
 	// dialer stops hammering unreachable targets. Without this, every
 	// connection attempt to an unreachable peer (socks5 exit, monitor
@@ -1050,6 +1056,8 @@ func (n *MeshNode) isKnownPeer(pubKeyHex string) bool {
 	if _, ok := n.clientSessions[pubKeyHex]; ok {
 		return true
 	}
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
 	for i := range n.cfg.Peers {
 		if n.cfg.Peers[i].PublicKey == pubKeyHex {
 			return true
@@ -1295,10 +1303,15 @@ func smuxCfg() smux.Config {
 
 // findPeerConfigByAddress searches the node's config Peers list for a
 // peer whose Endpoint matches the given address (host:port).
+// Returns a COPY — callers must not retain a pointer into the shared
+// slice (AddPeer may append concurrently, reallocating the backing array).
 func (n *MeshNode) findPeerConfigByAddress(address string) (*config.PeerConfig, bool) {
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
 	for i := range n.cfg.Peers {
 		if n.cfg.Peers[i].Endpoint == address {
-			return &n.cfg.Peers[i], true
+			pc := n.cfg.Peers[i]
+			return &pc, true
 		}
 	}
 	return nil, false
@@ -1553,12 +1566,14 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 		// entry, which may contain an ephemeral source address from an
 		// inbound connection).
 		var dialAddr string
+		n.peersMu.RLock()
 		for i := range n.cfg.Peers {
 			if n.cfg.Peers[i].PublicKey == peerIdentityHex {
 				dialAddr = n.cfg.Peers[i].Endpoint
 				break
 			}
 		}
+		n.peersMu.RUnlock()
 		if dialAddr == "" {
 			// Fall back to routing table endpoint.
 			entry, rtOK := n.routes.GetPeer(peerIdentityHex)
@@ -1737,7 +1752,9 @@ func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 func (n *MeshNode) addPeerWithConnection(cfg config.PeerConfig) error {
 	// Ensure the peer config is available for Dial's address lookup.
 	if !n.hasPeerConfigByAddress(cfg.Endpoint) {
+		n.peersMu.Lock()
 		n.cfg.Peers = append(n.cfg.Peers, cfg)
+		n.peersMu.Unlock()
 		log.Printf("[mesh] AddPeer: registered peer config for %s", cfg.Endpoint)
 	}
 
@@ -1766,6 +1783,8 @@ func (n *MeshNode) addPeerWithConnection(cfg config.PeerConfig) error {
 // hasPeerConfigByAddress checks whether a peer config with the given
 // endpoint address exists in the node's config peer list.
 func (n *MeshNode) hasPeerConfigByAddress(address string) bool {
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
 	for i := range n.cfg.Peers {
 		if n.cfg.Peers[i].Endpoint == address {
 			return true
