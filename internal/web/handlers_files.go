@@ -79,7 +79,7 @@ func (s *Server) handleFileRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 180*time.Second) // lossy-link aware
 	defer cancel()
 	conn, err := s.fileServerConn(ctx, nodeID)
 	if err != nil {
@@ -124,7 +124,7 @@ func (s *Server) handleFileCopy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second) // lossy-link aware
 	defer cancel()
 
 	// Read from source.
@@ -219,7 +219,7 @@ func (s *Server) handleFileDistribute(w http.ResponseWriter, r *http.Request) {
 			results = append(results, map[string]any{"node": nid, "ok": false, "error": "seek: " + err.Error()})
 			continue
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second) // lossy-link aware
 		conn, derr := s.fileServerConn(ctx, nid)
 		if derr != nil {
 			cancel()
