@@ -41,6 +41,10 @@ import (
 // SSCipher name constants (matching shadowsocks protocol names).
 const (
 	CipherChaCha20IETFPoly1305 = "chacha20-ietf-poly1305"
+
+	// ssHandshakeTimeout bounds the salt read in Accept so a
+	// connect-and-stall client cannot wedge the accept loop.
+	ssHandshakeTimeout = 10 * time.Second
 )
 
 // SSConfig holds configuration for the Shadowsocks listener.
@@ -119,8 +123,13 @@ func (l *ssListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Wrap the connection in an SS session.
+	// Wrap the connection in an SS session. newSSSession blocks on
+	// reading the client's salt — bound it with a deadline so a
+	// connect-and-stall client cannot wedge the accept loop
+	// (slow-loris DoS on the whole SS entry).
+	conn.SetReadDeadline(time.Now().Add(ssHandshakeTimeout))
 	session, err := newSSSession(conn, l.masterKey)
+	conn.SetReadDeadline(time.Time{})
 	if err != nil {
 		// Security event: SS session initialization failed (salt read error,
 		// AEAD creation failure, etc.). This could indicate a port scanner,

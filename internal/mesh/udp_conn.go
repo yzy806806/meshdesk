@@ -3,6 +3,7 @@ package mesh
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -36,6 +37,11 @@ const (
 
 	udpWindowSize = 32 // sliding window (in-flight frames)
 	udpMaxSeq     = uint32(1 << 30)
+
+	// udpWriteTimeout bounds how long Write waits for the sliding
+	// window to drain before giving up (dead peer → error → caller
+	// falls back to TCP). 30s ≈ 150 RTO retransmits.
+	udpWriteTimeout = 30 * time.Second
 )
 
 var (
@@ -125,8 +131,15 @@ func (sc *udpStreamConn) Write(p []byte) (int, error) {
 		total += len(chunk)
 		p = p[len(chunk):]
 
-		// Block when the window is full until ACKs drain it.
+		// Block when the window is full until ACKs drain it. Bound the
+		// wait: a peer that stopped ACKing (dead endpoint, network
+		// partition) must not wedge Write forever — the caller (TUN
+		// forwarder) needs the error to fall back to the TCP path.
+		windowWaitStart := time.Now()
 		for len(sc.inflight) >= udpWindowSize {
+			if time.Since(windowWaitStart) > udpWriteTimeout {
+				return total, fmt.Errorf("udp stream: write timeout (%d frames unacked)", len(sc.inflight))
+			}
 			select {
 			case ack := <-sc.ackRecv:
 				// Inline advanceBase — we already hold sendMu, and

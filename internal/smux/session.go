@@ -265,7 +265,7 @@ func (s *Session) writer() {
 // reader goroutine: reads frames from conn and dispatches them.
 func (s *Session) reader() {
 	for {
-		f, err := readFrame(s.bufReader)
+		f, err := readFrame(s.bufReader, s.cfg.MaxFrameSize)
 		if err != nil {
 			s.abort(err)
 			return
@@ -300,10 +300,15 @@ func (s *Session) dispatch(f *frame) {
 		case FrameSyn:
 			s.handleHandshakeSyn(f)
 		case FramePing:
-			resp := newPingFrame(binary.BigEndian.Uint32(f.Payload))
-			select {
-			case s.writeCh <- resp:
-			case <-s.doneCh:
+			// PING echoes its 4-byte payload back. Guard against
+			// malformed frames with Length < 4 — Uint32 on a short
+			// payload would panic the reader goroutine (process crash).
+			if len(f.Payload) >= 4 {
+				resp := newPingFrame(binary.BigEndian.Uint32(f.Payload))
+				select {
+				case s.writeCh <- resp:
+				case <-s.doneCh:
+				}
 			}
 		case FrameGoAway:
 			s.Close()
