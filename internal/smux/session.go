@@ -55,6 +55,12 @@ type Session struct {
 	// Session handshake
 	handshakeDone chan struct{}
 
+	// Keepalive: lastActivity is updated on every incoming frame;
+	// the keepalive goroutine aborts the session if it stalls longer
+	// than PingTimeout (detects TCP half-close that would otherwise
+	// block reads forever).
+	lastActivity atomic.Int64
+
 	// Traffic counters (atomic, no lock needed)
 	bytesSent     atomic.Uint64
 	bytesReceived atomic.Uint64
@@ -267,6 +273,9 @@ func (s *Session) reader() {
 
 		// Count received bytes (header + payload).
 		s.bytesReceived.Add(uint64(HeaderSize + len(f.Payload)))
+
+		// Any incoming frame proves liveness (data or pong).
+		s.lastActivity.Store(time.Now().UnixNano())
 
 		// Validate version.
 		if f.Version != ProtocolVersion {

@@ -23,7 +23,9 @@ package smux
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
+	"log"
 	"net"
 	"time"
 )
@@ -68,6 +70,11 @@ type Config struct {
 	// Default: 0 (disabled — MultiPathSession manages heartbeat
 	// at Layer 4 via a dedicated stream).
 	PingInterval time.Duration
+
+	// PingTimeout is how long without ANY incoming frame (data or
+	// pong) before the session is considered dead and aborted.
+	// Only used when PingInterval > 0. Default: 3 × PingInterval.
+	PingTimeout time.Duration
 }
 
 // DefaultConfig returns a Config with production-tested defaults.
@@ -132,6 +139,9 @@ func Client(conn io.ReadWriteCloser, cfg Config) (*Session, error) {
 	// Start background goroutines.
 	go s.reader()
 	go s.writer()
+	if s.cfg.PingInterval > 0 {
+		go s.keepaliveLoop()
+	}
 
 	// Perform session handshake.
 	if err := s.handshake(); err != nil {
@@ -140,6 +150,42 @@ func Client(conn io.ReadWriteCloser, cfg Config) (*Session, error) {
 	}
 
 	return s, nil
+}
+
+// keepaliveLoop sends periodic PING frames on the control channel and
+// aborts the session if no frame (data or pong) arrives within
+// PingTimeout. This detects TCP half-closes (FIN-WAIT-2/CLOSE-WAIT)
+// that would otherwise leave reads blocked forever with IsClosed()
+// false — the root cause of zombie sessions.
+func (s *Session) keepaliveLoop() {
+	interval := s.cfg.PingInterval
+	timeout := s.cfg.PingTimeout
+	if timeout <= 0 {
+		timeout = 3 * interval
+	}
+	s.lastActivity.Store(time.Now().UnixNano())
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.doneCh:
+			return
+		case <-ticker.C:
+			// Send a ping on the control channel.
+			select {
+			case s.writeCh <- newPingFrame(0):
+			case <-s.doneCh:
+				return
+			}
+			// Check liveness.
+			if time.Since(time.Unix(0, s.lastActivity.Load())) > timeout {
+				log.Printf("[smux] keepalive timeout — session dead (no frames for %s), aborting", timeout)
+				s.abort(errors.New("smux: keepalive timeout"))
+				return
+			}
+		}
+	}
 }
 
 // Server creates a new smux session in server mode over the given connection.
