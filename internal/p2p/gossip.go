@@ -1595,9 +1595,12 @@ func (g *GossipLayer) SetPeerLinkHandler() {
 
 // localKey returns this node's public key (best-effort).
 func (g *GossipLayer) localKey() string {
-	if g.identity != nil && len(g.identity) >= 32 {
-		// identity is the ed25519 private key bytes; derive pubkey hex.
-		pub := g.identity[32:]
+	// identity is the ed25519 private key bytes (64 = PrivateKeySize);
+	// the public key is the last 32 bytes. Check the FULL length — a
+	// 32..63-byte value would slice private-key tail bytes as if they
+	// were the public key.
+	if g.identity != nil && len(g.identity) >= ed25519.PrivateKeySize {
+		pub := g.identity[ed25519.PrivateKeySize-32:]
 		return fmt.Sprintf("%x", pub)
 	}
 	return ""

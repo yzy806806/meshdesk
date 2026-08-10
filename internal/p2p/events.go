@@ -203,7 +203,7 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 	// Flapping prevention: check if this peer recently left.
 	if e.inCooldown(meta.PublicKey) {
 		log.Printf("[p2p] NotifyJoin: peer %s in cooldown (recently left), delaying connection",
-			meta.PublicKey[:8])
+			safeShortKey(meta.PublicKey))
 		// Still cache the metadata, but delay connection.
 		e.cacheMeta(meta)
 		return
@@ -251,7 +251,7 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 	// Fire collector discovery callback (outside the lock).
 	if collectorChanged && collectorHdl != nil {
 		log.Printf("[p2p] NotifyJoin: collector peer %s discovered, notifying handler",
-			meta.PublicKey[:8])
+			safeShortKey(meta.PublicKey))
 		collectorHdl(meta.PublicKey)
 	}
 
@@ -260,7 +260,7 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 		endpoints := meta.Endpoints
 		if len(endpoints) == 0 && e.relayPathBuilder != nil {
 			log.Printf("[p2p] NotifyJoin: NAT peer %s discovered (no endpoints), selecting relay...",
-				meta.PublicKey[:8])
+				safeShortKey(meta.PublicKey))
 			e.relayPathBuilder.OnNATPeerDiscovered(meta)
 
 			// Still invoke the external join handler.
@@ -272,10 +272,10 @@ func (e *meshEventDelegate) NotifyJoin(node *memberlist.Node) {
 
 		if err := e.wg.Connect(meta.PublicKey, endpoints); err != nil {
 			log.Printf("[p2p] NotifyJoin: failed to connect peer %s: %v",
-				meta.PublicKey[:8], err)
+				safeShortKey(meta.PublicKey), err)
 		} else {
 			log.Printf("[p2p] NotifyJoin: connected peer %s (role %s, %d endpoints)",
-				meta.PublicKey[:8], meta.Role, len(endpoints))
+				safeShortKey(meta.PublicKey), meta.Role, len(endpoints))
 		}
 	}
 
@@ -363,10 +363,10 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 	// Disconnect from the peer.
 	if err := e.wg.Disconnect(meta.PublicKey); err != nil {
 		log.Printf("[p2p] NotifyLeave: failed to disconnect peer %s: %v",
-			meta.PublicKey[:8], err)
+			safeShortKey(meta.PublicKey), err)
 	} else {
 		log.Printf("[p2p] NotifyLeave: disconnected peer %s",
-			meta.PublicKey[:8])
+			safeShortKey(meta.PublicKey))
 	}
 
 	// Clean up relay circuits for this peer.
@@ -382,7 +382,7 @@ func (e *meshEventDelegate) NotifyLeave(node *memberlist.Node) {
 	// doesn't waste dial attempts on dead peers.
 	if wasCollector && collectorRemovedHdl != nil {
 		log.Printf("[p2p] NotifyLeave: collector peer %s left, notifying handler",
-			meta.PublicKey[:8])
+			safeShortKey(meta.PublicKey))
 		collectorRemovedHdl(meta.PublicKey)
 	}
 
@@ -468,7 +468,7 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 		e.mu.Unlock()
 		if err := e.wg.UpdateEndpoints(meta.PublicKey, newEndpoints); err != nil {
 			log.Printf("[p2p] NotifyUpdate: failed to update endpoints for %s: %v",
-				meta.PublicKey[:8], err)
+				safeShortKey(meta.PublicKey), err)
 		}
 	} else {
 		e.mu.Unlock()
@@ -486,7 +486,7 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 		e.mu.RUnlock()
 		if collectorHdl != nil {
 			log.Printf("[p2p] NotifyUpdate: peer %s became collector, notifying handler",
-				meta.PublicKey[:8])
+				safeShortKey(meta.PublicKey))
 			collectorHdl(meta.PublicKey)
 		}
 	}
@@ -498,7 +498,7 @@ func (e *meshEventDelegate) NotifyUpdate(node *memberlist.Node) {
 		e.mu.RUnlock()
 		if collectorRemovedHdl != nil {
 			log.Printf("[p2p] NotifyUpdate: peer %s lost collector capability, notifying handler",
-				meta.PublicKey[:8])
+				safeShortKey(meta.PublicKey))
 			collectorRemovedHdl(meta.PublicKey)
 		}
 	}
