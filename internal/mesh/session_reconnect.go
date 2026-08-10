@@ -270,6 +270,8 @@ func (n *MeshNode) resolvePeerEndpoint(peerIdentityHex string) string {
 			return ep
 		}
 	}
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
 	for i := range n.cfg.Peers {
 		if n.cfg.Peers[i].PublicKey == peerIdentityHex {
 			return n.cfg.Peers[i].Endpoint

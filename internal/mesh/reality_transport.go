@@ -336,9 +336,9 @@ func (t *RealityTransport) Connect(ctx context.Context, addr string) (PeerConn, 
 		slotRelease: t.releaseSemSlot,
 	}
 
-	// Apply idle timeout if configured.
+	// Apply idle timeout if configured (per-activity, not absolute).
 	if t.cfg.IdleTimeout > 0 {
-		pc.SetDeadline(time.Now().Add(t.cfg.IdleTimeout))
+		pc.idleTimeout = t.cfg.IdleTimeout
 	}
 
 	t.factory.registerConn(pc)
@@ -712,6 +712,23 @@ type realityPeerConn struct {
 	latency     atomic.Int64 // nanoseconds
 	slotRelease func()
 	closed      atomic.Bool
+	idleTimeout time.Duration // 0 = no idle timeout
+}
+
+// Read refreshes the idle deadline on activity when configured.
+func (c *realityPeerConn) Read(p []byte) (int, error) {
+	if c.idleTimeout > 0 {
+		c.Conn.SetReadDeadline(time.Now().Add(c.idleTimeout))
+	}
+	return c.Conn.Read(p)
+}
+
+// Write refreshes the idle deadline on activity when configured.
+func (c *realityPeerConn) Write(p []byte) (int, error) {
+	if c.idleTimeout > 0 {
+		c.Conn.SetWriteDeadline(time.Now().Add(c.idleTimeout))
+	}
+	return c.Conn.Write(p)
 }
 
 // Transport returns the transport name that created this connection: "reality".

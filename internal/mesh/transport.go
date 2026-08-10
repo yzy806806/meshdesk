@@ -34,6 +34,7 @@ package mesh
 import (
 	"context"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -212,6 +213,8 @@ type TransportRegistry struct {
 	// embed TransportRegistry directly in MeshNode without an extra allocation.
 	// All mutation methods are safe for concurrent use.
 
+	mu sync.RWMutex
+
 	// exported for testing and introspection
 	factories     map[string]TransportFactory
 	fallbackOrder []string
@@ -227,6 +230,8 @@ func NewTransportRegistry() *TransportRegistry {
 // Register adds a TransportFactory to the registry under its Name().
 // If a factory with the same name already exists, it is replaced.
 func (r *TransportRegistry) Register(factory TransportFactory) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.factories == nil {
 		r.factories = make(map[string]TransportFactory)
 	}
@@ -241,6 +246,8 @@ func (r *TransportRegistry) Register(factory TransportFactory) {
 //
 // Returns ErrTransportNotFound if no suitable transport is found.
 func (r *TransportRegistry) Get(name string) (TransportFactory, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	if len(r.fallbackOrder) > 0 {
 		return r.getByFallback(name)
 	}
@@ -257,6 +264,7 @@ func (r *TransportRegistry) Get(name string) (TransportFactory, error) {
 // getByFallback walks the fallback order and returns the first healthy factory.
 // If the requested name is not first in the fallback order, it still returns
 // the first healthy factory (fallback overrides direct selection).
+// Caller must hold r.mu (read or write).
 func (r *TransportRegistry) getByFallback(requested string) (TransportFactory, error) {
 	for _, name := range r.fallbackOrder {
 		if f, ok := r.factories[name]; ok {
@@ -268,6 +276,8 @@ func (r *TransportRegistry) getByFallback(requested string) (TransportFactory, e
 
 // List returns the names of all registered transports.
 func (r *TransportRegistry) List() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	names := make([]string, 0, len(r.factories))
 	for name := range r.factories {
 		names = append(names, name)
@@ -279,6 +289,8 @@ func (r *TransportRegistry) List() []string {
 // Index 0 is the primary transport, higher indices are fallbacks.
 // Returns nil if no fallback order has been set.
 func (r *TransportRegistry) FallbackOrder() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.fallbackOrder
 }
 
@@ -290,6 +302,8 @@ func (r *TransportRegistry) FallbackOrder() []string {
 // may be added to the registry after SetFallbackOrder is called.
 // SetFallbackOrder(nil) disables automatic failover (Get returns exact matches).
 func (r *TransportRegistry) SetFallbackOrder(order []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if order == nil {
 		r.fallbackOrder = nil
 		return
@@ -301,7 +315,13 @@ func (r *TransportRegistry) SetFallbackOrder(order []string) {
 // ShutdownAll calls Shutdown on every registered factory, collecting errors.
 // Returns the first error encountered, or nil if all factories shut down cleanly.
 func (r *TransportRegistry) ShutdownAll(ctx context.Context) error {
+	r.mu.RLock()
+	factories := make(map[string]TransportFactory, len(r.factories))
 	for name, f := range r.factories {
+		factories[name] = f
+	}
+	r.mu.RUnlock()
+	for name, f := range factories {
 		if err := f.Shutdown(ctx); err != nil {
 			return &TransportShutdownError{Name: name, Err: err}
 		}

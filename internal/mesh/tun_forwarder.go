@@ -196,6 +196,15 @@ func (f *TunForwarder) Stop() {
 	}
 	f.outboundMu.Unlock()
 
+	// Close cached UDP TUN streams too (multipath D) — they hold
+	// UDP sockets + ARQ goroutines and must not leak on shutdown.
+	f.udpMu.Lock()
+	for peerKey, entry := range f.udpStreams {
+		entry.conn.Close()
+		delete(f.udpStreams, peerKey)
+	}
+	f.udpMu.Unlock()
+
 	f.wg.Wait()
 	log.Printf("[tun-forwarder] stopped (sent=%d, recv=%d, dropped=%d, spoofed=%d)",
 		f.packetsSent.Load(), f.packetsReceived.Load(), f.packetsDropped.Load(), f.packetsSpoofed.Load())
