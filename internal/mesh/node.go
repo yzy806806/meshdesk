@@ -1155,7 +1155,7 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 // forever with IsClosed() false — the root cause of zombie sessions
 // that silently break direct paths until a dial attempts cleanup.
 func smuxCfg() smux.Config {
-	cfg := smuxCfg()
+	cfg := smux.DefaultConfig()
 	cfg.PingInterval = 10 * time.Second
 	cfg.PingTimeout = 40 * time.Second
 	return cfg
