@@ -58,7 +58,17 @@ type MeshRelayRequest struct {
 	InitiatorKey string           `msgpack:"ik"`  // initiator peer identity hex (for target-side auth)
 	Port         uint16           `msgpack:"pt"`  // target virtual port (0 = legacy/unset)
 	Timestamp    int64            `msgpack:"ts"`  // UnixNano
+	Hops         uint8            `msgpack:"hp"`  // relay hop count (multi-hop, T4.5)
 }
+
+// maxRelayHops caps recursive relay chains to prevent cycles.
+const maxRelayHops = 3
+
+// relayHopsKey is the context key carrying the current relay hop count
+// (set when a relay extends a multi-hop chain).
+type relayHopsCtxKey struct{}
+
+var relayHopsKey = relayHopsCtxKey{}
 
 // MeshRelayResponse is sent by the relay node back to the initiator
 // (or target) to indicate acceptance or rejection of a relay tunnel.
