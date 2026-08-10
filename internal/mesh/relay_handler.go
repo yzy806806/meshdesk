@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -49,6 +50,9 @@ type relayTunnel struct {
 	// May be nil until the target dials back or the relay opens a stream
 	// to the target.
 	TargetConn net.Conn
+
+	// TargetPort is the requested virtual port (multi-hop recursion).
+	TargetPort int
 
 	// ready field removed (was dead code, caused double-close panic risk).
 
@@ -228,6 +232,33 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 		h.node.sessionsMu.Unlock()
 	}
 	if targetSession == nil {
+		// No direct session to the target. Multi-hop (T4.5): recursively
+		// dial the target's virtual port — DialVirtualPort will itself
+		// fall back to another relay, extending the chain. Capped by
+		// maxRelayHops to prevent cycles.
+		if req.Hops >= maxRelayHops {
+			h.sendResponse(initiatorConn, tunnelID, false, RelayRejectNoSessionToTarget)
+			h.removeTunnel(tunnelID)
+			initiatorConn.Close()
+			return
+		}
+		ctx, cancel := context.WithTimeout(h.node.ctx, 10*time.Second)
+		// Extend the hop count for the next leg of the chain.
+		ctx = context.WithValue(ctx, relayHopsKey, req.Hops+1)
+		stream, dialErr := h.node.DialVirtualPort(ctx, req.TargetKey, int(req.Port))
+		cancel()
+		if dialErr == nil && stream != nil {
+			// Multi-hop chain established — bridge the initiator to the
+			// recursive stream.
+			h.mu.Lock()
+			tunnel.TargetConn = stream
+			tunnel.TargetPort = int(req.Port)
+			h.mu.Unlock()
+			log.Printf("[mesh-relay] multi-hop: tunnel=%s extended via recursive dial to %s (hops=%d)",
+				tunnelID[:min(len(tunnelID), 16)], req.TargetKey[:min(len(req.TargetKey), 16)]+"...", req.Hops)
+			h.startBridge(tunnel)
+			return
+		}
 		h.sendResponse(initiatorConn, tunnelID, false, RelayRejectNoSessionToTarget)
 		h.removeTunnel(tunnelID)
 		initiatorConn.Close()
