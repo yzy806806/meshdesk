@@ -78,9 +78,11 @@ type TunForwarder struct {
 
 	// outboundStreams maps peer public key → the smux stream used
 	// for outbound TUN packets. Each stream is opened lazily on the
-	// first packet to that peer and reused.
+	// first packet to that peer and reused; entries refresh after
+	// outboundStreamTTL so session reconnects don't strand packets
+	// on dead streams (buffered writes "succeed" without error).
 	outboundMu      sync.Mutex
-	outboundStreams map[string]net.Conn
+	outboundStreams map[string]outboundStreamEntry
 
 	// listener is the virtual port listener for inbound TUN packets.
 	listener net.Listener
@@ -121,7 +123,7 @@ func NewTunForwarder(cfg TunForwarderConfig) (*TunForwarder, error) {
 
 	return &TunForwarder{
 		cfg:             cfg,
-		outboundStreams: make(map[string]net.Conn),
+		outboundStreams: make(map[string]outboundStreamEntry),
 		ctx:             ctx,
 		cancel:          cancel,
 	}, nil
@@ -172,8 +174,8 @@ func (f *TunForwarder) Stop() {
 
 	// Close all outbound streams.
 	f.outboundMu.Lock()
-	for peerKey, conn := range f.outboundStreams {
-		conn.Close()
+	for peerKey, entry := range f.outboundStreams {
+		entry.conn.Close()
 		delete(f.outboundStreams, peerKey)
 	}
 	f.outboundMu.Unlock()
@@ -362,13 +364,21 @@ func (f *TunForwarder) tunReadLoop() {
 // getOutboundStream returns the existing outbound smux stream for the
 // given peer, or creates a new one if none exists. Streams are cached
 // per-peer for the lifetime of the forwarder (or until they break).
+// Cached streams are re-established after outboundStreamTTL — a peer's
+// session may have reconnected (smux session replaced) while the old
+// stream's buffered writes still "succeed" (no immediate error), so
+// packets silently vanish on the dead session. TTL forces re-dial.
 func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
 	f.outboundMu.Lock()
-	conn, ok := f.outboundStreams[peerKey]
+	entry, ok := f.outboundStreams[peerKey]
 	f.outboundMu.Unlock()
 
+	if ok && time.Since(entry.createdAt) < outboundStreamTTL {
+		return entry.conn, nil
+	}
 	if ok {
-		return conn, nil
+		// Stale — close and re-dial.
+		f.closeOutboundStream(peerKey)
 	}
 
 	// Open a new smux stream to the peer's TUN virtual port.
@@ -382,12 +392,12 @@ func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
 
 	f.outboundMu.Lock()
 	// Check if another goroutine created a stream in the meantime.
-	if existing, ok := f.outboundStreams[peerKey]; ok {
+	if existing, ok := f.outboundStreams[peerKey]; ok && time.Since(existing.createdAt) < outboundStreamTTL {
 		f.outboundMu.Unlock()
 		newConn.Close()
-		return existing, nil
+		return existing.conn, nil
 	}
-	f.outboundStreams[peerKey] = newConn
+	f.outboundStreams[peerKey] = outboundStreamEntry{conn: newConn, createdAt: time.Now()}
 	f.outboundMu.Unlock()
 
 	return newConn, nil
@@ -397,16 +407,29 @@ func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
 // given peer. The next packet to this peer will open a new stream.
 func (f *TunForwarder) closeOutboundStream(peerKey string) {
 	f.outboundMu.Lock()
-	conn, ok := f.outboundStreams[peerKey]
+	entry, ok := f.outboundStreams[peerKey]
 	if ok {
 		delete(f.outboundStreams, peerKey)
 	}
 	f.outboundMu.Unlock()
 
 	if ok {
-		conn.Close()
+		entry.conn.Close()
 	}
 }
+
+// outboundStreamEntry wraps a cached outbound stream with its creation
+// time so stale streams (peer session reconnected) can be re-dialed.
+type outboundStreamEntry struct {
+	conn      net.Conn
+	createdAt time.Time
+}
+
+// outboundStreamTTL forces outbound TUN streams to be re-established
+// periodically. A peer's smux session may reconnect while the old
+// stream's buffered writes still succeed (no immediate error), so
+// packets would silently vanish on the dead session forever.
+const outboundStreamTTL = 60 * time.Second
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Inbound: smux stream → TUN device
