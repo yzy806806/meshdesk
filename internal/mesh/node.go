@@ -275,6 +275,11 @@ func (n *MeshNode) Start() error {
 		// smux sessions directly (without Reality TLS).
 		meshLn := n.muxTransport.MeshListener()
 		go n.acceptMeshLoop(meshLn)
+
+		// Wire the UDP TUN stream authenticator (multipath D): the
+		// tun-forwarder's UDP-preferred data plane authenticates
+		// first-frame signatures against known peers.
+		n.wireTUNAUDAuthValidator()
 	} else {
 		// Shared node mode (reality.enabled: true).
 		if !n.cfg.Reality.Enabled {
@@ -946,6 +951,112 @@ func (n *MeshNode) MuxTransport() *MuxTransport {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.muxTransport
+}
+
+// TunUDPListener returns a listener for inbound TUN-data UDP streams
+// (multipath D). Each accepted conn carries framed TUN packets over the
+// UDP ARQ layer. Returns nil when the mux transport is unavailable.
+func (n *MeshNode) TunUDPListener() net.Listener {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return nil
+	}
+	return mt.TunUDPListener()
+}
+
+// DialTUNUDPForPeer opens (or reuses) the UDP ARQ TUN stream to a peer,
+// resolving its stable endpoint via gossip/config/routing table. The
+// first frame carries an Ed25519-signed auth header (pubkey + timestamp
+// + signature) so the receiver can authenticate the UDP stream — this
+// is what prevents unauthenticated UDP injection into the TUN.
+// The returned conn is used by the tun-forwarder as the UDP-preferred
+// data path (multipath D); on any error the caller falls back to TCP
+// smux.
+func (n *MeshNode) DialTUNUDPForPeer(peerKey string) (net.Conn, error) {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return nil, fmt.Errorf("mesh: mux transport unavailable")
+	}
+	ep := n.resolvePeerEndpoint(peerKey)
+	if ep == "" {
+		return nil, fmt.Errorf("mesh: no endpoint known for peer %s", shortKey(peerKey))
+	}
+	authHeader, err := n.buildTUNAuthHeader()
+	if err != nil {
+		return nil, err
+	}
+	sc, err := mt.DialTUNUDP(ep, authHeader)
+	if err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+// buildTUNAuthHeader produces the first-frame auth payload for a TUN
+// UDP stream: [pubkey 64][ts 10][sig 128] where sig = Ed25519(pubkey+ts).
+func (n *MeshNode) buildTUNAuthHeader() ([]byte, error) {
+	if n.identity == nil {
+		return nil, fmt.Errorf("mesh: no identity for TUN UDP auth")
+	}
+	now := time.Now().Unix()
+	pubKeyHex := n.identity.PublicKey
+	tsStr := fmt.Sprintf("%010d", now)
+	signedData := []byte(pubKeyHex + tsStr)
+	sigHex, err := n.identity.Sign(signedData)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: TUN UDP auth sign: %w", err)
+	}
+	if len(pubKeyHex) != 64 || len(sigHex) != 128 {
+		return nil, fmt.Errorf("mesh: unexpected key/sig lengths %d/%d", len(pubKeyHex), len(sigHex))
+	}
+	header := make([]byte, 0, tunUDPAuthLen)
+	header = append(header, pubKeyHex...)
+	header = append(header, tsStr...)
+	header = append(header, sigHex...)
+	return header, nil
+}
+
+// wireTUNAUDAuthValidator installs the UDP TUN stream authenticator:
+// the pubkey must be a known peer and the Ed25519 signature over
+// (pubkey+ts) must verify.
+func (n *MeshNode) wireTUNAUDAuthValidator() {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return
+	}
+	mt.udpMesh.SetTUNUDPAuthValidator(func(pubKeyHex string, data []byte, sigHex string) (string, bool) {
+		// The key must be a peer we have a session with (or know via
+		// config/routing) — refuse strangers.
+		if !n.isKnownPeer(pubKeyHex) {
+			return "", false
+		}
+		if !identity.Verify(pubKeyHex, data, sigHex) {
+			return "", false
+		}
+		return pubKeyHex, true
+	})
+}
+
+// isKnownPeer reports whether the public key belongs to a peer we have
+// (or have had) a session with, or is in the static config.
+func (n *MeshNode) isKnownPeer(pubKeyHex string) bool {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+	if _, ok := n.sessions[pubKeyHex]; ok {
+		return true
+	}
+	if _, ok := n.clientSessions[pubKeyHex]; ok {
+		return true
+	}
+	for i := range n.cfg.Peers {
+		if n.cfg.Peers[i].PublicKey == pubKeyHex {
+			return true
+		}
+	}
+	if entry, ok := n.routes.GetPeer(pubKeyHex); ok && entry.Endpoint != "" {
+		return true
+	}
+	return false
 }
 
 // Identity returns this node's Ed25519 identity.

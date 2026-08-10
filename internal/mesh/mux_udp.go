@@ -3,7 +3,9 @@ package mesh
 import (
 	"encoding/binary"
 	"net"
+	"strconv"
 	"sync"
+	"time"
 )
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -21,13 +23,50 @@ import (
 // ──────────────────────────────────────────────────────────────────────────
 
 // udpMeshManager tracks per-remote UDP mesh streams.
+// tunUDPMarker is the first payload byte of a TUN-data UDP stream's
+// first frame. It must not collide with meshInternalMarker (0x4D) or a
+// valid IP version nibble (IPv4 = 0x45, IPv6 = 0x60). 0x54 = 'T'.
+const tunUDPMarker = 0x54
+
+// tunUDPAuthLen is the fixed authentication header carried in the FIRST
+// frame of a TUN UDP stream, right after the marker:
+//
+//	[pubkey 64 hex][ts 10 ascii][sig 128 hex]
+//
+// The signature covers (pubkey + ts) with the sender's Ed25519 key; ts
+// is a unix timestamp with a ±10min window (anti-replay). The header
+// is deliberately larger than udpMaxPayload can share with a TUN frame,
+// so the first frame carries auth only — data follows on frame 2+.
+const tunUDPAuthLen = 64 + 10 + 128
+
+// tunUDPAuthWindow is the accepted clock skew for the auth timestamp.
+const tunUDPAuthWindow = 10 * time.Minute
+
 type udpMeshManager struct {
-	mu      sync.Mutex
-	streams map[string]*udpStreamConn
+	mu         sync.Mutex
+	streams    map[string]*udpStreamConn // mesh key-exchange streams (by remote addr)
+	tunStreams map[string]*udpStreamConn // TUN data streams (by remote addr)
+	tunCh      chan net.Conn             // accepted TUN streams → tun-forwarder
+	// tunAuthValidator authenticates the first-frame auth header and
+	// returns the verified peer identity hex. Set by MeshNode.
+	tunAuthValidator func(pubKeyHex string, data []byte, sigHex string) (string, bool)
 }
 
 func newUDPMeshManager() *udpMeshManager {
-	return &udpMeshManager{streams: make(map[string]*udpStreamConn)}
+	return &udpMeshManager{
+		streams:    make(map[string]*udpStreamConn),
+		tunStreams: make(map[string]*udpStreamConn),
+		tunCh:      make(chan net.Conn, 64),
+	}
+}
+
+// SetTUNUDPAuthValidator installs the callback that authenticates a TUN
+// UDP stream's first-frame auth header (Ed25519 signature) and returns
+// the verified peer identity hex.
+func (m *udpMeshManager) SetTUNUDPAuthValidator(fn func(pubKeyHex string, data []byte, sigHex string) (string, bool)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tunAuthValidator = fn
 }
 
 // routeMeshPacket handles a UDP datagram that carries the mesh marker.
@@ -144,8 +183,9 @@ func (m *udpMeshManager) HasStream(addr *net.UDPAddr) bool {
 //
 // A UDP datagram is an ARQ frame: [type][seq][ack][len][payload]. The
 // mesh marker (0x4D) lives at the START of the payload (data[11]) on
-// the FIRST frame of a stream. Subsequent frames from an established
-// stream carry arbitrary mesh bytes — they must ALL feed the stream.
+// the FIRST frame of a mesh stream; the TUN marker (0x54) marks a
+// TUN-data stream. Established streams of either kind receive every
+// subsequent frame from that address.
 func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, meshCh chan net.Conn) bool {
 	if len(data) < 1 {
 		return false
@@ -154,17 +194,168 @@ func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 
 	m.mu.Lock()
 	sc, exists := m.streams[key]
+	tun, tunExists := m.tunStreams[key]
 	m.mu.Unlock()
 	if exists {
-		// Established stream: feed everything from this addr.
+		// Established mesh stream: feed everything from this addr.
+		sc.handlePacket(data)
+		return true
+	}
+	if tunExists {
+		// Established TUN stream: feed everything from this addr.
+		tun.handlePacket(data)
+		return true
+	}
+
+	// New stream candidates: ARQ DATA frame whose payload starts with
+	// the mesh marker (key exchange) or the TUN marker (TUN data).
+	if len(data) >= udpFrameHeaderLen+1 && data[0] == udpFrameTypeData {
+		switch data[udpFrameHeaderLen] {
+		case meshInternalMarker:
+			return m.routeMeshPacket(conn, addr, data, meshCh)
+		case tunUDPMarker:
+			return m.routeTUNPacket(conn, addr, data)
+		}
+	}
+	return false
+}
+
+// routeTUNPacket handles a UDP datagram that carries the TUN marker:
+// authenticates the first-frame auth header (Ed25519 signature over
+// pubkey+ts), creates (or reuses) the per-address TUN UDP stream, and
+// delivers it to the TUN accept channel once — wrapped with the verified
+// peer identity so the tun-forwarder can run anti-spoof/ACL checks.
+func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte) bool {
+	if len(data) < udpFrameHeaderLen+1 {
+		return false
+	}
+	key := addr.String()
+
+	m.mu.Lock()
+	sc, exists := m.tunStreams[key]
+	m.mu.Unlock()
+	if exists {
+		// Established (authenticated) TUN stream: feed everything.
 		sc.handlePacket(data)
 		return true
 	}
 
-	// New stream candidate: ARQ DATA frame whose payload starts with
-	// the mesh marker.
-	if len(data) >= udpFrameHeaderLen+1 && data[0] == udpFrameTypeData && data[udpFrameHeaderLen] == meshInternalMarker {
-		return m.routeMeshPacket(conn, addr, data, meshCh)
+	// First frame: [marker][pubkey 64][ts 10][sig 128] — auth only.
+	plen := int(binary.BigEndian.Uint16(data[9:11]))
+	if plen < 1+tunUDPAuthLen {
+		return true // malformed first frame; drop quietly (consumed)
 	}
-	return false
+	payload := data[udpFrameHeaderLen : udpFrameHeaderLen+plen]
+	if payload[0] != tunUDPMarker {
+		return false
+	}
+	pubKeyHex := string(payload[1 : 1+64])
+	tsStr := string(payload[1+64 : 1+64+10])
+	sigHex := string(payload[1+64+10 : 1+tunUDPAuthLen])
+
+	// Timestamp anti-replay window.
+	ts, err := strconv.ParseInt(tsStr, 10, 64)
+	if err != nil {
+		return true
+	}
+	now := time.Now().Unix()
+	if ts < now-int64(tunUDPAuthWindow.Seconds()) || ts > now+int64(tunUDPAuthWindow.Seconds()) {
+		return true
+	}
+
+	// Verify Ed25519 signature over (pubkey + ts).
+	m.mu.Lock()
+	validator := m.tunAuthValidator
+	m.mu.Unlock()
+	if validator == nil {
+		return true // no validator wired — refuse (security)
+	}
+	signedData := []byte(pubKeyHex + tsStr)
+	peerID, ok := validator(pubKeyHex, signedData, sigHex)
+	if !ok {
+		return true // auth failed; drop quietly
+	}
+
+	m.mu.Lock()
+	sc, exists = m.tunStreams[key]
+	if !exists {
+		sc = newUDPStreamConn(conn, addr)
+		m.tunStreams[key] = sc
+	}
+	m.mu.Unlock()
+
+	// Strip the auth header so the tun-forwarder sees clean TUN frames.
+	data = data[:udpFrameHeaderLen]
+	binary.BigEndian.PutUint16(data[9:11], 0)
+	sc.handlePacket(data)
+
+	select {
+	case m.tunCh <- &connWithPeer{Conn: sc, peerID: peerID}:
+	default:
+		go func(s *udpStreamConn, k string) { m.tunCh <- &connWithPeer{Conn: s, peerID: peerID} }(sc, key)
+	}
+	// Clean up when the stream closes.
+	go func(s *udpStreamConn, k string) {
+		<-s.done
+		m.mu.Lock()
+		if cur, ok := m.tunStreams[k]; ok && cur == s {
+			delete(m.tunStreams, k)
+		}
+		m.mu.Unlock()
+	}(sc, key)
+	return true
+}
+
+// TunCh returns the channel on which accepted TUN UDP streams are
+// delivered (each is a net.Conn carrying framed TUN packets).
+func (m *udpMeshManager) TunCh() <-chan net.Conn {
+	return m.tunCh
+}
+
+// DialTUNStream initiates a TUN-data UDP stream to a remote address.
+// authHeader is the first-frame authentication payload ([pubkey 64][ts
+// 10][sig 128]) produced by the caller (MeshNode) — it proves identity
+// and prevents UDP injection. Returns the existing stream if one is
+// already established.
+func (m *udpMeshManager) DialTUNStream(local *net.UDPConn, remote *net.UDPAddr, authHeader []byte) (*udpStreamConn, error) {
+	key := remote.String()
+
+	m.mu.Lock()
+	if existing, ok := m.tunStreams[key]; ok {
+		m.mu.Unlock()
+		return existing, nil
+	}
+	sc := newUDPStreamConn(local, remote)
+	m.tunStreams[key] = sc
+	m.mu.Unlock()
+
+	// Send the first frame: ARQ DATA with payload = TUN marker + auth.
+	payload := make([]byte, 0, 1+len(authHeader))
+	payload = append(payload, tunUDPMarker)
+	payload = append(payload, authHeader...)
+	frame := make([]byte, udpFrameHeaderLen+len(payload))
+	frame[0] = udpFrameTypeData
+	binary.BigEndian.PutUint32(frame[1:5], 0)
+	binary.BigEndian.PutUint32(frame[5:9], 0)
+	binary.BigEndian.PutUint16(frame[9:11], uint16(len(payload)))
+	copy(frame[udpFrameHeaderLen:], payload)
+	if _, err := local.WriteToUDP(frame, remote); err != nil {
+		m.mu.Lock()
+		delete(m.tunStreams, key)
+		m.mu.Unlock()
+		sc.Close()
+		return nil, err
+	}
+
+	// Clean up when the stream closes.
+	go func(s *udpStreamConn, k string) {
+		<-s.done
+		m.mu.Lock()
+		if cur, ok := m.tunStreams[k]; ok && cur == s {
+			delete(m.tunStreams, k)
+		}
+		m.mu.Unlock()
+	}(sc, key)
+
+	return sc, nil
 }

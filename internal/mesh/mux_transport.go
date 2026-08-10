@@ -330,12 +330,34 @@ func (t *MuxTransport) PacketCh() <-chan *memberlist.Packet {
 // (host:port). Returns a reliable ARQ conn ready for key exchange.
 // nil if no UDP socket or manager available.
 func (t *MuxTransport) DialUDP(remoteAddr string) (*udpStreamConn, error) {
+	local, udpAddr, err := t.pickUDPSocket(remoteAddr)
+	if err != nil {
+		return nil, err
+	}
+	return t.udpMesh.DialUDPStream(local, udpAddr)
+}
+
+// DialTUNUDP establishes a UDP ARQ stream to a remote address for TUN
+// data (multipath D: UDP-preferred data plane). authHeader is the
+// first-frame authentication payload (pubkey+ts+sig) proving identity.
+// Returns a reliable conn carrying framed TUN packets.
+func (t *MuxTransport) DialTUNUDP(remoteAddr string, authHeader []byte) (*udpStreamConn, error) {
+	local, udpAddr, err := t.pickUDPSocket(remoteAddr)
+	if err != nil {
+		return nil, err
+	}
+	return t.udpMesh.DialTUNStream(local, udpAddr, authHeader)
+}
+
+// pickUDPSocket resolves the remote address and picks a local UDP
+// socket matching the remote family.
+func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPAddr, error) {
 	if t.udpMesh == nil {
-		return nil, fmt.Errorf("mux: udp mesh manager not initialized")
+		return nil, nil, fmt.Errorf("mux: udp mesh manager not initialized")
 	}
 	udpAddr, err := net.ResolveUDPAddr("udp", remoteAddr)
 	if err != nil {
-		return nil, fmt.Errorf("mux: resolve %s: %w", remoteAddr, err)
+		return nil, nil, fmt.Errorf("mux: resolve %s: %w", remoteAddr, err)
 	}
 	// Pick a local UDP socket matching the remote family.
 	var local *net.UDPConn
@@ -351,9 +373,52 @@ func (t *MuxTransport) DialUDP(remoteAddr string) (*udpStreamConn, error) {
 		local = t.udpConns[0]
 	}
 	if local == nil {
-		return nil, fmt.Errorf("mux: no UDP socket available")
+		return nil, nil, fmt.Errorf("mux: no UDP socket available")
 	}
-	return t.udpMesh.DialUDPStream(local, udpAddr)
+	return local, udpAddr, nil
+}
+
+// TunUDPListener returns a listener that accepts inbound TUN-data UDP
+// streams (each conn carries framed TUN packets via ARQ).
+func (t *MuxTransport) TunUDPListener() net.Listener {
+	return &muxTunUDPListener{transport: t}
+}
+
+type muxTunUDPListener struct {
+	transport *MuxTransport
+	once      sync.Once
+	doneCh    chan struct{}
+}
+
+func (l *muxTunUDPListener) Accept() (net.Conn, error) {
+	if l.doneCh == nil {
+		l.doneCh = make(chan struct{})
+	}
+	select {
+	case conn := <-l.transport.udpMesh.TunCh():
+		return conn, nil
+	case <-l.doneCh:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *muxTunUDPListener) Addr() net.Addr {
+	if l.transport.tcpListener != nil {
+		return l.transport.tcpListener.Addr()
+	}
+	return nil
+}
+
+func (l *muxTunUDPListener) Close() error {
+	l.once.Do(func() {
+		if l.doneCh != nil {
+			close(l.doneCh)
+		} else {
+			l.doneCh = make(chan struct{})
+			close(l.doneCh)
+		}
+	})
+	return nil
 }
 
 // DialTimeout creates an outbound TCP connection to the given address
