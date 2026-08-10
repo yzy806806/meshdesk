@@ -615,39 +615,7 @@ func configureTUNInterface(ifName string, virtualIP net.IP, ipNet *net.IPNet, mt
 		log.Printf("[mesh/tun] added on-link route: %s dev %s metric 0", subnetStr, ifName)
 	}
 
-	// Android policy-routing fix: Android (and some carrier routers)
-	// install per-network ip rules — e.g. "11000: from all iif lo
-	// lookup 1020" — that are consulted BEFORE the main table (32766).
-	// A locally-originated packet to a mesh VIP then matches the
-	// wlan0/cellular table and never reaches mesh0 (data plane black
-	// hole: RX works, TX never enters the TUN). Insert a high-priority
-	// rule forcing the mesh subnet to consult the main table.
-	//
-	//   ip rule add pref 500 from all to <subnet> lookup main
-	//
-	// pref 500 sits below Android's per-network rules (11000+) and
-	// above the default/main fallback. Idempotent: a duplicate add
-	// returns EEXIST which we tolerate. On non-Android Linux this is a
-	// harmless no-op (main is already the default lookup target).
-	addPolicyRoutingRule(subnetStr)
-
 	return nil
-}
-
-// addPolicyRoutingRule inserts a high-priority ip rule sending traffic
-// for the mesh subnet to the main routing table, bypassing Android's
-// per-network policy tables. Non-fatal on failure (e.g. no ip tool,
-// rule already present).
-func addPolicyRoutingRule(subnetStr string) {
-	cmd := exec.Command("ip", "rule", "add", "pref", "500", "from", "all", "to", subnetStr, "lookup", "main")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		out := string(output)
-		if !strings.Contains(out, "File exists") && !strings.Contains(out, "already exists") {
-			log.Printf("[mesh/tun] ip rule add to %s lookup main: %v: %s (non-fatal)", subnetStr, err, strings.TrimSpace(out))
-		}
-	} else {
-		log.Printf("[mesh/tun] policy rule: to %s lookup main (Android multi-table fix)", subnetStr)
-	}
 }
 
 // detectSubnetConflict checks whether any existing kernel route or
