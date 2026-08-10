@@ -110,6 +110,24 @@ func SendWithContext(ctx context.Context, conn io.ReadWriter, reader io.Reader, 
 	// Apply deadline to the connection if possible.
 	applyDeadline(ctx, conn)
 
+	// Compute the checksum BEFORE sending the header: the header is
+	// written first and the receiver verifies header.Checksum — a
+	// checksum computed after the header went out never reaches the
+	// receiver (it was silently dropped before, skipping integrity
+	// verification entirely). Requires a seekable reader so the data
+	// can be read twice (hash pass + send pass). For non-seekable
+	// readers the checksum stays empty (integrity check skipped).
+	if header.Checksum == "" && header.FileType == FileTypeRegular && header.Size > 0 {
+		if seeker, ok := reader.(io.Seeker); ok {
+			hasher := sha256.New()
+			if _, err := io.Copy(hasher, reader); err == nil {
+				header.Checksum = hex.EncodeToString(hasher.Sum(nil))
+			}
+			// Rewind for the actual send pass.
+			_, _ = seeker.Seek(0, io.SeekStart)
+		}
+	}
+
 	// Marshal header
 	headerJSON, err := json.Marshal(header)
 	if err != nil {

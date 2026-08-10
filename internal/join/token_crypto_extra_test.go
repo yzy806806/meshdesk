@@ -437,11 +437,13 @@ func TestClientIP_XForwardedFor(t *testing.T) {
 		remoteAddr string
 		expected   string
 	}{
-		{"single xff", "1.2.3.4", "10.0.0.1:12345", "1.2.3.4"},
-		{"multiple xff", "1.2.3.4, 5.6.7.8, 9.10.11.12", "10.0.0.1:12345", "1.2.3.4"},
+		// XFF is client-controlled and deliberately NOT trusted for
+		// rate limiting — the remote address is always used.
+		{"single xff", "1.2.3.4", "10.0.0.1:12345", "10.0.0.1"},
+		{"multiple xff", "1.2.3.4, 5.6.7.8, 9.10.11.12", "10.0.0.1:12345", "10.0.0.1"},
 		{"no xff", "", "10.0.0.1:12345", "10.0.0.1"},
-		{"ipv6 xff", "::1", "10.0.0.1:12345", "::1"},
-		{"xff no comma", "192.168.1.1", "127.0.0.1:9999", "192.168.1.1"},
+		{"ipv6 xff", "::1", "10.0.0.1:12345", "10.0.0.1"},
+		{"xff no comma", "192.168.1.1", "127.0.0.1:9999", "127.0.0.1"},
 	}
 
 	for _, tc := range tests {

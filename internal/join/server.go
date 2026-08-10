@@ -10,7 +10,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -535,15 +534,15 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// clientIP extracts the client IP from a request, accounting for X-Forwarded-For.
+// clientIP extracts the client IP from a request for rate limiting.
+//
+// X-Forwarded-For is deliberately NOT trusted: it is client-controlled,
+// so honoring it would let an attacker rotate forged XFF values to
+// bypass the join rate limit entirely. When the join server sits behind
+// a proxy (e.g. Cloudflare Tunnel), all clients share the proxy's
+// RemoteAddr — the rate limit then applies globally, which still
+// throttles brute force.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		// Take the first IP in the chain.
-		if idx := strings.Index(xff, ","); idx > 0 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

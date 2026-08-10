@@ -493,16 +493,31 @@ func (e *EntryNode) setupCircuit(conn net.Conn, targetAddr string) (*session, er
 		return nil, fmt.Errorf("generate ECDH key pair: %w", err)
 	}
 
-	// Generate circuit ID.
-	circuitID, err := GenerateCircuitID()
-	if err != nil {
-		return nil, fmt.Errorf("generate circuit ID: %w", err)
+	// Generate circuit ID. Prefer the CircuitManager's ID so teardown
+	// (which addresses the CM by this ID) finds the circuit — creating
+	// a separate ID here and another inside CreateCircuit left every
+	// circuit orphaned in the CM (teardown always returned not-found).
+	var circuitID CircuitIDType
+	if e.circuitMgr != nil {
+		cid, cerr := e.circuitMgr.CreateCircuit(targetAddr, "entry", "exit", e.cfg.CandidateRelays)
+		if cerr == nil {
+			circuitID = cid
+		}
+	}
+	if circuitID == (CircuitIDType{}) {
+		// CM unavailable or path selection failed — fall back to a
+		// local ID (legacy path; no CM tracking).
+		idBytes, gerr := GenerateCircuitID()
+		if gerr != nil {
+			return nil, fmt.Errorf("generate circuit ID: %w", gerr)
+		}
+		copy(circuitID[:], idBytes)
 	}
 	circuitIDHex := fmt.Sprintf("%x", circuitID)
 
 	// Build CircuitSetup message.
 	setup := &CircuitSetup{
-		CircuitID:  circuitID,
+		CircuitID:  circuitID[:],
 		ECDHPubKey: entryKeys.Public,
 		TargetAddr: targetAddr,
 	}
@@ -578,7 +593,7 @@ func (e *EntryNode) setupCircuit(conn net.Conn, targetAddr string) (*session, er
 		Path1:            e.path1,
 		Path2:            e.path2,
 		E2EKey:           e2eKey,
-		CircuitID:        circuitID,
+		CircuitID:        circuitID[:],
 		ExitAddr:         e.cfg.ExitAddr,
 		DebugFixedChunks: e.cfg.DebugFixedChunks,
 	}
@@ -589,7 +604,7 @@ func (e *EntryNode) setupCircuit(conn net.Conn, targetAddr string) (*session, er
 	}
 
 	return &session{
-		circuitID:    circuitID,
+		circuitID:    circuitID[:],
 		circuitIDHex: circuitIDHex,
 		e2eKey:       e2eKey,
 		dispatcher:   dispatcher,
@@ -618,7 +633,7 @@ func (e *EntryNode) setupCircuitViaManager(conn net.Conn, targetAddr string) (*s
 
 	// Build CircuitSetup message.
 	setup := &CircuitSetup{
-		CircuitID:  circuitID,
+		CircuitID:  circuitID[:],
 		ECDHPubKey: entryKeys.Public,
 		TargetAddr: targetAddr,
 	}
@@ -714,18 +729,6 @@ func (e *EntryNode) setupCircuitViaManager(conn net.Conn, targetAddr string) (*s
 		cmCfg.MaxNACKRetries = e.cfg.CircuitCfg.MaxNACKRetries
 	}
 
-	// Use the CircuitManager's configured paths (from auto selection
-	// or manual config). The CM was initialized with these paths.
-	// For now, use the entry node's resolved paths.
-	entryID := "entry"
-	exitID := "exit"
-	_, cmErr := e.circuitMgr.CreateCircuit(targetAddr, entryID, exitID, e.cfg.CandidateRelays)
-	if cmErr != nil {
-		// CircuitManager failed (e.g. path selection error). Log but
-		// continue — the circuit is still functional via the legacy path.
-		// The CM tracks it for lifecycle/teardown purposes.
-	}
-
 	// Create the dispatcher with the assignment strategy.
 	dispCfg := DispatcherConfig{
 		ChunkerStrategy:    e.cfg.ChunkerStrategy,
@@ -749,7 +752,7 @@ func (e *EntryNode) setupCircuitViaManager(conn net.Conn, targetAddr string) (*s
 	_ = cid // used by CircuitManager for lifecycle
 
 	return &session{
-		circuitID:    circuitID,
+		circuitID:    circuitID[:],
 		circuitIDHex: circuitIDHex,
 		e2eKey:       e2eKey,
 		dispatcher:   dispatcher,
