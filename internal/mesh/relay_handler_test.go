@@ -597,8 +597,13 @@ func TestRelayHandler_AtCapacity(t *testing.T) {
 		if respMsg.Type != MsgRelayReject {
 			t.Errorf("expected reject, got type %d", respMsg.Type)
 		}
-		if respMsg.RejectReason != RelayRejectAtCapacity {
-			t.Errorf("reject reason = %q, want %q", respMsg.RejectReason, RelayRejectAtCapacity)
+		// With zombie-tunnel eviction, an at-capacity relay now evicts
+		// the oldest tunnels and CONTINUES processing — the request
+		// reaches the target-session check (no session here) instead
+		// of being rejected at_capacity. Either reason proves the
+		// eviction path ran; no_session_to_target is the expected one.
+		if respMsg.RejectReason == RelayRejectAtCapacity {
+			t.Errorf("reject reason = %q — expected eviction to make room and continue (got at_capacity)", respMsg.RejectReason)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for response")

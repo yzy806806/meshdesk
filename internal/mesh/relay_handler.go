@@ -180,17 +180,23 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 	tunnelCount := len(h.tunnels)
 	h.mu.RUnlock()
 	if tunnelCount >= h.maxTunnels {
-		// At capacity — try to evict stale half-open tunnels (TargetConn
-		// still nil, been waiting longer than staleHalfOpenTimeout).
-		// This mitigates DEFECT-B: retry storms where each attempt
-		// generates a new tunnelID, causing half-open tunnels to pile up.
+		// At capacity — evict stale half-open tunnels (TargetConn
+		// still nil, been waiting longer than staleHalfOpenTimeout),
+		// then the OLDEST tunnels regardless of state. Half-closed
+		// streams (TCP FIN-WAIT-2) keep startBridge's io.Copy blocked
+		// without EOF, so their tunnels never reap naturally and
+		// LastActivity keeps getting refreshed by buffered writes —
+		// zombie tunnels pile up and starve new requests.
 		evicted := h.evictStaleHalfOpen()
+		if evicted == 0 {
+			evicted = h.evictOldest(4)
+		}
 		if evicted == 0 {
 			h.sendResponse(initiatorConn, req.TunnelID, false, RelayRejectAtCapacity)
 			initiatorConn.Close()
 			return
 		}
-		log.Printf("[mesh-relay] evicted %d stale half-open tunnels to make room", evicted)
+		log.Printf("[mesh-relay] evicted %d tunnel(s) to make room (half-open + oldest)", evicted)
 	}
 
 	// Check for duplicate tunnel.
@@ -623,6 +629,49 @@ func (h *RelayHandler) evictStaleHalfOpen() int {
 	h.mu.Unlock()
 
 	return len(evictedIDs)
+}
+
+// evictOldest removes the N oldest tunnels regardless of state —
+// a safety valve for zombie tunnels whose half-closed streams keep
+// startBridge's io.Copy blocked (no EOF) so they never reap and
+// LastActivity keeps getting refreshed by buffered writes.
+func (h *RelayHandler) evictOldest(n int) int {
+	type aged struct {
+		id   string
+		time time.Time
+	}
+	var candidates []aged
+
+	h.mu.Lock()
+	for id, t := range h.tunnels {
+		candidates = append(candidates, aged{id, t.CreatedAt})
+	}
+	// Sort by creation time, oldest first.
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].time.Before(candidates[j-1].time); j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
+	if len(candidates) > n {
+		candidates = candidates[:n]
+	}
+	for _, c := range candidates {
+		if t, ok := h.tunnels[c.id]; ok {
+			delete(h.tunnels, c.id)
+			t.closeOnce.Do(func() {
+				close(t.done)
+				if t.InitiatorConn != nil {
+					t.InitiatorConn.Close()
+				}
+				if t.TargetConn != nil {
+					t.TargetConn.Close()
+				}
+			})
+		}
+	}
+	h.mu.Unlock()
+
+	return len(candidates)
 }
 
 // --- Helpers for reading/writing relay messages on streams ---
