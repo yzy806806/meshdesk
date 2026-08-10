@@ -166,6 +166,15 @@ type MeshNode struct {
 	// routing table.
 	peerEndpointResolver func(string) string
 
+	// relayBackoff tracks failed (target, relay) relay attempts so the
+	// dialer stops hammering unreachable targets. Without this, every
+	// connection attempt to an unreachable peer (socks5 exit, monitor
+	// probe) fired multiple relay requests per second; on shared nodes
+	// the accumulated slow connections saturated memberlist's 128-slot
+	// push/pull queue ("Too many pending push/pull requests"), which
+	// rejected legitimate seed joins with EOF.
+	relayBackoff *relayBackoff
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -192,6 +201,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		peerManagers:         make(map[string]*PeerManager),
 		portMux:              newVirtualPortMux(),
 		reconnectState:       make(map[string]*reconnectTracker),
+		relayBackoff:         newRelayBackoff(),
 		ctx:                  ctx,
 		cancel:               cancel,
 	}
