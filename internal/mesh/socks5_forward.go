@@ -427,10 +427,32 @@ func (h *SOCKS5ForwardHandler) sendReply(conn net.Conn, rep byte, bndAddr net.IP
 }
 
 // relay bridges two connections bidirectionally with an idle timeout.
+
+// idleTimeoutConn refreshes the read/write deadline on every operation
+// so the timeout is IDLE-based, not absolute: an active long-running
+// connection is never cut because it exceeded the timeout since setup.
+type idleTimeoutConn struct {
+	net.Conn
+	timeout time.Duration
+}
+
+func (c *idleTimeoutConn) Read(p []byte) (int, error) {
+	c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Read(p)
+}
+
+func (c *idleTimeoutConn) Write(p []byte) (int, error) {
+	c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
+	return c.Conn.Write(p)
+}
+
 func (h *SOCKS5ForwardHandler) relay(clientConn, exitConn net.Conn) {
 	if h.config.IdleTimeout > 0 {
-		clientConn.SetDeadline(time.Now().Add(h.config.IdleTimeout))
-		exitConn.SetDeadline(time.Now().Add(h.config.IdleTimeout))
+		// Per-activity deadline, not an absolute one: an active
+		// long-running connection must not be cut mid-transfer
+		// because it exceeded the timeout since setup.
+		clientConn = &idleTimeoutConn{Conn: clientConn, timeout: h.config.IdleTimeout}
+		exitConn = &idleTimeoutConn{Conn: exitConn, timeout: h.config.IdleTimeout}
 	}
 
 	done := make(chan struct{}, 2)

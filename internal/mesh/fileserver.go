@@ -232,7 +232,13 @@ func (fs *FileServer) serveWrite(r io.Reader, path string, size int64) (int64, e
 	defer f.Close()
 
 	written, err := io.CopyN(f, r, size)
-	if err != nil && err != io.EOF {
+	if err != nil {
+		// EOF before `size` bytes means the client sent a truncated
+		// body — report it as an error instead of silently reporting
+		// a partial write as success.
+		if err == io.EOF {
+			return written, fmt.Errorf("write: truncated body: got %d of %d bytes", written, size)
+		}
 		return 0, err
 	}
 	return written, nil
@@ -268,8 +274,37 @@ func (fs *FileServer) resolvePath(p string) (string, error) {
 		if !allowed {
 			return "", fmt.Errorf("path %s outside allowed roots", abs)
 		}
+		// Symlink escape guard: a path that lexically lives inside an
+		// allowed root may resolve (via symlink) outside it. Resolve
+		// the real path and re-check the prefix. Paths that do not
+		// exist yet (create/write) cannot be resolved — the parent
+		// directory is checked instead so a symlinked parent cannot
+		// smuggle writes out of the root.
+		check := abs
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			check = resolved
+		} else if parent, perr := filepath.EvalSymlinks(filepath.Dir(abs)); perr == nil {
+			check = filepath.Join(parent, filepath.Base(abs))
+		}
+		if !pathWithinAllowed(check, fs.cfg.AllowedPaths) {
+			return "", fmt.Errorf("path %s resolves outside allowed roots", abs)
+		}
 	}
 	return abs, nil
+}
+
+// pathWithinAllowed reports whether p is inside one of the allowed roots.
+func pathWithinAllowed(p string, allowedPaths []string) bool {
+	for _, ap := range allowedPaths {
+		aap, err := filepath.Abs(ap)
+		if err != nil {
+			continue
+		}
+		if p == aap || strings.HasPrefix(p, aap+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 func listDir(dir string) ([]FileEntry, error) {

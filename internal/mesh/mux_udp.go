@@ -141,8 +141,16 @@ func (m *udpMeshManager) routeMeshPacket(conn *net.UDPConn, addr *net.UDPAddr, d
 		case meshCh <- sc:
 		default:
 			// Backpressure: queue full — the stream is still fed by
-			// subsequent packets, the accept loop drains meshCh.
-			go func(s *udpStreamConn) { meshCh <- s }(sc)
+			// subsequent packets, the accept loop drains meshCh. Bound
+			// the blocked handoff so a drained loop cannot leak the
+			// goroutine forever after shutdown.
+			go func(s *udpStreamConn) {
+				select {
+				case meshCh <- s:
+				case <-time.After(30 * time.Second):
+					s.Close()
+				}
+			}(sc)
 		}
 		// Clean up when the stream closes.
 		go func(s *udpStreamConn, k string) {
@@ -339,7 +347,13 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	select {
 	case m.tunCh <- &connWithPeer{Conn: sc, peerID: peerID}:
 	default:
-		go func(s *udpStreamConn, k string) { m.tunCh <- &connWithPeer{Conn: s, peerID: peerID} }(sc, key)
+		go func(s *udpStreamConn, k string) {
+			select {
+			case m.tunCh <- &connWithPeer{Conn: s, peerID: peerID}:
+			case <-time.After(30 * time.Second):
+				s.Close()
+			}
+		}(sc, key)
 	}
 	// Clean up when the stream closes.
 	go func(s *udpStreamConn, k string) {

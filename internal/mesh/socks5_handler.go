@@ -256,15 +256,19 @@ func (h *SOCKS5Handler) HandleStream(conn net.Conn) {
 	}
 
 	// Validate the target against allowed ports / destination filter.
-	if !h.isTargetAllowed(targetAddr) {
+	// resolveAndCheckTarget returns the checked dialable address
+	// (hostname resolved ONCE — no DNS rebinding window).
+	checkedTarget, allowed := h.resolveAndCheckTarget(targetAddr)
+	if !allowed {
 		h.sendReply(conn, socks5RepNotAllowed, nil, 0)
 		conn.Close()
 		return
 	}
 
-	// Phase 2: Dial the target.
-	log.Printf("[socks5] dialing target %s", targetAddr)
-	targetConn, err := h.dialer.Dial("tcp", targetAddr)
+	// Phase 2: Dial the target (the checked address, not the raw
+	// hostname — prevents DNS-rebinding SSRF).
+	log.Printf("[socks5] dialing target %s", checkedTarget)
+	targetConn, err := h.dialer.Dial("tcp", checkedTarget)
 	if err != nil {
 		log.Printf("[socks5] dial %s failed: %v", targetAddr, err)
 		rep := byte(socks5RepGeneralFailure)
@@ -372,20 +376,31 @@ func (h *SOCKS5Handler) handleGreeting(conn net.Conn) (string, error) {
 // isTargetAllowed checks whether the target address is permitted by
 // the AllowedPorts and DestinationFilter configuration.
 func (h *SOCKS5Handler) isTargetAllowed(targetAddr string) bool {
+	_, ok := h.resolveAndCheckTarget(targetAddr)
+	return ok
+}
+
+// resolveAndCheckTarget validates the target and resolves hostnames
+// exactly ONCE, returning the dialable address (IP:port when the
+// destination filter is active). Dialing the returned address instead
+// of re-resolving closes the DNS-rebinding TOCTOU: a hostile DNS
+// answer that flips after the check would otherwise route the dial to
+// an internal address.
+func (h *SOCKS5Handler) resolveAndCheckTarget(targetAddr string) (string, bool) {
 	host, portStr, err := net.SplitHostPort(targetAddr)
 	if err != nil {
-		return false
+		return "", false
 	}
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return false
+		return "", false
 	}
 
 	// Check port restrictions.
 	if !h.config.AllowAllPorts && len(h.config.AllowedPorts) > 0 {
 		if !h.config.AllowedPorts[port] {
-			return false
+			return "", false
 		}
 	}
 
@@ -393,26 +408,38 @@ func (h *SOCKS5Handler) isTargetAllowed(targetAddr string) bool {
 	if len(h.allowedNets) > 0 {
 		ip := net.ParseIP(host)
 		if ip == nil {
-			// Could be a hostname — resolve and check.
+			// Hostname — resolve once and pick the first allowed IP.
 			ips, err := net.LookupIP(host)
 			if err != nil || len(ips) == 0 {
-				return false
+				return "", false
 			}
-			ip = ips[0]
-		}
-		allowed := false
-		for _, ipNet := range h.allowedNets {
-			if ipNet.Contains(ip) {
-				allowed = true
-				break
+			for _, cand := range ips {
+				if h.ipInAllowedNets(cand) {
+					ip = cand
+					break
+				}
 			}
+			if ip == nil {
+				return "", false
+			}
+		} else if !h.ipInAllowedNets(ip) {
+			return "", false
 		}
-		if !allowed {
-			return false
-		}
+		// Return the CHECKED address so the dial cannot be re-resolved.
+		return net.JoinHostPort(ip.String(), portStr), true
 	}
 
-	return true
+	return targetAddr, true
+}
+
+// ipInAllowedNets reports whether ip is inside any configured allowed net.
+func (h *SOCKS5Handler) ipInAllowedNets(ip net.IP) bool {
+	for _, ipNet := range h.allowedNets {
+		if ipNet.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // sendReply sends a SOCKS5 reply on the connection.
@@ -433,10 +460,10 @@ func (h *SOCKS5Handler) sendReply(conn net.Conn, rep byte, bndAddr net.IP, bndPo
 // When either direction completes or the idle timeout fires, both
 // connections are closed.
 func (h *SOCKS5Handler) relay(meshConn, targetConn net.Conn) {
-	// Apply idle timeout if configured.
+	// Apply idle timeout if configured (per-activity, not absolute).
 	if h.config.IdleTimeout > 0 {
-		meshConn.SetDeadline(time.Now().Add(h.config.IdleTimeout))
-		targetConn.SetDeadline(time.Now().Add(h.config.IdleTimeout))
+		meshConn = &idleTimeoutConn{Conn: meshConn, timeout: h.config.IdleTimeout}
+		targetConn = &idleTimeoutConn{Conn: targetConn, timeout: h.config.IdleTimeout}
 	}
 
 	done := make(chan struct{}, 2)

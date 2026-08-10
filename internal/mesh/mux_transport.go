@@ -95,6 +95,8 @@ type MuxTransport struct {
 	udpMesh    *udpMeshManager         // per-remote UDP ARQ streams (0x4D routing)
 	httpCh     chan net.Conn           // HTTP connections → Dashboard/join server
 	packetChIn chan *memberlist.Packet // UDP packets → memberlist
+	// connSem bounds concurrent TCP connection handling (slowloris guard).
+	connSem chan struct{}
 
 	shutdown   atomic.Int32
 	shutdownMu sync.Mutex
@@ -192,6 +194,7 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		meshCh:        make(chan net.Conn, 64),
 		httpCh:        make(chan net.Conn, 64),
 		packetChIn:    make(chan *memberlist.Packet, 4096),
+		connSem:       make(chan struct{}, maxConcurrentMuxConns),
 		bindAddr:      bindAddr,
 		advertiseAddr: cfg.AdvertiseAddr,
 		advertisePort: cfg.AdvertisePort,
@@ -549,9 +552,19 @@ func (t *MuxTransport) tcpAcceptLoop() {
 		}
 		loopDelay = 0
 
-		// Handle the connection in a goroutine to avoid blocking the
-		// accept loop on slow clients.
-		go t.handleMuxConn(conn)
+		// Bound concurrent connection handling: an attacker opening
+		// connections faster than they're drained would otherwise
+		// spawn unbounded goroutines (each holds a conn up to the
+		// 10s peek deadline). When saturated, refuse immediately.
+		select {
+		case t.connSem <- struct{}{}:
+			go func(c net.Conn) {
+				defer func() { <-t.connSem }()
+				t.handleMuxConn(c)
+			}(conn)
+		default:
+			conn.Close()
+		}
 	}
 }
 
@@ -560,6 +573,11 @@ func (t *MuxTransport) tcpAcceptLoop() {
 // TLS ClientHello (0x16) or memberlist message types (0–13, 244).
 // 0x4D = 'M' for Mesh.
 const meshInternalMarker = 0x4D
+
+// maxConcurrentMuxConns caps how many TCP connections the mux accept
+// path handles simultaneously (slowloris guard). Each conn may be held
+// up to the 10s peek deadline before routing.
+const maxConcurrentMuxConns = 256
 
 // MeshListener returns a net.Listener that accepts mesh-internal connections
 // demuxed from the shared TCP listener. These are connections from other
@@ -777,7 +795,13 @@ func (t *MuxTransport) udpListenLoop() {
 					t.logger.Printf("[WARN] mux: UDP packet too short (%d bytes) from %s", n, addr)
 					continue
 				}
-				pkt := buf[:n]
+				// Copy out of the shared read buffer: the same buf is
+				// reused for the next ReadFrom, and packets queued on
+				// packetChIn must not alias it (memberlist's consumer
+				// may read them after the buffer was overwritten —
+				// corrupted gossip packets under load).
+				pkt := make([]byte, n)
+				copy(pkt, buf[:n])
 				// Route mesh-marked datagrams to the ARQ stream manager.
 				if udpAddr, ok := addr.(*net.UDPAddr); ok && t.udpMesh != nil {
 					if t.udpMesh.routeUDPPacket(conn, udpAddr, pkt, t.meshCh) {
