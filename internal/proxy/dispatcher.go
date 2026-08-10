@@ -458,11 +458,21 @@ func SelectPaths(candidates []string, exitAddr string, maxRelaysPerPath int) (*P
 // KeepaliveLoop sends periodic keepalive pings to prevent idle timeout
 // and measure RTT. Should be run in a goroutine alongside Run().
 func (d *Dispatcher) KeepaliveLoop(ctx context.Context, sendKeepalive func(path int, msg *KeepaliveMsg) error) {
-	ticker := time.NewTicker(d.cfg.CircuitCfg.KeepaliveInterval)
+	interval := d.cfg.CircuitCfg.KeepaliveInterval
+	if interval <= 0 {
+		interval = 15 * time.Second // NewTicker(0) would panic
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	circuitID := make([]byte, CircuitIDSize)
-	rand.Read(circuitID)
+	// Use the dispatcher's OWN circuit ID — the exit identifies the
+	// circuit by this value. A fresh random ID per loop could not be
+	// matched by the exit (keepalive RTT/anti-idle silently dead).
+	circuitID := d.cfg.CircuitID
+	if len(circuitID) == 0 {
+		circuitID = make([]byte, CircuitIDSize)
+		rand.Read(circuitID)
+	}
 
 	for {
 		select {

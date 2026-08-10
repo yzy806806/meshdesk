@@ -184,6 +184,7 @@ type ssSession struct {
 	readNonce  []byte
 	writeMu    sync.Mutex
 	readMu     sync.Mutex
+	closeOnce  sync.Once
 	closed     bool
 
 	// secSink receives suspicious-activity events for alerting.
@@ -449,6 +450,11 @@ func (s *ssSession) nextReadNonce() []byte {
 
 // Close closes the SS session and underlying connection.
 func (s *ssSession) Close() error {
+	// Close the underlying conn FIRST: a Read blocked on conn.Read
+	// (no deadline) would otherwise hold readMu forever and Close
+	// would deadlock waiting for the lock. Closing conn unblocks it.
+	s.closeOnce.Do(func() { s.conn.Close() })
+
 	s.readMu.Lock()
 	s.writeMu.Lock()
 	defer s.readMu.Unlock()
@@ -458,7 +464,7 @@ func (s *ssSession) Close() error {
 		return nil
 	}
 	s.closed = true
-	return s.conn.Close()
+	return nil
 }
 
 // LocalAddr returns the local network address.

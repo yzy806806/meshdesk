@@ -378,11 +378,13 @@ func (c *Circuit) ToInfo() CircuitInfo {
 	defer c.mu.RUnlock()
 
 	paths := make([]PathInfo, 0, 2)
+	bytesDispatched := uint64(0)
 	for _, p := range c.Paths {
 		if p == nil {
 			continue
 		}
 		p.mu.Lock()
+		bytesDispatched += p.TotalChunks
 		paths = append(paths, PathInfo{
 			Hops:      append([]string{}, p.Hops...),
 			LatencyMs: float64(p.LastRTT.Milliseconds()),
@@ -400,7 +402,7 @@ func (c *Circuit) ToInfo() CircuitInfo {
 		Target:          c.TargetAddr,
 		Paths:           paths,
 		AgeSeconds:      int64(time.Since(c.CreatedAt).Seconds()),
-		BytesDispatched: c.Paths[0].TotalChunks + c.Paths[1].TotalChunks, // simplified
+		BytesDispatched: bytesDispatched,
 	}
 }
 
@@ -1403,11 +1405,15 @@ func (cm *CircuitManager) removeCircuit(cid CircuitIDType) {
 		delete(cm.circuitsByExit, exit)
 	}
 
-	// Update stats.
+	// Update stats. State is written under circuit.mu elsewhere —
+	// read it under the lock.
+	circuit.mu.RLock()
+	st := circuit.State
+	circuit.mu.RUnlock()
 	cm.stats.TotalClosed++
-	if circuit.State == CircuitActive {
+	if st == CircuitActive {
 		cm.stats.Active--
-	} else if circuit.State == CircuitTeardown {
+	} else if st == CircuitTeardown {
 		cm.stats.TearingDown--
 	}
 
@@ -1481,13 +1487,21 @@ func (cm *CircuitManager) MissKeepalive(cid CircuitIDType, pathIdx int) error {
 		return fmt.Errorf("path %d is nil", pathIdx)
 	}
 
+	path.mu.Lock()
 	wasHealthy := path.Health == PathHealthHealthy
+	path.mu.Unlock()
+
+	// MissKeepalive takes path.mu internally.
 	path.MissKeepalive(cm.cfg.KeepaliveInterval)
 
-	if path.Health == PathHealthDegraded && wasHealthy {
+	path.mu.Lock()
+	nowHealth := path.Health
+	path.mu.Unlock()
+
+	if nowHealth == PathHealthDegraded && wasHealthy {
 		cm.emitEvent(EventPathDegraded, cid, pathIdx)
 	}
-	if path.Health == PathHealthUnhealthy {
+	if nowHealth == PathHealthUnhealthy {
 		cm.emitEvent(EventPathUnhealthy, cid, pathIdx)
 	}
 
