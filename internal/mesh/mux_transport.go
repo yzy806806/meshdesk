@@ -381,7 +381,10 @@ func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPA
 // TunUDPListener returns a listener that accepts inbound TUN-data UDP
 // streams (each conn carries framed TUN packets via ARQ).
 func (t *MuxTransport) TunUDPListener() net.Listener {
-	return &muxTunUDPListener{transport: t}
+	return &muxTunUDPListener{
+		transport: t,
+		doneCh:    make(chan struct{}),
+	}
 }
 
 type muxTunUDPListener struct {
@@ -391,9 +394,6 @@ type muxTunUDPListener struct {
 }
 
 func (l *muxTunUDPListener) Accept() (net.Conn, error) {
-	if l.doneCh == nil {
-		l.doneCh = make(chan struct{})
-	}
 	select {
 	case conn := <-l.transport.udpMesh.TunCh():
 		return conn, nil
@@ -411,12 +411,7 @@ func (l *muxTunUDPListener) Addr() net.Addr {
 
 func (l *muxTunUDPListener) Close() error {
 	l.once.Do(func() {
-		if l.doneCh != nil {
-			close(l.doneCh)
-		} else {
-			l.doneCh = make(chan struct{})
-			close(l.doneCh)
-		}
+		close(l.doneCh)
 	})
 	return nil
 }

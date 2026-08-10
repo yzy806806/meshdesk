@@ -2,15 +2,12 @@ package mesh
 
 import (
 	"encoding/binary"
-	"log"
+
 	"net"
 	"strconv"
 	"sync"
 	"time"
 )
-
-// debugTUNAuth enables verbose logging for the UDP TUN stream auth path.
-const debugTUNAuth = false
 
 // ──────────────────────────────────────────────────────────────────────────
 // UDP mesh data plane (T0.1/T0.2)
@@ -46,6 +43,21 @@ const tunUDPAuthLen = 64 + 10 + 128
 // tunUDPAuthWindow is the accepted clock skew for the auth timestamp.
 const tunUDPAuthWindow = 10 * time.Minute
 
+// Tun UDP auth DoS protection: forging first frames costs the receiver
+// an Ed25519 verification per datagram. Track per-source failures and
+// block sources that exceed the threshold for a cooldown window.
+const (
+	tunAuthFailWindow   = 10 * time.Second
+	tunAuthFailMax      = 5
+	tunAuthFailCooldown = 60 * time.Second
+)
+
+type tunAuthFailState struct {
+	count       int // failures within the window
+	windowStart time.Time
+	blockUntil  time.Time // active cooldown end
+}
+
 type udpMeshManager struct {
 	mu         sync.Mutex
 	streams    map[string]*udpStreamConn // mesh key-exchange streams (by remote addr)
@@ -54,13 +66,16 @@ type udpMeshManager struct {
 	// tunAuthValidator authenticates the first-frame auth header and
 	// returns the verified peer identity hex. Set by MeshNode.
 	tunAuthValidator func(pubKeyHex string, data []byte, sigHex string) (string, bool)
+	// tunAuthFails tracks per-source auth failure state (DoS guard).
+	tunAuthFails map[string]*tunAuthFailState
 }
 
 func newUDPMeshManager() *udpMeshManager {
 	return &udpMeshManager{
-		streams:    make(map[string]*udpStreamConn),
-		tunStreams: make(map[string]*udpStreamConn),
-		tunCh:      make(chan net.Conn, 64),
+		streams:      make(map[string]*udpStreamConn),
+		tunStreams:   make(map[string]*udpStreamConn),
+		tunCh:        make(chan net.Conn, 64),
+		tunAuthFails: make(map[string]*tunAuthFailState),
 	}
 }
 
@@ -237,6 +252,14 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 
 	m.mu.Lock()
 	sc, exists := m.tunStreams[key]
+	if !exists {
+		// DoS guard: a source blocked for repeated auth failures is
+		// dropped without any verification work (cheap reject).
+		if st := m.tunAuthFails[key]; st != nil && time.Now().Before(st.blockUntil) {
+			m.mu.Unlock()
+			return true
+		}
+	}
 	m.mu.Unlock()
 	if exists {
 		// Established (authenticated) TUN stream: feed everything.
@@ -247,6 +270,7 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	// First frame: [marker][pubkey 64][ts 10][sig 128] — auth only.
 	plen := int(binary.BigEndian.Uint16(data[9:11]))
 	if plen < 1+tunUDPAuthLen {
+		m.recordTUNAuthFail(key)
 		return true // malformed first frame; drop quietly (consumed)
 	}
 	payload := data[udpFrameHeaderLen : udpFrameHeaderLen+plen]
@@ -260,10 +284,12 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	// Timestamp anti-replay window.
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil {
+		m.recordTUNAuthFail(key)
 		return true
 	}
 	now := time.Now().Unix()
 	if ts < now-int64(tunUDPAuthWindow.Seconds()) || ts > now+int64(tunUDPAuthWindow.Seconds()) {
+		m.recordTUNAuthFail(key)
 		return true
 	}
 
@@ -277,10 +303,8 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	signedData := []byte(pubKeyHex + tsStr)
 	peerID, ok := validator(pubKeyHex, signedData, sigHex)
 	if !ok {
+		m.recordTUNAuthFail(key)
 		return true // auth failed; drop quietly
-	}
-	if debugTUNAuth {
-		log.Printf("[tun-udp] routeTUNPacket: auth OK peer=%s from=%s", peerID[:8], addr)
 	}
 
 	m.mu.Lock()
@@ -290,25 +314,16 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 		m.tunStreams[key] = sc
 	}
 	m.mu.Unlock()
-	if debugTUNAuth {
-		log.Printf("[tun-udp] routeTUNPacket: stream registered exists=%v", exists)
-	}
 
 	// Strip the auth header so the tun-forwarder sees clean TUN frames.
 	data = data[:udpFrameHeaderLen]
 	binary.BigEndian.PutUint16(data[9:11], 0)
 	sc.handlePacket(data)
-	if debugTUNAuth {
-		log.Printf("[tun-udp] routeTUNPacket: delivering to TunCh")
-	}
 
 	select {
 	case m.tunCh <- &connWithPeer{Conn: sc, peerID: peerID}:
 	default:
 		go func(s *udpStreamConn, k string) { m.tunCh <- &connWithPeer{Conn: s, peerID: peerID} }(sc, key)
-	}
-	if debugTUNAuth {
-		log.Printf("[tun-udp] routeTUNPacket: delivered")
 	}
 	// Clean up when the stream closes.
 	go func(s *udpStreamConn, k string) {
@@ -320,6 +335,38 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 		m.mu.Unlock()
 	}(sc, key)
 	return true
+}
+
+// recordTUNAuthFail counts an auth failure for a source address and
+// blocks the source once the threshold is exceeded within the window.
+// Caller must NOT hold m.mu.
+func (m *udpMeshManager) recordTUNAuthFail(key string) {
+	now := time.Now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	st := m.tunAuthFails[key]
+	if st == nil {
+		st = &tunAuthFailState{}
+		m.tunAuthFails[key] = st
+	}
+	if now.Sub(st.windowStart) > tunAuthFailWindow {
+		// New window.
+		st.count = 0
+		st.windowStart = now
+	}
+	st.count++
+	if st.count >= tunAuthFailMax {
+		st.blockUntil = now.Add(tunAuthFailCooldown)
+		st.count = 0
+	}
+	// Opportunistic cleanup: don't let the failure map grow unbounded.
+	if len(m.tunAuthFails) > 1024 {
+		for k, s := range m.tunAuthFails {
+			if now.After(s.windowStart.Add(tunAuthFailWindow)) && now.After(s.blockUntil) {
+				delete(m.tunAuthFails, k)
+			}
+		}
+	}
 }
 
 // TunCh returns the channel on which accepted TUN UDP streams are
