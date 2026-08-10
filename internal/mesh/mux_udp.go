@@ -2,11 +2,15 @@ package mesh
 
 import (
 	"encoding/binary"
+	"log"
 	"net"
 	"strconv"
 	"sync"
 	"time"
 )
+
+// debugTUNAuth enables verbose logging for the UDP TUN stream auth path.
+const debugTUNAuth = false
 
 // ──────────────────────────────────────────────────────────────────────────
 // UDP mesh data plane (T0.1/T0.2)
@@ -275,6 +279,9 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	if !ok {
 		return true // auth failed; drop quietly
 	}
+	if debugTUNAuth {
+		log.Printf("[tun-udp] routeTUNPacket: auth OK peer=%s from=%s", peerID[:8], addr)
+	}
 
 	m.mu.Lock()
 	sc, exists = m.tunStreams[key]
@@ -283,16 +290,25 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 		m.tunStreams[key] = sc
 	}
 	m.mu.Unlock()
+	if debugTUNAuth {
+		log.Printf("[tun-udp] routeTUNPacket: stream registered exists=%v", exists)
+	}
 
 	// Strip the auth header so the tun-forwarder sees clean TUN frames.
 	data = data[:udpFrameHeaderLen]
 	binary.BigEndian.PutUint16(data[9:11], 0)
 	sc.handlePacket(data)
+	if debugTUNAuth {
+		log.Printf("[tun-udp] routeTUNPacket: delivering to TunCh")
+	}
 
 	select {
 	case m.tunCh <- &connWithPeer{Conn: sc, peerID: peerID}:
 	default:
 		go func(s *udpStreamConn, k string) { m.tunCh <- &connWithPeer{Conn: s, peerID: peerID} }(sc, key)
+	}
+	if debugTUNAuth {
+		log.Printf("[tun-udp] routeTUNPacket: delivered")
 	}
 	// Clean up when the stream closes.
 	go func(s *udpStreamConn, k string) {
@@ -328,6 +344,14 @@ func (m *udpMeshManager) DialTUNStream(local *net.UDPConn, remote *net.UDPAddr, 
 	sc := newUDPStreamConn(local, remote)
 	m.tunStreams[key] = sc
 	m.mu.Unlock()
+
+	// Reserve seq 0 for the auth handshake frame so subsequent
+	// Write() frames start at seq 1 (otherwise the data frame
+	// collides with the handshake seq and is dropped as a duplicate
+	// by the receiver's ARQ dedup).
+	sc.sendMu.Lock()
+	sc.nextSeq = 1
+	sc.sendMu.Unlock()
 
 	// Send the first frame: ARQ DATA with payload = TUN marker + auth.
 	payload := make([]byte, 0, 1+len(authHeader))

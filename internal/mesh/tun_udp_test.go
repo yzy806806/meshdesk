@@ -41,10 +41,13 @@ func TestTUNUDPStream_AuthAndData(t *testing.T) {
 	mgrB := newUDPMeshManager()
 	// B authenticates: A's pubkey must verify the signature.
 	mgrB.SetTUNUDPAuthValidator(func(pubKeyHex string, data []byte, sigHex string) (string, bool) {
+		t.Logf("B validator: pk=%s len(sig)=%d", pubKeyHex[:8], len(sigHex))
 		if pubKeyHex != idA.PublicKey {
+			t.Log("B validator: pubkey mismatch")
 			return "", false
 		}
 		if !identity.Verify(pubKeyHex, data, sigHex) {
+			t.Log("B validator: signature verify FAILED")
 			return "", false
 		}
 		return pubKeyHex, true
@@ -56,8 +59,10 @@ func TestTUNUDPStream_AuthAndData(t *testing.T) {
 		for {
 			n, addr, err := sb.ReadFromUDP(buf)
 			if err != nil {
+				t.Logf("B pump exit: %v", err)
 				return
 			}
+			t.Logf("B pump: %d bytes from %s first=%02x", n, addr, buf[0])
 			cp := make([]byte, n)
 			copy(cp, buf[:n])
 			mgrB.routeUDPPacket(sb, addr, cp, nil)
@@ -67,11 +72,13 @@ func TestTUNUDPStream_AuthAndData(t *testing.T) {
 	// A dials B with an auth header signed by A.
 	authA := buildTestAuthHeader(t, idA)
 	remoteB := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sb.LocalAddr().(*net.UDPAddr).Port}
+	t.Logf("A dialing B at %s", remoteB)
 	streamA, err := mgrA.DialTUNStream(sa, remoteB, authA)
 	if err != nil {
 		t.Fatalf("DialTUNStream: %v", err)
 	}
 	defer streamA.Close()
+	t.Log("A stream established, writing data frame")
 
 	// A writes a framed TUN packet.
 	payload := []byte{0x45, 0x00, 0x00, 0x14, 0x01, 0x02, 0x03, 0x04}
