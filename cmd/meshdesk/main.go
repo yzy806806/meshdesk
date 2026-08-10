@@ -1299,8 +1299,10 @@ func main() {
 					log.Printf("Warning: failed to generate random join secret: %v — join server disabled", err)
 				} else {
 					cfg.Join.Secret = hex.EncodeToString(randomSecret)
-					log.Printf("WARNING: join.secret not set — generated random secret: %s", cfg.Join.Secret)
-					log.Printf("  Use this secret with `meshdesk join-token` to generate tokens.")
+					// Do NOT log the secret itself (credential in logs).
+					// Tell the operator where to set it instead.
+					log.Printf("WARNING: join.secret not set — a random secret was generated for this session")
+					log.Printf("  Persist it in the config (join.secret) to keep tokens valid across restarts")
 				}
 			}
 			joinServerCfg.Secret = []byte(cfg.Join.Secret)
