@@ -78,12 +78,19 @@ func TestValidateSourceIP_IPv4_UnknownPeer(t *testing.T) {
 	f, router := newTestForwarder("10.10.0.0/24", "localkey")
 
 	// Register peerA but try to validate as unknown peer "peerB".
-	peerIP := net.ParseIP("10.10.0.5")
-	router.AddRoute(peerIP, "peerA")
+	router.AddRoute(net.ParseIP("10.10.0.5"), "peerA")
 
-	packet := makeIPv4Packet(peerIP, net.ParseIP("10.10.0.1"))
+	// Non-mesh-subnet source from unknown peer → rejected.
+	packet := makeIPv4Packet(net.ParseIP("192.168.9.9"), net.ParseIP("10.10.0.1"))
 	if f.validateSourceIP(packet, "peerB") {
-		t.Fatal("validateSourceIP should return false for unknown peer (not in routing table)")
+		t.Fatal("validateSourceIP should return false for non-subnet source from unknown peer")
+	}
+
+	// Mesh-subnet source from unknown peer → accepted (authenticated
+	// smux chain; VIP unknown only due to degraded gossip).
+	meshPacket := makeIPv4Packet(net.ParseIP("10.10.0.9"), net.ParseIP("10.10.0.1"))
+	if !f.validateSourceIP(meshPacket, "peerB") {
+		t.Fatal("validateSourceIP should accept mesh-subnet source from unknown peer")
 	}
 }
 
@@ -174,16 +181,17 @@ func TestValidateSourceIP_PeerWithMultipleIPs_OnlyLatestValid(t *testing.T) {
 }
 
 func TestValidateSourceIP_EmptyPeerID(t *testing.T) {
-	// When peerID is empty, the caller skips validation entirely.
-	// This test verifies validateSourceIP itself handles empty peerID
-	// gracefully (returns false since the peer won't be found).
+	// The inbound handler rejects empty peerID before validation; this
+	// tests validateSourceIP directly. Empty peerID = no authenticated
+	// chain — even mesh-subnet sources are rejected (must have a peer
+	// identity to pass the smux-authenticated path).
 	f, router := newTestForwarder("10.10.0.0/24", "localkey")
 
 	router.AddRoute(net.ParseIP("10.10.0.5"), "peerA")
 
 	packet := makeIPv4Packet(net.ParseIP("10.10.0.5"), net.ParseIP("10.10.0.1"))
 	if f.validateSourceIP(packet, "") {
-		t.Fatal("validateSourceIP should return false for empty peerID (unknown peer)")
+		t.Fatal("validateSourceIP should return false for empty peerID (no authenticated chain)")
 	}
 }
 
@@ -254,10 +262,16 @@ func TestValidateSourceIP_IPv6_UnknownPeer(t *testing.T) {
 	// Register peerA only.
 	router.AddRoute(net.ParseIP("fd00::5"), "peerA")
 
-	// Validate as peerB (unknown).
-	packet := makeIPv6Packet(net.ParseIP("fd00::5"), net.ParseIP("fd00::1"))
+	// Non-mesh-subnet source from unknown peer → rejected.
+	packet := makeIPv6Packet(net.ParseIP("2001:db8::9"), net.ParseIP("fd00::1"))
 	if f.validateSourceIP(packet, "peerB") {
-		t.Fatal("validateSourceIP should return false for unknown peer (IPv6)")
+		t.Fatal("validateSourceIP should return false for non-subnet source from unknown peer (IPv6)")
+	}
+
+	// Mesh-subnet source from unknown peer → accepted.
+	meshPacket := makeIPv6Packet(net.ParseIP("fd00::9"), net.ParseIP("fd00::1"))
+	if !f.validateSourceIP(meshPacket, "peerB") {
+		t.Fatal("validateSourceIP should accept mesh-subnet source from unknown peer (IPv6)")
 	}
 }
 
@@ -446,7 +460,8 @@ func TestValidateSourceIP_TableDriven(t *testing.T) {
 		{"spoof: peerB claims to be peerA's IP", "10.10.0.5", "10.10.0.1", "peerB", false},
 		{"spoof: peerA sends from unknown IP", "10.10.0.99", "10.10.0.1", "peerA", false},
 		{"spoof: peerA sends from outside subnet", "192.168.1.1", "10.10.0.1", "peerA", false},
-		{"unknown peer", "10.10.0.5", "10.10.0.1", "peerC", false},
+		{"unknown peer (non-subnet src)", "192.168.1.9", "10.10.0.1", "peerC", false},
+		{"unknown peer (mesh-subnet src accepted)", "10.10.0.9", "10.10.0.1", "peerC", true},
 	}
 
 	for _, tt := range tests {
