@@ -403,13 +403,13 @@ func main() {
 		}
 	}
 
-	// Attempt to connect statically configured peers with Reality TLS.
-	// This establishes v2 mesh sessions (Reality TLS + smux). If the
-	// REALITY TLS handshake fails (library compatibility), peers are
-	// still discovered via gossip and added to the routing table by
-	// the WireGuardDelegate.
+	// Attempt to connect statically configured peers.
+	// Reality-configured peers establish v2 sessions (Reality TLS + smux).
+	// Plain peers (no Reality block) are dialed via the mesh-internal
+	// 0x4D path — this matters for NAT'd nodes whose auto-connect never
+	// fires because gossip/memberlist is degraded (mixed IP families).
 	for _, peerCfg := range cfg.Peers {
-		if peerCfg.Reality != nil && peerCfg.Endpoint != "" {
+		if peerCfg.Endpoint != "" {
 			go func(pc config.PeerConfig) {
 				backoff := 5 * time.Second
 				for attempt := 0; attempt < 3; attempt++ {
