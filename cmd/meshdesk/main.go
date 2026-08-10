@@ -740,18 +740,19 @@ func main() {
 				if natLeaveHandler != nil {
 					natLeaveHandler(peerKey)
 				}
-				// Decouple TUN route cleanup from memberlist NotifyLeave.
-				// memberlist may flap (UDP ping timeout) while the smux
-				// session is still alive and functional. Only remove TUN
-				// routes if the session is truly dead.
-				if node.HasActiveSession(peerKey) {
-					log.Printf("[p2p] NotifyLeave: keeping TUN routes for peer %s (smux session still alive)",
-						peerKey[:8])
-					return
-				}
-				log.Printf("[p2p] NotifyLeave: removing TUN routes for peer %s (no active session)",
-					peerKey[:8])
-				node.RemoveAllTUNRoutesForPeer(peerKey)
+				// TUN routes are NOT removed on memberlist NotifyLeave.
+				// memberlist flaps on UDP ping timeouts — which are
+				// the NORM for NAT'd peers in mixed-family meshes
+				// (symmetric NAT: no inbound UDP, so probes always
+				// fail even while the peer is fully reachable via
+				// relay). Removing the VirtualIP route here breaks the
+				// TUN return path permanently: the forwarder's
+				// ResolveIP finds no route and drops replies, while
+				// the smux session (or relay path) is alive.
+				// Real death cleanup is handled by the session death
+				// handler (smux Done) — keep routes for flap-prone
+				// memberlist leaves.
+				log.Printf("[p2p] NotifyLeave: keeping TUN routes for peer %s (memberlist flap != session death)", peerKey[:8])
 			})
 
 			// Wire the subnet proxy handler: when a peer advertises

@@ -553,6 +553,13 @@ func (f *TunForwarder) validateSourceIP(packet []byte, peerID string) bool {
 
 	expectedIP, ok := f.cfg.Router.ResolvePeer(peerID)
 	if !ok {
+		// Empty peer ID = no authenticated chain — always reject.
+		if peerID == "" {
+			if isDebugLogEnabled() {
+				log.Printf("[tun-forwarder] anti-spoof: empty peerID, dropping packet (src=%s)", srcIP)
+			}
+			return false
+		}
 		// Peer not in the routing table — cannot verify identity.
 		// Fall back: if the source IP is inside the mesh subnet, accept
 		// it. In degraded-gossip topologies the peer's VirtualIP may
