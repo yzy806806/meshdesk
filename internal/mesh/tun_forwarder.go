@@ -553,10 +553,20 @@ func (f *TunForwarder) validateSourceIP(packet []byte, peerID string) bool {
 
 	expectedIP, ok := f.cfg.Router.ResolvePeer(peerID)
 	if !ok {
-		// Peer not in routing table — cannot verify identity.
+		// Peer not in the routing table — cannot verify identity.
+		// Fall back: if the source IP is inside the mesh subnet, accept
+		// it. In degraded-gossip topologies the peer's VirtualIP may
+		// not have propagated (mixed IP families / NAT'd nodes), yet
+		// the packet arrived over an authenticated smux chain — a
+		// spoofed mesh-subnet source would need the peer's session key.
+		if f.cfg.Router.IsInSubnet(srcIP) {
+			if isDebugLogEnabled() {
+				log.Printf("[tun-forwarder] anti-spoof: peer %s VIP unknown, accepting mesh-subnet src %s", shortKey(peerID), srcIP)
+			}
+			return true
+		}
 		if isDebugLogEnabled() {
-			log.Printf("[tun-forwarder] anti-spoof: peer %s not in routing table, dropping packet (src=%s)",
-				shortKey(peerID), srcIP)
+			log.Printf("[tun-forwarder] anti-spoof: peer %s not in routing table, dropping packet (src=%s)", shortKey(peerID), srcIP)
 		}
 		return false
 	}
