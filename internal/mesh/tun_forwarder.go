@@ -466,6 +466,10 @@ func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 
 // closeOutboundStream closes and removes the outbound stream for the
 // given peer. The next packet to this peer will open a new stream.
+// Multipath D: a failing write on either path also invalidates the
+// cached UDP stream (otherwise a dead UDP conn keeps being reused
+// until its 60s TTL, silently dropping packets) and starts the UDP
+// cooldown so we don't immediately re-dial the dead path.
 func (f *TunForwarder) closeOutboundStream(peerKey string) {
 	f.outboundMu.Lock()
 	entry, ok := f.outboundStreams[peerKey]
@@ -477,6 +481,14 @@ func (f *TunForwarder) closeOutboundStream(peerKey string) {
 	if ok {
 		entry.conn.Close()
 	}
+
+	f.udpMu.Lock()
+	if ue, uok := f.udpStreams[peerKey]; uok {
+		delete(f.udpStreams, peerKey)
+		ue.conn.Close()
+		f.udpFail[peerKey] = time.Now()
+	}
+	f.udpMu.Unlock()
 }
 
 // outboundStreamEntry wraps a cached outbound stream with its creation

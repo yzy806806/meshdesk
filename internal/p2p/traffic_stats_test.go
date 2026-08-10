@@ -8,12 +8,12 @@ import (
 // survive a marshal/unmarshal cycle.
 func TestNodeMetaTrafficStatsRoundTrip(t *testing.T) {
 	original := &NodeMeta{
-		PublicKey:      "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-		Hostname:       "test-traffic",
-		Role:           "relay",
-		CapRelay:       true,
-		Version:        "1.0.0",
-		Seq:            1,
+		PublicKey:       "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+		Hostname:        "test-traffic",
+		Role:            "relay",
+		CapRelay:        true,
+		Version:         "1.0.0",
+		Seq:             1,
 		TrafficInBytes:  123456,
 		TrafficOutBytes: 789012,
 		SmuxStreams:     7,
@@ -66,10 +66,10 @@ func TestNodeMetaTrafficStatsRoundTrip(t *testing.T) {
 func TestNodeMetaTrafficStatsZeroByDefault(t *testing.T) {
 	original := &NodeMeta{
 		PublicKey: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-		Hostname: "test-zero-traffic",
-		Role:     "agent",
-		Version:  "1.0.0",
-		Seq:      1,
+		Hostname:  "test-zero-traffic",
+		Role:      "agent",
+		Version:   "1.0.0",
+		Seq:       1,
 	}
 
 	data, err := original.MarshalMeta()
@@ -95,10 +95,10 @@ func TestNodeMetaTrafficStatsZeroByDefault(t *testing.T) {
 func TestSetLocalTrafficStats(t *testing.T) {
 	meta := &NodeMeta{
 		PublicKey: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
-		Hostname: "test-stats",
-		Role:     "agent",
-		Version:  "1.0.0",
-		Seq:      1,
+		Hostname:  "test-stats",
+		Role:      "agent",
+		Version:   "1.0.0",
+		Seq:       1,
 	}
 	d := newMeshDelegate(meta)
 

@@ -80,7 +80,17 @@ func (b *relayBackoff) allowed(targetKey, relayKey string) bool {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return time.Now().After(b.nextTry[relayBackoffKey(targetKey, relayKey)])
+	now := time.Now()
+	// Opportunistic cleanup so the map cannot grow unbounded on
+	// long-lived nodes with many (target, relay) combinations.
+	if len(b.nextTry) > 1024 {
+		for k, t := range b.nextTry {
+			if now.After(t) {
+				delete(b.nextTry, k)
+			}
+		}
+	}
+	return now.After(b.nextTry[relayBackoffKey(targetKey, relayKey)])
 }
 
 // markFailed records a failed attempt, starting a cooldown window
