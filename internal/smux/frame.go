@@ -57,7 +57,7 @@ func (f *frame) encodeHeader(dst []byte) {
 
 // readFrame reads one complete frame from r (header + payload).
 // It allocates the payload buffer if Length > 0.
-func readFrame(r io.Reader) (*frame, error) {
+func readFrame(r io.Reader, maxPayload int) (*frame, error) {
 	var hdr [HeaderSize]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
 		return nil, err
@@ -69,6 +69,13 @@ func readFrame(r io.Reader) (*frame, error) {
 		Flags:    binary.BigEndian.Uint16(hdr[2:4]),
 		StreamID: binary.BigEndian.Uint32(hdr[4:8]),
 		Length:   binary.BigEndian.Uint32(hdr[8:12]),
+	}
+
+	// The length is attacker-controlled wire data. Cap the allocation
+	// at the configured max frame size — a claimed Length=0xFFFFFFFF
+	// would otherwise trigger a ~4GB make() → OOM crash.
+	if maxPayload > 0 && f.Length > uint32(maxPayload) {
+		return nil, fmt.Errorf("smux: frame length %d exceeds max %d", f.Length, maxPayload)
 	}
 
 	if f.Length > 0 {

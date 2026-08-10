@@ -351,11 +351,11 @@ func absInt(x int) int {
 // a dead path). This lets us measure failover behavior.
 type failTrackingConn struct {
 	net.Conn
-	bytesRead     int64
-	failAt        int64
-	failCh        chan struct{}
-	failed        int32
-	readHook      func(n int)
+	bytesRead int64
+	failAt    int64
+	failCh    chan struct{}
+	failed    int32
+	readHook  func(n int)
 }
 
 func (c *failTrackingConn) Read(b []byte) (int, error) {

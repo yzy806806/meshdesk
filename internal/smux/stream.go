@@ -45,14 +45,22 @@ type Stream struct {
 	localClosed  atomic.Bool // local Write side closed (FIN sent)
 	remoteClosed atomic.Bool // remote FIN received
 	resetErr     error       // set when RST received (protected by readMu)
+	// maxReadBuf caps the read buffer; overflow resets the stream
+	// (peer flooding DATA on an unread stream must not OOM us).
+	maxReadBuf int
 }
 
 // newStream creates a new Stream within the given session.
 func newStream(id uint32, s *Session) *Stream {
+	maxRead := s.cfg.WriteBufferSize
+	if maxRead <= 0 {
+		maxRead = 262144 // default 256KB
+	}
 	return &Stream{
-		id:      id,
-		session: s,
-		readCh:  make(chan struct{}, 1),
+		id:         id,
+		session:    s,
+		readCh:     make(chan struct{}, 1),
+		maxReadBuf: maxRead,
 	}
 }
 
@@ -228,6 +236,16 @@ func uint32ToStr(v uint32) string {
 // onData is called by the reader goroutine when a DATA frame arrives.
 func (st *Stream) onData(payload []byte) {
 	st.readMu.Lock()
+	// Bound the read buffer: a peer flooding DATA on a stream nobody
+	// reads (handler stuck, accept queue full) must not grow memory
+	// unboundedly → OOM. On overflow, treat as a reset.
+	if st.readBuf.Len()+len(payload) > st.maxReadBuf {
+		st.resetErr = ErrStreamReset
+		st.remoteClosed.Store(true)
+		st.readMu.Unlock()
+		st.signalRead()
+		return
+	}
 	st.readBuf.Write(payload)
 	st.readMu.Unlock()
 	st.signalRead()

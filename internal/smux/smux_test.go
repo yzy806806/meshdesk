@@ -803,7 +803,7 @@ func TestFrameEncodeDecode(t *testing.T) {
 
 	// Read it back.
 	r := bytes.NewReader(buf)
-	parsed, err := readFrame(r)
+	parsed, err := readFrame(r, 65535)
 	if err != nil {
 		t.Fatalf("readFrame: %v", err)
 	}

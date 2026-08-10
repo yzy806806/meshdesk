@@ -161,7 +161,13 @@ func (n *MeshNode) reconnectLoop(
 				reconnectHdl(peerIdentityHex)
 			}
 
+			// Re-arm the watcher for the NEW session: the old tracker is
+			// removed here, and DialPeerByEndpoint inside tryReconnect
+			// skipped startSessionWatcher (tracker still existed), so
+			// without this the new session would have NO monitor and a
+			// future drop would never auto-reconnect.
 			n.removeReconnectTracker(peerIdentityHex)
+			n.startSessionWatcher(peerIdentityHex, endpoint, isClientSession)
 			return
 		}
 
