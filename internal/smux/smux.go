@@ -172,10 +172,19 @@ func (s *Session) keepaliveLoop() {
 		case <-s.doneCh:
 			return
 		case <-ticker.C:
-			// Send a ping on the control channel.
+			// Send a ping on the control channel. If the writer is
+			// stuck (TCP buffer full / half-open peer that keeps
+			// ACKing but never reads), writeCh fills up and the send
+			// would block forever — which would also freeze the
+			// liveness check below. Bound the send: a blocked write
+			// means the session is effectively dead.
 			select {
 			case s.writeCh <- newPingFrame(0):
 			case <-s.doneCh:
+				return
+			case <-time.After(timeout):
+				log.Printf("[smux] keepalive write blocked for %s — aborting stuck session", timeout)
+				s.abort(errors.New("smux: keepalive write blocked"))
 				return
 			}
 			// Check liveness.
