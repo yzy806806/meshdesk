@@ -410,28 +410,64 @@ func detectOutboundIP() string {
 	return ""
 }
 
-// detectOutboundIPsFromInterfaces scans network interfaces for all non-loopback,
-// non-link-local IP addresses (both IPv4 and IPv6). This is a fallback used
-// when the UDP dial trick fails (e.g., no default route).
+// detectOutboundIPsFromInterfaces scans network interfaces for all
+// non-loopback, non-link-local IP addresses (both IPv4 and IPv6). This
+// is a fallback used when the UDP dial trick fails (e.g., no default
+// route, or a sandboxed environment like an Android chroot where UDP
+// sockets are restricted by seccomp).
+//
+// Virtual interfaces (TUN/TAP/WireGuard/docker/...) are excluded: their
+// addresses are not reachable from other nodes — announcing them (e.g.
+// mesh0's 10.100.0.x or tun0's 10.10.14.1) makes peers dial a black
+// hole. This was observed on Redmi (Android chroot): the fallback
+// announced tun0's address instead of wlan0's public IPv6.
 func detectOutboundIPsFromInterfaces() []string {
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
 	}
 	var ips []string
-	for _, addr := range addrs {
-		// addr is either *net.IPNet or *net.IPAddr
-		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+	for _, iface := range ifaces {
+		if isVirtualInterfaceName(iface.Name) {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok || ipnet.IP.IsLoopback() {
+				continue
+			}
 			ip := ipnet.IP
-			// Include both IPv4 and IPv6 addresses. Exclude link-local
-			// addresses (IPv4 169.254.x.x and IPv6 fe80::/10) since they
-			// are not routable beyond the local network segment.
+			// Exclude link-local addresses (IPv4 169.254.x.x and
+			// IPv6 fe80::/10) since they are not routable beyond
+			// the local network segment.
 			if !ip.IsLinkLocalUnicast() {
 				ips = append(ips, ip.String())
 			}
 		}
 	}
 	return ips
+}
+
+// isVirtualInterfaceName reports whether the interface name belongs to
+// a virtual/overlay device whose addresses must never be announced as
+// reachable endpoints (TUN/TAP, WireGuard, mesh TUN, docker bridges,
+// veth pairs, etc).
+func isVirtualInterfaceName(name string) bool {
+	lower := strings.ToLower(name)
+	for _, prefix := range []string{
+		"tun", "tap", "wg", "mesh", "br-", "docker", "veth",
+		"virbr", "ppp", "lo", "sit", "gre", "gretap", "erspan",
+		"ip6tnl", "ip6gre", "dummy",
+	} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // OnCollectorDiscovered is called when a peer with CapCollector=true is
