@@ -55,7 +55,9 @@ type MeshNode struct {
 	// from an inbound connection has replaced the entry in sessions.
 	clientSessions       map[string]*smux.Session
 	sessionEstablishedAt map[string]time.Time
-	sessionEstablished   map[string]func(peerKey string) // hook registry
+	// sessionEstablished holds callbacks fired when a smux session is
+	// established with a peer (multiple may be registered).
+	sessionEstablished []func(peerKey string) // hook registry
 	// peerManagers tracks per-peer PeerManager instances for outbound
 	// connections (one per peer). Inbound sessions from handleConnection
 	// do not create a PeerManager — they reuse the session directly.
@@ -197,7 +199,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		sessions:             make(map[string]*smux.Session),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
-		sessionEstablished:   make(map[string]func(peerKey string)),
+		sessionEstablished:   []func(peerKey string){},
 		peerManagers:         make(map[string]*PeerManager),
 		portMux:              newVirtualPortMux(),
 		reconnectState:       make(map[string]*reconnectTracker),
@@ -2063,20 +2065,29 @@ func (n *MeshNode) PerPeerTrafficStats() []PeerTrafficStat {
 // SetSessionEstablishedHandler registers a callback fired whenever a
 // smux session is established with a peer (any path: server accept,
 // client dial, UDP, reconnect). Used by the meta exchanger to push
-// VirtualIP knowledge over the session graph.
+// VirtualIP knowledge over the session graph. Multiple handlers may be
+// registered; each fires in its own goroutine with panic recovery.
 func (n *MeshNode) SetSessionEstablishedHandler(h func(peerKey string)) {
 	n.mu.Lock()
-	n.sessionEstablished["main"] = h
-	n.mu.Unlock()
+	defer n.mu.Unlock()
+	n.sessionEstablished = append(n.sessionEstablished, h)
 }
 
-// fireSessionEstablished invokes the registered handler.
+// fireSessionEstablished invokes the registered handlers.
 func (n *MeshNode) fireSessionEstablished(peerKey string) {
 	n.mu.RLock()
-	h := n.sessionEstablished["main"]
+	handlers := make([]func(string), len(n.sessionEstablished))
+	copy(handlers, n.sessionEstablished)
 	n.mu.RUnlock()
-	if h != nil {
-		go h(peerKey)
+	for _, h := range handlers {
+		go func(fn func(string)) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[mesh] session-established handler panic: %v", r)
+				}
+			}()
+			fn(peerKey)
+		}(h)
 	}
 }
 

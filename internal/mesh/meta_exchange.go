@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net"
 	"sync"
@@ -141,6 +142,9 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		return
 	}
 	me.seen[dedup] = msg.Seq
+	// Bound the dedup/sequence maps: a long-lived node with many peers
+	// and frequent meta updates must not grow these forever.
+	me.boundMapsLocked()
 	me.mu.Unlock()
 
 	// Learn the sender's own metadata.
@@ -156,16 +160,39 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		}
 	}
 
-	// Flood the new knowledge to our other peers (bounded TTL).
+	// Flood the new knowledge to our other peers (bounded TTL). The
+	// TTL is incremented once per hop — not once per recipient (the
+	// old code incremented inside the loop, so the Nth peer received
+	// TTL=N and large meshes exhausted maxMetaTTL after a few hops).
 	if msg.TTL >= maxMetaTTL {
 		return
 	}
+	msg.TTL++
+	var wg sync.WaitGroup
 	for _, key := range me.node.SessionPeerKeys() {
 		if key == fromKey || key == msg.Self.Key {
 			continue
 		}
-		msg.TTL++
-		me.sendTo(key, msg)
+		// Parallel sends: a slow peer must not block the flood to
+		// the rest of the mesh.
+		wg.Add(1)
+		go func(k string, m MetaMessage) {
+			defer wg.Done()
+			me.sendTo(k, m)
+		}(key, msg)
+	}
+	wg.Wait()
+}
+
+// boundMapsLocked caps the size of the dedup maps (caller holds me.mu).
+// A full rebuild is coarse but cheap and bounded — these maps are pure
+// dedup caches; dropping old entries only risks one redundant re-send.
+func (me *MetaExchanger) boundMapsLocked() {
+	if len(me.seen) > 4096 {
+		me.seen = make(map[string]uint64)
+	}
+	if len(me.peerSeq) > 512 {
+		me.peerSeq = make(map[string]uint64)
 	}
 }
 
@@ -235,7 +262,7 @@ type limitedReader struct {
 
 func (l *limitedReader) Read(p []byte) (int, error) {
 	if l.n <= 0 {
-		return 0, errEOF
+		return 0, io.EOF
 	}
 	if int64(len(p)) > l.n {
 		p = p[:l.n]
@@ -245,8 +272,6 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-var errEOF = errClosed
-
 func u64str(v uint64) string {
 	b := make([]byte, 8)
 	for i := 7; i >= 0; i-- {
@@ -255,9 +280,3 @@ func u64str(v uint64) string {
 	}
 	return string(b)
 }
-
-var errClosed = &closedError{}
-
-type closedError struct{}
-
-func (*closedError) Error() string { return "eof" }

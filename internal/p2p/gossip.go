@@ -458,9 +458,14 @@ func detectOutboundIPsFromInterfaces() []string {
 // veth pairs, etc).
 func isVirtualInterfaceName(name string) bool {
 	lower := strings.ToLower(name)
+	// Loopback: exact match only — a prefix match would also exclude
+	// legitimate interfaces like "local0" or "loeth".
+	if lower == "lo" {
+		return true
+	}
 	for _, prefix := range []string{
 		"tun", "tap", "wg", "mesh", "br-", "docker", "veth",
-		"virbr", "ppp", "lo", "sit", "gre", "gretap", "erspan",
+		"virbr", "ppp", "sit", "gre", "gretap", "erspan",
 		"ip6tnl", "ip6gre", "dummy",
 	} {
 		if strings.HasPrefix(lower, prefix) {
@@ -1049,12 +1054,17 @@ func (g *GossipLayer) retryJoinSeeds() {
 		}
 		if contacted > 0 {
 			log.Printf("[p2p] partial seed join: %d/%d (next retry in %v)", contacted, total, backoff)
+			// At least one seed is reachable — reset to the fast
+			// interval so the remaining seeds keep being probed
+			// promptly instead of decaying to the 5min cap while
+			// the reachable ones are already joined.
+			backoff = 5 * time.Second
 		} else {
 			log.Printf("[p2p] seed join retry failed: %v (next in %v)", err, backoff)
-		}
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
 		}
 	}
 }

@@ -79,13 +79,13 @@ func shortStr(s string) string {
 // Sanity: confirm the honest fallback (compact meta) stays under limit.
 func TestNodeMeta_CompactFits(t *testing.T) {
 	compact := &NodeMeta{
-		PublicKey:  strings.Repeat("b", 64),
-		Hostname:   "node",
-		Role:       "agent",
-		VirtualIP:  "10.100.0.9",
-		Endpoints:  []string{"203.0.113.1:52888"},
-		Seq:        42,
-		CapRelay:   true,
+		PublicKey: strings.Repeat("b", 64),
+		Hostname:  "node",
+		Role:      "agent",
+		VirtualIP: "10.100.0.9",
+		Endpoints: []string{"203.0.113.1:52888"},
+		Seq:       42,
+		CapRelay:  true,
 	}
 	data, err := compact.MarshalMeta()
 	if err != nil {

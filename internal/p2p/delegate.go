@@ -363,6 +363,13 @@ func (d *meshDelegate) NodeMeta(limit int) []byte {
 	if len(snap.compact) > 0 && len(snap.compact) <= limit {
 		return snap.compact
 	}
+	// The runtime limit may differ from the default (512) used when the
+	// compact was pre-computed (e.g. memberlist configured with a
+	// smaller MetaMaxSize). Fall back to a fresh compact at this limit;
+	// this path is rare, so the marshal cost is acceptable.
+	if c := marshalCompactMeta(snap.meta, limit); len(c) > 0 && len(c) <= limit {
+		return c
+	}
 	// Defensive: compact should always fit; if it somehow doesn't,
 	// return nil rather than corrupt bytes.
 	return nil

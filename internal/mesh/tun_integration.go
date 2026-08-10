@@ -402,6 +402,23 @@ func (n *MeshNode) AddPeerVirtualIPRoute(peerPubKey string, virtualIP string) {
 		return
 	}
 
+	// Validate the VIP belongs to our mesh subnet. A malicious or
+	// misconfigured peer must not inject kernel routes for arbitrary
+	// hosts (e.g. 8.8.8.8 or a LAN address) — that would black-hole
+	// or hijack the node's traffic to those hosts via mesh0.
+	if !ti.Router.IsInSubnet(ip) {
+		log.Printf("[mesh/tun] VirtualIP %s from peer %s outside mesh subnet %s, skipping route",
+			virtualIP, shortKey(peerPubKey), ti.Router.Subnet())
+		return
+	}
+
+	// A peer claiming our own VirtualIP is a conflict — refuse.
+	if ti.VirtualIP != nil && ti.VirtualIP.Equal(ip) {
+		log.Printf("[mesh/tun] VirtualIP %s from peer %s conflicts with local VIP, skipping route",
+			virtualIP, shortKey(peerPubKey))
+		return
+	}
+
 	// Add to the routing table (used by the forwarder for packet dispatch).
 	ti.Router.AddRoute(ip, peerPubKey)
 
