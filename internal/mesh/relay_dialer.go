@@ -126,12 +126,6 @@ func (d *RelayDialer) DialViaRelay(
 		Port:         port,
 		Timestamp:    nowNano(),
 	}
-	// Propagate the relay hop count from context (set by the relay
-	// handler when extending a multi-hop chain) so recursive relays
-	// can enforce maxRelayHops.
-	if hops, ok := ctx.Value(relayHopsKey).(uint8); ok {
-		req.Hops = hops
-	}
 	if err := writeRelayMessage(stream, req); err != nil {
 		stream.Close()
 		return nil, fmt.Errorf("mesh relay: send request: %w", err)
