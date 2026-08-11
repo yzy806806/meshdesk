@@ -475,9 +475,17 @@ type udpFailState struct {
 // getUDPStream returns the cached (or freshly dialed) UDP ARQ TUN
 // stream for a peer. Returns an error when UDP is unavailable or in
 // cooldown — the caller falls back to the TCP smux path.
+//
+// Zone-aware: UDP P2P is only used for peers in the SAME zone as us.
+// Cross-zone (or unknown-zone) peers are Reality-only — skipping UDP
+// here forces the TCP smux path (which rides Reality TLS).
 func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 	if f.cfg.MeshNode == nil {
 		return nil, errors.New("tun-forwarder: no mesh node for UDP path")
+	}
+	// Zone gate: cross-zone / unknown → Reality only (no UDP).
+	if !f.cfg.MeshNode.SameZone(peerKey) {
+		return nil, errors.New("tun-forwarder: cross-zone peer — Reality only")
 	}
 	f.udpMu.Lock()
 	entry, ok := f.udpStreams[peerKey]
