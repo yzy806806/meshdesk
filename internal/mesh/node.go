@@ -336,6 +336,12 @@ func (n *MeshNode) Start() error {
 			n.muxTransport = mt
 			n.mu.Unlock()
 
+			// Wire the UDP TUN stream authenticator (multipath D) in
+			// shared-node mode too — without it the UDP-preferred data
+			// plane is silently refused on shared nodes (validator nil
+			// → all first frames dropped → always falls back to TCP).
+			n.wireTUNAUDAuthValidator()
+
 			// Wrap the MuxTransport's RealityListener with REALITY auth.
 			realityLn := mt.RealityListener()
 			ln, err = hs.ListenWithListener(n.ctx, realityLn)
