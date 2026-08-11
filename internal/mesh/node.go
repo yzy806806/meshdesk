@@ -185,6 +185,12 @@ type MeshNode struct {
 	// Guarded by sessionsMu.
 	learnedZones map[string]string
 
+	// learnedEndpoints caches endpoint lists learned via the meta
+	// exchange — lets same-zone peers dial UDP/TCP directly even when
+	// memberlist (the usual endpoint source) is degraded.
+	// Guarded by sessionsMu.
+	learnedEndpoints map[string][]string
+
 	// relayBackoff tracks failed (target, relay) relay attempts so the
 	// dialer stops hammering unreachable targets. Without this, every
 	// connection attempt to an unreachable peer (socks5 exit, monitor
@@ -220,6 +226,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		sessions:             make(map[string]*smux.Session),
 		peerTransport:        make(map[string]string),
 		learnedZones:         make(map[string]string),
+		learnedEndpoints:     make(map[string][]string),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		sessionEstablished:   []func(peerKey string){},
@@ -2243,6 +2250,45 @@ func (n *MeshNode) PeerZone(peerKey string) string {
 		return gz
 	}
 	return ""
+}
+
+// LocalEndpoints returns this node's advertised endpoints (from
+// config p2p.advertise_endpoints) — propagated via the meta exchange
+// so peers can dial us directly.
+func (n *MeshNode) LocalEndpoints() []string {
+	if n.cfg == nil {
+		return nil
+	}
+	return append([]string(nil), n.cfg.P2P.AdvertiseEndpoints...)
+}
+
+// PeerEndpoints returns the endpoints known for a peer: config first,
+// meta-exchange-learned as fallback.
+func (n *MeshNode) PeerEndpoints(peerKey string) []string {
+	n.peersMu.RLock()
+	for i := range n.cfg.Peers {
+		if n.cfg.Peers[i].PublicKey == peerKey && n.cfg.Peers[i].Endpoint != "" {
+			ep := n.cfg.Peers[i].Endpoint
+			n.peersMu.RUnlock()
+			return []string{ep}
+		}
+	}
+	n.peersMu.RUnlock()
+	n.sessionsMu.Lock()
+	eps := append([]string(nil), n.learnedEndpoints[peerKey]...)
+	n.sessionsMu.Unlock()
+	return eps
+}
+
+// SetLearnedEndpoints records a peer's endpoints learned via the meta
+// exchange (0x4D45) — independent of memberlist health.
+func (n *MeshNode) SetLearnedEndpoints(peerKey string, endpoints []string) {
+	if peerKey == "" || len(endpoints) == 0 {
+		return
+	}
+	n.sessionsMu.Lock()
+	n.learnedEndpoints[peerKey] = append([]string(nil), endpoints...)
+	n.sessionsMu.Unlock()
 }
 
 // SetLearnedZone records a peer's zone tag learned via the meta

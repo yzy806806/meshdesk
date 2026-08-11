@@ -2,9 +2,11 @@ package join
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -48,6 +50,11 @@ type ConfigBundle struct {
 
 	// IssuedAt is when this bundle was generated (Unix timestamp).
 	IssuedAt int64 `json:"issued_at"`
+
+	// Signature is the server's Ed25519 signature over the serialized
+	// bundle (with Signature empty). The joiner verifies it against the
+	// token's ServerFP — pins the bundle even over plain HTTP.
+	Signature string `json:"signature,omitempty"`
 }
 
 // PeerInfo is a lightweight peer descriptor for the known-peers list.
@@ -474,7 +481,7 @@ func (s *JoinServer) buildBundle(req JoinRequest) *ConfigBundle {
 	if s.knownPeersFunc != nil {
 		knownPeers = s.knownPeersFunc()
 	}
-	return &ConfigBundle{
+	bundle := &ConfigBundle{
 		BootstrapPublicKey: s.cfg.ServerIdentity.PublicKey,
 		BootstrapEndpoint:  s.cfg.BootstrapEndpoint,
 		GossipPort:         s.cfg.GossipPort,
@@ -485,6 +492,54 @@ func (s *JoinServer) buildBundle(req JoinRequest) *ConfigBundle {
 		KnownPeers:         knownPeers,
 		IssuedAt:           time.Now().Unix(),
 	}
+	// Sign the bundle with the server identity so the joiner can pin it
+	// against the token's ServerFP — protects against MITM tampering of
+	// the bundle over plain HTTP.
+	if sig, err := s.signBundle(bundle); err == nil {
+		bundle.Signature = sig
+	} else {
+		log.Printf("[join] warning: failed to sign bundle: %v", err)
+	}
+	return bundle
+}
+
+// signBundle signs the bundle's serialized form (with Signature empty)
+// using the server's Ed25519 identity.
+func (s *JoinServer) signBundle(b *ConfigBundle) (string, error) {
+	copy := *b
+	copy.Signature = ""
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return "", fmt.Errorf("marshal bundle: %w", err)
+	}
+	return s.cfg.ServerIdentity.Sign(data)
+}
+
+// verifyBundleSignature verifies the bundle's signature against the
+// expected server public key (the token's ServerFP). Returns an error
+// when the signature is missing or invalid.
+func verifyBundleSignature(b *ConfigBundle, serverPubKeyHex string) error {
+	if b == nil || b.Signature == "" {
+		return errors.New("bundle has no signature")
+	}
+	pub, err := hex.DecodeString(serverPubKeyHex)
+	if err != nil || len(pub) != ed25519.PublicKeySize {
+		return fmt.Errorf("invalid server public key")
+	}
+	copy := *b
+	copy.Signature = ""
+	data, err := json.Marshal(copy)
+	if err != nil {
+		return fmt.Errorf("marshal bundle: %w", err)
+	}
+	sig, err := hex.DecodeString(b.Signature)
+	if err != nil {
+		return fmt.Errorf("invalid bundle signature encoding")
+	}
+	if !ed25519.Verify(pub, data, sig) {
+		return errors.New("bundle signature verification failed (possible MITM)")
+	}
+	return nil
 }
 
 // SetKnownPeersFunc allows the caller to provide a function that returns

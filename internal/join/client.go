@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -41,6 +42,11 @@ type ClientConfig struct {
 
 	// JoinerEndpoint is this node's reachable endpoint (optional).
 	JoinerEndpoint string
+
+	// AllowUnsignedBundle permits joining when the token has no
+	// ServerFP to pin against (legacy/plain tokens). Default false —
+	// bundle signature verification is required.
+	AllowUnsignedBundle bool
 
 	// JoinerSigner is used to sign the challenge during step 2.
 	// If nil, the challenge-response step cannot be completed and
@@ -248,7 +254,38 @@ func (c *JoinClient) requestBundle(ctx context.Context, httpClient *http.Client,
 		return nil, fmt.Errorf("join response missing config bundle")
 	}
 
+	// Pin the bundle against the token's ServerFP (the shared node's
+	// Ed25519 public key). This protects the joiner from a MITM that
+	// tampers with the bundle over plain HTTP — the attacker cannot
+	// forge a valid signature without the server's private key.
+	if fp := serverFPFromToken(c.cfg.Token); fp != "" {
+		if err := verifyBundleSignature(joinResp.Bundle, fp); err != nil {
+			return nil, fmt.Errorf("join: bundle rejected: %w", err)
+		}
+	} else if !c.cfg.AllowUnsignedBundle {
+		return nil, fmt.Errorf("join: token has no ServerFP — cannot pin bundle (refusing)")
+	}
+
 	return joinResp.Bundle, nil
+}
+
+// serverFPFromToken decodes a join token (base64 JSON) and returns its
+// ServerFP (the server's Ed25519 public key hex). Returns "" when the
+// token cannot be parsed.
+func serverFPFromToken(token string) string {
+	data, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		// Some tokens may be standard base64.
+		data, err = base64.StdEncoding.DecodeString(token)
+		if err != nil {
+			return ""
+		}
+	}
+	var t Token
+	if err := json.Unmarshal(data, &t); err != nil {
+		return ""
+	}
+	return t.ServerFP
 }
 
 // startsWithHTTPS checks if a URL starts with "https://".

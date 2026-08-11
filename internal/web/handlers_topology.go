@@ -195,6 +195,15 @@ func (m *meshTopologyPeers) PeerTransport(peerID string) string {
 	return m.node.PeerTransport(peerID)
 }
 
+// PeerRTT returns the live session round-trip to the node in
+// milliseconds (0 = unknown/unreachable).
+func (m *meshTopologyPeers) PeerRTT(peerID string) float64 {
+	if m.node == nil {
+		return 0
+	}
+	return float64(m.node.PeerRTT(peerID).Milliseconds())
+}
+
 // deriveRoleFromConfig computes the local node's role from its config.
 func deriveRoleFromConfig(cfg *config.Config) string {
 	ssPasswordSet := cfg.Proxy.SS.Password != ""
@@ -472,9 +481,9 @@ func buildTopologySnapshot(peers topology.TopologyPeers, metrics topology.Topolo
 		nodes = append(nodes, node)
 	}
 
-	// Build edges from the path probe cache.
-	// Edges are derived from measured pairs; if no probe cache exists,
-	// edges will be empty (the frontend handles this gracefully).
+	// Build edges: full mesh connectivity — every node pair gets an
+	// edge. Latency comes from the probe cache when available, else
+	// from a live session ping (peers.PeerRTT).
 	edges := buildEdges(paths, metrics, ids, peers)
 
 	return topology.TopologySnapshot{
@@ -483,63 +492,15 @@ func buildTopologySnapshot(peers topology.TopologyPeers, metrics topology.Topolo
 	}
 }
 
-// buildEdges constructs the edge list from path probe data.
-// Each measured pair becomes one edge. Bandwidth is derived from
-// the source node's best network interface speed.
+// buildEdges constructs the edge list. FULL mesh connectivity: every
+// known node pair gets an edge. Latency comes from the path probe
+// cache when available, else from a live session ping (peers.PeerRTT).
+// Bandwidth is derived from the source node's best interface speed.
 func buildEdges(paths topology.TopologyPathInfo, metrics topology.TopologyMetrics, knownIDs []string, peers topology.TopologyPeers) []topology.TopologyEdge {
 	if paths == nil {
 		return []topology.TopologyEdge{}
 	}
-
-	// Build a set of known node IDs for filtering.
-	known := make(map[string]bool, len(knownIDs))
-	for _, id := range knownIDs {
-		known[id] = true
-	}
-
-	// Use the pathProbeAdapter to access AllPairs via the cache.
-	adapter, ok := paths.(*pathProbeAdapter)
-	if !ok || adapter.cache == nil {
-		// Fall back to individual latency queries for any TopologyPathInfo.
-		// This handles mock implementations that don't use the adapter.
-		return buildEdgesFromInterface(paths, metrics, knownIDs, peers)
-	}
-
-	pairs := adapter.cache.AllPairs()
-	edges := make([]topology.TopologyEdge, 0, len(pairs))
-
-	for _, p := range pairs {
-		// Only include edges between known nodes.
-		if !known[p.Src] || !known[p.Dst] {
-			continue
-		}
-
-		bandwidth := metrics.BestBandwidth(p.Src)
-		if bandwidth < 0 {
-			bandwidth = metrics.BestBandwidth(p.Dst)
-		}
-
-		transport := ""
-		if peers != nil {
-			// Transport is per-peer (our session to the peer). Use the
-			// target that is NOT the local node when possible.
-			if peers.PeerTransport(p.Src) != "" {
-				transport = peers.PeerTransport(p.Src)
-			} else {
-				transport = peers.PeerTransport(p.Dst)
-			}
-		}
-
-		edges = append(edges, topology.TopologyEdge{
-			Source:        p.Src,
-			Target:        p.Dst,
-			LatencyMs:     p.Latency,
-			BandwidthMbps: bandwidth,
-			Transport:     transport,
-		})
-	}
-
-	return edges
+	return buildEdgesFromInterface(paths, metrics, knownIDs, peers)
 }
 
 // buildEdgesFromInterface builds edges by querying PeerLatency for
@@ -556,8 +517,15 @@ func buildEdgesFromInterface(paths topology.TopologyPathInfo, metrics topology.T
 				// Try reverse direction.
 				lat = paths.PeerLatency(dst, src)
 			}
+			if lat < 0 && peers != nil {
+				// Full-connectivity fallback: live session ping.
+				lat = peers.PeerRTT(src)
+				if lat <= 0 {
+					lat = peers.PeerRTT(dst)
+				}
+			}
 			if lat < 0 {
-				continue // no measurement for this pair
+				lat = 0 // unknown — still draw the edge
 			}
 
 			bandwidth := metrics.BestBandwidth(src)
@@ -565,11 +533,21 @@ func buildEdgesFromInterface(paths topology.TopologyPathInfo, metrics topology.T
 				bandwidth = metrics.BestBandwidth(dst)
 			}
 
+			transport := ""
+			if peers != nil {
+				if peers.PeerTransport(src) != "" {
+					transport = peers.PeerTransport(src)
+				} else {
+					transport = peers.PeerTransport(dst)
+				}
+			}
+
 			edges = append(edges, topology.TopologyEdge{
 				Source:        src,
 				Target:        dst,
 				LatencyMs:     lat,
 				BandwidthMbps: bandwidth,
+				Transport:     transport,
 			})
 		}
 	}

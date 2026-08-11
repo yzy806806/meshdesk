@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -60,10 +61,33 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == "POST" {
+		// Brute-force rate limit: 5 failed attempts per minute per IP.
+		ip := clientIP(r)
+		s.loginMu.Lock()
+		if s.loginAttempts == nil {
+			s.loginAttempts = make(map[string]*loginAttempt)
+		}
+		att := s.loginAttempts[ip]
+		now := time.Now()
+		if att == nil || now.Sub(att.windowStart) > time.Minute {
+			att = &loginAttempt{windowStart: now}
+			s.loginAttempts[ip] = att
+		}
+		if att.count >= 5 {
+			s.loginMu.Unlock()
+			http.Error(w, "Too many login attempts — try again later", http.StatusTooManyRequests)
+			return
+		}
+		s.loginMu.Unlock()
+
 		username := r.FormValue("username")
 		password := r.FormValue("password")
 
 		if s.authenticate(username, password) {
+			// Success — reset the attempt counter for this IP.
+			s.loginMu.Lock()
+			delete(s.loginAttempts, clientIP(r))
+			s.loginMu.Unlock()
 			// Check if the user has TOTP enrolled
 			if s.totpStore.IsEnrolled(username) {
 				// Password is correct, but TOTP is required.
@@ -95,6 +119,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
+
+		// Count the failure for rate limiting.
+		s.loginMu.Lock()
+		if att, ok := s.loginAttempts[clientIP(r)]; ok {
+			att.count++
+		}
+		s.loginMu.Unlock()
 
 		// Log failed login attempt for alerting
 		s.alertStore.Add(SecurityAlert{
@@ -1147,4 +1178,19 @@ func writeJSONError(w http.ResponseWriter, code int, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
+// loginAttempt tracks failed login attempts per source IP.
+type loginAttempt struct {
+	count       int
+	windowStart time.Time
+}
+
+// clientIP returns the client's IP (host part of RemoteAddr).
+func clientIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
