@@ -110,15 +110,22 @@ func (s *Server) Start() error {
 
 	// Wait for either a successful start or an error.
 	// We use a short timeout via Shutdown to detect binding failures.
-	// miekg/dns doesn't have a "ready" channel, so we check the error
-	// channel after a brief moment.
-	select {
-	case err := <-errCh:
-		return fmt.Errorf("dns server failed to start on %s: %w", addr, err)
-	case <-time.After(100 * time.Millisecond):
-		// Server appears to be starting (no immediate error).
-		// Give it a moment to bind.
+	// miekg/dns doesn't have a "ready" channel, so we poll the error
+	// channel for up to 1s — slow CI runners can take longer than a
+	// single 100ms tick to bind.
+	deadline := time.Now().Add(1 * time.Second)
+	for {
+		select {
+		case err := <-errCh:
+			return fmt.Errorf("dns server failed to start on %s: %w", addr, err)
+		case <-time.After(50 * time.Millisecond):
+			if time.Now().After(deadline) {
+				// No error within the window — server appears up.
+				goto started
+			}
+		}
 	}
+started:
 
 	s.mu.Lock()
 	s.started = true
