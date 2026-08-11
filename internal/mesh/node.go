@@ -212,6 +212,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		cfg:                  cfg,
 		registry:             registry,
 		sessions:             make(map[string]*smux.Session),
+		peerTransport:        make(map[string]string),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		sessionEstablished:   []func(peerKey string){},

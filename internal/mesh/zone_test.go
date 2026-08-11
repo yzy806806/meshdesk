@@ -10,9 +10,9 @@ func TestSameZone(t *testing.T) {
 	cfg := &config.Config{
 		Mesh: config.MeshConfig{Zone: "cn"},
 		Peers: []config.PeerConfig{
-			{PublicKey: "aaaa", Zone: "cn"},   // same zone
-			{PublicKey: "bbbb", Zone: "us"},   // cross zone
-			{PublicKey: "cccc"},               // unknown zone (empty)
+			{PublicKey: "aaaa", Zone: "cn"}, // same zone
+			{PublicKey: "bbbb", Zone: "us"}, // cross zone
+			{PublicKey: "cccc"},             // unknown zone (empty)
 		},
 	}
 	n, err := New(cfg)
