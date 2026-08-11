@@ -1,6 +1,6 @@
 # MeshDesk Threat Model
 
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Draft
 **Companion to:** [ARCHITECTURE.md](docs/ARCHITECTURE.md) — Decision E (Security Model)
 
@@ -409,3 +409,16 @@ Key verifications:
 - Nonce challenge: `internal/auth/nonce.go:53-111` — verified crypto/rand nonce + ed25519 verify
 - Revocation signing: `internal/auth/revocation.go:37-52` — verified ed25519 signature over structured message
 - Cookie hardening: `internal/web/handlers.go:50-52` — verified HttpOnly + SameSite Strict
+## Zone-Aware Transport Considerations (v1.5.8+)
+
+- **Cross-zone (Reality TLS)**: the only permitted transport across the
+  GFW boundary. Reality's full TLS 1.3 fallback (to the configured dest)
+  defeats active probing; wire bytes are indistinguishable from HTTPS.
+- **Same-zone (UDP P2P)**: fast multipath/ARQ on links that do not cross
+  the boundary. UDP datagrams carry Ed25519-authenticated first frames
+  (anti-injection); payloads are NOT encrypted — only use same-zone UDP
+  where the channel is not an attack surface (or add upper-layer
+  encryption if the threat model requires it).
+- **Unknown zone**: conservative — treated as cross-zone (Reality only).
+- **Operational**: all nodes must run the same binary version; mixed
+  versions break the data plane (protocol drift).
