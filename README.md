@@ -165,6 +165,41 @@ Port 52888 handles all protocols via first-byte sniffing:
 
 UDP 52888 handles memberlist gossip (ping/pong, anti-entropy).
 
+### Zone-Aware Transport (v1.5.8+)
+
+Nodes carry a free-form zone tag (`mesh.zone` + `peer.zone`, e.g. `cn`/`us`).
+Transport selection:
+
+| Peer zone | Data plane | Sessions |
+|-----------|-----------|----------|
+| **Same zone** (equal, non-empty) | UDP multipath (fast) | UDP direct / 0x4D / hole-punching |
+| **Cross zone** (different) | Reality TLS only | Reality (no 0x4D, no punching) |
+| **Unknown** (empty) | Reality TLS only (conservative) | Reality / relay |
+
+**Rationale**: same zone = same side of the network → UDP P2P is fast and
+safe; cross zone = crossing the GFW boundary → **Reality TLS only** (UDP
+across the wall is QoS-throttled and fingerprintable). Unknown zone is
+conservative (Reality works everywhere, UDP across the wall is the real
+risk).
+
+```yaml
+mesh:
+  zone: cn
+
+peers:
+  - public_key: 0d4bf4b1...
+    endpoint: 203.0.113.10:52888
+    zone: cn    # same zone → UDP P2P
+  - public_key: 7eb1844e...
+    endpoint: 203.0.113.30:52888
+    zone: us    # cross zone → Reality only
+```
+
+Zone is broadcast via gossip (NodeMeta.Zone) — new nodes are auto-learned.
+The Dashboard 3D topology shows zone rings + transport-colored edges
+(Reality green / UDP blue / 0x4D amber / relay grey), with ping & bandwidth
+on edge hover. Full guide: [docs/ZONE_AWARE_TRANSPORT.md](docs/ZONE_AWARE_TRANSPORT.md)
+
 ### Node Types
 
 | | Shared Node | Ordinary Node |

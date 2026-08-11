@@ -1,5 +1,34 @@
 # Release Notes
 
+## v1.5.8 — 2026-08-11
+
+**Zone-aware transport + 3D topology.** Completion commits: `69f0f74` → `e9a5061`
+
+### Features
+- **Zone tags** (`mesh.zone` + `peer.zone`, free-form strings like `cn`/`us`):
+  same zone → **UDP P2P** (multipath + hole-punching + 0x4D); cross zone /
+  unknown → **Reality TLS only** (conservative). Zone broadcast via gossip
+  (NodeMeta.Zone) + meta exchange.
+- **3D Topology Dashboard**: node ring color = zone; edge color = transport
+  (Reality green / UDP blue / 0x4D amber / relay grey); edge hover shows
+  transport / ping / bandwidth. Backend `/api/topology` exposes
+  `zone` + `transport` + `latency_ms` + `bandwidth_mbps`.
+- Guide: [docs/ZONE_AWARE_TRANSPORT.md](ZONE_AWARE_TRANSPORT.md)
+
+### Fixes
+- `peerTransport` map init (nil-map panic on 0x4D dial)
+- Earlier Reality-only experiment reverted (UDP/0x4D/NAT code restored —
+  kept in git history)
+
+### Verified
+- 25/25 test packages green; SameZone unit tests
+- Real machines (txcloud ↔ aliyun, both zone: cn): session (Reality),
+  data plane (TCP), ping, same-zone UDP multipath (0x54 auth frames)
+- ⚠️ All nodes MUST run the same binary version (mixed versions break
+  the data plane)
+
+---
+
 ## v1.2.1 — 2026-08-06
 
 Single-port HTTP multiplexing and programmatic join endpoint. Completion commit: `a83c9f8`

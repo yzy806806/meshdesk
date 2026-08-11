@@ -1,5 +1,8 @@
 # 4-Node Deployment + CapRelay Verification Report
 
+> ⚠️ **历史验证报告（2026-08-07）**：v1.2.1 时代四节点验证记录。
+> 当前（v1.5.8+）请参考 README 与 [docs/ZONE_AWARE_TRANSPORT.md](docs/ZONE_AWARE_TRANSPORT.md)。
+
 Task: t_54e1aac3 — 四节点部署 + CapRelay 全开验证
 Date: 2026-08-07
 HEAD: 4229ee7 (a83c9f8 + docs only; no mesh code changes)

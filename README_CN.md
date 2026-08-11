@@ -114,6 +114,35 @@ Layer 0 — Ed25519 身份（PEM 文件持久化）
 - **共享节点**（`reality.enabled: true`）：监听 52888 TCP+UDP，唯一暴露公网端口的节点
 - **普通节点**（`reality.enabled: false`）：不监听 TCP，仅 UDP gossip，出站连接共享节点
 
+### Zone 感知传输（v1.5.8+）
+
+节点携带自由字符串 zone 标签（`mesh.zone` + `peer.zone`，如 `cn`/`us`）：
+
+| 对端 zone | 数据面 | 会话 |
+|-----------|--------|------|
+| **同 zone**（值相等非空） | UDP 多路径（快） | UDP 直连 / 0x4D / 打洞 |
+| **跨 zone**（值不同） | **Reality only** | Reality（不 0x4D、不打洞） |
+| **未知**（空） | Reality only（保守） | Reality / 中继 |
+
+**设计意图**：同 zone = 同侧网络 → UDP P2P 快；跨 zone = 过墙 →
+必须 Reality TLS（UDP 过墙会被 QoS 限速且特征可识别，明确禁止）。
+未知 zone 保守走 Reality（Reality 哪都能用，UDP 过墙才是真风险）。
+
+```yaml
+mesh:
+  zone: cn
+
+peers:
+  - public_key: 0d4bf4b1...
+    zone: cn    # 同 zone → UDP P2P
+  - public_key: 7eb1844e...
+    zone: us    # 跨 zone → Reality only
+```
+
+zone 经 gossip 广播（NodeMeta.Zone），新节点自动学习。Dashboard 3D 拓扑：
+节点环色 = zone；连线颜色 = 传输方式（Reality 绿 / UDP 蓝 / 0x4D 黄 / 中继灰）；
+悬停连线显示 ping + 带宽。完整指南见 [docs/ZONE_AWARE_TRANSPORT.md](docs/ZONE_AWARE_TRANSPORT.md)
+
 ### 反应式中继回退
 
 当两个节点无法直连时，per-pair `NatSession` 状态机自动尝试替代路径（STUN→DirectProbe→RelayFallback），从 gossip 广播的 `CapRelay` 元数据中按 RTT 择优选择中继节点。无需全局路由表，无需手动配置路径。单跳中继（A→relay→B）覆盖四节点拓扑；多跳中继（A→R1→R2→B）列为后续阶段 backlog。详见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
