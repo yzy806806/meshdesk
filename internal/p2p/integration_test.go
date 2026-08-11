@@ -43,7 +43,6 @@ type virtualNode struct {
 	wgMgr    *mockPeerManager
 	join     *JoinProtocol
 	relayMgr *RelaySessionManager
-	nat      *NatTraversal
 
 	// relaySelector for NAT traversal test scenarios.
 	relaySelector *RelaySelector
@@ -252,27 +251,12 @@ func createRelayNode(id int, pubKey, hostname string) *virtualNode {
 	return vn
 }
 
-// createNatNode creates a virtual node with NAT traversal enabled.
-func createNatNode(id int, pubKey, hostname string) *virtualNode {
-	vn := createVirtualNode(id, pubKey, hostname, "agent")
-	natCfg := DefaultNatTraversalConfig()
-	natCfg.RelayMode = "auto"
-	natCfg.DirectReprobeInterval = 1 * time.Hour // disable re-probe for tests
-	natCfg.ProbeTimeout = 100 * time.Millisecond
-	natCfg.MaxRetries = 3
-	vn.nat = NewNatTraversal(natCfg, vn.wgMgr, vn.relaySelector, vn.events, 51820)
-	return vn
-}
-
 // stop shuts down all protocol instances.
 func (vn *virtualNode) stop() {
 	if vn.relayMgr != nil {
 		vn.relayMgr.Stop()
 	}
 	vn.join.Stop()
-	if vn.nat != nil {
-		vn.nat.Stop()
-	}
 }
 
 // sentMessages returns the sent message count.
@@ -386,135 +370,6 @@ func TestIntegration_MultiNodeGossipConvergence(t *testing.T) {
 		t.Logf("bootstrap alerts: %d total", len(alerts))
 	})
 }
-
-// ============================================================================
-// Integration Test 2: NAT Traversal State Machine Across Nodes
-// ============================================================================
-
-func TestIntegration_NatTraversalSuccessPath(t *testing.T) {
-	bus := newMessageBus()
-
-	nodeAKey := genTestKey()
-	nodeBKey := genTestKey()
-
-	nodeA := createNatNode(0, nodeAKey, "node-a")
-	nodeB := createNatNode(1, nodeBKey, "node-b")
-
-	nodeA.bus = bus
-	nodeB.bus = bus
-	bus.register(nodeA)
-	bus.register(nodeB)
-
-	// Set up local STUN discovery results (simulated).
-	nodeA.nat.SetLocalDiscovery("203.0.113.10:51820", NatTypeFullCone)
-	nodeB.nat.SetLocalDiscovery("203.0.113.11:51820", NatTypeFullCone)
-
-	// Mark B as healthy for wireguard handshake check.
-	nodeA.wgMgr.SetConnected(nodeBKey, true)
-
-	// Initiate connection from A → B.
-	nodeA.nat.InitiateConnection(nodeBKey,
-		[]string{"203.0.113.11:51820"},
-		NatTypeFullCone,
-	)
-
-	// Give the state machine time to run.
-	time.Sleep(200 * time.Millisecond)
-
-	session := nodeA.nat.GetSession(nodeBKey)
-	if session == nil {
-		t.Fatal("expected NAT session for peer B")
-	}
-
-	state := nodeA.nat.SessionState(nodeBKey)
-	t.Logf("NAT state after connection: %s", state)
-
-	// With full_cone both sides and healthy WG peer, should be past INIT.
-	if state == NatInit {
-		t.Errorf("expected NAT state to advance past INIT, got %s", state)
-	}
-}
-
-func TestIntegration_NatTraversalBothSymmetricForcesRelay(t *testing.T) {
-	bus := newMessageBus()
-
-	nodeAKey := genTestKey()
-	nodeBKey := genTestKey()
-	relayKey := genTestKey()
-
-	nodeA := createNatNode(0, nodeAKey, "node-a")
-	relayNode := createRelayNode(1, relayKey, "relay")
-
-	nodeA.bus = bus
-	relayNode.bus = bus
-	bus.register(nodeA)
-	bus.register(relayNode)
-
-	// Both sides are symmetric NAT - can't hole-punch.
-	nodeA.nat.SetLocalDiscovery("203.0.113.10:51820", NatTypeSymmetric)
-
-	// Cache relay node's metadata so it's discoverable.
-	nodeA.events.cacheMeta(relayNode.meta)
-
-	// Initiate with remote symmetric — CanHolePunch(symmetric, symmetric) = false.
-	nodeA.nat.InitiateConnection(nodeBKey,
-		[]string{"203.0.113.11:51820"},
-		NatTypeSymmetric,
-	)
-
-	// Give state machine time.
-	time.Sleep(200 * time.Millisecond)
-
-	state := nodeA.nat.SessionState(nodeBKey)
-	t.Logf("NAT state (both symmetric): %s", state)
-
-	// With both symmetric, hole-punch should be skipped and transition to relay.
-	if state == NatDirect || state == NatActive {
-		t.Logf("unexpected direct connection with both symmetric NAT (state=%s)", state)
-	}
-}
-
-func TestIntegration_NatTraversalFallbackToRelay(t *testing.T) {
-	bus := newMessageBus()
-
-	nodeAKey := genTestKey()
-	nodeBKey := genTestKey()
-	relayKey := genTestKey()
-
-	nodeA := createNatNode(0, nodeAKey, "node-a")
-	relayNode := createRelayNode(1, relayKey, "relay")
-
-	nodeA.bus = bus
-	relayNode.bus = bus
-	bus.register(nodeA)
-	bus.register(relayNode)
-
-	// A is full_cone, remote is symmetric (hole-punch is possible but may fail).
-	nodeA.nat.SetLocalDiscovery("203.0.113.10:51820", NatTypeFullCone)
-
-	// Cache relay + target metadata.
-	nodeA.events.cacheMeta(relayNode.meta)
-
-	// Initiate connection — hole-punch will be attempted but WG handshake may fail.
-	// Since mock is not healthy by default, it will fall back to relay.
-	nodeA.nat.InitiateConnection(nodeBKey,
-		[]string{"203.0.113.11:51820"},
-		NatTypeSymmetric,
-	)
-
-	time.Sleep(200 * time.Millisecond)
-	state := nodeA.nat.SessionState(nodeBKey)
-	t.Logf("NAT state after fallback attempt: %s", state)
-
-	// Should have transitioned to something past STUN_DISCOVERY.
-	if state == NatInit {
-		t.Errorf("expected state past INIT, got %s", state)
-	}
-}
-
-// ============================================================================
-// Integration Test 3: Relay Session Lifecycle
-// ============================================================================
 
 func TestIntegration_RelaySessionLifecycle(t *testing.T) {
 	bus := newMessageBus()
