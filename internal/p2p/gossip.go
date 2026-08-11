@@ -587,13 +587,6 @@ func (g *GossipLayer) OnEndpointDiscovered(peerKey, endpoint string) {
 	})
 }
 
-// inferNAT classifies the peer NAT type for gossip metadata. With the
-// UDP hole-punching path removed (Reality-only architecture), NAT type
-// is informational only — there is nothing to punch through.
-func inferNAT(receivedFromEndpoint string) string {
-	return ""
-}
-
 // resolveAdvertiseAddr determines the address to advertise to gossip peers.
 // hashicorp memberlist uses a TCP transport that is IPv4-native, so when
 // multiple endpoints are available (dual-stack), we prefer the first IPv4

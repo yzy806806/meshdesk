@@ -643,15 +643,6 @@ func (rsm *RelaySessionManager) sweepIdleCircuits() {
 }
 
 // shortKey returns the first 8 characters of a public key for logging.
-// safeShortKey returns the first 8 characters of a key, or the full
-// key if shorter (no slice-bounds panic on short/malformed values).
-func safeShortKey(key string) string {
-	if len(key) > 8 {
-		return key[:8]
-	}
-	return key
-}
-
 func shortKey(key string) string {
 	if len(key) < 8 {
 		return key
