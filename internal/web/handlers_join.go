@@ -120,7 +120,7 @@ func (s *Server) handleJoinPage(w http.ResponseWriter, r *http.Request) {
 // parameter is present, it serves the install shell script (public, no auth).
 // Otherwise it renders the Dashboard join page (auth required).
 func (s *Server) handleJoinRoute(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet && r.URL.Query().Get("token") != "" {
+	if (r.Method == http.MethodGet || r.Method == http.MethodPost) && joinTokenFromRequest(r) != "" {
 		s.handleJoinScript(w, r)
 		return
 	}
@@ -128,17 +128,30 @@ func (s *Server) handleJoinRoute(w http.ResponseWriter, r *http.Request) {
 	s.requireAuth(s.handleJoinPage)(w, r)
 }
 
-// handleJoinScript validates a join token from the query parameter and,
-// if valid, returns the install shell script. This endpoint is public
-// (no session auth) so that `curl -sSL http://<dashboard>:8080/join?token=xxx | sh`
-// works on a fresh node that has no browser session.
+// joinTokenFromRequest extracts the join token from a POST body
+// (token=xxx form) or a GET query parameter. POST body takes priority.
+func joinTokenFromRequest(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		if err := r.ParseForm(); err == nil {
+			if t := r.PostForm.Get("token"); t != "" {
+				return t
+			}
+		}
+	}
+	return r.URL.Query().Get("token")
+}
+
+// handleJoinScript validates a join token and, if valid, returns the
+// install shell script. This endpoint is public (no session auth) so
+// that `curl -sSL http://<dashboard>:8080/join?token=xxx | sh` works
+// on a fresh node that has no browser session.
 //
 // The token is validated using the node's join secret (HMAC signature +
 // expiration). The install script embeds the token, join server URL, and
 // binary download URL. The actual mesh join (challenge-response protocol)
 // happens when the script runs `meshdesk join --join-url ... --join-token ...`.
 func (s *Server) handleJoinScript(w http.ResponseWriter, r *http.Request) {
-	tokenStr := r.URL.Query().Get("token")
+	tokenStr := joinTokenFromRequest(r)
 	if tokenStr == "" {
 		http.Error(w, "missing token parameter", http.StatusBadRequest)
 		return
@@ -433,6 +446,31 @@ elif command -v wget >/dev/null 2>&1; then
 else
   echo "Error: neither curl nor wget found"; exit 1
 fi
+
+# Verify checksum against the release checksums.txt (same directory as
+# the binary asset). Custom BINARY_URLs without a checksums.txt skip
+# verification with a warning.
+if [ ! -s /tmp/meshdesk ]; then
+  echo "Error: downloaded binary is empty"; exit 1
+fi
+CHECKSUM_URL="$(dirname "$BINARY_URL")/checksums.txt"
+if command -v curl >/dev/null 2>&1; then
+  CHECKSUMS=$(curl -fsSL "$CHECKSUM_URL" 2>/dev/null || true)
+else
+  CHECKSUMS=$(wget -qO- "$CHECKSUM_URL" 2>/dev/null || true)
+fi
+ASSET_NAME=$(basename "$BINARY_URL")
+EXPECTED_SHA=$(echo "$CHECKSUMS" | grep -F "$ASSET_NAME" | awk '{print $1}')
+if [ -n "$EXPECTED_SHA" ]; then
+  ACTUAL_SHA=$(sha256sum /tmp/meshdesk | awk '{print $1}')
+  if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+    echo "Error: checksum mismatch for $ASSET_NAME (got $ACTUAL_SHA, want $EXPECTED_SHA) — aborting"; exit 1
+  fi
+  echo "Checksum verified ($ASSET_NAME)"
+else
+  echo "Warning: no checksum entry for $ASSET_NAME — skipping verification"
+fi
+
 chmod +x /tmp/meshdesk
 mv /tmp/meshdesk "$INSTALL_DIR/meshdesk" 2>/dev/null || sudo mv /tmp/meshdesk "$INSTALL_DIR/meshdesk"
 echo "Binary installed to $INSTALL_DIR/meshdesk"

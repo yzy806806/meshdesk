@@ -29,13 +29,17 @@ import (
 // terminal endpoint (delegated to webssh.Handler), an SSE stream for live
 // dashboard metrics, and JSON API endpoints for file/service operations.
 type Server struct {
-	cfg          *config.Config
-	node         *mesh.MeshNode
-	monitorStore *monitor.Store
-	sshHub       *webssh.Hub
-	authEngine   *auth.CapabilityEngine
-	svcMgr       service.ServiceManager
-	meshDialer   MeshDialer // for remote file transfer + remote service management
+	cfg  *config.Config
+	node *mesh.MeshNode
+	// loginAttempts rate-limits login POSTs per source IP (brute-force
+	// protection). Guarded by loginMu.
+	loginMu       sync.Mutex
+	loginAttempts map[string]*loginAttempt
+	monitorStore  *monitor.Store
+	sshHub        *webssh.Hub
+	authEngine    *auth.CapabilityEngine
+	svcMgr        service.ServiceManager
+	meshDialer    MeshDialer // for remote file transfer + remote service management
 
 	totpStore   *TOTPStore
 	totpKM      *TOTPKeyManager

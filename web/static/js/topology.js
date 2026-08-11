@@ -334,6 +334,15 @@
     return ZONE_PALETTE[h % ZONE_PALETTE.length];
   }
 
+  // latencyToSpringLength maps a latency (ms) to a spring rest length:
+  // low latency = short edge, high latency = long edge. 0/negative
+  // (unknown) falls back to the default spacing.
+  function latencyToSpringLength(lat) {
+    if (lat <= 0) return CONFIG.layout.springLength;
+    var len = 180 + lat * 1.2; // 50ms → 240, 200ms → 420, 500ms → 780
+    return Math.max(180, Math.min(800, len));
+  }
+
   // createLabel builds a canvas-text sprite that always shows the
   // node's hostname above it.
   function createLabel(text) {
@@ -462,6 +471,9 @@
       latency: lat,
       bandwidth: edgeData.bandwidth_mbps || -1,
       transport: edgeData.transport || '',
+      // Rest length sized by latency: low latency = short edge, high
+      // latency = long edge (0/unknown = default).
+      springLength: latencyToSpringLength(lat),
       line: line,
       glowLine: glowLine,
       srcNode: src,
@@ -582,7 +594,8 @@
       var dy = b.y - a.y;
       var dz = b.z - a.z;
       var dist = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
-      var force = L.springStrength * (dist - L.springLength);
+      var restLength = edge.springLength || L.springLength;
+      var force = L.springStrength * (dist - restLength);
       var fx = (dx / dist) * force;
       var fy = (dy / dist) * force;
       var fz = (dz / dist) * force;

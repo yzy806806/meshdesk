@@ -284,6 +284,10 @@ func (n *MeshNode) resolvePeerEndpoint(peerIdentityHex string) string {
 			return n.cfg.Peers[i].Endpoint
 		}
 	}
+	// Meta-exchange-learned endpoints (works with degraded memberlist).
+	if eps := n.PeerEndpoints(peerIdentityHex); len(eps) > 0 {
+		return eps[0]
+	}
 	if entry, ok := n.routes.GetPeer(peerIdentityHex); ok && entry.Endpoint != "" {
 		return entry.Endpoint
 	}

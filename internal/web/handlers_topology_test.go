@@ -127,6 +127,9 @@ func (p *testPeers) PeerZone(peerID string) string { return "" }
 // PeerTransport returns the test peer's transport ("" unless set).
 func (p *testPeers) PeerTransport(peerID string) string { return "" }
 
+// PeerRTT returns the test peer's RTT (0 = unknown).
+func (p *testPeers) PeerRTT(peerID string) float64 { return 0 }
+
 // testPaths is a minimal TopologyPathInfo implementation for testing.
 type testPaths struct {
 	latencies map[string]float64

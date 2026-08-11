@@ -39,6 +39,10 @@ type PeerMeta struct {
 	Hostname string `json:"h"`
 	// Zone is the peer's zone tag (transport-selection signal).
 	Zone string `json:"z,omitempty"`
+	// Endpoints are the peer's reachable IP:port endpoints — propagated
+	// so same-zone peers can dial UDP/TCP directly even when memberlist
+	// (the usual endpoint source) is degraded.
+	Endpoints []string `json:"e,omitempty"`
 }
 
 // MetaExchanger maintains per-peer meta sequence numbers and floods
@@ -168,6 +172,13 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		if pm.Key != "" && pm.Zone != "" {
 			me.node.SetLearnedZone(pm.Key, pm.Zone)
 		}
+		if pm.Key != "" && len(pm.Endpoints) > 0 {
+			me.node.SetLearnedEndpoints(pm.Key, pm.Endpoints)
+		}
+	}
+	// Also learn the sender's own endpoints.
+	if msg.Self.Key != "" && len(msg.Self.Endpoints) > 0 {
+		me.node.SetLearnedEndpoints(msg.Self.Key, msg.Self.Endpoints)
 	}
 
 	// Flood the new knowledge to our other peers (bounded TTL). The
@@ -223,10 +234,11 @@ func (me *MetaExchanger) NotifyPeerJoined(peerKey string) {
 func (me *MetaExchanger) localMeta() PeerMeta {
 	vip := me.node.LocalVirtualIP()
 	return PeerMeta{
-		Key:      me.node.LocalPublicKey(),
-		VIP:      vip,
-		Hostname: me.node.LocalHostname(),
-		Zone:     me.node.LocalZone(),
+		Key:       me.node.LocalPublicKey(),
+		VIP:       vip,
+		Hostname:  me.node.LocalHostname(),
+		Zone:      me.node.LocalZone(),
+		Endpoints: me.node.LocalEndpoints(),
 	}
 }
 
@@ -238,9 +250,10 @@ func (me *MetaExchanger) knownPeers() []PeerMeta {
 			continue
 		}
 		out = append(out, PeerMeta{
-			Key:  key,
-			VIP:  me.node.PeerVirtualIP(key),
-			Zone: me.node.PeerZone(key),
+			Key:       key,
+			VIP:       me.node.PeerVirtualIP(key),
+			Zone:      me.node.PeerZone(key),
+			Endpoints: me.node.PeerEndpoints(key),
 		})
 	}
 	return out

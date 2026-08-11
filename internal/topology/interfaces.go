@@ -34,6 +34,10 @@ type TopologyPeers interface {
 	// PeerTransport returns the transport the session to the node was
 	// established over: "reality", "0x4d", "udp", or "" (no session).
 	PeerTransport(peerID string) string
+
+	// PeerRTT returns the round-trip time to the node in milliseconds
+	// (0 = unknown/unreachable). Used to size topology edges.
+	PeerRTT(peerID string) float64
 }
 
 // TopologyMetrics provides a read-only view of per-node system metrics

@@ -146,6 +146,19 @@ if [ ! -s "$TMP_FILE" ]; then
     fatal "Downloaded file is empty. Something went wrong."
 fi
 
+# Verify checksum against the release checksums.txt (when available)
+CHECKSUM_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
+EXPECTED_SHA=$(curl -fsSL "$CHECKSUM_URL" 2>/dev/null | grep -F "$ASSET_NAME" | awk '{print $1}')
+if [ -n "$EXPECTED_SHA" ]; then
+    ACTUAL_SHA=$(sha256sum "$TMP_FILE" | awk '{print $1}')
+    if [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
+        fatal "Checksum mismatch for $ASSET_NAME (got $ACTUAL_SHA, want $EXPECTED_SHA) — aborting"
+    fi
+    info "Checksum verified ($ASSET_NAME)"
+else
+    info "Warning: no checksum entry for $ASSET_NAME — skipping verification (supply-chain hardening recommended)"
+fi
+
 info "Downloaded $(stat -c %s "$TMP_FILE" 2>/dev/null || stat -f %z "$TMP_FILE") bytes"
 
 # ============================================================================
