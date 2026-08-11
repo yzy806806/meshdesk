@@ -88,7 +88,7 @@ type TunForwarder struct {
 	// (multipath D). udpFail records when a UDP dial last failed so
 	// we don't hammer unreachable UDP endpoints on every packet.
 	udpStreams map[string]outboundStreamEntry
-	udpFail    map[string]time.Time
+	udpFail    map[string]udpFailState
 	udpMu      sync.Mutex
 
 	// listener is the virtual port listener for inbound TUN packets.
@@ -132,7 +132,7 @@ func NewTunForwarder(cfg TunForwarderConfig) (*TunForwarder, error) {
 		cfg:             cfg,
 		outboundStreams: make(map[string]outboundStreamEntry),
 		udpStreams:      make(map[string]outboundStreamEntry),
-		udpFail:         make(map[string]time.Time),
+		udpFail:         make(map[string]udpFailState),
 		ctx:             ctx,
 		cancel:          cancel,
 	}, nil
@@ -435,9 +435,21 @@ func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
 	return newConn, nil
 }
 
-// udpCooldown is how long a failed UDP TUN dial keeps the UDP path
-// disabled for that peer before retrying (fall back to TCP meanwhile).
-const udpCooldown = 30 * time.Second
+// udpCooldown is the BASE cooldown after a failed UDP TUN dial. The
+// actual cooldown grows exponentially with consecutive failures (×2 per
+// failure, capped at udpCooldownMax) so a permanently firewalled UDP
+// path stops being re-probed every 30s — each probe costs 3s of
+// confirmation wait, which visibly stalls the data plane.
+const (
+	udpCooldown    = 30 * time.Second
+	udpCooldownMax = 10 * time.Minute
+)
+
+// udpFailState tracks consecutive UDP dial failures for a peer.
+type udpFailState struct {
+	last  time.Time
+	count int
+}
 
 // getUDPStream returns the cached (or freshly dialed) UDP ARQ TUN
 // stream for a peer. Returns an error when UDP is unavailable or in
@@ -448,20 +460,34 @@ func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 	}
 	f.udpMu.Lock()
 	entry, ok := f.udpStreams[peerKey]
-	lastFail, failed := f.udpFail[peerKey]
+	fail, failed := f.udpFail[peerKey]
 	f.udpMu.Unlock()
 
 	if ok && time.Since(entry.createdAt) < outboundStreamTTL {
 		return entry.conn, nil
 	}
-	if failed && time.Since(lastFail) < udpCooldown {
-		return nil, errors.New("tun-forwarder: UDP path in cooldown")
+	if failed {
+		// Exponential backoff: 30s, 60s, 120s, ... capped at 10min.
+		shift := fail.count
+		if shift > 6 {
+			shift = 6
+		}
+		cooldown := udpCooldown << shift
+		if cooldown > udpCooldownMax {
+			cooldown = udpCooldownMax
+		}
+		if time.Since(fail.last) < cooldown {
+			return nil, errors.New("tun-forwarder: UDP path in cooldown")
+		}
 	}
 
 	conn, err := f.cfg.MeshNode.DialTUNUDPForPeer(peerKey)
 	if err != nil {
 		f.udpMu.Lock()
-		f.udpFail[peerKey] = time.Now()
+		st := f.udpFail[peerKey]
+		st.count++
+		st.last = time.Now()
+		f.udpFail[peerKey] = st
 		f.udpMu.Unlock()
 		return nil, err
 	}
@@ -495,7 +521,10 @@ func (f *TunForwarder) closeOutboundStream(peerKey string) {
 	if ue, uok := f.udpStreams[peerKey]; uok {
 		delete(f.udpStreams, peerKey)
 		ue.conn.Close()
-		f.udpFail[peerKey] = time.Now()
+		st := f.udpFail[peerKey]
+		st.count++
+		st.last = time.Now()
+		f.udpFail[peerKey] = st
 	}
 	f.udpMu.Unlock()
 }
