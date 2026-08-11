@@ -397,9 +397,7 @@ func main() {
 			socks5Cfg.AllowedPorts[p] = true
 		}
 	}
-	if !cfg.Proxy.SOCKS5.Enabled {
-		log.Printf("  SOCKS5 proxy: disabled (proxy.socks5.enabled=false)")
-	} else if _, err := node.RegisterSOCKS5Handler(socks5Cfg); err != nil {
+	if _, err := node.RegisterSOCKS5Handler(socks5Cfg); err != nil {
 		log.Printf("Warning: failed to register SOCKS5 handler: %v", err)
 	} else {
 		log.Printf("  SOCKS5 proxy: listening on virtual port 0x5350 (maxConns=%d)", socks5Cfg.MaxConnections)
