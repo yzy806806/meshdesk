@@ -377,27 +377,32 @@ func main() {
 	// this node to reach arbitrary internet destinations. The handler
 	// listens on virtual port 0x5350 and reuses the existing smux virtual
 	// port dispatch mechanism (no new MuxTransport marker needed).
-	if cfg.Proxy.SOCKS5.Enabled {
-		socks5Cfg := mesh.SOCKS5Config{
-			DialTimeout:       time.Duration(cfg.Proxy.SOCKS5.DialTimeoutSec) * time.Second,
-			IdleTimeout:       time.Duration(cfg.Proxy.SOCKS5.IdleTimeoutSec) * time.Second,
-			AllowAllPorts:     cfg.Proxy.SOCKS5.AllowAllPorts,
-			DestinationFilter: cfg.Proxy.SOCKS5.DestinationFilter,
-			MaxConnections:    cfg.Proxy.SOCKS5.MaxConnections,
-			AllowedPeers:      cfg.Proxy.SOCKS5.AllowedPeers,
-			RequireMeshPeer:   cfg.Proxy.SOCKS5.RequireMeshPeer,
+	// Every node is a SOCKS5 exit by default (virtual port 0x5350,
+	// default destination ports 80/443). No configuration needed —
+	// peers can route SOCKS5 CONNECT through this node. AllowedPorts /
+	// AllowAllPorts / DestinationFilter extend or restrict the default.
+	// (Enabled is kept for explicit opt-out only.)
+	socks5Cfg := mesh.SOCKS5Config{
+		DialTimeout:       time.Duration(cfg.Proxy.SOCKS5.DialTimeoutSec) * time.Second,
+		IdleTimeout:       time.Duration(cfg.Proxy.SOCKS5.IdleTimeoutSec) * time.Second,
+		AllowAllPorts:     cfg.Proxy.SOCKS5.AllowAllPorts,
+		DestinationFilter: cfg.Proxy.SOCKS5.DestinationFilter,
+		MaxConnections:    cfg.Proxy.SOCKS5.MaxConnections,
+		AllowedPeers:      cfg.Proxy.SOCKS5.AllowedPeers,
+		RequireMeshPeer:   cfg.Proxy.SOCKS5.RequireMeshPeer,
+	}
+	if !socks5Cfg.AllowAllPorts && len(cfg.Proxy.SOCKS5.AllowedPorts) > 0 {
+		socks5Cfg.AllowedPorts = make(map[int]bool, len(cfg.Proxy.SOCKS5.AllowedPorts))
+		for _, p := range cfg.Proxy.SOCKS5.AllowedPorts {
+			socks5Cfg.AllowedPorts[p] = true
 		}
-		if !socks5Cfg.AllowAllPorts && len(cfg.Proxy.SOCKS5.AllowedPorts) > 0 {
-			socks5Cfg.AllowedPorts = make(map[int]bool, len(cfg.Proxy.SOCKS5.AllowedPorts))
-			for _, p := range cfg.Proxy.SOCKS5.AllowedPorts {
-				socks5Cfg.AllowedPorts[p] = true
-			}
-		}
-		if _, err := node.RegisterSOCKS5Handler(socks5Cfg); err != nil {
-			log.Printf("Warning: failed to register SOCKS5 handler: %v", err)
-		} else {
-			log.Printf("  SOCKS5 proxy: listening on virtual port 0x5350 (maxConns=%d)", socks5Cfg.MaxConnections)
-		}
+	}
+	if !cfg.Proxy.SOCKS5.Enabled {
+		log.Printf("  SOCKS5 proxy: disabled (proxy.socks5.enabled=false)")
+	} else if _, err := node.RegisterSOCKS5Handler(socks5Cfg); err != nil {
+		log.Printf("Warning: failed to register SOCKS5 handler: %v", err)
+	} else {
+		log.Printf("  SOCKS5 proxy: listening on virtual port 0x5350 (maxConns=%d)", socks5Cfg.MaxConnections)
 	}
 
 	// Start SOCKS5 client listener (bridges local SOCKS5 to mesh exit node).
