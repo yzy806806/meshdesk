@@ -409,6 +409,21 @@ Key verifications:
 - Nonce challenge: `internal/auth/nonce.go:53-111` — verified crypto/rand nonce + ed25519 verify
 - Revocation signing: `internal/auth/revocation.go:37-52` — verified ed25519 signature over structured message
 - Cookie hardening: `internal/web/handlers.go:50-52` — verified HttpOnly + SameSite Strict
+## Join / Onboarding Trust Boundary (v1.5.10+)
+
+- **Bundle signing**: the ConfigBundle returned by the join server is
+  Ed25519-signed by the server identity. The joiner pins it against the
+  token's ServerFP — a MITM tampering with the bundle over plain HTTP
+  is detected and refused. Tokens without a ServerFP are refused unless
+  AllowUnsignedBundle is explicitly set.
+- **Install supply chain**: install.sh and the join-generated script
+  verify the binary sha256 against the release checksums.txt — a
+  tampered or partial binary is rejected.
+- **Token handling**: the join token may be sent in a POST body (never
+  lands in URLs / proxy logs). GET query still works for `curl | sh`.
+- **Login brute force**: the web login POST is rate-limited per source
+  IP (5 failures/minute → 429).
+
 ## Zone-Aware Transport Considerations (v1.5.8+)
 
 - **Cross-zone (Reality TLS)**: the only permitted transport across the
