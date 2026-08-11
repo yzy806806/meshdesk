@@ -67,6 +67,15 @@ RestartSec=5
 StartLimitBurst=10
 StartLimitIntervalSec=60
 
+# 优雅停止（v1.5.7+）：meshdesk SIGTERM 约 11s 内退出（LeaveNotice +
+# forwarder 有界 drain）。超过则 systemd 强杀（默认 90s 太久——旧版会
+# 卡死导致僵尸进程 + 脏 TUN）。
+TimeoutStopSec=15
+
+# 无论进程如何退出都清理 TUN 设备（kill -9 会残留 mesh0，下次启动
+# 会与脏接口冲突）。
+ExecStopPost=/bin/sh -c 'ip link del mesh0 2>/dev/null || true'
+
 # 日志
 StandardOutput=journal
 StandardError=journal

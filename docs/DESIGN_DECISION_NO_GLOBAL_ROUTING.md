@@ -1,5 +1,10 @@
 # Design Decision: No Global Routing Table — Per-Pair Reactive Fallback
 
+
+> ⚠️ **历史决策（2026-08-07）**：本文档描述 v1.2.1 时代的"无全局路由表"决策。
+> 当前版本（v1.5.8+）已引入 zone 感知传输与自动互联，全局路由表语义见
+> [ZONE_AWARE_TRANSPORT.md](ZONE_AWARE_TRANSPORT.md) 与 README。保留本文档供决策追溯。
+
 **Status:** Adopted (motion-fb0fdd61c936, 2026-08-07)
 **Phase:** Node Auto-Interconnect (post-v1.2.1)
 **Author:** architect

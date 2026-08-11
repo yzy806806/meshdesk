@@ -1,5 +1,9 @@
 # MeshDesk 部署顺序与验证报告
 
+
+> ⚠️ **历史验证报告（2026-08-07）**：四节点部署顺序为当时阶段结论。
+> 当前部署请参考 README 快速开始 + [ZONE_AWARE_TRANSPORT.md](ZONE_AWARE_TRANSPORT.md)。
+
 **日期:** 2026-08-07
 **关联:** motion-fb0fdd61c936, action item 5/5
 **代码基线:** 4229ee7 (HEAD = origin/main)
