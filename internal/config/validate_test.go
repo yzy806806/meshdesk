@@ -80,8 +80,8 @@ mesh:
 			wantErrs: []string{"YAML syntax error"},
 		},
 		{
-			name: "YAML syntax error: tab character",
-			yaml: "mesh:\n\tport: 51820\n",
+			name:     "YAML syntax error: tab character",
+			yaml:     "mesh:\n\tport: 51820\n",
 			wantErrs: []string{"YAML syntax error"},
 		},
 

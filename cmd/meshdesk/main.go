@@ -404,20 +404,38 @@ func main() {
 	}
 
 	// Start SOCKS5 client listener (bridges local SOCKS5 to mesh exit node).
-	if socks5Listen != "" && socks5ExitNode != "" {
-		go runSOCKS5Client(node, socks5Listen, []string{socks5ExitNode})
+	// Listen address: CLI flag wins, else config proxy.socks5.entry_listen.
+	entryListen := cfg.Proxy.SOCKS5.EntryListen
+	if socks5Listen != "" {
+		entryListen = socks5Listen
 	}
-	if socks5Listen != "" && socks5ExitNodes != "" {
-		parts := strings.Split(socks5ExitNodes, ",")
-		var nodes []string
-		for _, p := range parts {
-			if p = strings.TrimSpace(p); p != "" {
-				nodes = append(nodes, p)
+	entryAuthUser, entryAuthPass := cfg.Proxy.SOCKS5.EntryUsername, cfg.Proxy.SOCKS5.EntryPassword
+	if entryListen != "" {
+		// Safety: a non-loopback entry listener requires credentials.
+		if host, _, err := net.SplitHostPort(entryListen); err == nil {
+			if host != "" && host != "127.0.0.1" && host != "::1" && host != "localhost" && entryAuthUser == "" {
+				log.Printf("  SOCKS5 entry: REFUSED to listen on %s without credentials (proxy.socks5.entry_username/password)", entryListen)
+				entryListen = ""
 			}
 		}
-		if len(nodes) > 0 {
-			go runSOCKS5Client(node, socks5Listen, nodes)
+	}
+	if entryListen != "" && (socks5ExitNode != "" || socks5ExitNodes != "" || len(cfg.Proxy.SOCKS5.AllowedPeers) > 0) {
+		var nodes []string
+		if socks5ExitNode != "" {
+			nodes = []string{socks5ExitNode}
 		}
+		if socks5ExitNodes != "" {
+			for _, p := range strings.Split(socks5ExitNodes, ",") {
+				if p = strings.TrimSpace(p); p != "" {
+					nodes = append(nodes, p)
+				}
+			}
+		}
+		if len(nodes) == 0 {
+			log.Printf("  SOCKS5 entry: listening on %s but no exit nodes configured — traffic has nowhere to go", entryListen)
+		}
+		go runSOCKS5Client(node, entryListen, nodes, entryAuthUser, entryAuthPass)
+		log.Printf("  SOCKS5 entry: %s (auth: %s)", entryListen, map[bool]string{true: "username/password", false: "none"}[entryAuthUser != ""])
 	}
 
 	// Attempt to connect statically configured peers.
@@ -2291,7 +2309,7 @@ func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPa
 // connections through the mesh to a remote SOCKS5 exit handler.
 // Each SOCKS5 CONNECT from a local client (e.g., curl) is forwarded
 // via DialVirtualPort to the exit node's virtual port 0x5350.
-func runSOCKS5Client(node *mesh.MeshNode, listenAddr string, exitNodes []string) {
+func runSOCKS5Client(node *mesh.MeshNode, listenAddr string, exitNodes []string, authUser, authPass string) {
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Printf("SOCKS5 client: failed to listen on %s: %v", listenAddr, err)
@@ -2324,7 +2342,45 @@ func runSOCKS5Client(node *mesh.MeshNode, listenAddr string, exitNodes []string)
 			nMethods := int(buf[1])
 			methods := make([]byte, nMethods)
 			io.ReadFull(c, methods)
-			c.Write([]byte{0x05, 0x00}) // no-auth
+
+			// RFC 1929 username/password auth when credentials are set.
+			if authUser != "" {
+				useAuth := false
+				for _, m := range methods {
+					if m == 0x02 {
+						useAuth = true
+						break
+					}
+				}
+				if !useAuth {
+					c.Write([]byte{0x05, 0xFF}) // no acceptable methods
+					return
+				}
+				c.Write([]byte{0x05, 0x02}) // username/password
+				auth := make([]byte, 2)
+				if _, err := io.ReadFull(c, auth); err != nil || auth[0] != 0x01 {
+					return
+				}
+				u := make([]byte, int(auth[1]))
+				if _, err := io.ReadFull(c, u); err != nil {
+					return
+				}
+				pl := make([]byte, 1)
+				if _, err := io.ReadFull(c, pl); err != nil {
+					return
+				}
+				pw := make([]byte, int(pl[0]))
+				if _, err := io.ReadFull(c, pw); err != nil {
+					return
+				}
+				if string(u) != authUser || string(pw) != authPass {
+					c.Write([]byte{0x01, 0x01}) // auth failed
+					return
+				}
+				c.Write([]byte{0x01, 0x00}) // auth success
+			} else {
+				c.Write([]byte{0x05, 0x00}) // no-auth
+			}
 
 			// Phase 2: Read CONNECT request.
 			header := make([]byte, 4)

@@ -524,6 +524,18 @@ type SOCKS5YAMLConfig struct {
 	// (e.g. phone clients that connect via Reality TLS without a mesh
 	// identity). Default: false.
 	RequireMeshPeer bool `yaml:"require_mesh_peer,omitempty"`
+
+	// EntryListen enables the local SOCKS5 entry listener (the
+	// --socks5-listen equivalent) when non-empty. Empty = disabled.
+	// Managed from the Dashboard Proxy page; the CLI flag still wins.
+	EntryListen string `yaml:"entry_listen,omitempty"`
+
+	// EntryUsername/EntryPassword enable RFC 1929 username/password
+	// authentication on the entry listener when both are non-empty.
+	// A listener on a non-loopback address without credentials is
+	// refused (no bare exposed socks5 proxies).
+	EntryUsername string `yaml:"entry_username,omitempty"`
+	EntryPassword string `yaml:"entry_password,omitempty"`
 }
 
 // TransferConfig holds file transfer settings.
