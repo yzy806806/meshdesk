@@ -1,5 +1,49 @@
 # Release Notes
 
+## v1.5.10 — 2026-08-12
+
+**Security hardening + full-connectivity topology.**
+
+### Security (external review driven)
+- **Join bundle signing**: ConfigBundle is Ed25519-signed by the server;
+  the joiner pins it against the token's ServerFP — MITM tampering over
+  plain HTTP is detected and refused (`AllowUnsignedBundle` for legacy
+  tokens).
+- **Install checksums**: install.sh + join install script verify the
+  binary sha256 against the release checksums.txt (fail closed).
+- **Login rate limit**: web login POST limited to 5 failures/minute/IP
+  (429) — brute-force protection.
+- **Join token POST**: `/join` accepts the token in a POST body (no URL
+  / proxy-log leakage); GET query still works for `curl | sh`.
+
+### Topology
+- **Full-connectivity edges**: every node pair gets an edge (was:
+  only measured probe pairs — empty graph with degraded memberlist).
+- **Latency-sized layout**: edge spring length maps real path RTT
+  (new session echo ping, virtual port 0x5049) — low latency = short
+  edge, high latency = long edge.
+- **Meta exchange propagates endpoints**: same-zone peers learn
+  reachable endpoints even with degraded memberlist → direct UDP/TCP
+  dials work (resolvePeerEndpoint fallback).
+
+### Fixes / cleanup
+- DNS test helper readiness probe sleeps (deterministic under load)
+- Stale WireGuard-era comments + Agora motion annotations removed;
+  puppeteer dep dropped
+- THREAT_MODEL documents the join trust boundary
+
+---
+
+## v1.5.9 — 2026-08-12
+
+**SOCKS5 entry management + zone fixes.** Zone-aware transport
+(v1.5.8) continued; every node is a SOCKS5 exit by default; Dashboard
+Proxy page manages the entry listener (listen address + RFC 1929
+credentials), save auto-restarts the daemon; relay fallback with
+degraded gossip; peers/topology pages show meta-learned peers.
+
+---
+
 ## v1.5.8 — 2026-08-11
 
 **Zone-aware transport + 3D topology.** Completion commits: `69f0f74` → `e9a5061`
