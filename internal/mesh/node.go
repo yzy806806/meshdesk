@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -469,7 +470,7 @@ func (n *MeshNode) acceptMeshLoop(ln net.Listener) {
 func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr, transport string) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[mesh] panic handling connection from %s: %v", remoteAddr, r)
+			log.Printf("[mesh] panic handling connection from %s: %v\n%s", remoteAddr, r, debug.Stack())
 		}
 	}()
 

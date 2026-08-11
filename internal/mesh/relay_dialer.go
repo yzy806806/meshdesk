@@ -489,6 +489,26 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port 
 		}
 
 		if len(candidates) == 0 {
+			// Degraded-gossip fallback: the relay metadata provider
+			// returned nothing usable (memberlist down → no CapRelay
+			// knowledge). Every node registers the relay handler, so
+			// ANY peer with an active session can relay. Fall back to
+			// session-based candidates.
+			log.Printf("[mesh] tryRelayFallback: gossip relay metadata empty — falling back to session-based candidates for target %s...", targetKey[:min(len(targetKey), 8)])
+			n.sessionsMu.Lock()
+			for key := range n.sessions {
+				if key != targetKey && key != localKey {
+					candidates = append(candidates, key)
+				}
+			}
+			for key := range n.clientSessions {
+				if key != targetKey && key != localKey {
+					candidates = append(candidates, key)
+				}
+			}
+			n.sessionsMu.Unlock()
+		}
+		if len(candidates) == 0 {
 			return nil, fmt.Errorf("no relay candidates (no eligible relay-capable peers)")
 		}
 
