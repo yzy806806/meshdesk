@@ -605,6 +605,12 @@ type MeshConfig struct {
 	// Default: 7946. Only used when p2p.enabled is true.
 	GossipPort int `yaml:"gossip_port,omitempty"`
 
+	// Zone is this node's zone tag (free-form string, e.g. "cn", "us",
+	// "uk"). Peers with the SAME zone value use UDP P2P (multipath +
+	// hole-punching); peers with a DIFFERENT zone (or unknown) use
+	// Reality TLS only. Empty = unknown (conservative: Reality for all).
+	Zone string `yaml:"zone,omitempty"`
+
 	// --- TUN virtual network interface ---
 
 	// TunEnabled controls whether the TUN device is created on startup.
@@ -732,6 +738,12 @@ type PeerConfig struct {
 	Endpoint     string   `yaml:"endpoint"`     // host:port; empty for roaming
 	AllowedIPs   []string `yaml:"allowed_ips"`  // v2: kept for routing table compatibility
 	Capabilities []string `yaml:"capabilities"` // what this peer can do on us
+
+	// Zone is the peer's zone tag (free-form, e.g. "cn", "us"). The
+	// connection policy: SAME zone as ours → UDP P2P; different or
+	// unknown (empty) → Reality TLS only. This is the primary
+	// transport-selection signal.
+	Zone string `yaml:"zone,omitempty"`
 
 	// Reality holds per-peer Reality TLS transport configuration.
 	// In v2, this is the only transport mode. See docs/MESHDESK_V2_DESIGN.md.

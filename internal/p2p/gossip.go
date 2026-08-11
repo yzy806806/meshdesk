@@ -177,6 +177,18 @@ func (g *GossipLayer) SetLocalIdentity(hostname, role string) {
 	})
 }
 
+// SetLocalZone sets the local node's zone tag (transport-selection
+// signal: peers with the same zone use UDP P2P, different → Reality).
+func (g *GossipLayer) SetLocalZone(zone string) {
+	if zone == "" {
+		return
+	}
+	g.delegate.updateLocalMeta(func(m *NodeMeta) {
+		m.Zone = zone
+		m.Seq++
+	})
+}
+
 // SetLocalCapabilities sets the local node's capability flags.
 func (g *GossipLayer) SetLocalCapabilities(capRelay, capExit, capProxyEntry, capCollector bool) {
 	g.delegate.updateLocalMeta(func(m *NodeMeta) {
@@ -1133,6 +1145,16 @@ func (g *GossipLayer) PeerRTT(peerKey string) time.Duration {
 		return 0
 	}
 	return time.Duration(meta.RTTUs) * time.Microsecond
+}
+
+// PeerZone returns the zone tag advertised by a peer via gossip
+// ("" if unknown). Used for zone-aware transport selection.
+func (g *GossipLayer) PeerZone(peerKey string) string {
+	meta := g.events.GetPeerMeta(peerKey)
+	if meta == nil {
+		return ""
+	}
+	return meta.Zone
 }
 
 // SelectTopKRelays is a convenience method that selects the top K=2 relays

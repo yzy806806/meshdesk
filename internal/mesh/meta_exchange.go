@@ -37,6 +37,8 @@ type PeerMeta struct {
 	Key      string `json:"k"`
 	VIP      string `json:"v"`
 	Hostname string `json:"h"`
+	// Zone is the peer's zone tag (transport-selection signal).
+	Zone string `json:"z,omitempty"`
 }
 
 // MetaExchanger maintains per-peer meta sequence numbers and floods
@@ -216,6 +218,7 @@ func (me *MetaExchanger) localMeta() PeerMeta {
 		Key:      me.node.LocalPublicKey(),
 		VIP:      vip,
 		Hostname: me.node.LocalHostname(),
+		Zone:     me.node.LocalZone(),
 	}
 }
 
