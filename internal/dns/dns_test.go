@@ -1,6 +1,8 @@
 package dns
 
 import (
+	"time"
+
 	"net"
 	"strings"
 	"sync"
@@ -52,7 +54,10 @@ func startTestServer(t *testing.T, provider PeerMetaProvider) (*Server, string, 
 		_ = server.ListenAndServe()
 	}()
 
-	// Wait for the server to be ready by probing it.
+	// Wait for the server to be ready by probing it. Sleep between
+	// probes — a busy loop can burn all 100 iterations before the
+	// server goroutine is scheduled (UDP port not yet bound → every
+	// Exchange returns instantly via ICMP refusal).
 	ready := false
 	for i := 0; i < 100; i++ {
 		m := new(dns.Msg)
@@ -62,6 +67,7 @@ func startTestServer(t *testing.T, provider PeerMetaProvider) (*Server, string, 
 			ready = true
 			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if !ready {
 		server.Shutdown()
