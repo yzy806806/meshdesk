@@ -238,8 +238,9 @@ func (me *MetaExchanger) knownPeers() []PeerMeta {
 			continue
 		}
 		out = append(out, PeerMeta{
-			Key: key,
-			VIP: me.node.PeerVirtualIP(key),
+			Key:  key,
+			VIP:  me.node.PeerVirtualIP(key),
+			Zone: me.node.PeerZone(key),
 		})
 	}
 	return out
