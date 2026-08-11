@@ -93,6 +93,9 @@ type TunForwarder struct {
 
 	// listener is the virtual port listener for inbound TUN packets.
 	listener net.Listener
+	// udpListener is the UDP TUN accept listener (multipath D); closed
+	// in Stop so udpAcceptLoop can exit.
+	udpListener net.Listener
 
 	// ctx/cancel control the forwarder lifecycle.
 	ctx    context.Context
@@ -165,6 +168,7 @@ func (f *TunForwarder) Start() error {
 	// Start the inbound UDP TUN stream accept loop (multipath D:
 	// UDP-preferred data plane).
 	if f.cfg.MeshNode != nil && f.cfg.MeshNode.TunUDPListener() != nil {
+		f.udpListener = f.cfg.MeshNode.TunUDPListener()
 		f.wg.Add(1)
 		go f.udpAcceptLoop()
 	}
@@ -187,6 +191,12 @@ func (f *TunForwarder) Stop() {
 	if f.listener != nil {
 		f.listener.Close()
 	}
+	// Close the UDP TUN accept listener so udpAcceptLoop can exit
+	// (its Accept blocks on the mux channel — context cancel alone
+	// does not interrupt it).
+	if f.udpListener != nil {
+		f.udpListener.Close()
+	}
 
 	// Close all outbound streams.
 	f.outboundMu.Lock()
@@ -205,7 +215,18 @@ func (f *TunForwarder) Stop() {
 	}
 	f.udpMu.Unlock()
 
-	f.wg.Wait()
+	// Drain goroutines with a bounded wait. An inbound handler stuck
+	// on a peer stream read must NOT block process shutdown forever
+	// (the stale-process-on-restart bug: systemd waited minutes for a
+	// process that could never exit). The goroutines die with the
+	// process.
+	done := make(chan struct{})
+	go func() { f.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		log.Printf("[tun-forwarder] stop: drained %d of goroutines within 3s, forcing (process exit will reap the rest)", 0)
+	}
 	log.Printf("[tun-forwarder] stopped (sent=%d, recv=%d, dropped=%d, spoofed=%d)",
 		f.packetsSent.Load(), f.packetsReceived.Load(), f.packetsDropped.Load(), f.packetsSpoofed.Load())
 }
@@ -556,7 +577,7 @@ const outboundStreamTTL = 60 * time.Second
 func (f *TunForwarder) udpAcceptLoop() {
 	defer f.wg.Done()
 
-	ln := f.cfg.MeshNode.TunUDPListener()
+	ln := f.udpListener
 	if ln == nil {
 		return
 	}
