@@ -176,6 +176,12 @@ func (m *MockPeers) Position(peerID string) (x, y, z float64) {
 	return pos[0], pos[1], pos[2]
 }
 
+// PeerZone returns the mock node's zone (empty unless set).
+func (m *MockPeers) PeerZone(peerID string) string { return "" }
+
+// PeerTransport returns the mock transport (empty).
+func (m *MockPeers) PeerTransport(peerID string) string { return "" }
+
 // --- MockMetrics: implements topology.TopologyMetrics ---
 
 // MockMetrics is a mock implementation of topology.TopologyMetrics
