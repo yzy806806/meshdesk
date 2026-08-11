@@ -1,7 +1,7 @@
 {
   "name": "meshdesk",
   "version": "1.0.0",
-  "description": "**Decentralized server mesh network + monitoring + WebSSH — in a single binary.**",
+  "description": "**Decentralized server mesh network + monitoring + WebSSH \u2014 in a single binary.**",
   "main": "index.js",
   "directories": {
     "doc": "docs",
@@ -20,8 +20,5 @@
   "bugs": {
     "url": "https://github.com/yzy806806/meshdesk/issues"
   },
-  "homepage": "https://github.com/yzy806806/meshdesk#readme",
-  "dependencies": {
-    "puppeteer": "^25.3.0"
-  }
+  "homepage": "https://github.com/yzy806806/meshdesk#readme"
 }

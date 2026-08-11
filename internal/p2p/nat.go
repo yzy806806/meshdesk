@@ -20,14 +20,14 @@ const (
 	// NatStunDiscovery — querying STUN servers for public endpoint + NAT type.
 	NatStunDiscovery
 
-	// NatDirectProbe — attempting direct WireGuard handshake to peer's
+	// NatDirectProbe — attempting direct mesh handshake to peer's
 	// STUN-discovered endpoint via hole-punching.
 	NatDirectProbe
 
-	// NatDirect — direct WireGuard connection established.
+	// NatDirect — direct mesh connection established.
 	NatDirect
 
-	// NatRelayFallback — relaying WireGuard traffic through a relay peer.
+	// NatRelayFallback — relaying mesh traffic through a relay peer.
 	NatRelayFallback
 
 	// NatDirectReprobe — re-attempting direct connection while in relay mode.
@@ -72,7 +72,7 @@ func (s NatState) String() string {
 // NatSession tracks the NAT traversal state for a single peer connection.
 // It implements the NatSession struct from §3.4 of the spec.
 type NatSession struct {
-	// PeerKey is the WireGuard public key of the remote peer.
+	// PeerKey is the mesh public key of the remote peer.
 	PeerKey string
 
 	// State is the current state machine state.
@@ -190,7 +190,7 @@ type NatTraversal struct {
 	// wired (e.g., in unit tests).
 	gossipLayer *GossipLayer
 
-	// localKey is this node's WireGuard public key (set when the
+	// localKey is this node's mesh public key (set when the
 	// gossip layer is available, used as FromKey in relay messages).
 	localKey string
 
@@ -533,7 +533,7 @@ func (nt *NatTraversal) handleStunDiscovery(session *NatSession) {
 }
 
 // handleDirectProbe processes the DIRECT_PROBE state.
-// It performs hole-punching and checks if the WireGuard handshake completes.
+// It performs hole-punching and checks if the mesh handshake completes.
 func (nt *NatTraversal) handleDirectProbe(session *NatSession) {
 	session.mu.Lock()
 	endpoints := session.Endpoints
@@ -616,7 +616,7 @@ func (nt *NatTraversal) handleDirectProbe(session *NatSession) {
 
 // transitionToRelay sets up relay fallback for the session.
 // It selects a relay peer, sends a circuit_setup message via gossip,
-// and updates the WireGuard endpoint.
+// and updates the mesh endpoint.
 func (nt *NatTraversal) transitionToRelay(session *NatSession) {
 	if nt.relay == nil {
 		session.mu.Lock()
