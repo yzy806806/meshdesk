@@ -128,14 +128,19 @@ func (s *Server) handleConfigRestart(w http.ResponseWriter, r *http.Request) {
 		s.configAPI.mu.Unlock()
 	}
 
-	// Trigger the actual restart: SIGTERM to self. In production the
-	// supervisor (systemd Restart=always) brings the daemon back with
-	// the new config. The response is sent first so the API call
-	// completes cleanly.
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
-	}()
+	// Trigger the actual restart: SIGTERM to self. Only when the
+	// supervisor (systemd Restart=always, PPID=1) will bring the daemon
+	// back with the new config — otherwise (tests, manual runs) the
+	// process must not kill itself. The response is sent first so the
+	// API call completes cleanly.
+	if os.Getppid() == 1 {
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+		}()
+	} else {
+		log.Printf("[/api/config/restart] not under a supervisor (PPID=%d) — config saved, manual restart required", os.Getppid())
+	}
 
 	resp := map[string]any{
 		"ok":      true,
