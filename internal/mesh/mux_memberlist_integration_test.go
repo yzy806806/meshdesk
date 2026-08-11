@@ -13,10 +13,6 @@ import (
 // instances using MuxTransport can discover each other and complete
 // push/pull sync.
 func TestMuxTransport_MemberlistIntegration(t *testing.T) {
-	// Reality-only: memberlist gossip rides inside a real Reality TLS
-	// tunnel (protocol ID 0x02). A mock cannot reproduce Reality
-	// masking — convergence is verified on live nodes instead.
-	t.Skip("Reality-only: gossip convergence requires a real Reality tunnel (verified on live nodes)")
 	// Create two MuxTransport nodes on different ports
 	node1 := createMuxMemberlistNode(t, 0) // port 0 = auto-assign
 	node2 := createMuxMemberlistNode(t, 0)

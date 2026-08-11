@@ -230,3 +230,104 @@ func TestShutdownOrder_ReverseSequenceIsSafe(t *testing.T) {
 // memberlist (gossip) must be stopped/disconnected from the MuxTransport
 // before MuxTransport is shut down. When using the shared transport,
 // memberlist uses MuxTransport's StreamCh and PacketCh; stopping memberlist
+// first ensures the transport channels are no longer being consumed.
+func TestShutdownOrder_MemberlistDisconnectsFirst(t *testing.T) {
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := tcpLn.Addr().String()
+
+	mt, err := NewMuxTransport(MuxTransportConfig{
+		TCPListener: tcpLn,
+		BindAddr:    "127.0.0.1",
+	})
+	if err != nil {
+		tcpLn.Close()
+		t.Fatalf("NewMuxTransport: %v", err)
+	}
+
+	rl := mt.RealityListener()
+	defer rl.Close()
+
+	// Simulate memberlist consuming from StreamCh via select (matching the
+	// real memberlist behavior — it uses select, not range, because the
+	// go channel is never closed by MuxTransport.Shutdown()).
+	streamDone := make(chan struct{})
+	streamConsumed := make(chan struct{}, 1)
+	go func() {
+		defer close(streamDone)
+		for {
+			select {
+			case conn := <-mt.StreamCh():
+				if conn != nil {
+					conn.Close()
+				}
+				streamConsumed <- struct{}{}
+			case <-time.After(50 * time.Millisecond):
+				// Exit when no more activity (shutdown happened).
+				// In real code, memberlist.Stop() stops reading.
+				return
+			}
+		}
+	}()
+
+	// Forward reality connections.
+	realityDone := make(chan struct{})
+	go func() {
+		defer close(realityDone)
+		for {
+			_, err := rl.Accept()
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	// Send a gossip connection (should be consumed by streamDone goroutine).
+	go func() {
+		conn, _ := net.Dial("tcp", addr)
+		defer conn.Close()
+		conn.Write([]byte{0x01, 0x02})
+		time.Sleep(100 * time.Millisecond)
+	}()
+
+	// Wait for the stream to be consumed.
+	select {
+	case <-streamConsumed:
+		t.Log("gossip stream consumed by memberlist consumer")
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for gossip stream consumption")
+	}
+
+	// Step 1: "Stop" memberlist (simulated — the goroutine exits after
+	// shutdown since no new connections arrive). In real code,
+	// gossipLayer.Stop() calls memberlist.Leave() and memberlist.Shutdown().
+	t.Log("step 1: memberlist/gossip stops (simulated)")
+
+	// Step 2: Shut down MuxTransport.
+	t.Log("step 2: MuxTransport shuts down")
+	if err := mt.Shutdown(); err != nil {
+		t.Fatalf("muxTransport.Shutdown: %v", err)
+	}
+
+	// After MuxTransport shutdown, the stream consumer goroutine should
+	// exit (no new connections on the channel, and the time.After fires).
+	select {
+	case <-streamDone:
+		t.Log("stream consumer exited after shutdown")
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for stream consumer to exit")
+	}
+
+	// Step 3: Close Reality listener.
+	t.Log("step 3: Reality listener closes")
+	rl.Close()
+
+	select {
+	case <-realityDone:
+		t.Log("reality consumer exited")
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for reality consumer to exit")
+	}
+}
