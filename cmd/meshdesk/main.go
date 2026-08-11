@@ -520,6 +520,13 @@ func main() {
 			role = "web"
 		}
 		gl.SetLocalIdentity(hostname, role)
+		gl.SetLocalZone(cfg.Mesh.Zone)
+		node.SetZoneLearner(func(peerKey string) string {
+			if z := gl.PeerZone(peerKey); z != "" {
+				return z
+			}
+			return ""
+		})
 		gl.SetLocalCapabilities(
 			true, // stream relay handler is always registered — any node can relay
 			len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
@@ -642,6 +649,12 @@ func main() {
 			// and call it from within its own handler.
 
 			natJoinHandler = func(meta *p2p.NodeMeta) {
+				// Zone-aware: only hole-punch peers in the SAME zone.
+				// Cross-zone (or unknown) peers are Reality-only —
+				// punching across the GFW boundary is forbidden.
+				if !node.SameZone(meta.PublicKey) {
+					return
+				}
 				peerEndpoints := meta.Endpoints
 				peerNatType := p2p.NatType(meta.NatType)
 				natTraversal.InitiateConnection(meta.PublicKey, peerEndpoints, peerNatType)
@@ -706,9 +719,18 @@ func main() {
 				// NotifyJoin only adds routing state; without an active
 				// session the data plane (TUN, monitor, relay) reports
 				// "no session for peer" and traffic dies. Dial the peer's
-				// advertised endpoint outbound (mesh-internal 0x4D path)
-				// so the mesh is connected as soon as gossip discovers it
-				// — the same "discover → dial" model EasyTier uses.
+				// advertised endpoint outbound so the mesh is connected
+				// as soon as gossip discovers it — the same
+				// "discover → dial" model EasyTier uses.
+				//
+				// Zone-aware: cross-zone (or unknown-zone) peers are
+				// Reality-only. The 0x4D auto-dial below is only for
+				// same-zone peers; cross-zone connectivity comes from
+				// the peer's own Reality outbound session (or manual
+				// AddPeer with Reality config).
+				if !node.SameZone(meta.PublicKey) {
+					return
+				}
 				if node.HasActiveSession(meta.PublicKey) {
 					return
 				}

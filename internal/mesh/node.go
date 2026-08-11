@@ -183,6 +183,10 @@ type MeshNode struct {
 	// rejected legitimate seed joins with EOF.
 	relayBackoff *relayBackoff
 
+	// zoneLearner resolves a peer's zone from gossip (injected by
+	// main.go; avoids a mesh→p2p import cycle). nil = no gossip.
+	zoneLearner func(peerKey string) string
+
 	mu     sync.RWMutex
 	closed bool
 }
@@ -2169,6 +2173,65 @@ func (n *MeshNode) LocalVirtualIP() string {
 		return ""
 	}
 	return ti.VirtualIP.String()
+}
+
+// SetZoneLearner injects the gossip zone resolver (avoids import cycle).
+func (n *MeshNode) SetZoneLearner(fn func(peerKey string) string) {
+	n.mu.Lock()
+	n.zoneLearner = fn
+	n.mu.Unlock()
+}
+
+// LocalZone returns this node's zone tag ("" if unset — unknown).
+func (n *MeshNode) LocalZone() string {
+	if n.cfg == nil {
+		return ""
+	}
+	return n.cfg.Mesh.Zone
+}
+
+// PeerZone returns the zone tag known for a peer: static config first
+// (authoritative), gossip meta as fallback. "" = unknown.
+func (n *MeshNode) PeerZone(peerKey string) string {
+	// Static config peer zone (authoritative).
+	n.peersMu.RLock()
+	for i := range n.cfg.Peers {
+		if n.cfg.Peers[i].PublicKey == peerKey && n.cfg.Peers[i].Zone != "" {
+			z := n.cfg.Peers[i].Zone
+			n.peersMu.RUnlock()
+			return z
+		}
+	}
+	n.peersMu.RUnlock()
+
+	// Gossip-learned zone (from NodeMeta) as fallback.
+	if gz := n.learnedZone(peerKey); gz != "" {
+		return gz
+	}
+	return ""
+}
+
+// SameZone reports whether the peer is in the same zone as us.
+// Both zones must be non-empty and equal — different or unknown zone
+// means "cross-zone" → Reality-only (conservative).
+func (n *MeshNode) SameZone(peerKey string) bool {
+	myZone := n.LocalZone()
+	if myZone == "" {
+		return false
+	}
+	pz := n.PeerZone(peerKey)
+	return pz != "" && pz == myZone
+}
+
+// learnedZone consults the gossip layer (if wired) for a peer's zone.
+func (n *MeshNode) learnedZone(peerKey string) string {
+	n.mu.RLock()
+	zl := n.zoneLearner
+	n.mu.RUnlock()
+	if zl == nil {
+		return ""
+	}
+	return zl(peerKey)
 }
 
 // PeerVirtualIP returns the VirtualIP known for a peer ("" if unknown).

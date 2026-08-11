@@ -55,6 +55,10 @@ type NodeMeta struct {
 	// "none", "full_cone", "restricted", "port_restricted", "symmetric", "unknown"
 	NatType string `msgpack:"nt"`
 
+	// Zone is the node's zone tag (free-form, e.g. "cn", "us"). Peers
+	// with the same zone value use UDP P2P; different/unknown → Reality.
+	Zone string `msgpack:"z,omitempty"`
+
 	// --- Load metrics (refreshed every gossip interval) ---
 
 	// LoadCPU is the fraction of CPU used (0.0–1.0).
