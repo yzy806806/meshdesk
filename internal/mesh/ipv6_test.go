@@ -76,13 +76,6 @@ func TestIPv6_MuxTransportBindLoopback(t *testing.T) {
 	}
 	defer mt.Shutdown()
 
-	// Verify the transport binds on IPv6.
-	if mt.udpConns[0].LocalAddr().(*net.UDPAddr).IP.To4() != nil {
-		t.Log("UDP bound on IPv4 (may fallback when IPv6 dual-stack)")
-	} else {
-		t.Log("UDP bound on IPv6")
-	}
-
 	// Test TLS routing (byte 0x16).
 	rl := mt.RealityListener()
 	defer rl.Close()
@@ -122,7 +115,7 @@ func TestIPv6_MuxTransportBindLoopback(t *testing.T) {
 		t.Fatal("timed out waiting for IPv6 TLS connection")
 	}
 
-	// Test gossip routing.
+	// Test plaintext gossip refusal (Reality-only: plaintext is closed).
 	go func() {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
@@ -134,17 +127,13 @@ func TestIPv6_MuxTransportBindLoopback(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}()
 
+	// The plaintext connection must be closed, not delivered.
 	select {
 	case conn := <-mt.StreamCh():
-		buf := make([]byte, 3)
-		n, _ := io.ReadFull(conn, buf)
-		if n != 3 || buf[0] != 0x00 {
-			t.Fatalf("IPv6 gossip routing: unexpected data %v", buf[:n])
-		}
 		conn.Close()
-		t.Log("IPv6 gossip routing: OK")
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for IPv6 gossip connection")
+		t.Fatal("IPv6 plaintext gossip delivered — must be refused (Reality-only)")
+	case <-time.After(2 * time.Second):
+		t.Log("IPv6 plaintext gossip correctly refused")
 	}
 }
 
@@ -276,7 +265,8 @@ func TestIPv6_SinglePortDualProtocol(t *testing.T) {
 		}
 	}()
 
-	// Send 5 TLS and 5 gossip connections concurrently over IPv6.
+	// Send 5 TLS and 5 plaintext connections concurrently over IPv6.
+	// TLS is delivered; plaintext is refused (Reality-only).
 	const n = 5
 	for i := 0; i < n; i++ {
 		go func() {
@@ -294,25 +284,22 @@ func TestIPv6_SinglePortDualProtocol(t *testing.T) {
 	}
 
 	gotReality := 0
-	gotStream := 0
 	deadline := time.After(5 * time.Second)
 
-	for gotReality+gotStream < 2*n {
+	for gotReality < n {
 		select {
 		case conn := <-realityCh:
 			gotReality++
 			conn.Close()
 		case conn := <-mt.StreamCh():
-			gotStream++
 			conn.Close()
+			t.Fatal("plaintext delivered to StreamCh — must be refused")
 		case <-deadline:
-			t.Fatalf("timed out: got %d reality + %d gossip = %d/%d",
-				gotReality, gotStream, gotReality+gotStream, 2*n)
+			t.Fatalf("timed out: got %d/%d reality", gotReality, n)
 		}
 	}
 
-	t.Logf("IPv6 single-port: %d reality + %d gossip = %d total (OK)",
-		gotReality, gotStream, gotReality+gotStream)
+	t.Logf("IPv6 single-port: %d reality accepted, plaintext refused (OK)", gotReality)
 }
 
 // TestIPv6_DualStackInterop verifies that an IPv4-bound MuxTransport can
@@ -404,62 +391,6 @@ func TestIPv6_DualStackInterop(t *testing.T) {
 	// closes the listener, preventing "Fail in goroutine after test has
 	// completed" panics.
 	dialWG.Wait()
-}
-
-// itoa returns the decimal string representation of n.
-func itoa(n int) string {
-	return fmt.Sprintf("%d", n)
-}
-
-// TestIPv6_UDPPacketOnLoopback verifies that UDP packets (memberlist gossip)
-// work over IPv6 loopback on the MuxTransport.
-func TestIPv6_UDPPacketOnLoopback(t *testing.T) {
-	if !hasIPv6Loopback() {
-		t.Skip("IPv6 loopback not available")
-	}
-
-	tcpLn, err := net.Listen("tcp", "[::1]:0")
-	if err != nil {
-		t.Fatalf("listen tcp6: %v", err)
-	}
-
-	mt, err := NewMuxTransport(MuxTransportConfig{
-		TCPListener: tcpLn,
-		BindAddr:    "::1",
-	})
-	if err != nil {
-		tcpLn.Close()
-		t.Fatalf("NewMuxTransport: %v", err)
-	}
-	defer mt.Shutdown()
-
-	udpAddr := mt.udpConns[0].LocalAddr().String()
-	t.Logf("UDP addr: %s", udpAddr)
-
-	payload := []byte("hello-ipv6")
-
-	// Write a UDP packet to ourselves.
-	ts, err := mt.WriteTo(payload, udpAddr)
-	if err != nil {
-		t.Fatalf("WriteTo IPv6: %v", err)
-	}
-	if ts.IsZero() {
-		t.Fatal("timestamp is zero")
-	}
-
-	// Read it back from PacketCh.
-	select {
-	case pkt := <-mt.PacketCh():
-		if !bytes.Equal(pkt.Buf, payload) {
-			t.Fatalf("IPv6 UDP: expected %q, got %q", payload, string(pkt.Buf))
-		}
-		if pkt.From == nil {
-			t.Fatal("IPv6 UDP: packet From is nil")
-		}
-		t.Logf("IPv6 UDP packet from %s: OK", pkt.From)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for IPv6 UDP packet")
-	}
 }
 
 // TestIPv6_AdvertiseAddrWithIPV6 verifies that FinalAdvertiseAddr works
@@ -603,4 +534,9 @@ func TestIPv6_ConnWithPrefixPreservesIPV6Addrs(t *testing.T) {
 		t.Fatalf("prefix mismatch: got %v, want %v", buf, prefix)
 	}
 	t.Log("IPv6 connWithPrefix: addresses preserved, prefix replayed")
+}
+
+// itoa returns the decimal string representation of n.
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
 }
