@@ -101,7 +101,7 @@ func (p *peerConn) setLatency(d time.Duration) { p.latency = d }
 // Transport instances.
 //
 // Implementations:
-//   - UDPTransport     (WireGuard UDP, existing)
+//   - UDPTransport     (mesh UDP ARQ, existing)
 //   - WSTransport      (WebSocket + uTLS, existing as obfuscation mode)
 //   - RealityTransport (Reality TLS, new per motion-822f52b56dbe)
 //
