@@ -8,6 +8,7 @@ import (
 
 func TestSameZone(t *testing.T) {
 	cfg := &config.Config{
+		Node: config.NodeConfig{IdentityFile: t.TempDir() + "/identity.pem"},
 		Mesh: config.MeshConfig{Zone: "cn"},
 		Peers: []config.PeerConfig{
 			{PublicKey: "aaaa", Zone: "cn"}, // same zone
@@ -38,10 +39,12 @@ func TestSameZone(t *testing.T) {
 	}
 
 	// Local zone empty → everything is cross-zone (conservative).
-	cfg2 := &config.Config{}
+	cfg2 := &config.Config{
+		Node: config.NodeConfig{IdentityFile: t.TempDir() + "/identity.pem"},
+	}
 	n2, err2 := New(cfg2)
 	if err2 != nil {
-		t.Skipf("New with empty identity not supported in this env: %v", err2)
+		t.Fatalf("New: %v", err2)
 	}
 	if n2 == nil {
 		t.Fatal("New returned nil node")
@@ -52,10 +55,13 @@ func TestSameZone(t *testing.T) {
 }
 
 func TestLocalZone(t *testing.T) {
-	cfg := &config.Config{Mesh: config.MeshConfig{Zone: "uk"}}
+	cfg := &config.Config{
+		Node: config.NodeConfig{IdentityFile: t.TempDir() + "/identity.pem"},
+		Mesh: config.MeshConfig{Zone: "uk"},
+	}
 	n, err := New(cfg)
 	if err != nil {
-		t.Skipf("New not supported in this env: %v", err)
+		t.Fatalf("New: %v", err)
 	}
 	if got := n.LocalZone(); got != "uk" {
 		t.Errorf("LocalZone = %q, want uk", got)
