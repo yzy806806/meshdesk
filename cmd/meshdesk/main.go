@@ -444,6 +444,7 @@ func main() {
 	}
 
 	// Initialize the P2P gossip discovery layer (if enabled).
+	var natTraversal *p2p.NatTraversal
 	if cfg.P2P.Enabled {
 		// Create the WireGuard delegate for dynamic peer management.
 		wgDelegate := p2p.NewWireGuardDelegate(node)
@@ -622,6 +623,43 @@ func main() {
 		// handler can call them — SetJoinHandler overwrites, not appends.
 		var natJoinHandler func(meta *p2p.NodeMeta)
 		var natLeaveHandler func(peerKey string)
+		if cfg.P2P.NatTraversal {
+			natCfg := p2p.NatTraversalFromP2pConfig(p2pCfg)
+			natTraversal = p2p.NewNatTraversal(
+				natCfg,
+				wgDelegate,
+				gl.Relay(),
+				gl.Events(),
+				cfg.Mesh.Port,
+			)
+
+			// Register a join handler so that NAT traversal is initiated
+			// for each new peer discovered via gossip (§1.5 step 3).
+			// NOTE: SetJoinHandler/SetLeaveHandler are assignment semantics
+			// (overwrite, not append). If TUN is also enabled, we must merge
+			// both handlers into a single closure to avoid one clobbering
+			// the other. The TUN block below will check natTraversal != nil
+			// and call it from within its own handler.
+
+			natJoinHandler = func(meta *p2p.NodeMeta) {
+				peerEndpoints := meta.Endpoints
+				peerNatType := p2p.NatType(meta.NatType)
+				natTraversal.InitiateConnection(meta.PublicKey, peerEndpoints, peerNatType)
+			}
+			natLeaveHandler = func(peerKey string) {
+				natTraversal.RemoveConnection(peerKey)
+			}
+
+			if err := natTraversal.Start(); err != nil {
+				log.Printf("Warning: failed to start NAT traversal: %v", err)
+			} else {
+				log.Printf("  P2P:       NAT traversal active (STUN + hole-punch + relay fallback)")
+			}
+
+			// Wire the gossip layer to the NAT traversal so it can send
+			// relay control messages (SETUP, TEARDOWN) via gossip.
+			natTraversal.SetGossipLayer(gossipLayer)
+		}
 
 		// If TUN is not enabled but NAT is, register NAT handlers directly.
 		if natJoinHandler != nil && !(cfg.Mesh.TunEnabled && gossipLayer != nil) {
@@ -874,6 +912,9 @@ func main() {
 		}
 
 		defer func() {
+			if natTraversal != nil {
+				natTraversal.Stop()
+			}
 			if gossipLayer != nil {
 				gossipLayer.Stop()
 			}

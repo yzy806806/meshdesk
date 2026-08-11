@@ -84,8 +84,18 @@ type TunForwarder struct {
 	outboundMu      sync.Mutex
 	outboundStreams map[string]outboundStreamEntry
 
+	// udpStreams caches the UDP-preferred TUN stream per peer
+	// (multipath D). udpFail records when a UDP dial last failed so
+	// we don't hammer unreachable UDP endpoints on every packet.
+	udpStreams map[string]outboundStreamEntry
+	udpFail    map[string]udpFailState
+	udpMu      sync.Mutex
+
 	// listener is the virtual port listener for inbound TUN packets.
 	listener net.Listener
+	// udpListener is the UDP TUN accept listener (multipath D); closed
+	// in Stop so udpAcceptLoop can exit.
+	udpListener net.Listener
 
 	// ctx/cancel control the forwarder lifecycle.
 	ctx    context.Context
@@ -124,6 +134,8 @@ func NewTunForwarder(cfg TunForwarderConfig) (*TunForwarder, error) {
 	return &TunForwarder{
 		cfg:             cfg,
 		outboundStreams: make(map[string]outboundStreamEntry),
+		udpStreams:      make(map[string]outboundStreamEntry),
+		udpFail:         make(map[string]udpFailState),
 		ctx:             ctx,
 		cancel:          cancel,
 	}, nil
@@ -153,6 +165,14 @@ func (f *TunForwarder) Start() error {
 	f.wg.Add(1)
 	go f.streamAcceptLoop()
 
+	// Start the inbound UDP TUN stream accept loop (multipath D:
+	// UDP-preferred data plane).
+	if f.cfg.MeshNode != nil && f.cfg.MeshNode.TunUDPListener() != nil {
+		f.udpListener = f.cfg.MeshNode.TunUDPListener()
+		f.wg.Add(1)
+		go f.udpAcceptLoop()
+	}
+
 	log.Printf("[tun-forwarder] started (virtual port 0x%x, MTU=%d, subnet=%s)",
 		TunVirtualPort, f.cfg.Device.MTU(), f.cfg.Router.Subnet())
 
@@ -171,6 +191,13 @@ func (f *TunForwarder) Stop() {
 	if f.listener != nil {
 		f.listener.Close()
 	}
+	// Close the UDP TUN accept listener so udpAcceptLoop can exit
+	// (its Accept blocks on the mux channel — context cancel alone
+	// does not interrupt it).
+	if f.udpListener != nil {
+		f.udpListener.Close()
+	}
+
 	// Close all outbound streams.
 	f.outboundMu.Lock()
 	for peerKey, entry := range f.outboundStreams {
@@ -178,6 +205,15 @@ func (f *TunForwarder) Stop() {
 		delete(f.outboundStreams, peerKey)
 	}
 	f.outboundMu.Unlock()
+
+	// Close cached UDP TUN streams too (multipath D) — they hold
+	// UDP sockets + ARQ goroutines and must not leak on shutdown.
+	f.udpMu.Lock()
+	for peerKey, entry := range f.udpStreams {
+		entry.conn.Close()
+		delete(f.udpStreams, peerKey)
+	}
+	f.udpMu.Unlock()
 
 	// Drain goroutines with a bounded wait. An inbound handler stuck
 	// on a peer stream read must NOT block process shutdown forever
@@ -379,6 +415,13 @@ func (f *TunForwarder) tunReadLoop() {
 // stream's buffered writes still "succeed" (no immediate error), so
 // packets silently vanish on the dead session. TTL forces re-dial.
 func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
+	// Multipath D: UDP-preferred path first. The UDP ARQ stream is
+	// faster on lossy inter-cloud links (no TCP congestion-control
+	// collapse); fall back to TCP smux when UDP is unavailable.
+	if conn, err := f.getUDPStream(peerKey); err == nil {
+		return conn, nil
+	}
+
 	f.outboundMu.Lock()
 	entry, ok := f.outboundStreams[peerKey]
 	f.outboundMu.Unlock()
@@ -413,6 +456,70 @@ func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
 	return newConn, nil
 }
 
+// udpCooldown is the BASE cooldown after a failed UDP TUN dial. The
+// actual cooldown grows exponentially with consecutive failures (×2 per
+// failure, capped at udpCooldownMax) so a permanently firewalled UDP
+// path stops being re-probed every 30s — each probe costs 3s of
+// confirmation wait, which visibly stalls the data plane.
+const (
+	udpCooldown    = 30 * time.Second
+	udpCooldownMax = 10 * time.Minute
+)
+
+// udpFailState tracks consecutive UDP dial failures for a peer.
+type udpFailState struct {
+	last  time.Time
+	count int
+}
+
+// getUDPStream returns the cached (or freshly dialed) UDP ARQ TUN
+// stream for a peer. Returns an error when UDP is unavailable or in
+// cooldown — the caller falls back to the TCP smux path.
+func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
+	if f.cfg.MeshNode == nil {
+		return nil, errors.New("tun-forwarder: no mesh node for UDP path")
+	}
+	f.udpMu.Lock()
+	entry, ok := f.udpStreams[peerKey]
+	fail, failed := f.udpFail[peerKey]
+	f.udpMu.Unlock()
+
+	if ok && time.Since(entry.createdAt) < outboundStreamTTL {
+		return entry.conn, nil
+	}
+	if failed {
+		// Exponential backoff: 30s, 60s, 120s, ... capped at 10min.
+		shift := fail.count
+		if shift > 6 {
+			shift = 6
+		}
+		cooldown := udpCooldown << shift
+		if cooldown > udpCooldownMax {
+			cooldown = udpCooldownMax
+		}
+		if time.Since(fail.last) < cooldown {
+			return nil, errors.New("tun-forwarder: UDP path in cooldown")
+		}
+	}
+
+	conn, err := f.cfg.MeshNode.DialTUNUDPForPeer(peerKey)
+	if err != nil {
+		f.udpMu.Lock()
+		st := f.udpFail[peerKey]
+		st.count++
+		st.last = time.Now()
+		f.udpFail[peerKey] = st
+		f.udpMu.Unlock()
+		return nil, err
+	}
+
+	f.udpMu.Lock()
+	f.udpStreams[peerKey] = outboundStreamEntry{conn: conn, createdAt: time.Now()}
+	delete(f.udpFail, peerKey)
+	f.udpMu.Unlock()
+	return conn, nil
+}
+
 // closeOutboundStream closes and removes the outbound stream for the
 // given peer. The next packet to this peer will open a new stream.
 // Multipath D: a failing write on either path also invalidates the
@@ -430,6 +537,17 @@ func (f *TunForwarder) closeOutboundStream(peerKey string) {
 	if ok {
 		entry.conn.Close()
 	}
+
+	f.udpMu.Lock()
+	if ue, uok := f.udpStreams[peerKey]; uok {
+		delete(f.udpStreams, peerKey)
+		ue.conn.Close()
+		st := f.udpFail[peerKey]
+		st.count++
+		st.last = time.Now()
+		f.udpFail[peerKey] = st
+	}
+	f.udpMu.Unlock()
 }
 
 // outboundStreamEntry wraps a cached outbound stream with its creation
@@ -452,6 +570,33 @@ const outboundStreamTTL = 60 * time.Second
 // ──────────────────────────────────────────────────────────────────────────────
 // Inbound: UDP ARQ stream → TUN device (multipath D)
 // ──────────────────────────────────────────────────────────────────────────────
+
+// udpAcceptLoop accepts inbound UDP TUN streams (each already carries a
+// verified peer identity via connWithPeer) and reuses handleInboundStream
+// so anti-spoof and ACL checks apply identically to the UDP path.
+func (f *TunForwarder) udpAcceptLoop() {
+	defer f.wg.Done()
+
+	ln := f.udpListener
+	if ln == nil {
+		return
+	}
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if f.ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			log.Printf("[tun-forwarder] UDP accept error: %v", err)
+			continue
+		}
+		f.wg.Add(1)
+		go f.handleInboundStream(conn)
+	}
+}
 
 // streamAcceptLoop accepts inbound smux streams on the TUN virtual port
 // and spawns a per-stream read loop to forward packets to the TUN device.

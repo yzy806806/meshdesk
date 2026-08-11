@@ -1,7 +1,6 @@
 package p2p
 
 import (
-	cryptoRand "crypto/rand"
 	"fmt"
 	"log"
 	"sync"
@@ -359,13 +358,6 @@ func (rpb *RelayPathBuilderImpl) tryFallback(circuit *relayCircuit) {
 
 	// Send circuit_setup to the fallback relay.
 	rpb.sendCircuitSetup(circuit)
-}
-
-// generateCircuitID returns a random hex relay circuit identifier.
-func generateCircuitID() string {
-	b := make([]byte, 16)
-	_, _ = cryptoRand.Read(b)
-	return fmt.Sprintf("%x", b)
 }
 
 // healthCheckLoop sends periodic PING messages to the relay and

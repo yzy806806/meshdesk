@@ -236,6 +236,35 @@ func TestOnEndpointDiscoveredDedup(t *testing.T) {
 	}
 }
 
+// TestOnEndpointDiscoveredSetsNATType tests that OnEndpointDiscovered sets
+// the NAT type to "restricted_cone" (conservative default).
+func TestOnEndpointDiscoveredSetsNATType(t *testing.T) {
+	localMeta := &NodeMeta{
+		PublicKey: "localkey00000000000000000000000000000000000000000000000000000000",
+		Endpoints: []string{},
+		NatType:   "unknown",
+		Seq:       0,
+	}
+	delegate := newMeshDelegate(localMeta)
+
+	endpoint := "203.0.113.5:51820"
+	delegate.updateLocalMeta(func(m *NodeMeta) {
+		for _, ep := range m.Endpoints {
+			if ep == endpoint {
+				return
+			}
+		}
+		m.Endpoints = append(m.Endpoints, endpoint)
+		m.NatType = inferNAT(endpoint)
+		m.Seq++
+	})
+
+	meta := delegate.getLocalMeta()
+	if meta.NatType != "restricted_cone" {
+		t.Errorf("NatType should be 'restricted_cone', got '%s'", meta.NatType)
+	}
+}
+
 // TestOnEndpointDiscoveredConcurrent tests thread safety of OnEndpointDiscovered
 // under concurrent access. Runs under -race to detect data races.
 func TestOnEndpointDiscoveredConcurrent(t *testing.T) {
