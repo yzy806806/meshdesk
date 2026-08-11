@@ -597,6 +597,7 @@ func (s *Server) handlePeersPage(w http.ResponseWriter, r *http.Request) {
 				AllowedIPs:   p.AllowedIPs,
 				Transport:    "reality", // v2: only Reality TLS transport
 				Capabilities: s.getPeerCapabilities(p.ID),
+				Obfuscation:  "reality",
 			})
 		}
 		// Include peers learned via the meta exchange (0x4D45) that have
@@ -609,9 +610,10 @@ func (s *Server) handlePeersPage(w http.ResponseWriter, r *http.Request) {
 		for pubKey, vip := range s.node.PeerVirtualIPs() {
 			if !known[pubKey] {
 				peers = append(peers, PeerInfo{
-					ID:         pubKey,
-					AllowedIPs: []string{vip},
-					Transport:  "meta",
+					ID:          pubKey,
+					AllowedIPs:  []string{vip},
+					Transport:   "meta",
+					Obfuscation: "meta",
 				})
 			}
 		}
