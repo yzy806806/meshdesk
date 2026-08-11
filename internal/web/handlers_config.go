@@ -1,6 +1,8 @@
 package web
 
 import (
+	"syscall"
+
 	"encoding/json"
 	"fmt"
 	"log"
@@ -126,9 +128,15 @@ func (s *Server) handleConfigRestart(w http.ResponseWriter, r *http.Request) {
 		s.configAPI.mu.Unlock()
 	}
 
-	// In a production deployment, this would send SIGTERM to the process
-	// and let the supervisor (systemd) restart it. Here we return the
-	// intent; the actual restart is platform-specific.
+	// Trigger the actual restart: SIGTERM to self. In production the
+	// supervisor (systemd Restart=always) brings the daemon back with
+	// the new config. The response is sent first so the API call
+	// completes cleanly.
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
+	}()
+
 	resp := map[string]any{
 		"ok":      true,
 		"message": "Daemon restart initiated. The API will become unresponsive for approximately 3-5 seconds.",

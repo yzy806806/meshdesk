@@ -129,6 +129,20 @@
           <input type="text" id="cfg-socks5-dest-filter" placeholder="10.0.0.0/8, 203.0.113.0/24" data-config-path="proxy.socks5.destination_filter">
           <small>Restrict destinations to these CIDR ranges. Empty = all destinations.</small>
         </div>
+        <div class="proxy-config-field proxy-config-full">
+          <label for="cfg-socks5-entry-listen">Entry Listen Address</label>
+          <input type="text" id="cfg-socks5-entry-listen" placeholder="0.0.0.0:10811" data-config-path="proxy.socks5.entry_listen">
+          <small>Enable the local SOCKS5 entry (LAN devices connect here). Empty = off. Non-loopback requires credentials below.</small>
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-entry-user">Entry Username</label>
+          <input type="text" id="cfg-socks5-entry-user" placeholder="mesh" data-config-path="proxy.socks5.entry_username">
+        </div>
+        <div class="proxy-config-field">
+          <label for="cfg-socks5-entry-pass">Entry Password</label>
+          <input type="password" id="cfg-socks5-entry-pass" placeholder="••••••••" data-config-path="proxy.socks5.entry_password">
+          <small>RFC 1929 auth for entry clients (curl -U user:pass).</small>
+        </div>
       </div>
       <div class="proxy-config-actions">
         <button type="button" class="primary" id="proxy-save-socks5" onclick="proxySaveSOCKS5()">Save SOCKS5 Config</button>
