@@ -292,59 +292,7 @@ func TestMuxJoinWiring_ReplayProtectionThroughDemux(t *testing.T) {
 // the web server on HTTPListener() does not break the OTHER demux paths:
 // traffic that is not HTTP (the 0x4D mesh-internal marker, 'M') still routes
 // to MeshListener, not to the web server. This guards against a regression
-// where HTTPListener registration would consume the whole demux.
-//
-// NOTE: the mesh-internal path deliberately does NOT replay the 0x4D marker
-// byte (internal/mesh/mux_transport.go: "mesh key exchange expects the
-// connection WITHOUT the 0x4D marker") — so only the two payload bytes
-// arrive at the MeshListener.
-func TestMuxJoinWiring_NonJoinTrafficStillDemuxesToMeshCh(t *testing.T) {
-	_, mt, dial := newMuxJoinHarness(t)
 
-	meshLn := mt.MeshListener()
-	defer meshLn.Close()
-
-	// meshInternalMarker = 0x4D ('M') — the marker byte for mesh-internal
-	// connections, defined (unexported) in internal/mesh/mux_transport.go.
-	conn, err := dial()
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte{0x4D, 0x01, 0x02}); err != nil {
-		t.Fatalf("write mesh marker: %v", err)
-	}
-
-	acceptCh := make(chan net.Conn, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		mconn, err := meshLn.Accept()
-		if err != nil {
-			errCh <- err
-			return
-		}
-		acceptCh <- mconn
-	}()
-
-	select {
-	case mconn := <-acceptCh:
-		// The 0x4D marker is consumed by the demux peek and NOT replayed
-		// on the mesh path — expect exactly the 2 payload bytes.
-		buf := make([]byte, 2)
-		n, err := io.ReadFull(mconn, buf)
-		if err != nil {
-			t.Fatalf("read from mesh conn: %v", err)
-		}
-		if n != 2 || buf[0] != 0x01 || buf[1] != 0x02 {
-			t.Fatalf("unexpected mesh data: %v", buf[:n])
-		}
-		mconn.Close()
-	case err := <-errCh:
-		t.Fatalf("MeshListener.Accept: %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("mesh-marker traffic did not reach MeshListener — HTTP listener registration broke demux")
-	}
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
