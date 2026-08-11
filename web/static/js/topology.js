@@ -265,13 +265,15 @@
     });
     var mesh = new THREE.Mesh(geo, mat);
 
-    // Wireframe overlay for visual distinction
+    // Wireframe overlay: color by ZONE (same zone = same ring color,
+    // so zone grouping is visible at a glance).
+    var zoneRingColor = zoneColor(data.zone);
     var wireGeo = new THREE.SphereGeometry(radius * 1.18, 16, 16);
     var wireMat = new THREE.MeshBasicMaterial({
-      color: color,
+      color: zoneRingColor,
       wireframe: true,
       transparent: true,
-      opacity: 0.3,
+      opacity: 0.5,
     });
     var wireframe = new THREE.Mesh(wireGeo, wireMat);
     mesh.add(wireframe);
@@ -294,12 +296,15 @@
     // Position from API data
     mesh.position.set(data.x || 0, data.y || 0, data.z || 0);
 
-    // Always-visible hostname label
-    var label = createLabel(data.hostname || data.id.substring(0, 8));
+    // Always-visible hostname label (+ zone tag when known)
+    var labelText = data.hostname || data.id.substring(0, 8);
+    if (data.zone) labelText += ' [' + data.zone + ']';
+    var label = createLabel(labelText);
 
     var node = {
       id: data.id,
       role: data.role || 'node',
+      zone: data.zone || '',
       hostname: data.hostname || '',
       cpu: data.cpu || 0,
       mem: data.mem || 0,
@@ -315,6 +320,18 @@
     nodeGroup.add(mesh);
     labelGroup.add(label);
     return node;
+  }
+
+  // zoneColor maps a zone tag to a distinct ring color (stable hash).
+  var ZONE_PALETTE = [
+    0x3fb950, 0xd29922, 0xa371f7, 0x79c0ff, 0xf85149,
+    0x56d4dd, 0xffa657, 0xbc8cff, 0x7ee787, 0xff7b72
+  ];
+  function zoneColor(zone) {
+    if (!zone) return 0x30363d;
+    var h = 0;
+    for (var i = 0; i < zone.length; i++) h = (h * 31 + zone.charCodeAt(i)) >>> 0;
+    return ZONE_PALETTE[h % ZONE_PALETTE.length];
   }
 
   // createLabel builds a canvas-text sprite that always shows the
@@ -396,6 +413,17 @@
       opacity = CONFIG.edge.baseOpacity + (1 - lat / 200) * (CONFIG.edge.lowLatencyOpacity - CONFIG.edge.baseOpacity);
     }
 
+    // Transport → color: reality (TLS) = green, udp p2p = blue,
+    // 0x4d = amber, relay = grey. Cross-zone edges (Reality) stand out.
+    var transportColors = {
+      reality: 0x3fb950,
+      udp:     0x79c0ff,
+      '0x4d':  0xd29922,
+      relay:   0x8b949e,
+      '':      0x79c0ff
+    };
+    var lineColor = transportColors[edgeData.transport] || 0x79c0ff;
+
     var geometry = new THREE.BufferGeometry();
     var positions = new Float32Array([
       src.mesh.position.x, src.mesh.position.y, src.mesh.position.z,
@@ -405,7 +433,7 @@
 
     // Bright core line
     var material = new THREE.LineBasicMaterial({
-      color: 0x79c0ff,
+      color: lineColor,
       transparent: true,
       opacity: opacity,
       linewidth: 1,
@@ -419,7 +447,7 @@
     var glowPos = new Float32Array(positions);
     glowGeo.setAttribute('position', new THREE.BufferAttribute(glowPos, 3));
     var glowMat = new THREE.LineBasicMaterial({
-      color: 0x58a6ff,
+      color: lineColor,
       transparent: true,
       opacity: CONFIG.edge.glowOpacity,
       blending: THREE.AdditiveBlending,
@@ -433,6 +461,7 @@
       target: edgeData.target,
       latency: lat,
       bandwidth: edgeData.bandwidth_mbps || -1,
+      transport: edgeData.transport || '',
       line: line,
       glowLine: glowLine,
       srcNode: src,
@@ -918,12 +947,34 @@
 
     if (intersects.length > 0) {
       var hit = intersects[0].object;
+
+      // Edge hover: show transport / latency / bandwidth.
+      var hitEdge = edges.find(function(e) { return e.line === hit || e.glowLine === hit; });
+      if (hitEdge) {
+        var tLabel = { reality: 'Reality TLS', udp: 'UDP p2p', '0x4d': '0x4D direct', relay: 'Relay' }[hitEdge.transport] || 'Unknown';
+        tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
+        tooltip.style.top = (event.clientY - rect.top + 15) + 'px';
+        tooltip.innerHTML =
+          '<div class="tt-hostname">Link</div>' +
+          '<div class="tt-row"><span>Transport</span><strong>' + tLabel + '</strong></div>' +
+          '<div class="tt-row"><span>Ping</span><strong>' + (hitEdge.latency >= 0 ? hitEdge.latency.toFixed(1) + ' ms' : 'n/a') + '</strong></div>' +
+          '<div class="tt-row"><span>Bandwidth</span><strong>' + (hitEdge.bandwidth > 0 ? hitEdge.bandwidth.toFixed(1) + ' Mbps' : 'n/a') + '</strong></div>';
+        if (!tooltipVisible) {
+          tooltipVisible = true;
+          tooltip.style.display = 'block';
+          MeshAnim.fadeIn(tooltip);
+        }
+        renderer.domElement.style.cursor = 'pointer';
+        return;
+      }
+
       var node = nodes.find(function(n) { return n.mesh === hit; });
       if (node) {
         tooltip.style.left = (event.clientX - rect.left + 15) + 'px';
         tooltip.style.top = (event.clientY - rect.top + 15) + 'px';
         tooltip.innerHTML =
           '<div class="tt-hostname">' + (node.hostname || node.id.substring(0, 8)) + '</div>' +
+          (node.zone ? '<div class="tt-row"><span>Zone</span><strong>' + node.zone + '</strong></div>' : '') +
           '<div class="tt-row"><span>Role</span><strong>' + node.role + '</strong></div>' +
           '<div class="tt-row"><span>Status</span><strong class="tt-status-' + node.status + '">' + node.status + '</strong></div>' +
           '<div class="tt-row"><span>CPU</span><strong>' + node.cpu.toFixed(1) + '%</strong></div>' +
