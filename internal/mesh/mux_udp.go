@@ -440,8 +440,9 @@ func (m *udpMeshManager) TunCh() <-chan net.Conn {
 // UDP dial is connectionless — WriteToUDP "succeeds" even when a
 // firewall drops the datagram. Without confirmation the UDP-preferred
 // data plane would silently black-hole traffic instead of falling back
-// to TCP.
-const udpDialConfirmTimeout = 3 * time.Second
+// to TCP. 1s is plenty for real peers (RTT << 1s) and keeps the
+// fallback stall imperceptible.
+const udpDialConfirmTimeout = 1 * time.Second
 
 // DialTUNStream initiates a TUN-data UDP stream to a remote address.
 // authHeader is the first-frame authentication payload ([pubkey 64][ts
