@@ -24,6 +24,12 @@ import (
 // See RFC 5246 §6.2.1: ContentType handshake = 22.
 const tlsHandshakeRecordType = 0x16
 
+// muxUDPPacketBufSize is the receive buffer size for UDP packet reads.
+const muxUDPPacketBufSize = 65536
+
+// muxUDPRecvBufSize is the target SO_RCVBUF for UDP sockets.
+const muxUDPRecvBufSize = 2 * 1024 * 1024
+
 // ──────────────────────────────────────────────────────────────────────────────
 // MuxTransportConfig
 // ──────────────────────────────────────────────────────────────────────────────
@@ -79,18 +85,16 @@ type MuxTransportConfig struct {
 //
 // All methods are safe for concurrent use.
 type MuxTransport struct {
-	tcpListener net.Listener // shared TCP listener
+	tcpListener net.Listener   // shared TCP listener
+	udpConns    []*net.UDPConn // UDP sockets for memberlist packets (IPv4 + IPv6)
 	logger      *log.Logger
 
-	streamCh  chan net.Conn // gossip streams → memberlist
-	realityCh chan net.Conn // Reality TLS connections → reality listener
-	httpCh    chan net.Conn // HTTP connections → Dashboard/join server
+	streamCh   chan net.Conn           // gossip streams → memberlist
+	realityCh  chan net.Conn           // Reality TLS connections → reality listener
+	httpCh     chan net.Conn           // HTTP connections → Dashboard/join server
+	packetChIn chan *memberlist.Packet // UDP packets → memberlist
 	// connSem bounds concurrent TCP connection handling (slowloris guard).
 	connSem chan struct{}
-	// realityDialer is injected by MeshNode: memberlist's DialTimeout
-	// uses it to establish Reality-TLS-masked connections (Reality-only
-	// architecture — no plaintext gossip dials).
-	realityDialer func(addr string, timeout time.Duration) (net.Conn, error)
 
 	shutdown   atomic.Int32
 	shutdownMu sync.Mutex
@@ -130,23 +134,85 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		logger = log.New(log.Writer(), "[mux-transport] ", log.LstdFlags)
 	}
 
+	// Determine the UDP port: use UDPPort if set, otherwise mirror the
+	// TCP listener's port (0 if no TCP listener).
+	tcpPort := 0
+	if cfg.TCPListener != nil {
+		tcpPort = tcpPortFromListener(cfg.TCPListener)
+	}
+	udpPort := cfg.UDPPort
+	if udpPort == 0 {
+		udpPort = tcpPort
+	}
+	// When both TCPListener and UDPPort are unset, udpPort is 0.
+	// net.ListenUDP with port 0 lets the OS pick a free port — valid
+	// for testing, though production deployments should set UDPPort
+	// explicitly so the advertised port is stable across restarts.
+
+	// Create the UDP listener(s). For wildcard binds ("0.0.0.0" or "::"),
+	// bind BOTH an IPv4 socket (0.0.0.0) and an IPv6 socket ([::]). This
+	// is required for mixed IP-family meshes: an IPv6-only node (e.g. N1
+	// behind CGNAT) must receive UDP probes from IPv4 peers AND send UDP
+	// to IPv6 peers. A single [::] socket with IPV6_V6ONLY=0 can receive
+	// both, but sending IPv4 packets from it uses ::ffff: mapped source
+	// addresses that some NATs mishandle — so we keep a dedicated IPv4
+	// socket for IPv4 traffic and a dedicated IPv6 socket for IPv6.
+	// Explicit single-address binds (e.g. "127.0.0.1", "::1") stay as-is.
+	// Create the UDP listener. For wildcard binds ("0.0.0.0" or "::"),
+	// use a single [::] socket. On Linux with IPV6_V6ONLY=0 (default)
+	// it accepts BOTH IPv4 and IPv6 packets, and WriteTo from it to an
+	// IPv4 destination works (Go sends with an IPv4 source). This is
+	// essential for mixed IP-family meshes: an IPv6-only node (e.g. N1
+	// behind CGNAT) must receive UDP probes from IPv4 peers and send
+	// UDP to IPv6 peers. Explicit single-address binds (e.g. "127.0.0.1",
+	// "::1") stay as-is.
+	var udpConns []*net.UDPConn
+	udpBinds := []string{bindAddr}
+	if bindAddr == "0.0.0.0" || bindAddr == "::" {
+		udpBinds = []string{"::"}
+	}
+	for _, bind := range udpBinds {
+		udpAddr := &net.UDPAddr{IP: net.ParseIP(bind), Port: udpPort}
+		conn, err := net.ListenUDP("udp", udpAddr)
+		if err != nil {
+			return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
+		}
+		if err := setMuxUDPRecvBuf(conn); err != nil {
+			logger.Printf("[WARN] mux: failed to resize UDP recv buffer on %s: %v (continuing)", bind, err)
+		}
+		udpConns = append(udpConns, conn)
+	}
+
 	t := &MuxTransport{
 		tcpListener:   cfg.TCPListener,
+		udpConns:      udpConns,
 		logger:        logger,
 		streamCh:      make(chan net.Conn, 64),
 		realityCh:     make(chan net.Conn, 64),
 		httpCh:        make(chan net.Conn, 64),
+		packetChIn:    make(chan *memberlist.Packet, 4096),
 		connSem:       make(chan struct{}, maxConcurrentMuxConns),
 		bindAddr:      bindAddr,
 		advertiseAddr: cfg.AdvertiseAddr,
 		advertisePort: cfg.AdvertisePort,
 	}
 
-	if t.advertisePort == 0 && t.tcpListener != nil {
-		if addr, ok := t.tcpListener.Addr().(*net.TCPAddr); ok {
+	if t.advertisePort == 0 {
+		t.advertisePort = tcpPort
+	}
+	// In UDP-only mode (no TCP listener), advertisePort is still 0.
+	// Extract the actual bound port from the first UDP socket so
+	// memberlist can advertise a valid port for TCP push/pull sync.
+	if t.advertisePort == 0 && len(udpConns) > 0 {
+		if addr, ok := udpConns[0].LocalAddr().(*net.UDPAddr); ok && addr != nil {
 			t.advertisePort = addr.Port
 		}
 	}
+
+	// Start the UDP listen loop (always needed for gossip).
+	t.wg.Add(1)
+	go t.udpListenLoop()
+
 	// Start the TCP accept loop only if we have a TCP listener.
 	if t.tcpListener != nil {
 		t.wg.Add(1)
@@ -216,62 +282,64 @@ func (t *MuxTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, err
 // WriteTo sends a UDP packet to the given address. The address is a
 // "host:port" string. Returns the transmission timestamp as close to
 // the actual send time as possible.
-// WriteTo writes a packet to the given address. Reality-only: UDP is
-// fully disabled, so this always fails (memberlist must use TCP
-// streams via DialTimeout).
 func (t *MuxTransport) WriteTo(b []byte, addr string) (time.Time, error) {
-	return time.Time{}, fmt.Errorf("mux: UDP disabled (Reality-only transport)")
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("mux: resolve UDP addr %q: %w", addr, err)
+	}
+	// Pick the socket matching the destination's IP family. IPv6 dest →
+	// IPv6 socket; otherwise IPv4 socket. This is essential: a single
+	// dual-stack [::] socket can receive both families, but sending IPv4
+	// packets from it yields ::ffff: mapped source addresses that some
+	// NATs mishandle, and sending IPv6 packets from an IPv4-only socket
+	// fails outright ("non-IPv4 address").
+	var target *net.UDPConn
+	if udpAddr.IP != nil && udpAddr.IP.To4() == nil {
+		for _, conn := range t.udpConns {
+			if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() == nil {
+				target = conn
+				break
+			}
+		}
+	}
+	if target == nil {
+		for _, conn := range t.udpConns {
+			if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() != nil {
+				target = conn
+				break
+			}
+		}
+	}
+	if target == nil && len(t.udpConns) > 0 {
+		target = t.udpConns[0]
+	}
+	if target == nil {
+		return time.Time{}, fmt.Errorf("mux: no UDP socket available")
+	}
+	_, err = target.WriteTo(b, udpAddr)
+	return time.Now(), err
 }
 
 // PacketCh returns the channel for receiving incoming UDP packets.
-// Reality-only: UDP is disabled — returns nil so memberlist runs in
-// TCP-stream mode (gossip rides inside Reality TLS).
 func (t *MuxTransport) PacketCh() <-chan *memberlist.Packet {
-	return nil
+	return t.packetChIn
 }
 
-// DialTimeout creates an outbound connection to the given address with
-// the specified timeout. This is used by memberlist for anti-entropy
-// syncs and fallback probes.
-//
-// Reality-only: the dial goes through the injected Reality dialer so
-// memberlist traffic is ALSO masked as Reality TLS — no plaintext
-// memberlist connection ever leaves the node. Without an injected
-// dialer (non-Reality setup) the dial fails: every connection must be
-// Reality.
+// DialTimeout creates an outbound TCP connection to the given address
+// with the specified timeout. This is used by memberlist for anti-entropy
+// syncs and fallback probes. The dialed connection arrives at the remote
+// peer's shared TCP listener, where the remote muxTransport's peek logic
+// routes it to the gossip StreamCh.
 func (t *MuxTransport) DialTimeout(addr string, timeout time.Duration) (net.Conn, error) {
-	if t.realityDialer == nil {
-		return nil, fmt.Errorf("mux: no Reality dialer injected (Reality-only transport)")
-	}
-	return t.realityDialer(addr, timeout)
+	dialer := net.Dialer{Timeout: timeout}
+	return dialer.Dial("tcp", addr)
 }
 
 // StreamCh returns the channel for receiving incoming memberlist gossip
-// streams. Each conn delivered here has been demuxed: the peeked
+// TCP streams. Each conn delivered here has been demuxed: the peeked
 // byte has been replayed via connWithPrefix so the stream is intact.
 func (t *MuxTransport) StreamCh() <-chan net.Conn {
 	return t.streamCh
-}
-
-// DeliverStream hands a connection to the memberlist gossip consumer.
-// Used by MeshNode to route Reality-decrypted memberlist streams (the
-// Reality-only architecture carries gossip inside Reality TLS).
-func (t *MuxTransport) DeliverStream(conn net.Conn) {
-	select {
-	case t.streamCh <- conn:
-	case <-t.shutdownDone():
-		conn.Close()
-	default:
-		t.logger.Printf("[WARN] mux: gossip accept queue full, dropping connection from %s", conn.RemoteAddr())
-		conn.Close()
-	}
-}
-
-// SetRealityDialer injects the Reality dialer used by memberlist's
-// DialTimeout (Reality-only transport: every outbound connection,
-// including gossip, is Reality TLS).
-func (t *MuxTransport) SetRealityDialer(fn func(addr string, timeout time.Duration) (net.Conn, error)) {
-	t.realityDialer = fn
 }
 
 // Shutdown stops the transport, closing the TCP listener and UDP conn.
@@ -291,6 +359,9 @@ func (t *MuxTransport) Shutdown() error {
 
 	if t.tcpListener != nil {
 		_ = t.tcpListener.Close()
+	}
+	for _, conn := range t.udpConns {
+		_ = conn.Close()
 	}
 
 	t.wg.Wait()
@@ -508,10 +579,18 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 			wrapped.Close()
 		}
 	} else {
-		// Unknown/plaintext protocol (e.g. raw memberlist gossip from an
-		// old peer). Reality-only: every connection must be TLS — refuse
-		// plaintext rather than serve it.
-		conn.Close()
+		// Memberlist gossip stream.
+		// Use bufferedConn (bufio.Reader-based) for compatibility with
+		// memberlist v0.6.0's RemoveLabelHeaderFromStream.
+		wrapped := &bufferedConn{Reader: bufio.NewReader(io.MultiReader(bytes.NewReader(peekBuf), conn)), conn: conn}
+		select {
+		case t.streamCh <- wrapped:
+		case <-t.shutdownDone():
+			wrapped.Close()
+		default:
+			t.logger.Printf("[WARN] mux: gossip accept queue full, dropping connection from %s", conn.RemoteAddr())
+			wrapped.Close()
+		}
 	}
 }
 
@@ -539,6 +618,66 @@ func (t *MuxTransport) shutdownDone() <-chan struct{} {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // udpListenLoop reads UDP packets and delivers them to the packet channel.
+func (t *MuxTransport) udpListenLoop() {
+	defer t.wg.Done()
+
+	// One reader goroutine per UDP socket (IPv4 + IPv6), all feeding
+	// the same packetChIn channel (or the mesh manager for 0x4D).
+	var readers sync.WaitGroup
+	for _, conn := range t.udpConns {
+		conn := conn
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			buf := make([]byte, muxUDPPacketBufSize)
+			for {
+				n, addr, err := conn.ReadFrom(buf)
+				ts := time.Now()
+				if err != nil {
+					if t.shutdown.Load() == 1 {
+						return
+					}
+					t.logger.Printf("[ERR] mux: UDP read error: %v", err)
+					continue
+				}
+				if n < 1 {
+					t.logger.Printf("[WARN] mux: UDP packet too short (%d bytes) from %s", n, addr)
+					continue
+				}
+				// Copy out of the shared read buffer: the same buf is
+				// reused for the next ReadFrom, and packets queued on
+				// packetChIn must not alias it (memberlist's consumer
+				// may read them after the buffer was overwritten —
+				// corrupted gossip packets under load).
+				pkt := make([]byte, n)
+				copy(pkt, buf[:n])
+				select {
+				case t.packetChIn <- &memberlist.Packet{
+					Buf:       pkt,
+					From:      addr,
+					Timestamp: ts,
+				}:
+				case <-t.shutdownDone():
+					return
+				}
+			}
+		}()
+	}
+	readers.Wait()
+}
+
+// setMuxUDPRecvBuf attempts to set the UDP receive buffer to a large size.
+func setMuxUDPRecvBuf(c *net.UDPConn) error {
+	size := muxUDPRecvBufSize
+	var err error
+	for size > 0 {
+		if err = c.SetReadBuffer(size); err == nil {
+			return nil
+		}
+		size = size / 2
+	}
+	return err
+}
 
 // tcpPortFromListener extracts the port from a TCP listener's address.
 func tcpPortFromListener(ln net.Listener) int {

@@ -102,8 +102,128 @@ func TestMuxDemux_ClientResetDuringPeek(t *testing.T) {
 
 // TestMuxDemux_ExactBoundaryAtByte22 verifies that byte 22 (0x16 = TLS)
 // is correctly routed to Reality, while byte 21 and 23 go to gossip.
+// Each connection is sent and verified sequentially to avoid race conditions.
+func TestMuxDemux_ExactBoundaryAtByte22(t *testing.T) {
+	mt, _, addr := newTestMuxTransport(t)
+	defer mt.Shutdown()
+
+	rl := mt.RealityListener()
+	defer rl.Close()
+	realityCh := make(chan net.Conn, 10)
+	go func() {
+		for {
+			conn, err := rl.Accept()
+			if err != nil {
+				close(realityCh)
+				return
+			}
+			realityCh <- conn
+		}
+	}()
+
+	tests := []struct {
+		b         byte
+		isReality bool
+	}{
+		{0x14, false},
+		{0x15, false},
+		{0x16, true},
+		{0x17, false},
+		{0x18, false},
+	}
+
+	for _, tt := range tests {
+		go func(b byte) {
+			conn, _ := net.Dial("tcp", addr)
+			defer conn.Close()
+			conn.Write([]byte{b, 0xAA})
+			time.Sleep(30 * time.Millisecond)
+		}(tt.b)
+
+		if tt.isReality {
+			select {
+			case conn := <-realityCh:
+				buf := make([]byte, 2)
+				n, _ := io.ReadFull(conn, buf)
+				if n != 2 || buf[0] != tt.b {
+					t.Errorf("byte 0x%02x (TLS): got 0x%02x", tt.b, buf[0])
+				}
+				conn.Close()
+			case conn := <-mt.StreamCh():
+				conn.Close()
+				t.Errorf("byte 0x%02x (TLS) routed to StreamCh", tt.b)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("byte 0x%02x: timed out", tt.b)
+			}
+		} else {
+			select {
+			case conn := <-mt.StreamCh():
+				buf := make([]byte, 2)
+				n, _ := io.ReadFull(conn, buf)
+				if n != 2 || buf[0] != tt.b {
+					t.Errorf("byte 0x%02x (gossip): got 0x%02x", tt.b, buf[0])
+				}
+				conn.Close()
+			case conn := <-realityCh:
+				conn.Close()
+				t.Errorf("byte 0x%02x (gossip) routed to Reality", tt.b)
+			case <-time.After(2 * time.Second):
+				t.Fatalf("byte 0x%02x: timed out", tt.b)
+			}
+		}
+	}
+}
 
 // TestMuxDemux_HighVolumeRapidConnections verifies that the mux can handle
+// many rapid connections without dropping or misrouting any.
+func TestMuxDemux_HighVolumeRapidConnections(t *testing.T) {
+	mt, _, addr := newTestMuxTransport(t)
+	defer mt.Shutdown()
+
+	rl := mt.RealityListener()
+	defer rl.Close()
+	realityCh := make(chan net.Conn, 64)
+	go func() {
+		for {
+			conn, err := rl.Accept()
+			if err != nil {
+				close(realityCh)
+				return
+			}
+			realityCh <- conn
+		}
+	}()
+
+	const numConns = 50
+
+	// Use only memberlist message type bytes (0-14) to avoid 22 (TLS).
+	for i := 0; i < numConns; i++ {
+		go func(idx int) {
+			conn, _ := net.Dial("tcp", addr)
+			defer conn.Close()
+			// Use bytes 0-13 only (memberlist message types, all != 22).
+			firstByte := byte(idx % 14)
+			conn.Write([]byte{firstByte, byte(idx)})
+			time.Sleep(30 * time.Millisecond)
+		}(i)
+	}
+
+	got := 0
+	deadline := time.After(5 * time.Second)
+
+	for got < numConns {
+		select {
+		case conn := <-mt.StreamCh():
+			got++
+			conn.Close()
+		case conn := <-realityCh:
+			conn.Close()
+			t.Errorf("unexpected reality conn at count %d", got)
+		case <-deadline:
+			t.Fatalf("timed out: got %d/%d", got, numConns)
+		}
+	}
+}
 
 // TestMuxDemux_RealityQueueFullBackpressure verifies that when the Reality
 // accept queue is full (64 buffered), new TLS connections are dropped.

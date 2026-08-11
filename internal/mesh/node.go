@@ -32,18 +32,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/smux"
 )
 
-// Protocol IDs carried INSIDE the Reality TLS session as the first
-// byte after TLS decryption. Every byte on the wire is masked as
-// Reality TLS (Reality-only architecture — zero plaintext traffic).
-const (
-	// protoMeshSession marks a mesh session (X25519 key exchange →
-	// SecureConn → smux).
-	protoMeshSession byte = 0x01
-	// protoMemberlist marks a memberlist gossip stream (push/pull,
-	// probes) — carried inside Reality TLS like everything else.
-	protoMemberlist byte = 0x02
-)
-
 // MeshNode is the core mesh node. It manages:
 //   - An Ed25519 identity (Layer 0)
 //   - A Reality TLS transport or mesh-internal transport (Layer 1)
@@ -288,7 +276,6 @@ func (n *MeshNode) Start() error {
 		n.mu.Unlock()
 
 		log.Printf("[mesh] ordinary node mode (TCP+UDP gossip on %s:%d)", bindAddr, tcpPort)
-		n.injectRealityDialer()
 
 	} else {
 		// Shared node mode (reality.enabled: true).
@@ -337,7 +324,6 @@ func (n *MeshNode) Start() error {
 			n.mu.Lock()
 			n.muxTransport = mt
 			n.mu.Unlock()
-			n.injectRealityDialer()
 
 			// Wrap the MuxTransport's RealityListener with REALITY auth.
 			realityLn := mt.RealityListener()
@@ -404,35 +390,11 @@ func (n *MeshNode) acceptLoop(ln net.Listener) {
 			continue
 		}
 
-		// Reality-only: the first byte inside the TLS session is a
-		// protocol ID — 0x01 = mesh session (key exchange), 0x02 =
-		// memberlist gossip stream. Both ride inside Reality TLS, so
-		// no plaintext traffic ever exists on the wire.
-		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		var protoBuf [1]byte
-		if _, err := io.ReadFull(conn, protoBuf[:]); err != nil {
-			conn.Close()
-			continue
-		}
-		conn.SetReadDeadline(time.Time{})
+		remoteAddr := conn.RemoteAddr().String()
+		log.Printf("[mesh] accepted connection from %s", remoteAddr)
 
-		switch protoBuf[0] {
-		case protoMeshSession:
-			remoteAddr := conn.RemoteAddr().String()
-			log.Printf("[mesh] accepted connection from %s", remoteAddr)
-			go n.handleConnection(conn, remoteAddr)
-		case protoMemberlist:
-			// Gossip stream — hand to memberlist (still inside the
-			// Reality TLS connection).
-			if mt := n.MuxTransport(); mt != nil {
-				mt.DeliverStream(conn)
-			} else {
-				conn.Close()
-			}
-		default:
-			// Unknown protocol ID — refuse.
-			conn.Close()
-		}
+		// Handle each connection in its own goroutine.
+		go n.handleConnection(conn, remoteAddr)
 	}
 }
 
@@ -987,46 +949,6 @@ func (n *MeshNode) MuxTransport() *MuxTransport {
 	return n.muxTransport
 }
 
-// injectRealityDialer wires memberlist's DialTimeout through Reality
-// TLS (Reality-only architecture): gossip connections are masked as
-// Reality TLS exactly like mesh sessions. The memberlist transport
-// asks to dial a gossip peer; we resolve its Reality client config and
-// announce the memberlist protocol ID inside the TLS session.
-func (n *MeshNode) injectRealityDialer() {
-	mt := n.MuxTransport()
-	if mt == nil {
-		return
-	}
-	mt.SetRealityDialer(func(addr string, timeout time.Duration) (net.Conn, error) {
-		peerCfg, ok := n.findPeerConfigByAddress(addr)
-		if !ok || peerCfg.Reality == nil {
-			return nil, fmt.Errorf("mesh: no Reality config for gossip peer %s (Reality-only)", addr)
-		}
-		hsCfg := handshake.HandshakeConfig{
-			DialTimeout:      timeout,
-			TLSFingerprint:   "chrome",
-			RealityPublicKey: peerCfg.Reality.PublicKey,
-			RealityShortID:   peerCfg.Reality.ShortID,
-			ServerName:       peerCfg.Reality.ServerName,
-		}
-		if peerCfg.Reality.TLSFingerprint != "" {
-			hsCfg.TLSFingerprint = peerCfg.Reality.TLSFingerprint
-		}
-		hs := handshake.NewRealityHandshake(hsCfg)
-		ctx, cancel := context.WithTimeout(n.ctx, timeout)
-		defer cancel()
-		conn, err := hs.Connect(ctx, addr)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := conn.Write([]byte{protoMemberlist}); err != nil {
-			conn.Close()
-			return nil, err
-		}
-		return conn, nil
-	})
-}
-
 // Identity returns this node's Ed25519 identity.
 func (n *MeshNode) Identity() *identity.Identity {
 	return n.identity
@@ -1090,13 +1012,6 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	conn, err := hs.Connect(ctx, address)
 	if err != nil {
 		return nil, fmt.Errorf("mesh: dial %s: %w", address, err)
-	}
-
-	// 3b. Announce the protocol ID inside the TLS session (mesh
-	// session). The receiver routes by this byte.
-	if _, err := conn.Write([]byte{protoMeshSession}); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("mesh: write protocol ID to %s: %w", address, err)
 	}
 
 	// 4. Set a deadline for the key exchange (Layer 2a).
