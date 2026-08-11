@@ -284,6 +284,10 @@ func (n *MeshNode) Start() error {
 		meshLn := n.muxTransport.MeshListener()
 		go n.acceptMeshLoop(meshLn)
 
+		// Wire the UDP TUN stream authenticator (multipath D): the
+		// tun-forwarder's UDP-preferred data plane authenticates
+		// first-frame signatures against known peers.
+		n.wireTUNAUDAuthValidator()
 	} else {
 		// Shared node mode (reality.enabled: true).
 		if !n.cfg.Reality.Enabled {
@@ -331,6 +335,12 @@ func (n *MeshNode) Start() error {
 			n.mu.Lock()
 			n.muxTransport = mt
 			n.mu.Unlock()
+
+			// Wire the UDP TUN stream authenticator (multipath D) in
+			// shared-node mode too — without it the UDP-preferred data
+			// plane is silently refused on shared nodes (validator nil
+			// → all first frames dropped → always falls back to TCP).
+			n.wireTUNAUDAuthValidator()
 
 			// Wrap the MuxTransport's RealityListener with REALITY auth.
 			realityLn := mt.RealityListener()
@@ -963,6 +973,114 @@ func (n *MeshNode) MuxTransport() *MuxTransport {
 	return n.muxTransport
 }
 
+// TunUDPListener returns a listener for inbound TUN-data UDP streams
+// (multipath D). Each accepted conn carries framed TUN packets over the
+// UDP ARQ layer. Returns nil when the mux transport is unavailable.
+func (n *MeshNode) TunUDPListener() net.Listener {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return nil
+	}
+	return mt.TunUDPListener()
+}
+
+// DialTUNUDPForPeer opens (or reuses) the UDP ARQ TUN stream to a peer,
+// resolving its stable endpoint via gossip/config/routing table. The
+// first frame carries an Ed25519-signed auth header (pubkey + timestamp
+// + signature) so the receiver can authenticate the UDP stream — this
+// is what prevents unauthenticated UDP injection into the TUN.
+// The returned conn is used by the tun-forwarder as the UDP-preferred
+// data path (multipath D); on any error the caller falls back to TCP
+// smux.
+func (n *MeshNode) DialTUNUDPForPeer(peerKey string) (net.Conn, error) {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return nil, fmt.Errorf("mesh: mux transport unavailable")
+	}
+	ep := n.resolvePeerEndpoint(peerKey)
+	if ep == "" {
+		return nil, fmt.Errorf("mesh: no endpoint known for peer %s", shortKey(peerKey))
+	}
+	authHeader, err := n.buildTUNAuthHeader()
+	if err != nil {
+		return nil, err
+	}
+	sc, err := mt.DialTUNUDP(ep, authHeader)
+	if err != nil {
+		return nil, err
+	}
+	return sc, nil
+}
+
+// buildTUNAuthHeader produces the first-frame auth payload for a TUN
+// UDP stream: [pubkey 64][ts 10][sig 128] where sig = Ed25519(pubkey+ts).
+func (n *MeshNode) buildTUNAuthHeader() ([]byte, error) {
+	if n.identity == nil {
+		return nil, fmt.Errorf("mesh: no identity for TUN UDP auth")
+	}
+	now := time.Now().Unix()
+	pubKeyHex := n.identity.PublicKey
+	tsStr := fmt.Sprintf("%010d", now)
+	signedData := []byte(pubKeyHex + tsStr)
+	sigHex, err := n.identity.Sign(signedData)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: TUN UDP auth sign: %w", err)
+	}
+	if len(pubKeyHex) != 64 || len(sigHex) != 128 {
+		return nil, fmt.Errorf("mesh: unexpected key/sig lengths %d/%d", len(pubKeyHex), len(sigHex))
+	}
+	header := make([]byte, 0, tunUDPAuthLen)
+	header = append(header, pubKeyHex...)
+	header = append(header, tsStr...)
+	header = append(header, sigHex...)
+	return header, nil
+}
+
+// wireTUNAUDAuthValidator installs the UDP TUN stream authenticator:
+// the pubkey must be a known peer and the Ed25519 signature over
+// (pubkey+ts) must verify.
+func (n *MeshNode) wireTUNAUDAuthValidator() {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return
+	}
+	mt.udpMesh.SetTUNUDPAuthValidator(func(pubKeyHex string, data []byte, sigHex string) (string, bool) {
+		// The key must be a peer we have a session with (or know via
+		// config/routing) — refuse strangers.
+		if !n.isKnownPeer(pubKeyHex) {
+			return "", false
+		}
+		if !identity.Verify(pubKeyHex, data, sigHex) {
+			return "", false
+		}
+		return pubKeyHex, true
+	})
+}
+
+// isKnownPeer reports whether the public key belongs to a peer we have
+// (or have had) a session with, or is in the static config.
+func (n *MeshNode) isKnownPeer(pubKeyHex string) bool {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+	if _, ok := n.sessions[pubKeyHex]; ok {
+		return true
+	}
+	if _, ok := n.clientSessions[pubKeyHex]; ok {
+		return true
+	}
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
+	for i := range n.cfg.Peers {
+		if n.cfg.Peers[i].PublicKey == pubKeyHex {
+			return true
+		}
+	}
+	if entry, ok := n.routes.GetPeer(pubKeyHex); ok && entry.Endpoint != "" {
+		return true
+	}
+	return false
+}
+
 // Identity returns this node's Ed25519 identity.
 func (n *MeshNode) Identity() *identity.Identity {
 	return n.identity
@@ -1104,6 +1222,78 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	// Start auto-reconnect watcher for this outbound client session.
 	n.startSessionWatcher(peerIdentityHex, address, true)
 
+	return stream, nil
+}
+
+// DialUDPPeer dials a peer over the UDP data plane (T0.3). It opens a
+// reliable ARQ stream, sends the 0x4D marker, then runs the standard
+// v2 stack: X25519 ECDH → SecureConn → smux session. Used by the
+// hole-punch direct path. Falls back to TCP DialPeerByEndpoint when the
+// UDP stream cannot be established.
+func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, error) {
+	mt := n.MuxTransport()
+	if mt == nil {
+		return nil, fmt.Errorf("mesh: no mux transport for UDP dial")
+	}
+	sc, err := mt.DialUDP(address)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: udp dial %s: %w", address, err)
+	}
+
+	// DialUDP already sent the 0x4D marker frame; the stream is ready
+	// for key exchange.
+	sc.SetDeadline(time.Now().Add(30 * time.Second))
+
+	keys, peerIdentityHex, err := session.ClientKeyExchange(sc, n.identity)
+	if err != nil {
+		sc.Close()
+		return nil, fmt.Errorf("mesh: udp key exchange with %s: %w", address, err)
+	}
+	sc.SetDeadline(time.Time{})
+
+	log.Printf("[mesh] udp key exchange complete with %s (peer=%s)", address, peerIdentityHex[:16]+"...")
+
+	secureConn, err := crypto.NewSecureConn(sc, keys.SendKey[:], keys.RecvKey[:])
+	if err != nil {
+		sc.Close()
+		return nil, fmt.Errorf("mesh: udp create SecureConn with %s: %w", address, err)
+	}
+
+	smuxSession, err := smux.Client(secureConn, smuxCfg())
+	if err != nil {
+		secureConn.Close()
+		return nil, fmt.Errorf("mesh: udp smux handshake with %s: %w", address, err)
+	}
+
+	n.sessionsMu.Lock()
+	oldSession, exists := n.sessions[peerIdentityHex]
+	n.sessions[peerIdentityHex] = smuxSession
+	n.clientSessions[peerIdentityHex] = smuxSession
+	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
+	n.sessionsMu.Unlock()
+
+	if exists {
+		oldSession.Close()
+	}
+
+	log.Printf("[mesh] udp session established with %s (peer=%s)", address, peerIdentityHex[:16]+"...")
+	n.fireSessionEstablished(peerIdentityHex)
+
+	n.routes.AddPeer(&PeerEntry{
+		ID:       peerIdentityHex,
+		Endpoint: address,
+	})
+	go n.handleSessionStreams(peerIdentityHex, smuxSession)
+	n.startSessionWatcher(peerIdentityHex, address, true)
+
+	stream, err := smuxSession.OpenStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("mesh: udp open stream to %s: %w", address, err)
+	}
+	if err := writePortFrame(stream, 0); err != nil {
+		stream.Close()
+		return nil, fmt.Errorf("mesh: udp write port frame to %s: %w", address, err)
+	}
 	return stream, nil
 }
 
