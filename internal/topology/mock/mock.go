@@ -182,6 +182,9 @@ func (m *MockPeers) PeerZone(peerID string) string { return "" }
 // PeerTransport returns the mock transport (empty).
 func (m *MockPeers) PeerTransport(peerID string) string { return "" }
 
+// PeerRTT returns the mock RTT (0 = unknown).
+func (m *MockPeers) PeerRTT(peerID string) float64 { return 0 }
+
 // --- MockMetrics: implements topology.TopologyMetrics ---
 
 // MockMetrics is a mock implementation of topology.TopologyMetrics

@@ -164,15 +164,15 @@ func TestTopologyAPI_UnknownEdgeHasMinusOne(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	// With noPath provider, all edges should have latency=-1 (built from
-	// interface fallback via buildEdgesFromInterface which checks all pairs).
-	// If no measurements exist, edges should be empty.
-	if len(snap.Edges) != 0 {
-		for _, e := range snap.Edges {
-			if e.LatencyMs != -1 {
-				t.Errorf("Expected latency_ms=-1 for unknown edge %s→%s, got %f",
-					e.Source, e.Target, e.LatencyMs)
-			}
+	// Full-connectivity semantics: every known pair gets an edge, even
+	// without path data — latency 0 = unknown (edge still drawn).
+	if len(snap.Edges) == 0 {
+		t.Fatal("expected full-connectivity edges (all pairs), got none")
+	}
+	for _, e := range snap.Edges {
+		if e.LatencyMs < 0 {
+			t.Errorf("Expected latency_ms >= 0 (0=unknown) for edge %s→%s, got %f",
+				e.Source, e.Target, e.LatencyMs)
 		}
 	}
 }

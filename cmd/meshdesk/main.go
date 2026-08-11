@@ -348,6 +348,9 @@ func main() {
 	// Session-based meta exchange (P1): VirtualIP knowledge floods the
 	// smux session graph — works even when memberlist is degraded.
 	var metaExchanger *mesh.MetaExchanger
+	if err := node.RegisterPingHandler(); err != nil {
+		log.Printf("Warning: failed to register ping handler: %v", err)
+	}
 	if me, err := node.RegisterMetaExchanger(); err == nil {
 		metaExchanger = me
 		node.SetSessionEstablishedHandler(func(peerKey string) {
