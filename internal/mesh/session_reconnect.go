@@ -203,13 +203,17 @@ func (n *MeshNode) tryReconnect(ctx context.Context, peerIdentityHex, endpoint s
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Reality-only reconnect: every peer must have Reality client
-	// config. No 0x4D fallback — if Reality dial fails the peer is
-	// unreachable (NAT'd peers reach the mesh via their own outbound
-	// sessions, never via inbound dials).
-	stream, err := n.Dial(dialCtx, "tcp", endpoint)
+	stream, err := n.DialPeerByEndpoint(dialCtx, endpoint)
 	if err != nil {
-		return fmt.Errorf("reality dial: %w", err)
+		if n.hasPeerConfigByAddress(endpoint) {
+			stream2, err2 := n.Dial(dialCtx, "tcp", endpoint)
+			if err2 != nil {
+				return fmt.Errorf("mesh-internal dial: %w; reality dial: %v", err, err2)
+			}
+			stream2.Close()
+			return nil
+		}
+		return fmt.Errorf("mesh-internal dial: %w", err)
 	}
 	stream.Close()
 	return nil

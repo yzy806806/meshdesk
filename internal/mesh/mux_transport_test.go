@@ -84,9 +84,17 @@ func TestNewMuxTransport_UDPOnlyMode(t *testing.T) {
 	if rl == nil {
 		t.Fatal("RealityListener is nil")
 	}
+	// MeshListener should not panic.
+	ml := mt.MeshListener()
+	if ml == nil {
+		t.Fatal("MeshListener is nil")
+	}
 	// Addr() on listeners should return nil, not panic.
 	if rl.Addr() != nil {
 		t.Fatalf("expected nil Addr in UDP-only mode, got %v", rl.Addr())
+	}
+	if ml.Addr() != nil {
+		t.Fatalf("expected nil Addr in UDP-only mode, got %v", ml.Addr())
 	}
 }
 
@@ -866,6 +874,21 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 		}
 	}()
 
+	// Also accept mesh-internal connections (0x4D marker).
+	meshCh := mt.MeshListener()
+	defer meshCh.Close()
+	meshConnCh := make(chan net.Conn, 256)
+	go func() {
+		for {
+			conn, err := meshCh.Accept()
+			if err != nil {
+				close(meshConnCh)
+				return
+			}
+			meshConnCh <- conn
+		}
+	}()
+
 	// Also accept HTTP connections (G/P/H first byte).
 	httpLn := mt.HTTPListener()
 	defer httpLn.Close()
@@ -892,7 +915,7 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 		}(firstByte)
 
 		isTLS := firstByte == tlsHandshakeRecordType
-		isRejected := firstByte == 0x4D // retired mesh-internal protocol — refused
+		isMesh := firstByte == meshInternalMarker
 		isHTTP := firstByte == 'G' || firstByte == 'P' || firstByte == 'H'
 
 		select {
@@ -901,9 +924,9 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 				conn.Close()
 				t.Fatalf("byte 0x%02x (TLS) was routed to StreamCh instead of Reality", firstByte)
 			}
-			if isRejected {
+			if isMesh {
 				conn.Close()
-				t.Fatalf("byte 0x%02x (retired mesh) must not be served", firstByte)
+				t.Fatalf("byte 0x%02x (mesh) was routed to StreamCh instead of MeshCh", firstByte)
 			}
 			if isHTTP {
 				conn.Close()
@@ -926,13 +949,20 @@ func TestMuxDemux_AllByteValues(t *testing.T) {
 				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
 			}
 			conn.Close()
-		case <-time.After(2 * time.Second):
-			if isRejected {
-				// 0x4D is refused (connection closed) — no delivery is
-				// the expected outcome.
-				continue
+		case conn := <-meshConnCh:
+			if !isMesh {
+				conn.Close()
+				t.Fatalf("byte 0x%02x was routed to MeshCh instead of StreamCh", firstByte)
 			}
-			t.Fatalf("byte 0x%02x: timed out", firstByte)
+			// Mesh-internal path: the 0x4D marker byte was consumed by
+			// MuxTransport peek (no connWithPrefix replay), so only the
+			// remaining data (0x01) is readable.
+			buf := make([]byte, 1)
+			n, _ := io.ReadFull(conn, buf)
+			if n != 1 || buf[0] != 0x01 {
+				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
+			}
+			conn.Close()
 		case conn := <-httpConnCh:
 			if !isHTTP {
 				conn.Close()
