@@ -180,6 +180,11 @@ type MeshNode struct {
 	// Guarded by sessionsMu. Used by the topology display.
 	peerTransport map[string]string
 
+	// learnedZones caches zone tags learned via the meta exchange
+	// (0x4D45) — works even when memberlist/gossip is degraded.
+	// Guarded by sessionsMu.
+	learnedZones map[string]string
+
 	// relayBackoff tracks failed (target, relay) relay attempts so the
 	// dialer stops hammering unreachable targets. Without this, every
 	// connection attempt to an unreachable peer (socks5 exit, monitor
@@ -214,6 +219,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		registry:             registry,
 		sessions:             make(map[string]*smux.Session),
 		peerTransport:        make(map[string]string),
+		learnedZones:         make(map[string]string),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		sessionEstablished:   []func(peerKey string){},
@@ -2224,11 +2230,30 @@ func (n *MeshNode) PeerZone(peerKey string) string {
 	}
 	n.peersMu.RUnlock()
 
+	// Meta-exchange-learned zone (works with degraded memberlist).
+	n.sessionsMu.Lock()
+	lz, ok := n.learnedZones[peerKey]
+	n.sessionsMu.Unlock()
+	if ok && lz != "" {
+		return lz
+	}
+
 	// Gossip-learned zone (from NodeMeta) as fallback.
 	if gz := n.learnedZone(peerKey); gz != "" {
 		return gz
 	}
 	return ""
+}
+
+// SetLearnedZone records a peer's zone tag learned via the meta
+// exchange (0x4D45) — independent of memberlist health.
+func (n *MeshNode) SetLearnedZone(peerKey, zone string) {
+	if peerKey == "" || zone == "" {
+		return
+	}
+	n.sessionsMu.Lock()
+	n.learnedZones[peerKey] = zone
+	n.sessionsMu.Unlock()
 }
 
 // SameZone reports whether the peer is in the same zone as us.
