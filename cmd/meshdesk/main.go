@@ -701,9 +701,7 @@ func main() {
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 					for _, ep := range endpoints {
-						// Reality-only: dial requires the peer to have
-						// Reality client config (matched by address).
-						stream, err := node.Dial(ctx, "tcp", ep)
+						stream, err := node.DialPeerByEndpoint(ctx, ep)
 						if err == nil {
 							stream.Close() // close port-0 stream; session stays
 							log.Printf("[mesh] auto-connected to new peer %s at %s", peerKey[:8], ep)
@@ -1690,7 +1688,7 @@ func (d *meshDialerAdapter) DialMesh(ctx context.Context, peerID string, port in
 					// the reporter's 10s context may have been
 					// consumed by the initial DialVirtualPort attempt.
 					dialCtx, dialCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					stream, dialErr := d.node.Dial(dialCtx, "tcp", ep)
+					stream, dialErr := d.node.DialPeerByEndpoint(dialCtx, ep)
 					dialCancel()
 					if dialErr == nil {
 						// Session established, now open a stream with
