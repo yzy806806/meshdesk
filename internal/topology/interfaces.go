@@ -27,6 +27,13 @@ type TopologyPeers interface {
 	// Position (0,0,0) is the default — the caller assumes no
 	// explicit position has been set.
 	Position(peerID string) (x, y, z float64)
+
+	// PeerZone returns the node's zone tag ("" if unknown).
+	PeerZone(peerID string) string
+
+	// PeerTransport returns the transport the session to the node was
+	// established over: "reality", "0x4d", "udp", or "" (no session).
+	PeerTransport(peerID string) string
 }
 
 // TopologyMetrics provides a read-only view of per-node system metrics

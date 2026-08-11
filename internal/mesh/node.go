@@ -174,6 +174,11 @@ type MeshNode struct {
 	// sessionsMu.
 	peersMu sync.RWMutex
 
+	// peerTransport records the transport each peer session was
+	// established over: "reality" (TLS), "0x4d" (mesh-internal), "udp".
+	// Guarded by sessionsMu. Used by the topology display.
+	peerTransport map[string]string
+
 	// relayBackoff tracks failed (target, relay) relay attempts so the
 	// dialer stops hammering unreachable targets. Without this, every
 	// connection attempt to an unreachable peer (socks5 exit, monitor
@@ -420,8 +425,8 @@ func (n *MeshNode) acceptLoop(ln net.Listener) {
 		remoteAddr := conn.RemoteAddr().String()
 		log.Printf("[mesh] accepted connection from %s", remoteAddr)
 
-		// Handle each connection in its own goroutine.
-		go n.handleConnection(conn, remoteAddr)
+		// Handle each connection in its own goroutine (Reality TLS).
+		go n.handleConnection(conn, remoteAddr, "reality")
 	}
 }
 
@@ -450,7 +455,7 @@ func (n *MeshNode) acceptMeshLoop(ln net.Listener) {
 
 		remoteAddr := conn.RemoteAddr().String()
 		log.Printf("[mesh] accepted mesh-internal connection from %s", remoteAddr)
-		go n.handleConnection(conn, remoteAddr)
+		go n.handleConnection(conn, remoteAddr, "0x4d")
 	}
 }
 
@@ -460,7 +465,7 @@ func (n *MeshNode) acceptMeshLoop(ln net.Listener) {
 //  2. Wrap in AES-256-GCM SecureConn (crypto.NewSecureConn)
 //  3. Create smux multiplexer session (smux.Server)
 //  4. Store the session keyed by peer identity
-func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
+func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr, transport string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[mesh] panic handling connection from %s: %v", remoteAddr, r)
@@ -506,6 +511,7 @@ func (n *MeshNode) handleConnection(conn net.Conn, remoteAddr string) {
 	n.sessionsMu.Lock()
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
+	n.peerTransport[peerIdentityHex] = transport
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
@@ -1185,6 +1191,7 @@ func (n *MeshNode) Dial(ctx context.Context, network, address string) (net.Conn,
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
 	n.clientSessions[peerIdentityHex] = smuxSession // client session for DialVirtualPort
+	n.peerTransport[peerIdentityHex] = "reality"
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
@@ -1273,6 +1280,7 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
 	n.clientSessions[peerIdentityHex] = smuxSession
+	n.peerTransport[peerIdentityHex] = "udp"
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
@@ -1388,6 +1396,8 @@ func (n *MeshNode) DialPeerByEndpoint(ctx context.Context, address string) (net.
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
 	n.clientSessions[peerIdentityHex] = smuxSession
+	n.peerTransport[peerIdentityHex] = "0x4d"
+	n.peerTransport[peerIdentityHex] = "udp"
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
@@ -2173,6 +2183,14 @@ func (n *MeshNode) LocalVirtualIP() string {
 		return ""
 	}
 	return ti.VirtualIP.String()
+}
+
+// PeerTransport returns the transport the session to the peer was
+// established over: "reality", "0x4d", "udp", or "" (no session).
+func (n *MeshNode) PeerTransport(peerKey string) string {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+	return n.peerTransport[peerKey]
 }
 
 // SetZoneLearner injects the gossip zone resolver (avoids import cycle).

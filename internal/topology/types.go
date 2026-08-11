@@ -12,6 +12,8 @@ type TopologyNode struct {
 	Mem      float64 `json:"mem"`
 	Hostname string  `json:"hostname"`
 	Status   string  `json:"status"`
+	// Zone is the node's zone tag ("cn", "us", ... — free-form).
+	Zone string `json:"zone,omitempty"`
 }
 
 // TopologyEdge represents a connection between two nodes.
@@ -21,6 +23,9 @@ type TopologyEdge struct {
 	Target        string  `json:"target"`
 	LatencyMs     float64 `json:"latency_ms"`
 	BandwidthMbps float64 `json:"bandwidth_mbps"`
+	// Transport is the current data-plane transport to the target:
+	// "reality" (TLS), "udp" (UDP P2P), "relay", "none".
+	Transport string `json:"transport,omitempty"`
 }
 
 // TopologySnapshot is the full topology response for GET /api/topology
