@@ -2,6 +2,7 @@ package mesh
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"net"
 	"strconv"
@@ -434,11 +435,24 @@ func (m *udpMeshManager) TunCh() <-chan net.Conn {
 	return m.tunCh
 }
 
+// udpDialConfirmTimeout is how long DialTUNStream waits for the peer's
+// ARQ ACK of the handshake frame before declaring the path unusable.
+// UDP dial is connectionless — WriteToUDP "succeeds" even when a
+// firewall drops the datagram. Without confirmation the UDP-preferred
+// data plane would silently black-hole traffic instead of falling back
+// to TCP.
+const udpDialConfirmTimeout = 3 * time.Second
+
 // DialTUNStream initiates a TUN-data UDP stream to a remote address.
 // authHeader is the first-frame authentication payload ([pubkey 64][ts
 // 10][sig 128]) produced by the caller (MeshNode) — it proves identity
 // and prevents UDP injection. Returns the existing stream if one is
 // already established.
+//
+// The dial only succeeds once the peer's ARQ ACK for the handshake
+// frame arrives (the receiver authenticates BEFORE acking), so an
+// unreachable/firewalled UDP path fails here and the caller falls back
+// to TCP.
 func (m *udpMeshManager) DialTUNStream(local *net.UDPConn, remote *net.UDPAddr, authHeader []byte) (*udpStreamConn, error) {
 	key := remote.String()
 
@@ -469,12 +483,38 @@ func (m *udpMeshManager) DialTUNStream(local *net.UDPConn, remote *net.UDPAddr, 
 	binary.BigEndian.PutUint32(frame[5:9], 0)
 	binary.BigEndian.PutUint16(frame[9:11], uint16(len(payload)))
 	copy(frame[udpFrameHeaderLen:], payload)
+	// Track the handshake frame in inflight so the ACK-confirmation
+	// wait below observes it being acknowledged.
+	sc.sendMu.Lock()
+	sc.inflight[0] = frame
+	sc.sendMu.Unlock()
 	if _, err := local.WriteToUDP(frame, remote); err != nil {
 		m.mu.Lock()
 		delete(m.tunStreams, key)
 		m.mu.Unlock()
 		sc.Close()
 		return nil, err
+	}
+
+	// Confirm the path: wait for the peer's ACK of the handshake
+	// frame (inflight drains when ACKed). A firewall that drops UDP
+	// yields no ACK — fail the dial so the caller falls back to TCP.
+	confirmDeadline := time.Now().Add(udpDialConfirmTimeout)
+	for {
+		sc.sendMu.Lock()
+		pending := len(sc.inflight)
+		sc.sendMu.Unlock()
+		if pending == 0 {
+			break
+		}
+		if time.Now().After(confirmDeadline) {
+			m.mu.Lock()
+			delete(m.tunStreams, key)
+			m.mu.Unlock()
+			sc.Close()
+			return nil, fmt.Errorf("udp tun stream: no ACK from %s within %s (path unusable)", remote, udpDialConfirmTimeout)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// Clean up when the stream closes.
