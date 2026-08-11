@@ -161,11 +161,12 @@ func (m *meshTopologyPeers) Position(peerID string) (x, y, z float64) {
 // PeerZone returns the node's zone tag (local node from config,
 // peers via the mesh node — config first, gossip fallback).
 func (m *meshTopologyPeers) PeerZone(peerID string) string {
-	if m.node != nil {
-		return m.node.PeerZone(peerID)
-	}
+	// Local node: authoritative from config.
 	if m.cfg != nil && peerID == m.localNodeID {
 		return m.cfg.Mesh.Zone
+	}
+	if m.node != nil {
+		return m.node.PeerZone(peerID)
 	}
 	return ""
 }
