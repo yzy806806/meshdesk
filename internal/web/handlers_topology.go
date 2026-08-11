@@ -82,6 +82,21 @@ func (m *meshTopologyPeers) AllPeerIDs() []string {
 		ids = append(ids, p.ID)
 	}
 
+	// Include peers learned via the meta exchange (0x4D45) that have a
+	// VirtualIP route but no PeerEntry — keeps the topology complete
+	// even when memberlist/gossip is degraded.
+	if m.node != nil {
+		known := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			known[id] = true
+		}
+		for pubKey := range m.node.PeerVirtualIPs() {
+			if !known[pubKey] {
+				ids = append(ids, pubKey)
+			}
+		}
+	}
+
 	return mergeGossipPeers(ids, m.liveness)
 }
 

@@ -2279,6 +2279,32 @@ func (n *MeshNode) learnedZone(peerKey string) string {
 	return zl(peerKey)
 }
 
+// PeerVirtualIPs returns all peer → VirtualIP mappings known to the
+// router (config peers + meta-exchange learned peers), excluding self.
+// Used by the topology to show nodes discovered via the meta exchange
+// even when memberlist/gossip is degraded.
+func (n *MeshNode) PeerVirtualIPs() map[string]string {
+	n.mu.RLock()
+	ti := n.tunIntegration
+	n.mu.RUnlock()
+	if ti == nil || ti.Router == nil {
+		return nil
+	}
+	self := ""
+	if n.identity != nil {
+		self = n.identity.PublicKey
+	}
+	routes := ti.Router.AllRoutes()
+	out := make(map[string]string, len(routes))
+	for ipStr, pubKey := range routes {
+		if pubKey == self {
+			continue
+		}
+		out[pubKey] = ipStr
+	}
+	return out
+}
+
 // PeerVirtualIP returns the VirtualIP known for a peer ("" if unknown).
 func (n *MeshNode) PeerVirtualIP(peerKey string) string {
 	n.mu.RLock()
