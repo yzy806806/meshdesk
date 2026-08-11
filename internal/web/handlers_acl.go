@@ -31,11 +31,11 @@ type aclRuleJSON struct {
 
 // aclStatusResponse is the JSON response for GET /api/acl/status.
 type aclStatusResponse struct {
-	Enabled       bool                  `json:"enabled"`
-	DefaultPolicy string                `json:"default_policy"`
-	AllowCount    uint64                `json:"allow_count"`
-	DenyCount     uint64                `json:"deny_count"`
-	Rules         []aclRuleJSON         `json:"rules"`
+	Enabled       bool                   `json:"enabled"`
+	DefaultPolicy string                 `json:"default_policy"`
+	AllowCount    uint64                 `json:"allow_count"`
+	DenyCount     uint64                 `json:"deny_count"`
+	Rules         []aclRuleJSON          `json:"rules"`
 	RuleHits      []mesh.ACLRuleHitStats `json:"rule_hits"`
 }
 
@@ -94,9 +94,10 @@ func (s *Server) handleACLStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleACLRules handles POST/PUT/DELETE /api/acl/rules.
-//   POST   — add a single rule to the current set.
-//   PUT    — replace the entire rule set.
-//   DELETE — delete a rule by index (?index=N).
+//
+//	POST   — add a single rule to the current set.
+//	PUT    — replace the entire rule set.
+//	DELETE — delete a rule by index (?index=N).
 func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 	provider := s.getACLProvider()
 	if provider == nil {

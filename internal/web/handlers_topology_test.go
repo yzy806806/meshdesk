@@ -121,6 +121,12 @@ func (p *testPeers) Position(peerID string) (x, y, z float64) {
 	return topology.DerivePosition(peerID)
 }
 
+// PeerZone returns the test peer's zone ("" unless set).
+func (p *testPeers) PeerZone(peerID string) string { return "" }
+
+// PeerTransport returns the test peer's transport ("" unless set).
+func (p *testPeers) PeerTransport(peerID string) string { return "" }
+
 // testPaths is a minimal TopologyPathInfo implementation for testing.
 type testPaths struct {
 	latencies map[string]float64

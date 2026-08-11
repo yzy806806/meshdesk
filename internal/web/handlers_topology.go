@@ -42,6 +42,8 @@ type PeerLiveness interface {
 type meshTopologyPeers struct {
 	rt  *mesh.RoutingTable
 	cfg *config.Config
+	// node provides zone/transport lookups (nil-safe for tests).
+	node *mesh.MeshNode
 	// localNodeID is this node's own public key (so it appears in topology)
 	localNodeID string
 	// liveness provides gossip-based peer liveness. When non-nil,
@@ -154,6 +156,27 @@ func (m *meshTopologyPeers) Position(peerID string) (x, y, z float64) {
 	// Tier 2: Deterministic auto-assignment from public key.
 	// This applies to all nodes (local and remote).
 	return topology.DerivePosition(peerID)
+}
+
+// PeerZone returns the node's zone tag (local node from config,
+// peers via the mesh node — config first, gossip fallback).
+func (m *meshTopologyPeers) PeerZone(peerID string) string {
+	if m.node != nil {
+		return m.node.PeerZone(peerID)
+	}
+	if m.cfg != nil && peerID == m.localNodeID {
+		return m.cfg.Mesh.Zone
+	}
+	return ""
+}
+
+// PeerTransport returns the transport the session to the node was
+// established over ("reality"/"0x4d"/"udp"/"").
+func (m *meshTopologyPeers) PeerTransport(peerID string) string {
+	if m.node == nil {
+		return ""
+	}
+	return m.node.PeerTransport(peerID)
 }
 
 // deriveRoleFromConfig computes the local node's role from its config.
@@ -410,6 +433,7 @@ func buildTopologySnapshot(peers topology.TopologyPeers, metrics topology.Topolo
 			X:    x,
 			Y:    y,
 			Z:    z,
+			Zone: peers.PeerZone(id),
 		}
 
 		if metrics != nil {
@@ -435,7 +459,7 @@ func buildTopologySnapshot(peers topology.TopologyPeers, metrics topology.Topolo
 	// Build edges from the path probe cache.
 	// Edges are derived from measured pairs; if no probe cache exists,
 	// edges will be empty (the frontend handles this gracefully).
-	edges := buildEdges(paths, metrics, ids)
+	edges := buildEdges(paths, metrics, ids, peers)
 
 	return topology.TopologySnapshot{
 		Nodes: nodes,
@@ -446,7 +470,7 @@ func buildTopologySnapshot(peers topology.TopologyPeers, metrics topology.Topolo
 // buildEdges constructs the edge list from path probe data.
 // Each measured pair becomes one edge. Bandwidth is derived from
 // the source node's best network interface speed.
-func buildEdges(paths topology.TopologyPathInfo, metrics topology.TopologyMetrics, knownIDs []string) []topology.TopologyEdge {
+func buildEdges(paths topology.TopologyPathInfo, metrics topology.TopologyMetrics, knownIDs []string, peers topology.TopologyPeers) []topology.TopologyEdge {
 	if paths == nil {
 		return []topology.TopologyEdge{}
 	}
@@ -462,7 +486,7 @@ func buildEdges(paths topology.TopologyPathInfo, metrics topology.TopologyMetric
 	if !ok || adapter.cache == nil {
 		// Fall back to individual latency queries for any TopologyPathInfo.
 		// This handles mock implementations that don't use the adapter.
-		return buildEdgesFromInterface(paths, metrics, knownIDs)
+		return buildEdgesFromInterface(paths, metrics, knownIDs, peers)
 	}
 
 	pairs := adapter.cache.AllPairs()
@@ -479,11 +503,23 @@ func buildEdges(paths topology.TopologyPathInfo, metrics topology.TopologyMetric
 			bandwidth = metrics.BestBandwidth(p.Dst)
 		}
 
+		transport := ""
+		if peers != nil {
+			// Transport is per-peer (our session to the peer). Use the
+			// target that is NOT the local node when possible.
+			if peers.PeerTransport(p.Src) != "" {
+				transport = peers.PeerTransport(p.Src)
+			} else {
+				transport = peers.PeerTransport(p.Dst)
+			}
+		}
+
 		edges = append(edges, topology.TopologyEdge{
 			Source:        p.Src,
 			Target:        p.Dst,
 			LatencyMs:     p.Latency,
 			BandwidthMbps: bandwidth,
+			Transport:     transport,
 		})
 	}
 
@@ -493,7 +529,7 @@ func buildEdges(paths topology.TopologyPathInfo, metrics topology.TopologyMetric
 // buildEdgesFromInterface builds edges by querying PeerLatency for
 // each pair of known nodes. Used when the TopologyPathInfo is not
 // a *pathProbeAdapter (e.g., mock implementations in tests).
-func buildEdgesFromInterface(paths topology.TopologyPathInfo, metrics topology.TopologyMetrics, ids []string) []topology.TopologyEdge {
+func buildEdgesFromInterface(paths topology.TopologyPathInfo, metrics topology.TopologyMetrics, ids []string, peers topology.TopologyPeers) []topology.TopologyEdge {
 	edges := make([]topology.TopologyEdge, 0, len(ids)*(len(ids)-1)/2)
 
 	for i := 0; i < len(ids); i++ {
@@ -600,6 +636,7 @@ func (s *Server) topologyPeers() topology.TopologyPeers {
 			cfg:         s.cfg,
 			localNodeID: localID,
 			liveness:    s.liveness,
+			node:        s.node,
 		}
 	}
 

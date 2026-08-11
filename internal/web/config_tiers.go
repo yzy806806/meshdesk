@@ -240,16 +240,16 @@ var tierMap = map[string]fieldMeta{
 	// --- ACL (§3.14) ---
 	// ACL rules and engine settings are hot-reloadable: the ACL engine
 	// supports atomic rule replacement via UpdateRules.
-	"acl.enabled":          {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.default_policy":   {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules":            {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules[N].action":  {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules[N].src_cidr":   {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules[N].dst_cidr":   {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules[N].protocol":   {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules[N].src_port":   {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules[N].dst_port":   {Tier: TierStepUp, Reload: ReloadHot},
-	"acl.rules[N].peer_id":    {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.enabled":              {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.default_policy":       {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules":                {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].action":      {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].src_cidr":    {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].dst_cidr":    {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].protocol":    {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].src_port":    {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].dst_port":    {Tier: TierStepUp, Reload: ReloadHot},
+	"acl.rules[N].peer_id":     {Tier: TierStepUp, Reload: ReloadHot},
 	"acl.rules[N].description": {Tier: TierStepUp, Reload: ReloadHot},
 }
 
