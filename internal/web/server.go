@@ -1264,6 +1264,9 @@ type PeerInfo struct {
 	AllowedIPs   []string
 	Transport    string // v2: always "reality" (only transport)
 	Capabilities []string
+	// Obfuscation describes the transport obfuscation layer for display
+	// ("reality" TLS, "meta" for meta-exchange-learned peers, "" unknown).
+	Obfuscation string
 }
 
 // GrantInfo holds display-ready capability grant info.
