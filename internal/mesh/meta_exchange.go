@@ -155,10 +155,18 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		log.Printf("[meta] learned %s → %s (%s) from %s",
 			shortKey(msg.Self.Key), msg.Self.VIP, msg.Self.Hostname, shortKey(fromKey))
 	}
+	// Learn the sender's zone (transport-selection signal) — cached
+	// independently of memberlist health.
+	if msg.Self.Key != "" && msg.Self.Zone != "" {
+		me.node.SetLearnedZone(msg.Self.Key, msg.Self.Zone)
+	}
 	// Learn everything the sender knows about other peers.
 	for _, pm := range msg.Peers {
 		if pm.Key != "" && pm.VIP != "" {
 			me.node.AddPeerVirtualIPRoute(pm.Key, pm.VIP)
+		}
+		if pm.Key != "" && pm.Zone != "" {
+			me.node.SetLearnedZone(pm.Key, pm.Zone)
 		}
 	}
 
