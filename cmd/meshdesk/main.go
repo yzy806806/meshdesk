@@ -412,11 +412,17 @@ func main() {
 	entryAuthUser, entryAuthPass := cfg.Proxy.SOCKS5.EntryUsername, cfg.Proxy.SOCKS5.EntryPassword
 	if entryListen != "" {
 		// Safety: a non-loopback entry listener requires credentials.
+		// Note: host "" (e.g. ":10811" / "*:10811") binds ALL interfaces —
+		// treated as non-loopback and also requires credentials.
+		loopback := false
 		if host, _, err := net.SplitHostPort(entryListen); err == nil {
-			if host != "" && host != "127.0.0.1" && host != "::1" && host != "localhost" && entryAuthUser == "" {
-				log.Printf("  SOCKS5 entry: REFUSED to listen on %s without credentials (proxy.socks5.entry_username/password)", entryListen)
-				entryListen = ""
-			}
+			ip := net.ParseIP(host)
+			loopback = (host == "127.0.0.1" || host == "::1" || host == "localhost") ||
+				(ip != nil && ip.IsLoopback())
+		}
+		if !loopback && entryAuthUser == "" {
+			log.Printf("  SOCKS5 entry: REFUSED to listen on %s without credentials (proxy.socks5.entry_username/password)", entryListen)
+			entryListen = ""
 		}
 	}
 	if entryListen != "" && (socks5ExitNode != "" || socks5ExitNodes != "" || len(cfg.Proxy.SOCKS5.AllowedPeers) > 0) {
