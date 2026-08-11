@@ -599,6 +599,22 @@ func (s *Server) handlePeersPage(w http.ResponseWriter, r *http.Request) {
 				Capabilities: s.getPeerCapabilities(p.ID),
 			})
 		}
+		// Include peers learned via the meta exchange (0x4D45) that have
+		// a VirtualIP route but no PeerEntry (degraded gossip). Keeps the
+		// node list complete even when memberlist is down.
+		known := make(map[string]bool, len(peers))
+		for _, p := range peers {
+			known[p.ID] = true
+		}
+		for pubKey, vip := range s.node.PeerVirtualIPs() {
+			if !known[pubKey] {
+				peers = append(peers, PeerInfo{
+					ID:         pubKey,
+					AllowedIPs: []string{vip},
+					Transport:  "meta",
+				})
+			}
+		}
 	}
 
 	if s.authEngine != nil {
