@@ -91,6 +91,7 @@ type MuxTransport struct {
 
 	streamCh   chan net.Conn           // gossip streams → memberlist
 	realityCh  chan net.Conn           // Reality TLS connections → reality listener
+	meshCh     chan net.Conn           // mesh-internal connections → mesh listener
 	httpCh     chan net.Conn           // HTTP connections → Dashboard/join server
 	packetChIn chan *memberlist.Packet // UDP packets → memberlist
 	// connSem bounds concurrent TCP connection handling (slowloris guard).
@@ -189,6 +190,7 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		logger:        logger,
 		streamCh:      make(chan net.Conn, 64),
 		realityCh:     make(chan net.Conn, 64),
+		meshCh:        make(chan net.Conn, 64),
 		httpCh:        make(chan net.Conn, 64),
 		packetChIn:    make(chan *memberlist.Packet, 4096),
 		connSem:       make(chan struct{}, maxConcurrentMuxConns),
@@ -474,10 +476,28 @@ func (t *MuxTransport) tcpAcceptLoop() {
 	}
 }
 
+// meshInternalMarker is the first byte sent by a mesh-internal connection
+// (mesh-internal dial → key exchange → smux). It must not collide with
+// TLS ClientHello (0x16) or memberlist message types (0–13, 244).
+// 0x4D = 'M' for Mesh.
+const meshInternalMarker = 0x4D
+
 // maxConcurrentMuxConns caps how many TCP connections the mux accept
 // path handles simultaneously (slowloris guard). Each conn may be held
 // up to the 10s peek deadline before routing.
 const maxConcurrentMuxConns = 256
+
+// MeshListener returns a net.Listener that accepts mesh-internal connections
+// demuxed from the shared TCP listener. These are connections from other
+// meshdesk nodes that want to establish a smux session directly (without
+// Reality TLS). The caller (MeshNode) performs the key exchange + smux
+// handshake on each accepted connection.
+func (t *MuxTransport) MeshListener() net.Listener {
+	return &muxMeshListener{
+		transport: t,
+		doneCh:    make(chan struct{}),
+	}
+}
 
 // HTTPListener returns a net.Listener that receives HTTP connections
 // (GET/POST/HEAD) demuxed from the shared TCP port. Use this to serve
@@ -510,6 +530,34 @@ func (l *muxHTTPListener) Close() error {
 }
 
 func (l *muxHTTPListener) Addr() net.Addr {
+	if l.transport.tcpListener != nil {
+		return l.transport.tcpListener.Addr()
+	}
+	return nil
+}
+
+// muxMeshListener implements net.Listener for mesh-internal connections.
+type muxMeshListener struct {
+	transport *MuxTransport
+	once      sync.Once
+	doneCh    chan struct{}
+}
+
+func (l *muxMeshListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.transport.meshCh:
+		return conn, nil
+	case <-l.doneCh:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *muxMeshListener) Close() error {
+	l.once.Do(func() { close(l.doneCh) })
+	return nil
+}
+
+func (l *muxMeshListener) Addr() net.Addr {
 	if l.transport.tcpListener != nil {
 		return l.transport.tcpListener.Addr()
 	}
@@ -560,11 +608,22 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 			t.logger.Printf("[WARN] mux: reality accept queue full, dropping connection from %s", conn.RemoteAddr())
 			wrapped.Close()
 		}
-	} else if firstByte == 0x4D {
-		// 0x4D mesh-internal protocol is retired (Reality-only
-		// architecture): every mesh connection must be Reality TLS.
-		// Refuse rather than serve plaintext.
-		conn.Close()
+	} else if firstByte == meshInternalMarker {
+		// Mesh-internal connection → mesh key exchange + smux path.
+		// Use connWithPrefix to replay the marker byte — mesh key
+		// exchange does NOT go through memberlist's RemoveLabelHeaderFromStream,
+		// so there is no double-buffering issue.
+		// However, the mesh key exchange expects the connection WITHOUT
+		// the 0x4D marker (it was already consumed by the peek above).
+		// So we use the raw conn (no prefix replay).
+		select {
+		case t.meshCh <- conn:
+		case <-t.shutdownDone():
+			conn.Close()
+		default:
+			t.logger.Printf("[WARN] mux: mesh accept queue full, dropping connection from %s", conn.RemoteAddr())
+			conn.Close()
+		}
 	} else if firstByte == 'G' || firstByte == 'P' || firstByte == 'H' {
 		// HTTP request (GET/POST/HEAD) → Dashboard/join server.
 		// HTTP methods start with 'G' (0x47), 'P' (0x50), or 'H' (0x48),
