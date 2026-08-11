@@ -300,7 +300,8 @@
     var patch = collectDirty([
       'cfg-socks5-enabled', 'cfg-socks5-require-mesh', 'cfg-socks5-allow-all-ports',
       'cfg-socks5-max-conns', 'cfg-socks5-dial-timeout', 'cfg-socks5-idle-timeout',
-      'cfg-socks5-allowed-ports', 'cfg-socks5-dest-filter'
+      'cfg-socks5-allowed-ports', 'cfg-socks5-dest-filter',
+      'cfg-socks5-entry-listen', 'cfg-socks5-entry-user', 'cfg-socks5-entry-pass'
     ]);
 
     if (Object.keys(patch).length === 0) {
@@ -316,6 +317,23 @@
         parts.push(result.requires_restart.length + ' field(s) require restart');
       }
       showFeedback('Saved: ' + (parts.join(', ') || 'no changes'), 'success');
+      // Entry listener changes need a daemon restart to take effect —
+      // trigger it automatically (step-up token required).
+      var needsRestart = patch['cfg-socks5-entry-listen'] !== undefined ||
+                         patch['cfg-socks5-entry-user'] !== undefined ||
+                         patch['cfg-socks5-entry-pass'] !== undefined;
+      if (needsRestart) {
+        showFeedback('Entry config saved — restarting daemon...', 'info');
+        fetchJSON('/api/config/restart', { method: 'POST' }).then(function(rr) {
+          showFeedback('Restart initiated: ' + (rr.message || 'ok'), 'success');
+        }).catch(function(err) {
+          if (err.status === 403 && err.data && err.data.error === 'step_up_required') {
+            showFeedback('Step-up auth required to restart. Please re-authenticate on the Config page, then click Restart.', 'warning');
+          } else {
+            showFeedback('Saved, but restart failed: ' + err.message, 'warning');
+          }
+        });
+      }
       // Reload status after save
       setTimeout(loadStatus, 500);
     }).catch(function(err) {
