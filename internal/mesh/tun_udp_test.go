@@ -73,6 +73,22 @@ func TestTUNUDPStream_AuthAndData(t *testing.T) {
 	authA := buildTestAuthHeader(t, idA)
 	remoteB := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sb.LocalAddr().(*net.UDPAddr).Port}
 	t.Logf("A dialing B at %s", remoteB)
+
+	// A-side pump: feeds A's manager so the peer's ACK of the
+	// handshake frame is processed (DialTUNStream now waits for it).
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, addr, err := sa.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			cp := make([]byte, n)
+			copy(cp, buf[:n])
+			mgrA.routeUDPPacket(sa, addr, cp, nil)
+		}
+	}()
+
 	streamA, err := mgrA.DialTUNStream(sa, remoteB, authA)
 	if err != nil {
 		t.Fatalf("DialTUNStream: %v", err)
@@ -210,6 +226,50 @@ func TestTUNUDPStream_OversizedLengthNoPanic(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("packet was not processed")
 	}
+}
+
+// TestTUNUDPStream_NoAckFailsDial reproduces the firewall case: a UDP
+// path where the peer never ACKs the handshake (datagrams dropped) must
+// FAIL the dial so the tun-forwarder falls back to TCP — it must NOT
+// return an "established" stream that silently black-holes traffic.
+func TestTUNUDPStream_NoAckFailsDial(t *testing.T) {
+	sa, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen A: %v", err)
+	}
+	defer sa.Close()
+
+	// A UDP socket with no peer listening/responding on the other end.
+	sb, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("listen B: %v", err)
+	}
+	// Do NOT pump B — nothing consumes/acks the handshake frame.
+	_ = sb
+
+	mgrA := newUDPMeshManager()
+	authA := buildTestAuthHeader(t, mustIdentity(t))
+	remoteB := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sb.LocalAddr().(*net.UDPAddr).Port}
+
+	start := time.Now()
+	_, err = mgrA.DialTUNStream(sa, remoteB, authA)
+	if err == nil {
+		t.Fatal("DEFECT: dial succeeded with no ACK — UDP-preferred path would black-hole traffic")
+	}
+	elapsed := time.Since(start)
+	if elapsed > 5*time.Second {
+		t.Fatalf("dial took too long (%v) — confirmation wait is too generous", elapsed)
+	}
+	t.Logf("dial correctly failed after %v: %v", elapsed, err)
+}
+
+func mustIdentity(t *testing.T) *identity.Identity {
+	t.Helper()
+	id, err := identity.GenerateIdentity()
+	if err != nil {
+		t.Fatalf("gen identity: %v", err)
+	}
+	return id
 }
 
 func buildTestAuthHeader(t *testing.T, id *identity.Identity) []byte {
