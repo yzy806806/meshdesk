@@ -624,10 +624,13 @@ func (n *MeshNode) Close() error {
 
 	n.mu.Unlock()
 
-	// Tear down TUN integration if active.
-	n.teardownTUN()
-
-	// Close all smux sessions.
+	// Close all smux sessions FIRST. The tun-forwarder's inbound
+	// handlers block on smux stream reads; closing sessions unblocks
+	// them so the forwarder's Stop() (in teardownTUN below) can drain
+	// its waitgroup instead of hanging forever — the stale-process-
+	// on-restart root cause (systemd waited 90s+ for a process that
+	// could never exit, then manual restart raced into double
+	// processes + a dirty TUN device).
 	n.sessionsMu.Lock()
 	for id, sess := range n.sessions {
 		log.Printf("[mesh] closing session for peer %s", id[:16]+"...")
@@ -637,6 +640,9 @@ func (n *MeshNode) Close() error {
 	n.clientSessions = make(map[string]*smux.Session)
 	n.sessionEstablishedAt = make(map[string]time.Time)
 	n.sessionsMu.Unlock()
+
+	// Tear down TUN integration (forwarder Stop now completes quickly).
+	n.teardownTUN()
 
 	// Stop all auto-reconnect watchers.
 	n.stopAllReconnectWatchers()
