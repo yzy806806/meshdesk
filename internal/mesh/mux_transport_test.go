@@ -1,8 +1,6 @@
 package mesh
 
 import (
-	"bytes"
-	"crypto/rand"
 	"fmt"
 	"io"
 	"net"
@@ -57,36 +55,29 @@ func TestNewMuxTransport_NilTCPListenerOK(t *testing.T) {
 	defer mt.Shutdown()
 }
 
-func TestNewMuxTransport_UDPOnlyMode(t *testing.T) {
-	// A MuxTransport created without a TCP listener should work in
-	// UDP-only mode: PacketCh and WriteTo are functional, StreamCh
-	// returns a valid (but never-delivering) channel, and Shutdown
-	// is clean.
+func TestNewMuxTransport_NoTCPListenerOK(t *testing.T) {
+	// A MuxTransport created without a TCP listener should still
+	// construct cleanly (Reality-only: no UDP sockets are created).
 	mt, err := NewMuxTransport(MuxTransportConfig{
 		BindAddr: "127.0.0.1",
-		UDPPort:  0, // let OS pick a free port
 	})
 	if err != nil {
-		t.Fatalf("NewMuxTransport UDP-only: %v", err)
+		t.Fatalf("NewMuxTransport: %v", err)
 	}
 	defer mt.Shutdown()
 
+	// PacketCh is nil (UDP disabled — Reality-only).
+	if mt.PacketCh() != nil {
+		t.Fatal("PacketCh should be nil (UDP disabled)")
+	}
 	// StreamCh should return a non-nil channel (no panics).
 	if mt.StreamCh() == nil {
-		t.Fatal("StreamCh is nil in UDP-only mode")
-	}
-	// PacketCh should return a non-nil channel.
-	if mt.PacketCh() == nil {
-		t.Fatal("PacketCh is nil in UDP-only mode")
+		t.Fatal("StreamCh is nil")
 	}
 	// RealityListener should not panic.
 	rl := mt.RealityListener()
 	if rl == nil {
 		t.Fatal("RealityListener is nil")
-	}
-	// Addr() on listeners should return nil, not panic.
-	if rl.Addr() != nil {
-		t.Fatalf("expected nil Addr in UDP-only mode, got %v", rl.Addr())
 	}
 }
 
@@ -98,8 +89,8 @@ func TestNewMuxTransport_StartsGoroutines(t *testing.T) {
 	if mt.StreamCh() == nil {
 		t.Fatal("StreamCh is nil")
 	}
-	if mt.PacketCh() == nil {
-		t.Fatal("PacketCh is nil")
+	if mt.PacketCh() != nil {
+		t.Fatal("PacketCh should be nil (UDP disabled — Reality-only)")
 	}
 }
 
@@ -164,147 +155,41 @@ func TestMuxDemux_TLSTrafficRoutedToReality(t *testing.T) {
 	}
 }
 
-func TestMuxDemux_GossipTrafficRoutedToStreamCh(t *testing.T) {
+func TestMuxDemux_PlaintextGossipRefused(t *testing.T) {
+	// Reality-only: a plaintext gossip connection (non-TLS first byte)
+	// must be refused — the connection is closed, never delivered.
 	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
-	// memberlist ping message type is 0 (pingMsg).
-	gossipByte := byte(0)
-
-	go func() {
-		conn, err := net.Dial("tcp", addr)
-		if err != nil {
-			t.Errorf("dial: %v", err)
-			return
-		}
-		defer conn.Close()
-		_, err = conn.Write([]byte{gossipByte, 0x01, 0x02})
-		if err != nil {
-			t.Errorf("write gossip byte: %v", err)
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}()
-
-	select {
-	case conn := <-mt.StreamCh():
-		// Verify the peeked byte is replayed.
-		buf := make([]byte, 3)
-		n, err := io.ReadFull(conn, buf)
-		if err != nil {
-			t.Fatalf("read from stream conn: %v", err)
-		}
-		if n != 3 {
-			t.Fatalf("expected 3 bytes, got %d", n)
-		}
-		if buf[0] != gossipByte {
-			t.Fatalf("expected first byte 0x%02x, got 0x%02x", gossipByte, buf[0])
-		}
-		conn.Close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for gossip stream connection")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
 	}
-}
+	defer conn.Close()
 
-func TestMuxDemux_MultipleConnectionsMixed(t *testing.T) {
-	mt, _, addr := newTestMuxTransport(t)
-	defer mt.Shutdown()
+	// A memberlist-ish first byte (0x00) — no TLS.
+	if _, err := conn.Write([]byte{0x00, 0x01}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
 
-	rl := mt.RealityListener()
-	defer rl.Close()
+	// The connection should be closed by the transport (no delivery).
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("expected plaintext connection to be closed, got data")
+	}
 
-	// Forward Reality connections to a channel for the select loop.
-	realityCh := make(chan net.Conn, 4)
-	go func() {
-		for {
-			conn, err := rl.Accept()
-			if err != nil {
-				close(realityCh)
-				return
-			}
-			realityCh <- conn
-		}
-	}()
-
-	// Send one TLS and one gossip connection concurrently.
-	go func() {
-		conn, _ := net.Dial("tcp", addr)
-		defer conn.Close()
-		conn.Write([]byte{tlsHandshakeRecordType, 0x01})
-		time.Sleep(100 * time.Millisecond)
-	}()
-
-	go func() {
-		conn, _ := net.Dial("tcp", addr)
-		defer conn.Close()
-		conn.Write([]byte{0x00, 0xAA, 0xBB}) // gossip ping
-		time.Sleep(100 * time.Millisecond)
-	}()
-
-	gotStream := false
-	gotReality := false
-
-	for !gotStream || !gotReality {
-		select {
-		case conn := <-mt.StreamCh():
-			buf := make([]byte, 3)
-			n, _ := io.ReadFull(conn, buf)
-			if n != 3 || buf[0] != 0x00 {
-				t.Fatalf("unexpected gossip stream data: %v", buf[:n])
-			}
-			gotStream = true
-			conn.Close()
-		case conn := <-realityCh:
-			buf := make([]byte, 2)
-			n, _ := io.ReadFull(conn, buf)
-			if n != 2 || buf[0] != tlsHandshakeRecordType {
-				t.Fatalf("unexpected reality data: %v", buf[:n])
-			}
-			gotReality = true
-			conn.Close()
-		case <-time.After(2 * time.Second):
-			t.Fatalf("timed out: gotStream=%v gotReality=%v", gotStream, gotReality)
-		}
+	// And nothing must arrive on StreamCh.
+	select {
+	case sc := <-mt.StreamCh():
+		sc.Close()
+		t.Fatal("plaintext gossip was delivered — must be refused (Reality-only)")
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // WriteTo / PacketCh tests (UDP)
-// ──────────────────────────────────────────────────────────────────────────────
-
-func TestMuxTransport_WriteToAndReceivePacket(t *testing.T) {
-	mt, _, _ := newTestMuxTransport(t)
-	defer mt.Shutdown()
-
-	// Determine the UDP address.
-	udpAddr := mt.udpConns[0].LocalAddr().String()
-
-	// Write a packet to our own UDP listener.
-	payload := []byte("hello-gossip")
-	ts, err := mt.WriteTo(payload, udpAddr)
-	if err != nil {
-		t.Fatalf("WriteTo: %v", err)
-	}
-	if ts.IsZero() {
-		t.Fatal("WriteTo returned zero timestamp")
-	}
-
-	// Read the packet from the channel.
-	select {
-	case pkt := <-mt.PacketCh():
-		if string(pkt.Buf) != string(payload) {
-			t.Fatalf("expected %q, got %q", payload, string(pkt.Buf))
-		}
-		if pkt.From == nil {
-			t.Fatal("packet From is nil")
-		}
-		if pkt.Timestamp.IsZero() {
-			t.Fatal("packet timestamp is zero")
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for packet")
-	}
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // DialTimeout test
@@ -314,18 +199,46 @@ func TestMuxTransport_DialTimeout(t *testing.T) {
 	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
+	// Reality-only: DialTimeout requires an injected Reality dialer.
+	if _, err := mt.DialTimeout(addr, 2*time.Second); err == nil {
+		t.Fatal("expected DialTimeout to fail without a Reality dialer")
+	}
+
+	// Inject a mock Reality dialer (local TCP tunnel simulates the
+	// masked TLS connection — the server side is delivered to StreamCh
+	// exactly as acceptLoop does for a protoMemberlist connection).
+	dialed := make(chan struct{}, 1)
+	mt.SetRealityDialer(func(a string, timeout time.Duration) (net.Conn, error) {
+		dialed <- struct{}{}
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		go func() {
+			c, aerr := ln.Accept()
+			if aerr == nil {
+				mt.DeliverStream(c)
+			}
+			ln.Close()
+		}()
+		return net.Dial("tcp", ln.Addr().String())
+	})
+
 	conn, err := mt.DialTimeout(addr, 2*time.Second)
 	if err != nil {
 		t.Fatalf("DialTimeout: %v", err)
 	}
 	defer conn.Close()
-
-	// Write a gossip byte; it should arrive on StreamCh.
-	_, err = conn.Write([]byte{0x00, 0x01})
-	if err != nil {
-		t.Fatalf("write: %v", err)
+	select {
+	case <-dialed:
+	case <-time.After(time.Second):
+		t.Fatal("Reality dialer was not invoked")
 	}
 
+	// Write a gossip byte; it should arrive on StreamCh.
+	if _, err := conn.Write([]byte{0x00, 0x01}); err != nil {
+		t.Fatalf("write: %v", err)
+	}
 	select {
 	case sc := <-mt.StreamCh():
 		buf := make([]byte, 2)
@@ -339,20 +252,17 @@ func TestMuxTransport_DialTimeout(t *testing.T) {
 	}
 }
 
-func TestMuxTransport_DialTimeout_Unreachable(t *testing.T) {
-	mt, _, _ := newTestMuxTransport(t)
+func TestMuxTransport_DialTimeout_NoDialer(t *testing.T) {
+	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
-	// Dial a port that is almost certainly not listening.
-	_, err := mt.DialTimeout("127.0.0.1:1", 500*time.Millisecond)
+	// Without an injected Reality dialer every dial fails
+	// (Reality-only: no plaintext gossip dials allowed).
+	_, err := mt.DialTimeout(addr, 2*time.Second)
 	if err == nil {
-		t.Fatal("expected error for unreachable address")
+		t.Fatal("expected DialTimeout to fail without a Reality dialer")
 	}
 }
-
-// ──────────────────────────────────────────────────────────────────────────────
-// FinalAdvertiseAddr tests
-// ──────────────────────────────────────────────────────────────────────────────
 
 func TestMuxTransport_FinalAdvertiseAddr_Explicit(t *testing.T) {
 	tcpLn, _ := net.Listen("tcp", "127.0.0.1:0")
@@ -491,66 +401,39 @@ func TestMuxTransport_ShutdownIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestMuxTransport_ShutdownClosesUDP(t *testing.T) {
-	mt, _, _ := newTestMuxTransport(t)
-	udpAddr := mt.udpConns[0].LocalAddr().String()
-
-	mt.Shutdown()
-
-	// After shutdown, the UDP listener should be closed. Verify by trying
-	// to create a new UDP conn on the same port — it should succeed.
-	// (The OS may take a moment to release the port.)
-	// Instead, verify WriteTo returns an error.
-	_, err := mt.WriteTo([]byte("test"), udpAddr)
-	if err == nil {
-		// On some OSes the write may succeed even after close, but the
-		// read loop should have exited. Check that no packets arrive.
-		select {
-		case <-mt.PacketCh():
-			t.Fatal("received packet after shutdown")
-		case <-time.After(200 * time.Millisecond):
-			// Good — no packets.
-		}
-	}
-}
-
 // ──────────────────────────────────────────────────────────────────────────────
 // connWithPrefix integration test
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestMuxTransport_PeekedByteReplayed(t *testing.T) {
+func TestMuxTransport_PlaintextRefused(t *testing.T) {
+	// Reality-only: a plaintext (non-TLS) connection is refused and
+	// closed — memberlist gossip only arrives inside Reality TLS.
 	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
-	// Test that the peeked byte is correctly replayed.
-	// Send a known memberlist message type (e.g. 6 = pushPullMsg).
-	pushPullMsg := byte(6)
-	payload := []byte{pushPullMsg, 0xDE, 0xAD, 0xBE, 0xEF}
+	payload := []byte{0x06, 0xDE, 0xAD, 0xBE, 0xEF} // memberlist-ish, plaintext
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
 
-	go func() {
-		conn, _ := net.Dial("tcp", addr)
-		defer conn.Close()
-		conn.Write(payload)
-		time.Sleep(100 * time.Millisecond)
-	}()
+	// The transport must close the connection (refuse plaintext).
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("expected plaintext connection to be closed")
+	}
 
+	// Nothing arrives on StreamCh.
 	select {
-	case conn := <-mt.StreamCh():
-		// Read all bytes back — the peeked byte should be included.
-		buf := make([]byte, len(payload))
-		n, err := io.ReadFull(conn, buf)
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		if n != len(payload) {
-			t.Fatalf("expected %d bytes, got %d", len(payload), n)
-		}
-		if !bytes.Equal(buf, payload) {
-			t.Fatalf("data mismatch: got %v, want %v", buf, payload)
-		}
-		conn.Close()
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for stream")
+	case sc := <-mt.StreamCh():
+		sc.Close()
+		t.Fatal("plaintext delivered to StreamCh — must be refused")
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
@@ -558,38 +441,31 @@ func TestMuxTransport_PeekedByteReplayed(t *testing.T) {
 // Large payload test
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestMuxTransport_LargeGossipPayload(t *testing.T) {
+func TestMuxTransport_LargePlaintextRefused(t *testing.T) {
 	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
-	// Create a large payload (1KB) starting with a gossip byte.
-	payload := make([]byte, 1024)
-	rand.Read(payload[1:])
-	payload[0] = 0x00 // pingMsg
-
-	go func() {
-		conn, _ := net.Dial("tcp", addr)
-		defer conn.Close()
-		conn.Write(payload)
-		time.Sleep(200 * time.Millisecond)
-	}()
-
+	// A large plaintext payload must also be refused (connection closed).
+	payload := make([]byte, 4096)
+	payload[0] = 0x06
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("expected plaintext connection to be closed")
+	}
 	select {
-	case conn := <-mt.StreamCh():
-		buf := make([]byte, len(payload))
-		n, err := io.ReadFull(conn, buf)
-		if err != nil {
-			t.Fatalf("read: %v", err)
-		}
-		if n != len(payload) {
-			t.Fatalf("expected %d bytes, got %d", len(payload), n)
-		}
-		if !bytes.Equal(buf, payload) {
-			t.Fatal("data mismatch in large payload")
-		}
-		conn.Close()
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for large stream")
+	case sc := <-mt.StreamCh():
+		sc.Close()
+		t.Fatal("plaintext delivered to StreamCh — must be refused")
+	case <-time.After(500 * time.Millisecond):
 	}
 }
 
@@ -644,7 +520,7 @@ func TestMuxTransport_ImplementsMemberlistTransport(t *testing.T) {
 // Concurrent connection test
 // ──────────────────────────────────────────────────────────────────────────────
 
-func TestMuxTransport_ConcurrentConnections(t *testing.T) {
+func TestMuxTransport_ConcurrentRealityConnections(t *testing.T) {
 	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
@@ -652,7 +528,6 @@ func TestMuxTransport_ConcurrentConnections(t *testing.T) {
 	rl := mt.RealityListener()
 	defer rl.Close()
 
-	// Forward Reality connections to a channel for the select loop.
 	realityCh := make(chan net.Conn, numConns)
 	go func() {
 		for {
@@ -665,78 +540,43 @@ func TestMuxTransport_ConcurrentConnections(t *testing.T) {
 		}
 	}()
 
-	// Launch concurrent connections: half TLS, half gossip.
+	// Half TLS (accepted), half plaintext (refused).
 	for i := 0; i < numConns; i++ {
 		go func(idx int) {
 			conn, err := net.Dial("tcp", addr)
 			if err != nil {
-				t.Errorf("dial %d: %v", idx, err)
 				return
 			}
 			defer conn.Close()
-
 			if idx%2 == 0 {
-				// TLS path
 				conn.Write([]byte{tlsHandshakeRecordType, byte(idx)})
 			} else {
-				// Gossip path
-				conn.Write([]byte{byte(idx % 100), byte(idx)})
+				conn.Write([]byte{byte(idx % 100), byte(idx)}) // plaintext — refused
 			}
 			time.Sleep(200 * time.Millisecond)
 		}(i)
 	}
 
-	// Count received connections.
-	gotStream := 0
+	// Only the TLS connections are delivered.
 	gotReality := 0
 	deadline := time.After(5 * time.Second)
-
-	for gotStream+gotReality < numConns {
+	for gotReality < numConns/2 {
 		select {
-		case conn := <-mt.StreamCh():
-			gotStream++
-			conn.Close()
 		case conn := <-realityCh:
 			gotReality++
 			conn.Close()
+		case conn := <-mt.StreamCh():
+			conn.Close()
+			t.Fatal("plaintext delivered to StreamCh — must be refused")
 		case <-deadline:
-			t.Fatalf("timed out: got %d streams + %d reality = %d/%d",
-				gotStream, gotReality, gotStream+gotReality, numConns)
+			t.Fatalf("timed out: got %d/%d reality", gotReality, numConns/2)
 		}
 	}
-
-	t.Logf("received: %d streams, %d reality", gotStream, gotReality)
+	t.Logf("received: %d reality connections (plaintext refused)", gotReality)
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helper: get the UDP port
-// ──────────────────────────────────────────────────────────────────────────────
-
-func TestMuxTransport_UDPPortAutoAssigned(t *testing.T) {
-	tcpLn, _ := net.Listen("tcp", "127.0.0.1:0")
-	defer tcpLn.Close()
-
-	mt, err := NewMuxTransport(MuxTransportConfig{
-		TCPListener: tcpLn,
-		BindAddr:    "127.0.0.1",
-		UDPPort:     0,
-	})
-	if err != nil {
-		t.Fatalf("NewMuxTransport: %v", err)
-	}
-	defer mt.Shutdown()
-
-	udpAddr, ok := mt.udpConns[0].LocalAddr().(*net.UDPAddr)
-	if !ok {
-		t.Fatal("expected *net.UDPAddr")
-	}
-	if udpAddr.Port == 0 {
-		t.Fatal("UDP port not assigned")
-	}
-
-	t.Logf("TCP port: %d, UDP port: %d",
-		tcpPortFromListener(tcpLn), udpAddr.Port)
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // tcpPortFromListener helper test
@@ -789,168 +629,9 @@ func TestRealityListener_Addr(t *testing.T) {
 
 // ──────────────────────────────────────────────────────────────────────────────
 // All memberlist message types are routed to StreamCh (not Reality)
-// ──────────────────────────────────────────────────────────────────────────────
-
-func TestMuxDemux_AllMemberlistMessageTypes(t *testing.T) {
-	// All memberlist message types (0-14, 244) should be routed to StreamCh,
-	// not Reality. TLS record type 0x16 (22) should go to Reality.
-	mt, _, addr := newTestMuxTransport(t)
-	defer mt.Shutdown()
-
-	rl := mt.RealityListener()
-	defer rl.Close()
-
-	// Start a background goroutine that forwards Reality connections to a channel.
-	realityCh := make(chan net.Conn, 256)
-	go func() {
-		for {
-			conn, err := rl.Accept()
-			if err != nil {
-				close(realityCh)
-				return
-			}
-			realityCh <- conn
-		}
-	}()
-
-	// Test a few representative message types.
-	testTypes := []byte{0, 1, 5, 6, 7, 9, 10, 12, 13, 244}
-
-	for _, msgType := range testTypes {
-		go func(b byte) {
-			conn, _ := net.Dial("tcp", addr)
-			defer conn.Close()
-			conn.Write([]byte{b, 0x01})
-			time.Sleep(50 * time.Millisecond)
-		}(msgType)
-	}
-
-	for i := 0; i < len(testTypes); i++ {
-		select {
-		case conn := <-mt.StreamCh():
-			buf := make([]byte, 2)
-			n, _ := io.ReadFull(conn, buf)
-			if n != 2 {
-				t.Fatalf("expected 2 bytes, got %d", n)
-			}
-			conn.Close()
-		case <-realityCh:
-			t.Fatal("memberlist message type was routed to Reality instead of StreamCh")
-		case <-time.After(3 * time.Second):
-			t.Fatalf("timed out at iteration %d", i)
-		}
-	}
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Verify all 256 possible first bytes are routed correctly
-// ──────────────────────────────────────────────────────────────────────────────
-
-func TestMuxDemux_AllByteValues(t *testing.T) {
-	mt, _, addr := newTestMuxTransport(t)
-	defer mt.Shutdown()
-
-	rl := mt.RealityListener()
-	defer rl.Close()
-
-	// Start a background goroutine that forwards Reality connections to a channel.
-	realityCh := make(chan net.Conn, 256)
-	go func() {
-		for {
-			conn, err := rl.Accept()
-			if err != nil {
-				close(realityCh)
-				return
-			}
-			realityCh <- conn
-		}
-	}()
-
-	// Also accept HTTP connections (G/P/H first byte).
-	httpLn := mt.HTTPListener()
-	defer httpLn.Close()
-	httpConnCh := make(chan net.Conn, 256)
-	go func() {
-		for {
-			conn, err := httpLn.Accept()
-			if err != nil {
-				close(httpConnCh)
-				return
-			}
-			httpConnCh <- conn
-		}
-	}()
-
-	for b := 0; b < 256; b++ {
-		firstByte := byte(b)
-
-		go func(fb byte) {
-			conn, _ := net.Dial("tcp", addr)
-			defer conn.Close()
-			conn.Write([]byte{fb, 0x01})
-			time.Sleep(30 * time.Millisecond)
-		}(firstByte)
-
-		isTLS := firstByte == tlsHandshakeRecordType
-		isRejected := firstByte == 0x4D // retired mesh-internal protocol — refused
-		isHTTP := firstByte == 'G' || firstByte == 'P' || firstByte == 'H'
-
-		select {
-		case conn := <-mt.StreamCh():
-			if isTLS {
-				conn.Close()
-				t.Fatalf("byte 0x%02x (TLS) was routed to StreamCh instead of Reality", firstByte)
-			}
-			if isRejected {
-				conn.Close()
-				t.Fatalf("byte 0x%02x (retired mesh) must not be served", firstByte)
-			}
-			if isHTTP {
-				conn.Close()
-				t.Fatalf("byte 0x%02x (HTTP) was routed to StreamCh instead of HTTPCh", firstByte)
-			}
-			buf := make([]byte, 2)
-			n, _ := io.ReadFull(conn, buf)
-			if n != 2 || buf[0] != firstByte {
-				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
-			}
-			conn.Close()
-		case conn := <-realityCh:
-			if !isTLS {
-				conn.Close()
-				t.Fatalf("byte 0x%02x was routed to Reality instead of StreamCh", firstByte)
-			}
-			buf := make([]byte, 2)
-			n, _ := io.ReadFull(conn, buf)
-			if n != 2 || buf[0] != firstByte {
-				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
-			}
-			conn.Close()
-		case <-time.After(2 * time.Second):
-			if isRejected {
-				// 0x4D is refused (connection closed) — no delivery is
-				// the expected outcome.
-				continue
-			}
-			t.Fatalf("byte 0x%02x: timed out", firstByte)
-		case conn := <-httpConnCh:
-			if !isHTTP {
-				conn.Close()
-				t.Fatalf("byte 0x%02x was routed to HTTPCh instead of StreamCh", firstByte)
-			}
-			// HTTP path: the first byte is replayed via bufferedConn, so
-			// both the first byte and 0x01 are readable.
-			buf := make([]byte, 2)
-			n, _ := io.ReadFull(conn, buf)
-			if n != 2 || buf[0] != firstByte {
-				t.Fatalf("byte 0x%02x: data mismatch (got %v)", firstByte, buf[:n])
-			}
-			conn.Close()
-		case <-time.After(3 * time.Second):
-			t.Fatalf("byte 0x%02x: timed out", firstByte)
-		}
-	}
-}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Reality listener can be closed and recreated
