@@ -681,7 +681,7 @@ p2p:
 |------|------|--------|------|
 | `proxy.relay.enabled` | config.go:379 | `false` | **必须显式设为 true**。控制 CapRelay 和 RelayHandler 注册 |
 | `p2p.relay_mode` | config.go:678 | `"auto"` | `auto`=自动选择中继, `manual`=仅手动配置, `disabled`=仅直连 |
-| `p2p.max_relay_hops` | config.go:681 | `2` | NAT 遍历探测深度（不是中继转发跳数） |
+| `p2p.max_relay_hops` | config.go:681 | `2` | **中继转发最大跳数**（v1.5.11+）：多跳链 A→R1→R2→B 的深度上限（防环 + 有界） |
 | `proxy.relay.max_circuits` | config.go:395 | `1024` | 最大并发中继 circuit 数 |
 | `p2p.gossip_interval` | config.go:693 | `30` | PushPull 全状态同步间隔（秒） |
 | `p2p.direct_reprobe_interval` | config.go:699 | `120` | 中继模式下直连重探间隔（秒） |
