@@ -18,6 +18,7 @@ import (
 	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/dns"
+	"github.com/yzy806806/meshdesk/internal/holepunch"
 	"github.com/yzy806806/meshdesk/internal/join"
 	"github.com/yzy806806/meshdesk/internal/logging"
 	"github.com/yzy806806/meshdesk/internal/mesh"
@@ -93,6 +94,7 @@ type App struct {
 	svcMgr             service.ServiceManager
 	webLiveness        web.PeerLiveness
 	topoPaths          topology.TopologyPathInfo
+	holepunch          *holepunch.Engine
 	alertStore         *web.AlertStore
 	configPath         string
 	logWriter          *logging.RotatingWriter
@@ -155,6 +157,7 @@ func (a *App) Start(ctx context.Context) error {
 	a.registerVirtualPortServices()
 	a.startProxy()
 	a.startP2P()
+	a.startHolePunch()
 	a.integrateTUN()
 	a.startServices()
 	a.startProxyCircuit()
