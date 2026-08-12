@@ -126,4 +126,4 @@ GOOS=linux GOARCH=arm64 go build -o /tmp/meshdesk-arm64 ./cmd/meshdesk/
 
 - [RELAY_DEPLOYMENT_GUIDE.md](./RELAY_DEPLOYMENT_GUIDE.md) — 完整部署指南（729 行，含前提条件、代码路径、故障排查）
 - [DESIGN_DECISION_NO_GLOBAL_ROUTING.md](./DESIGN_DECISION_NO_GLOBAL_ROUTING.md) — 设计决策：不实现全局路由表
-- [AGENTS.md](../AGENTS.md) — 项目上下文与停止条件
+- [CONFIG_INVENTORY.md](CONFIG_INVENTORY.md) — 配置字段总览
