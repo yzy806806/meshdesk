@@ -578,7 +578,7 @@ func TestEvictStaleHalfOpen_AtCapacityWithEviction(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0, nil)
 	if err != nil {
 		t.Fatalf("DialViaRelay with stale eviction: %v", err)
 	}
