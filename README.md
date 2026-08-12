@@ -200,6 +200,30 @@ The Dashboard 3D topology shows zone rings + transport-colored edges
 (Reality green / UDP blue / 0x4D amber / relay grey), with ping & bandwidth
 on edge hover. Full guide: [docs/ZONE_AWARE_TRANSPORT.md](docs/ZONE_AWARE_TRANSPORT.md)
 
+### SOCKS5 Entry & Exit (v1.5.9+)
+
+Every node is a SOCKS5 **exit** by default (virtual port `0x5350`,
+destination ports 80/443). The **entry** listener is managed from the
+Dashboard Proxy page (or `--socks5-listen`):
+
+```yaml
+proxy:
+  socks5:
+    entry_listen: 0.0.0.0:10811   # LAN clients connect here
+    entry_username: mesh          # RFC 1929 auth (required for
+    entry_password: secret        #   non-loopback listeners)
+    exit_node: fc709e08...        # pin this entry to ONE fixed exit
+    # exit_nodes: [a..., b...]    # or a list — lowest live RTT picked
+```
+
+- **Exit selection (v1.5.11)**: per connection the healthy exit with the
+  lowest live RTT wins (`pickBestExits`); failures fall back to the next.
+- **Multi-hop relay (v1.5.11)**: `DialVirtualPort` tries a relay path when
+  the direct RTT is slow (>300ms, typical cross-zone Reality) — a
+  same-zone relay hop can beat the direct path; multi-hop chains
+  (A→R1→R2→B) are loop-protected and bounded by `p2p.max_relay_hops`.
+- Save on the Proxy page auto-restarts the daemon (supervisor required).
+
 ### Node Types
 
 | | Shared Node | Ordinary Node |

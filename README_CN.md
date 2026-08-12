@@ -143,6 +143,26 @@ zone 经 gossip 广播（NodeMeta.Zone），新节点自动学习。Dashboard 3D
 节点环色 = zone；连线颜色 = 传输方式（Reality 绿 / UDP 蓝 / 0x4D 黄 / 中继灰）；
 悬停连线显示 ping + 带宽。完整指南见 [docs/ZONE_AWARE_TRANSPORT.md](docs/ZONE_AWARE_TRANSPORT.md)
 
+### SOCKS5 入口与出口（v1.5.9+）
+
+所有节点默认都是 SOCKS5 **出口**（虚拟端口 `0x5350`，目标端口 80/443）。
+**入口**监听由 Dashboard Proxy 页管理（或 `--socks5-listen`）：
+
+```yaml
+proxy:
+  socks5:
+    entry_listen: 0.0.0.0:10811   # 局域网设备连这里
+    entry_username: mesh          # RFC 1929 认证（非回环监听必须）
+    entry_password: secret
+    exit_node: fc709e08...        # 固定出口（该入口流量从这出）
+    # exit_nodes: [a..., b...]    # 或多出口——自动选最低延迟
+```
+
+- **出口选路（v1.5.11）**：每连接选健康出口中实时 RTT 最低的；失败自动回退次优。
+- **多跳中继（v1.5.11）**：直连 RTT 慢（>300ms，典型跨 zone Reality）时优先试中继——
+  同 zone 中继可能更快；多跳链（A→R1→R2→B）有防环 + `p2p.max_relay_hops` 限制。
+- Proxy 页保存自动重启生效（需 systemd 托管）。
+
 ### 反应式中继回退
 
 当两个节点无法直连时，per-pair `NatSession` 状态机自动尝试替代路径（STUN→DirectProbe→RelayFallback），从 gossip 广播的 `CapRelay` 元数据中按 RTT 择优选择中继节点。无需全局路由表，无需手动配置路径。单跳中继（A→relay→B）覆盖四节点拓扑；多跳中继（A→R1→R2→B）列为后续阶段 backlog。详见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
