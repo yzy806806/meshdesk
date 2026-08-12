@@ -1597,6 +1597,18 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 		return nil, fmt.Errorf("mesh: no session for peer %s", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...")
 	}
 
+	// Multi-path selection: even with a direct session, a relay path may
+	// have lower total latency (e.g. direct cross-zone Reality vs a
+	// same-zone relay hop). Evaluate cheaply (direct RTT heuristic) and
+	// prefer the relay when it is likely faster; fall back to direct on
+	// failure. Never for the ping port — PeerRTT dials it and would
+	// recurse infinitely.
+	if port != PingVirtualPort {
+		if conn, ok := n.tryFasterRelayPath(ctx, peerIdentityHex, uint16(port)); ok {
+			return conn, nil
+		}
+	}
+
 	// Try to open a stream on the existing session.
 	// If the client session is closed, attempt to re-establish it by
 	// dialing the peer's configured endpoint.
@@ -2349,6 +2361,32 @@ func (n *MeshNode) PeerVirtualIPs() map[string]string {
 		out[pubKey] = ipStr
 	}
 	return out
+}
+
+// relaySlowPathThresholdMs: direct paths slower than this (ms) are
+// candidates for relay-path comparison. Cross-zone Reality links are
+// typically >300ms; same-zone UDP is usually well under. Relay has
+// per-hop overhead, so only try it when the direct path is this slow.
+const relaySlowPathThresholdMs = 300
+
+// tryFasterRelayPath tries a relay path when the direct session is
+// slow (heuristic: direct RTT above the threshold — typically a
+// cross-zone Reality link). A same-zone relay hop can beat the direct
+// path in total latency. On relay failure it returns (nil, false) so
+// the caller falls back to the direct session.
+func (n *MeshNode) tryFasterRelayPath(ctx context.Context, targetKey string, port uint16) (net.Conn, bool) {
+	direct := n.PeerRTT(targetKey)
+	if direct <= 0 || direct < relaySlowPathThresholdMs*time.Millisecond {
+		return nil, false
+	}
+	log.Printf("[mesh] DialVirtualPort: direct path to %s is slow (%v) — trying relay path",
+		targetKey[:min(len(targetKey), 16)]+"...", direct)
+	conn, err := n.tryRelayFallback(ctx, targetKey, port, nil)
+	if err != nil {
+		log.Printf("[mesh] DialVirtualPort: relay path slower/failed (%v) — using direct", err)
+		return nil, false
+	}
+	return conn, true
 }
 
 // PeerVirtualIP returns the VirtualIP known for a peer ("" if unknown).
