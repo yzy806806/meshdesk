@@ -114,6 +114,12 @@ type TunForwarder struct {
 	packetsSpoofed  atomic.Uint64
 	bytesSent       atomic.Uint64
 	bytesReceived   atomic.Uint64
+	// lastActivity is the UnixNano of the most recent TUN packet
+	// processed (send or receive) — a long-idle forwarder while the
+	// session is alive suggests a stalled inbound path.
+	lastActivity atomic.Int64
+	// startedAt is set when the forwarder starts (uptime tracking).
+	startedAt atomic.Int64
 }
 
 // NewTunForwarder creates a new TUN forwarder from the given config.
@@ -145,6 +151,8 @@ func NewTunForwarder(cfg TunForwarderConfig) (*TunForwarder, error) {
 // It registers a virtual port listener for TunVirtualPort and spawns
 // goroutines for both directions. Call Stop to shut down.
 func (f *TunForwarder) Start() error {
+	f.startedAt.Store(time.Now().UnixNano())
+	f.lastActivity.Store(time.Now().UnixNano())
 	if !f.running.CompareAndSwap(0, 1) {
 		return errors.New("tun-forwarder: already running")
 	}
@@ -231,18 +239,32 @@ func (f *TunForwarder) Stop() {
 		f.packetsSent.Load(), f.packetsReceived.Load(), f.packetsDropped.Load(), f.packetsSpoofed.Load())
 }
 
-// Stats returns current forwarder statistics.
-// TunForwarderStats holds the current forwarder statistics.
+// TunForwarderStats holds the current forwarder statistics, including
+// health signals for monitoring (last activity / uptime / stream counts)
+// so a stalled data plane is visible before it fully breaks.
 type TunForwarderStats struct {
-	PacketsSent     uint64
-	PacketsReceived uint64
-	PacketsDropped  uint64
-	PacketsSpoofed  uint64
-	BytesSent       uint64
-	BytesReceived   uint64
+	PacketsSent     uint64 `json:"packets_sent"`
+	PacketsReceived uint64 `json:"packets_received"`
+	PacketsDropped  uint64 `json:"packets_dropped"`
+	PacketsSpoofed  uint64 `json:"packets_spoofed"`
+	BytesSent       uint64 `json:"bytes_sent"`
+	BytesReceived   uint64 `json:"bytes_received"`
+	LastActivityMs  int64  `json:"last_activity_ms_ago"`
+	UptimeSec       int64  `json:"uptime_sec"`
+	UDPStreams      int    `json:"udp_streams"`
+	TCPStreams      int    `json:"tcp_streams"`
 }
 
 func (f *TunForwarder) Stats() TunForwarderStats {
+	now := time.Now()
+	last := time.Unix(0, f.lastActivity.Load())
+	start := time.Unix(0, f.startedAt.Load())
+	f.udpMu.Lock()
+	udpN := len(f.udpStreams)
+	f.udpMu.Unlock()
+	f.outboundMu.Lock()
+	tcpN := len(f.outboundStreams)
+	f.outboundMu.Unlock()
 	return TunForwarderStats{
 		PacketsSent:     f.packetsSent.Load(),
 		PacketsReceived: f.packetsReceived.Load(),
@@ -250,6 +272,10 @@ func (f *TunForwarder) Stats() TunForwarderStats {
 		PacketsSpoofed:  f.packetsSpoofed.Load(),
 		BytesSent:       f.bytesSent.Load(),
 		BytesReceived:   f.bytesReceived.Load(),
+		LastActivityMs:  now.Sub(last).Milliseconds(),
+		UptimeSec:       int64(now.Sub(start).Seconds()),
+		UDPStreams:      udpN,
+		TCPStreams:      tcpN,
 	}
 }
 
@@ -358,6 +384,8 @@ func (f *TunForwarder) tunReadLoop() {
 							continue
 						}
 						f.packetsSent.Add(1)
+						f.lastActivity.Store(time.Now().UnixNano())
+						f.lastActivity.Store(time.Now().UnixNano())
 						f.bytesSent.Add(uint64(len(packet)))
 						continue
 					}
@@ -403,6 +431,7 @@ func (f *TunForwarder) tunReadLoop() {
 		}
 
 		f.packetsSent.Add(1)
+		f.lastActivity.Store(time.Now().UnixNano())
 		f.bytesSent.Add(uint64(len(packet)))
 	}
 }
@@ -711,6 +740,7 @@ func (f *TunForwarder) handleInboundStream(conn net.Conn) {
 		}
 
 		f.packetsReceived.Add(1)
+		f.lastActivity.Store(time.Now().UnixNano())
 		f.bytesReceived.Add(uint64(len(packet)))
 	}
 }

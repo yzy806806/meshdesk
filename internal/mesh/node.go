@@ -2343,6 +2343,19 @@ func (n *MeshNode) learnedZone(peerKey string) string {
 	return zl(peerKey)
 }
 
+// TunForwarderStats returns the TUN forwarder's health snapshot, or
+// nil when TUN integration is not active.
+func (n *MeshNode) TunForwarderStats() *TunForwarderStats {
+	n.mu.RLock()
+	ti := n.tunIntegration
+	n.mu.RUnlock()
+	if ti == nil || ti.Forwarder == nil {
+		return nil
+	}
+	st := ti.Forwarder.Stats()
+	return &st
+}
+
 // PeerVirtualIPs returns all peer → VirtualIP mappings known to the
 // router (config peers + meta-exchange learned peers), excluding self.
 // Used by the topology to show nodes discovered via the meta exchange
