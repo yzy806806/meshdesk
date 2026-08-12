@@ -1,6 +1,10 @@
 package monitor
 
 import (
+	"bytes"
+	"compress/gzip"
+	"io"
+
 	"encoding/json"
 	"os"
 	"sync"
@@ -165,17 +169,41 @@ func (s *Store) Persist(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	// gzip-compress the history file (JSON compresses well; the raw
+	// dump was ~130MB for 6 nodes, gzip cuts it to ~15MB).
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o644)
 }
 
-// Load restores buffered metrics from a JSON file produced by Persist.
+// Load restores buffered metrics from a (possibly gzip-compressed) JSON
+// file produced by Persist. Plain-JSON files from older versions are
+// detected by magic and still load.
 func (s *Store) Load(path string) error {
-	data, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
+	}
+	data := raw
+	if len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b { // gzip magic
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return err
+		}
+		data, err = io.ReadAll(zr)
+		zr.Close()
+		if err != nil {
+			return err
+		}
 	}
 	var snapshot map[string][]*Metrics
 	if err := json.Unmarshal(data, &snapshot); err != nil {
