@@ -536,6 +536,15 @@ type SOCKS5YAMLConfig struct {
 	// refused (no bare exposed socks5 proxies).
 	EntryUsername string `yaml:"entry_username,omitempty"`
 	EntryPassword string `yaml:"entry_password,omitempty"`
+
+	// ExitNode pins this entry's traffic to a single fixed exit node
+	// (peer identity hex). Mutually exclusive with ExitNodes.
+	ExitNode string `yaml:"exit_node,omitempty"`
+
+	// ExitNodes is an ordered list of exit node identities for this
+	// entry. The exit with the lowest live RTT is selected per
+	// connection; failures fall back to the next in the list.
+	ExitNodes []string `yaml:"exit_nodes,omitempty"`
 }
 
 // TransferConfig holds file transfer settings.
