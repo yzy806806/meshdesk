@@ -440,14 +440,6 @@ func TestTunIntegration_ByteLevelSpoofing_IPv4(t *testing.T) {
 			},
 		},
 		{
-			// Different peer's IP within the same subnet.
-			name: "src_other_peer_ip_inside_subnet_reject",
-			mutate: func(p []byte) {
-				router.AddRoute(net.ParseIP("10.200.0.6"), "peerB")
-				copy(p[12:16], net.ParseIP("10.200.0.6").To4())
-			},
-		},
-		{
 			// Set src to another valid-looking IP in subnet.
 			name: "src_to_10_200_0_99_inside_subnet_reject",
 			mutate: func(p []byte) {
@@ -465,6 +457,17 @@ func TestTunIntegration_ByteLevelSpoofing_IPv4(t *testing.T) {
 			}
 		})
 	}
+
+	// Multi-hop relay trust model (v1.5.11): a KNOWN peer's VIP arriving
+	// through this peer (relay chain) is accepted.
+	t.Run("src_known_peer_ip_inside_subnet_accept_multihop", func(t *testing.T) {
+		router.AddRoute(net.ParseIP("10.200.0.6"), "peerB")
+		pkt := buildValid()
+		copy(pkt[12:16], net.ParseIP("10.200.0.6").To4())
+		if !f.validateSourceIP(pkt, "peerA") {
+			t.Fatalf("known mesh-member VIP should be accepted under the multi-hop trust model")
+		}
+	})
 
 	// Tests where the mutated source IP is OUTSIDE the subnet → REJECTED
 	// (no RouteManager configured, so all outside-subnet packets are rejected).
