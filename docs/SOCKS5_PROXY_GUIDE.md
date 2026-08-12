@@ -36,55 +36,57 @@ Phone/Laptop          Mesh Node            Mesh Network         Exit Node
 - The entry node must have Reality TLS configured (the SOCKS5 stream requires
   the Reality handshake for GFW evasion)
 
-## Step 1: Configure the Exit Node
+## Step 1: Exit Node (v1.5.9+)
 
-On the node that will serve as the internet exit:
-
-Edit `/etc/meshdesk/config.yaml` or use the Dashboard config page:
-
-```yaml
-proxy:
-  exit:
-    enabled: true
-    allowed_ports: [80, 443]      # only HTTP/HTTPS by default
-    # allow_all_ports: false      # set true to allow any port (higher risk)
-```
-
-Restart the node or use the Dashboard hot-reload to apply changes.
-
-**Security note:** Exit nodes forward traffic to the internet. The operator
-should understand the legal implications in their jurisdiction. By default,
-only ports 80 and 443 are allowed.
-
-## Step 2: Configure the Entry Node
-
-On the node where SOCKS5 clients will connect:
+**Every node is a SOCKS5 exit by default** — virtual port `0x5350`,
+destination ports 80/443. No configuration needed. To extend or
+restrict (Dashboard Proxy page or config):
 
 ```yaml
 proxy:
-  entry:
-    socks5:
-      enabled: true
-      port: 77                    # virtual port (default), multiplexed on 52888
-      auth: "none"                # or "password" for client authentication
+  socks5:
+    allowed_ports: [80, 443, 22]   # extend destination ports
+    # allow_all_ports: true        # any port (higher risk)
 ```
 
-The SOCKS5 port is a virtual port multiplexed on the MuxTransport port (52888).
-No additional firewall ports need to be opened.
+**Security note:** Exit nodes forward traffic to the internet. The
+operator should understand the legal implications in their
+jurisdiction. By default only ports 80 and 443 are allowed.
 
-If using password authentication:
+## Step 2: Entry Node
+
+On the node where SOCKS5 clients connect, enable the entry listener
+(Dashboard Proxy page, or config):
 
 ```yaml
 proxy:
-  entry:
-    socks5:
-      enabled: true
-      port: 77
-      auth: "password"
-      users:
-        - username: "phone1"
-          password: "your-strong-password"
+  socks5:
+    entry_listen: 0.0.0.0:10811    # LAN clients connect here (empty = off)
+    entry_username: mesh           # RFC 1929 auth — REQUIRED for
+    entry_password: secret         #   non-loopback listeners
+    exit_node: fc709e08...         # fixed exit for this entry (optional)
+    # exit_nodes: [a..., b...]     # or list — lowest live RTT picked per
+    #                              #   connection, failures fall back
 ```
+
+- Non-loopback listeners **require** `entry_username`/`entry_password`
+  (no bare exposed proxies).
+- Saving on the Proxy page auto-restarts the daemon (systemd supervisor).
+
+## Exit Selection & Path Routing (v1.5.11)
+
+- **Selection**: with multiple `exit_nodes`, each connection uses the
+  healthy exit with the lowest live RTT (measured by session echo ping,
+  cached 30s). Failures automatically fall back to the next-best exit.
+- **Path**: `DialVirtualPort` prefers a relay path when the direct RTT
+  is slow (>300ms — typical cross-zone Reality); a same-zone relay hop
+  can beat the direct path. Multi-hop chains (A→R1→R2→B) are
+  loop-protected and bounded by `p2p.max_relay_hops`.
+```
+
+The entry listener is a local TCP port; the mesh side rides the
+MuxTransport (52888). No additional firewall ports needed for mesh
+traffic (the entry port itself is exposed as configured).
 
 ## Step 3: Configure SOCKS5 Client
 
