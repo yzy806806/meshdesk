@@ -212,7 +212,13 @@ func (a *App) startP2P() error {
 			if !node.SameZone(meta.PublicKey) {
 				return
 			}
-			natTraversal.InitiateConnection(meta.PublicKey, meta.Endpoints, p2p.NatType(meta.NatType))
+			// v1.6: hole-punching is handled by the memberlist-
+			// independent engine (internal/holepunch); the legacy
+			// NatTraversal punch is replaced. Relay fallback
+			// (RelayPathBuilder) is unchanged.
+			if a.holepunch != nil {
+				a.holepunch.Trigger(meta.PublicKey, meta.Endpoints, holepunchNatType(meta.NatType))
+			}
 		}
 		natLeaveHandler = func(peerKey string) {
 			natTraversal.RemoveConnection(peerKey)
