@@ -21,8 +21,12 @@ type Reporter struct {
 	store      *Store     // local ring buffer store (self-metrics + buffer during outage)
 	dialer     MeshDialer // dials mesh-internal connections to collectors
 	collectors []string   // peer IDs of collector nodes
-	interval   time.Duration
-	port       int // mesh-internal port that collectors listen on
+	// peerLister returns all known mesh peers (used as the default
+	// push target when no collectors are configured/discovered).
+	peerLister  func() []string
+	localPeerID string
+	interval    time.Duration
+	port        int // mesh-internal port that collectors listen on
 
 	mu      sync.Mutex
 	running bool
@@ -92,6 +96,7 @@ func NewReporter(cfg ReporterConfig) *Reporter {
 
 	return &Reporter{
 		collector:    NewSystemCollector(cfg.NodeID, cfg.Hostname),
+		localPeerID:  cfg.NodeID,
 		store:        NewStore(),
 		dialer:       cfg.Dialer,
 		collectors:   cfg.Collectors,
@@ -184,6 +189,15 @@ func (r *Reporter) SetPort(port int) {
 	}
 	r.mu.Lock()
 	r.port = port
+	r.mu.Unlock()
+}
+
+// SetPeerLister sets the callback that returns all known mesh peers —
+// used as the default push target when no collectors are configured or
+// discovered (monitoring works out of the box, no manual collectors).
+func (r *Reporter) SetPeerLister(fn func() []string) {
+	r.mu.Lock()
+	r.peerLister = fn
 	r.mu.Unlock()
 }
 
@@ -361,6 +375,18 @@ func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 	collectors := make([]string, len(r.collectors))
 	copy(collectors, r.collectors)
 	r.mu.Unlock()
+
+	// Default: when no collectors are configured or discovered (e.g.
+	// degraded memberlist never propagated CapCollector), push to ALL
+	// known mesh peers — monitoring is expected to work out of the box.
+	if len(collectors) == 0 && r.peerLister != nil {
+		for _, p := range r.peerLister() {
+			if p == r.localPeerID {
+				continue
+			}
+			collectors = append(collectors, p)
+		}
+	}
 
 	var lastErr error
 	for _, collectorID := range collectors {

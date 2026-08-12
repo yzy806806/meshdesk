@@ -1242,6 +1242,11 @@ func main() {
 		Interval:   cfg.Monitoring.Interval,
 		Port:       cfg.Monitoring.Port,
 	})
+	// Default monitoring: when no collectors are configured/discovered,
+	// push to every known mesh peer (works out of the box).
+	reporter.SetPeerLister(func() []string {
+		return node.SessionPeerKeys()
+	})
 	if err := reporter.Start(); err != nil {
 		log.Printf("Warning: failed to start monitoring reporter: %v", err)
 	} else {
