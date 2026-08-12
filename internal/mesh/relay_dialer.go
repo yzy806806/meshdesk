@@ -62,15 +62,21 @@ const relayBackoffWindow = 30 * time.Second
 type relayBackoff struct {
 	mu      sync.Mutex
 	nextTry map[string]time.Time
+	fails   map[string]int // per-(target,relay) consecutive failure count (exponential)
 }
 
 func newRelayBackoff() *relayBackoff {
-	return &relayBackoff{nextTry: make(map[string]time.Time)}
+	return &relayBackoff{nextTry: make(map[string]time.Time), fails: make(map[string]int)}
 }
 
 func relayBackoffKey(targetKey, relayKey string) string {
 	return targetKey[:min(len(targetKey), 16)] + "|" + relayKey[:min(len(relayKey), 16)]
 }
+
+// maxRelayBackoffWindow caps the exponential cooldown (10 minutes) so a
+// permanently unreachable target (e.g. a dead node still in the mesh
+// view) stops generating per-tick relay noise without being forgotten.
+const maxRelayBackoffWindow = 10 * time.Minute
 
 // allowed reports whether a relay attempt to target via relay may
 // proceed (false while a failure cooldown is active).
@@ -87,21 +93,46 @@ func (b *relayBackoff) allowed(targetKey, relayKey string) bool {
 		for k, t := range b.nextTry {
 			if now.After(t) {
 				delete(b.nextTry, k)
+				delete(b.fails, k)
 			}
 		}
 	}
 	return now.After(b.nextTry[relayBackoffKey(targetKey, relayKey)])
 }
 
-// markFailed records a failed attempt, starting a cooldown window
-// during which the (target, relay) path is skipped.
+// markFailed records a failed attempt. The cooldown grows exponentially
+// (30s × 2^(n-1), capped at 10m) so persistently unreachable targets
+// stop hammering the relay path every tick.
 func (b *relayBackoff) markFailed(targetKey, relayKey string) {
 	if b == nil {
 		return
 	}
+	key := relayBackoffKey(targetKey, relayKey)
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.nextTry[relayBackoffKey(targetKey, relayKey)] = time.Now().Add(relayBackoffWindow)
+	b.fails[key]++
+	n := b.fails[key]
+	window := relayBackoffWindow << (n - 1)
+	if n > 1 && window < relayBackoffWindow { // overflow guard
+		window = maxRelayBackoffWindow
+	}
+	if window > maxRelayBackoffWindow {
+		window = maxRelayBackoffWindow
+	}
+	b.nextTry[key] = time.Now().Add(window)
+}
+
+// markSuccess clears the failure count for a (target, relay) path after
+// a successful relay dial (the path is healthy again).
+func (b *relayBackoff) markSuccess(targetKey, relayKey string) {
+	if b == nil {
+		return
+	}
+	key := relayBackoffKey(targetKey, relayKey)
+	b.mu.Lock()
+	delete(b.fails, key)
+	delete(b.nextTry, key)
+	b.mu.Unlock()
 }
 
 // RelayDialer provides DialViaRelay — a method to open a data stream
@@ -392,6 +423,7 @@ func (n *MeshNode) DialViaRelay(
 				relayKey[:min(len(relayKey), 16)]+"...", err, relayBackoffWindow)
 			continue
 		}
+		n.relayBackoff.markSuccess(targetKey, relayKey)
 		return conn, nil
 	}
 
