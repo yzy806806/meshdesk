@@ -512,8 +512,10 @@ func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 	if f.cfg.MeshNode == nil {
 		return nil, errors.New("tun-forwarder: no mesh node for UDP path")
 	}
-	// Zone gate: cross-zone / unknown → Reality only (no UDP).
-	if !f.cfg.MeshNode.SameZone(peerKey) {
+	// Zone gate: KNOWN cross-zone → Reality only (no UDP). Zone-
+	// unknown peers are allowed (memberlist-degraded meshes learn
+	// zones slowly; UDP dial failure falls back to TCP/relay).
+	if !f.cfg.MeshNode.SameZone(peerKey) && f.cfg.MeshNode.PeerZone(peerKey) != "" {
 		return nil, errors.New("tun-forwarder: cross-zone peer — Reality only")
 	}
 	f.udpMu.Lock()
