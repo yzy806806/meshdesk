@@ -1,5 +1,37 @@
 # Release Notes
 
+## v1.5.11 — 2026-08-12
+
+**Multi-hop relay + config-pinned exits + exit path selection.**
+
+### Relay
+- **Multi-hop relay** (A→R1→R2→B): recursive forwarding with
+  `MeshRelayRequest.Path` loop prevention, bounded by `max_relay_hops`.
+  Fix: accept response now sent to the initiator before bridging (was:
+  initiator timed out with EOF despite a live tunnel). Multi-hop
+  data-plane test passes (bidirectional echo).
+- **Slow-path relay preference**: `DialVirtualPort` tries a relay path
+  when the direct session RTT exceeds 300ms (typically cross-zone
+  Reality) — a same-zone relay hop can beat the direct path. Ping port
+  excluded (recursion guard).
+
+### Exit selection (socks5)
+- `proxy.socks5.exit_node` / `exit_nodes`: config-pinned fixed exit for
+  the entry listener (Dashboard-managed; CLI flags remain fallback).
+- Per-connection selection picks the healthy exit with the lowest live
+  RTT (`pickBestExits`); failures fall back to the next-best exit
+  (was: hard reject).
+- **PeerRTT caching** (30s TTL): topology renders (O(n²) pairs) and
+  exit selection reuse cached measurements instead of hammering the
+  session echo port.
+
+### Verified
+- 25/25 test packages green; multi-hop echo test
+- 4-node real machines: exit selection (aliyun auto-picked at 174ms vs
+  Oracle ARM 212ms), fixed exit via relay (Oracle ARM IP), data plane OK
+
+---
+
 ## v1.5.10 — 2026-08-12
 
 **Security hardening + full-connectivity topology.**
