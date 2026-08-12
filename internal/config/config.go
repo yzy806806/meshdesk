@@ -621,7 +621,7 @@ type PositionConfig struct {
 
 // MeshConfig holds mesh-level settings.
 type MeshConfig struct {
-	Port int `yaml:"port"` // WireGuard listen port (default 51820)
+	Port int `yaml:"port"` // mesh/Reality listen port
 	// GossipPort is the TCP port for memberlist gossip on the mesh IP.
 	// Default: 7946. Only used when p2p.enabled is true.
 	GossipPort int `yaml:"gossip_port,omitempty"`
@@ -717,7 +717,7 @@ type P2pConfig struct {
 	//   "manual" — admin approval via dashboard
 	JoinApproval string `yaml:"join_approval,omitempty"`
 
-	// AuthorizedKeys is the list of WireGuard public keys (hex) pre-authorized
+	// AuthorizedKeys is the list of mesh public keys (hex) pre-authorized
 	// to join the mesh. Used when JoinApproval is "auto".
 	AuthorizedKeys []string `yaml:"authorized_keys,omitempty"`
 
@@ -733,7 +733,7 @@ type P2pConfig struct {
 	// MaxPeers is the hard limit on total peers. Default: 256.
 	MaxPeers int `yaml:"max_peers,omitempty"`
 
-	// AdvertiseEndpoints is a list of explicit WireGuard endpoints (host:port)
+	// AdvertiseEndpoints is a list of explicit mesh endpoints (host:port)
 	// that this node advertises to peers via gossip. When set, they override
 	// the auto-detected local IP. Use this when the node is behind NAT and you
 	// know the public IP:port mapping, or when auto-detection would pick the
@@ -1043,10 +1043,10 @@ func Load(path string) (*Config, error) {
 			"The config field is ignored and should be removed.")
 	}
 	if cfg.Mesh.Port == 0 {
-		cfg.Mesh.Port = 51820
+		cfg.Mesh.Port = 52888
 	}
 	if cfg.Mesh.GossipPort == 0 {
-		cfg.Mesh.GossipPort = 7946
+		cfg.Mesh.GossipPort = 52888
 	}
 	// TUN config defaults for MeshConfig fields.
 	if cfg.Mesh.TunMTU == 0 {

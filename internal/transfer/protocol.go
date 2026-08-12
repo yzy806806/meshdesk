@@ -18,7 +18,7 @@
 // message is sent back as a JSON response.
 //
 // All transfers ride over the mesh VPN (gVisor netstack), so the
-// transport is already encrypted by WireGuard. The capability layer
+// transport is already encrypted (Reality TLS / mesh session). The capability layer
 // (auth package) enforces that only authorized peers can initiate or
 // accept transfers.
 package transfer
