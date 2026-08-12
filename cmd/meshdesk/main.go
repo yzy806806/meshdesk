@@ -1412,7 +1412,13 @@ func main() {
 		monitorAuthChecker := auth.NewMeshIdentityAuthChecker(
 			nodeID,
 			func(peerID string) bool {
-				_, ok := node.RoutingTable().GetPeer(peerID)
+				// Known = routing-table PeerEntry OR a peer learned via
+				// the meta exchange (VIP route — degraded memberlist
+				// leaves meta-learned peers without a PeerEntry).
+				if _, ok := node.RoutingTable().GetPeer(peerID); ok {
+					return true
+				}
+				_, ok := node.PeerVirtualIPs()[peerID]
 				return ok
 			},
 			auditLogger,
