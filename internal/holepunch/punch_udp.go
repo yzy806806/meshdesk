@@ -39,17 +39,21 @@ const (
 // punchUDP performs a coordinated two-way UDP hole punch. Returns the
 // peer's punched endpoint on success, "" on failure.
 func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
-	if len(endpoints) == 0 {
-		return ""
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
 	defer cancel()
 
-	// 1. Exchange punch params over the coordination stream.
-	peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, endpoints[0])
+	// 1. Exchange punch params over the coordination stream. With no
+	//    advertised endpoints, the exchange itself is the discovery.
+	fallback := ""
+	if len(endpoints) > 0 {
+		fallback = endpoints[0]
+	}
+	peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, fallback)
 	if err != nil {
 		log.Printf("[holepunch] %s: coordination exchange failed: %v", short(peerKey), err)
+		return ""
+	}
+	if peerEP == "" {
 		return ""
 	}
 
