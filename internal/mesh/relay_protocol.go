@@ -58,6 +58,12 @@ type MeshRelayRequest struct {
 	InitiatorKey string           `msgpack:"ik"`  // initiator peer identity hex (for target-side auth)
 	Port         uint16           `msgpack:"pt"`  // target virtual port (0 = legacy/unset)
 	Timestamp    int64            `msgpack:"ts"`  // UnixNano
+
+	// Path is the chain of relay nodes already traversed for this
+	// tunnel (initiator-excluded, relay-added). Used for multi-hop
+	// relay loop prevention: a relay never forwards to a node already
+	// on the path. Empty for single-hop (legacy-compatible).
+	Path []string `msgpack:"path,omitempty"`
 }
 
 // MeshRelayResponse is sent by the relay node back to the initiator

@@ -22,7 +22,7 @@ func TestMeshNode_TryRelayFallback_WithMetaProvider_NoRelayCapable(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error when no relay-capable peers")
 	}
@@ -42,7 +42,7 @@ func TestMeshNode_TryRelayFallback_WithMetaProvider_AtCapacity(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error when relay is at capacity")
 	}
@@ -62,7 +62,7 @@ func TestMeshNode_TryRelayFallback_WithMetaProvider_SymmetricNAT(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error when only relay is symmetric NAT")
 	}
@@ -87,7 +87,7 @@ func TestMeshNode_TryRelayFallback_WithMetaProvider_SkipsSelf(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error when only candidate is self")
 	}
@@ -107,7 +107,7 @@ func TestMeshNode_TryRelayFallback_WithMetaProvider_SkipsTarget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error when only candidate is the target")
 	}
@@ -123,7 +123,7 @@ func TestMeshNode_TryRelayFallback_LegacyFallback(t *testing.T) {
 	defer cancel()
 
 	// No relayMetaProvider set → legacy path.
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error for no sessions in legacy mode")
 	}

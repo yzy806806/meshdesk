@@ -1,6 +1,8 @@
 package mesh
 
 import (
+	"context"
+
 	"bufio"
 	"fmt"
 	"io"
@@ -234,9 +236,10 @@ func (h *RelayHandler) handleRequest(initiatorConn net.Conn, req *MeshRelayReque
 		h.node.sessionsMu.Unlock()
 	}
 	if targetSession == nil {
-		h.sendResponse(initiatorConn, tunnelID, false, RelayRejectNoSessionToTarget)
-		h.removeTunnel(tunnelID)
-		initiatorConn.Close()
+		// Multi-hop relay: this node has no session to the target.
+		// Recursively relay through another node (the path excludes
+		// already-traversed relays, preventing loops).
+		h.multiHopRelay(initiatorConn, req, tunnelID)
 		return
 	}
 
@@ -374,6 +377,63 @@ func (h *RelayHandler) handleDialBack(conn net.Conn, resp *MeshRelayResponse) {
 	// Start the bidirectional bridge now that both sides are connected.
 	// Previously this was dead code — TargetConn was set but startBridge
 	// was never called, leaving the tunnel hanging and leaking resources.
+	h.startBridge(tunnel)
+}
+
+// multiHopRelay forwards a relay request to another relay node when
+// this node has no session to the target — the core of multi-hop
+// relay (A → R1 → R2 → B). The path (already-traversed relays) is
+// propagated so loops are impossible; max_relay_hops bounds depth.
+func (h *RelayHandler) multiHopRelay(initiatorConn net.Conn, req *MeshRelayRequest, tunnelID string) {
+	// Append this relay to the path for the next hop.
+	path := append([]string(nil), req.Path...)
+	if h.node != nil {
+		path = append(path, h.node.LocalPublicKey())
+	}
+
+	// Depth bound (config max_relay_hops; default 2).
+	maxHops := 2
+	if h.node != nil && h.node.cfg != nil && h.node.cfg.P2P.MaxRelayHops > 0 {
+		maxHops = h.node.cfg.P2P.MaxRelayHops
+	}
+	if len(path) > maxHops {
+		log.Printf("[mesh-relay] multi-hop: max relay hops (%d) exceeded for target %s (tunnel=%s)",
+			maxHops, req.TargetKey[:min(len(req.TargetKey), 16)]+"...", tunnelID[:min(len(tunnelID), 16)])
+		h.sendResponse(initiatorConn, tunnelID, false, "max_relay_hops_exceeded")
+		h.removeTunnel(tunnelID)
+		initiatorConn.Close()
+		return
+	}
+
+	// Recursively dial the target through another relay (path-aware).
+	ctx, cancel := context.WithTimeout(h.node.ctx, 15*time.Second)
+	defer cancel()
+	nextHop, err := h.node.tryRelayFallback(ctx, req.TargetKey, req.Port, path)
+	if err != nil {
+		log.Printf("[mesh-relay] multi-hop relay to %s failed: %v (tunnel=%s)",
+			req.TargetKey[:min(len(req.TargetKey), 16)]+"...", err, tunnelID[:min(len(tunnelID), 16)])
+		h.sendResponse(initiatorConn, tunnelID, false, RelayRejectNoSessionToTarget)
+		h.removeTunnel(tunnelID)
+		initiatorConn.Close()
+		return
+	}
+
+	// Bridge the initiator stream to the next-hop tunnel.
+	h.mu.Lock()
+	tunnel, exists := h.tunnels[tunnelID]
+	if exists {
+		tunnel.TargetConn = nextHop
+	}
+	h.mu.Unlock()
+	if !exists {
+		nextHop.Close()
+		h.removeTunnel(tunnelID)
+		initiatorConn.Close()
+		return
+	}
+
+	log.Printf("[mesh-relay] multi-hop tunnel established via %d hop(s) to %s (tunnel=%s)",
+		len(path), req.TargetKey[:min(len(req.TargetKey), 16)]+"...", tunnelID[:min(len(tunnelID), 16)])
 	h.startBridge(tunnel)
 }
 
