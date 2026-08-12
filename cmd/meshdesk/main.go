@@ -1243,9 +1243,20 @@ func main() {
 		Port:       cfg.Monitoring.Port,
 	})
 	// Default monitoring: when no collectors are configured/discovered,
-	// push to every known mesh peer (works out of the box).
+	// push to every known mesh peer — sessions plus meta-learned peers
+	// (works out of the box, even without direct sessions).
 	reporter.SetPeerLister(func() []string {
-		return node.SessionPeerKeys()
+		keys := node.SessionPeerKeys()
+		seen := make(map[string]bool, len(keys))
+		for _, k := range keys {
+			seen[k] = true
+		}
+		for k := range node.PeerVirtualIPs() {
+			if !seen[k] {
+				keys = append(keys, k)
+			}
+		}
+		return keys
 	})
 	if err := reporter.Start(); err != nil {
 		log.Printf("Warning: failed to start monitoring reporter: %v", err)
