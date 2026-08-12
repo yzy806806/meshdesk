@@ -429,7 +429,7 @@ func ValidateFile(path string) []ValidationError {
 func checkPortConflicts(cfg *Config) []ValidationError {
 	var entries []portEntry
 
-	// Mesh WireGuard port.
+	// Mesh listen port.
 	if cfg.Mesh.Port > 0 {
 		entries = append(entries, portEntry{cfg.Mesh.Port, "mesh", "port"})
 	}

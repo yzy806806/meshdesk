@@ -216,13 +216,16 @@ func (sc *udpStreamConn) Read(p []byte) (int, error) {
 // Close implements net.Conn.
 func (sc *udpStreamConn) Close() error {
 	sc.once.Do(func() {
+		// Read baseSeq under sendMu — advanceBase() (recvLoop) writes
+		// it under the same lock; a lock-free read here is a data race.
 		sc.sendMu.Lock()
 		sc.closed = true
+		seq := sc.baseSeq
 		sc.sendMu.Unlock()
 		// Send FIN best-effort.
 		frame := make([]byte, udpFrameHeaderLen)
 		frame[0] = udpFrameTypeFin
-		binary.BigEndian.PutUint32(frame[5:9], sc.baseSeq)
+		binary.BigEndian.PutUint32(frame[5:9], seq)
 		sc.conn.WriteToUDP(frame, sc.peer)
 		close(sc.done)
 	})
