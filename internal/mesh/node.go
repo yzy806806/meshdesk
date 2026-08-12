@@ -1576,7 +1576,7 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 		// peers are known. This enables cross-network-family
 		// communication (e.g. IPv4-only → IPv6-only) through a
 		// dual-stack relay node.
-		if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex, uint16(port)); relayErr == nil {
+		if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex, uint16(port), nil); relayErr == nil {
 			return conn, nil
 		} else {
 			log.Printf("[mesh] DialVirtualPort: relay fallback for peer %s failed: %v",
@@ -1691,7 +1691,7 @@ func (n *MeshNode) DialVirtualPort(ctx context.Context, peerIdentityHex string, 
 			}
 			n.sessionsMu.Unlock()
 
-			if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex, uint16(port)); relayErr == nil {
+			if conn, relayErr := n.tryRelayFallback(ctx, peerIdentityHex, uint16(port), nil); relayErr == nil {
 				log.Printf("[mesh] DialVirtualPort: zombie session cleaned, relay fallback for peer %s succeeded", peerIdentityHex[:min(len(peerIdentityHex), 16)]+"...")
 				return conn, nil
 			}

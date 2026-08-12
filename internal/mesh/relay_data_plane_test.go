@@ -242,7 +242,7 @@ func TestRelayDecoder_CoalescedDataInDialViaRelay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, servicePort)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, servicePort, nil)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestRelayInitiatorKey_Propagation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, servicePort)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, servicePort, nil)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}

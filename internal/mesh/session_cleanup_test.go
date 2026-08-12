@@ -136,7 +136,7 @@ func TestTryRelayFallback_SkipsDeadSessions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error with only dead sessions, got nil")
 	}
@@ -163,7 +163,7 @@ func TestTryRelayFallback_ExcludesTargetAndSelf(t *testing.T) {
 
 	// tryRelayFallback for targetKey should not use targetKey as a relay.
 	// With only the target in sessions, it should return "no relay candidates".
-	_, err := node.tryRelayFallback(ctx, targetKey, 0)
+	_, err := node.tryRelayFallback(ctx, targetKey, 0, nil)
 	if err == nil {
 		t.Fatal("expected error when only session is to the target itself, got nil")
 	}

@@ -20,7 +20,7 @@ func TestRelayDialer_NoSessionToRelay(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := dialer.DialViaRelay(ctx, "nonexistentrelay", "targetkey", 0)
+	_, err := dialer.DialViaRelay(ctx, "nonexistentrelay", "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error for no session to relay, got nil")
 	}
@@ -44,7 +44,7 @@ func TestRelayDialer_RelayRejects(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	_, err = dialer.DialViaRelay(ctx, peerID, "nonexistenttarget", 0)
+	_, err = dialer.DialViaRelay(ctx, peerID, "nonexistenttarget", 0, nil)
 	if err == nil {
 		t.Fatal("expected error for relay rejecting, got nil")
 	}
@@ -105,7 +105,7 @@ func TestRelayDialer_SuccessAndDataFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0, nil)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestMeshNode_DialViaRelay_NoCandidates(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := node.DialViaRelay(ctx, "targetkey", nil, 0)
+	_, err := node.DialViaRelay(ctx, "targetkey", nil, 0, nil)
 	if err == nil {
 		t.Fatal("expected error for no relay candidates, got nil")
 	}
@@ -151,7 +151,7 @@ func TestMeshNode_DialViaRelay_SkipsSelf(t *testing.T) {
 	defer cancel()
 
 	// With only self as candidate (empty key matches), should fail.
-	_, err := node.DialViaRelay(ctx, "targetkey", []string{""}, 0)
+	_, err := node.DialViaRelay(ctx, "targetkey", []string{""}, 0, nil)
 	if err == nil {
 		t.Fatal("expected error when only self in candidates, got nil")
 	}
@@ -165,7 +165,7 @@ func TestMeshNode_TryRelayFallback_NoSessions(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := node.tryRelayFallback(ctx, "targetkey", 0)
+	_, err := node.tryRelayFallback(ctx, "targetkey", 0, nil)
 	if err == nil {
 		t.Fatal("expected error for no sessions, got nil")
 	}
@@ -191,7 +191,7 @@ func TestMeshNode_TryRelayFallback_WithSession(t *testing.T) {
 	// to relay through it. The relay will reject because "target" doesn't
 	// exist, so we expect an error.
 	_ = peerID
-	_, err = clientNode.tryRelayFallback(ctx, "nonexistenttarget", 0)
+	_, err = clientNode.tryRelayFallback(ctx, "nonexistenttarget", 0, nil)
 	if err == nil {
 		t.Fatal("expected error for relay to nonexistent target, got nil")
 	}
@@ -246,7 +246,7 @@ func TestRelayDialer_LargeDataFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0)
+	conn, err := dialer.DialViaRelay(ctx, peerA, peerB, 0, nil)
 	if err != nil {
 		t.Fatalf("DialViaRelay: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestRelayDialer_MultipleRelayCandidates(t *testing.T) {
 	// The target key must match what the relay has in its sessions map.
 	// relay1 has peerB1, relay2 has peerB2.
 	// We dial with target = peerB (which relay1 knows).
-	conn, err := nodeA.DialViaRelay(ctx, peerA1, []string{peerA2, peerA1}, 0)
+	conn, err := nodeA.DialViaRelay(ctx, peerA1, []string{peerA2, peerA1}, 0, nil)
 	if err != nil {
 		// If the first candidate (peerA2/relay2) fails, the second (peerA1/relay1)
 		// should succeed. But the target "peerA1" is A's own key in relay1,

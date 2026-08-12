@@ -105,7 +105,7 @@ func TestRelay_PortPreservation_ProductionPath(t *testing.T) {
 
 	// Node A dials B's virtual port 2222 via relay fallback.
 	// A has no direct session to B, so DialVirtualPort falls through to
-	// tryRelayFallback(ctx, peerB, 2222).
+	// tryRelayFallback(ctx, peerB, 2222, nil).
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
