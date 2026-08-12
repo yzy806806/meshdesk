@@ -127,7 +127,9 @@ func (s *SSHServer) HostSignerPublicKey() string {
 // Serve accepts SSH connections on the given listener until the context
 // is cancelled or the server is closed.
 func (s *SSHServer) Serve(ctx context.Context, listener net.Listener) error {
+	s.mu.Lock()
 	s.listener = listener
+	s.mu.Unlock()
 
 	go func() {
 		<-ctx.Done()
