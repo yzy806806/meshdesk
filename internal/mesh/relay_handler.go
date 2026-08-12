@@ -434,6 +434,11 @@ func (h *RelayHandler) multiHopRelay(initiatorConn net.Conn, req *MeshRelayReque
 
 	log.Printf("[mesh-relay] multi-hop tunnel established via %d hop(s) to %s (tunnel=%s)",
 		len(path), req.TargetKey[:min(len(req.TargetKey), 16)]+"...", tunnelID[:min(len(tunnelID), 16)])
+
+	// Send the accept response to the initiator BEFORE bridging — the
+	// initiator's DialViaRelay is blocked reading it; without this it
+	// times out with EOF even though the tunnel is live.
+	h.sendResponse(initiatorConn, tunnelID, true, "")
 	h.startBridge(tunnel)
 }
 
