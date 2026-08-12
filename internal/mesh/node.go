@@ -191,6 +191,11 @@ type MeshNode struct {
 	// Guarded by sessionsMu.
 	learnedEndpoints map[string][]string
 
+	// rttCache caches PeerRTT results so topology renders and exit
+	// selection don't hammer the session echo port on every call.
+	// Guarded by sessionsMu. rttCacheTTL bounds staleness.
+	rttCache map[string]rttCacheEntry
+
 	// relayBackoff tracks failed (target, relay) relay attempts so the
 	// dialer stops hammering unreachable targets. Without this, every
 	// connection attempt to an unreachable peer (socks5 exit, monitor
@@ -227,6 +232,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		peerTransport:        make(map[string]string),
 		learnedZones:         make(map[string]string),
 		learnedEndpoints:     make(map[string][]string),
+		rttCache:             make(map[string]rttCacheEntry),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
 		sessionEstablished:   []func(peerKey string){},
