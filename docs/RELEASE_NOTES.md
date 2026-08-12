@@ -18,6 +18,10 @@
   auth accepts meta-learned peers.
 - **Config defaults**: mesh/gossip port 51820/7946 → 52888 (single-port
   mux); stale WireGuard-era comments updated.
+- **Relay noise**: relayBackoff is now exponential (30s × 2^(n-1),
+  capped 10min) — permanently unreachable targets (dead AMD node) no
+  longer generate per-tick `no_session_to_target` storms; success
+  clears the counter immediately.
 
 ### Observability
 - **`tun_health` in /api/stats**: packets sent/recv/dropped/spoofed,
