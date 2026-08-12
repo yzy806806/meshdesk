@@ -25,10 +25,27 @@
   exit selection reuse cached measurements instead of hammering the
   session echo port.
 
+### Fixes (post-release)
+- **anti-spoof × multi-hop**: `validateSourceIP` required src == tunnel
+  peer's VIP; multi-hop relayed packets (src = original initiator, a
+  different member) were dropped — Redmi↔tx unreachable. Now any KNOWN
+  mesh-member VIP inside the subnet is accepted (mesh chain = trust
+  boundary); unknown/foreign sources still rejected.
+- **UDP ARQ data race**: `Close()` read `baseSeq` without `sendMu`
+  while `advanceBase()` (recvLoop) writes it under the lock — fixed
+  (race-detector clean).
+- **Monitor defaults**: no manual collectors needed — push to all known
+  peers (sessions + meta-learned) when the collector list is empty.
+- **Config defaults**: mesh/gossip port default 51820/7946 → 52888
+  (single-port mux, matches all docs/configs); stale WireGuard-era
+  comments updated.
+
 ### Verified
-- 25/25 test packages green; multi-hop echo test
+- 25/25 test packages green; multi-hop echo test; `-race` clean
 - 4-node real machines: exit selection (aliyun auto-picked at 174ms vs
   Oracle ARM 212ms), fixed exit via relay (Oracle ARM IP), data plane OK
+- Redmi (Android App) joins the mesh; tx↔Redmi bidirectional ping via
+  multi-hop relay after the anti-spoof fix
 
 ---
 

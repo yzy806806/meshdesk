@@ -44,7 +44,7 @@ func (n *MeshNode) GetPeerHandshakeInfo(publicKey string) *PeerHandshakeInfo {
 		// TxBytes/RxBytes: smux does not expose per-session byte counters
 		// in the current API. These remain zero until byte accounting is
 		// added to the smux Session.
-		// PersistentKeepalive: not applicable (no WireGuard keepalive).
+		// PersistentKeepalive: not applicable (no keepalive handshake).
 	}
 }
 
