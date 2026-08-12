@@ -297,7 +297,10 @@ func RelayStream(conn1, conn2 net.Conn) {
 
 	// conn1 → conn2
 	go func() {
-		io.Copy(conn2, conn1)
+		n, err := io.Copy(conn2, conn1)
+		if err != nil {
+			log.Printf("[mesh-relay] RelayStream 1→2 done: n=%d err=%v", n, err)
+		}
 		// Half-close conn2's write side if supported.
 		if cw, ok := conn2.(closeWriter); ok {
 			cw.CloseWrite()
@@ -307,7 +310,10 @@ func RelayStream(conn1, conn2 net.Conn) {
 
 	// conn2 → conn1
 	go func() {
-		io.Copy(conn1, conn2)
+		n, err := io.Copy(conn1, conn2)
+		if err != nil {
+			log.Printf("[mesh-relay] RelayStream 2→1 done: n=%d err=%v", n, err)
+		}
 		// Half-close conn1's write side if supported.
 		if cw, ok := conn1.(closeWriter); ok {
 			cw.CloseWrite()

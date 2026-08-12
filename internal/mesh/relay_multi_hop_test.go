@@ -21,8 +21,6 @@ func TestMultiHopRelay_DataPlane(t *testing.T) {
 	// initiator stream in the net.Pipe harness). Tracked for a dedicated
 	// relay-handler bridge debugging pass; single-hop data plane is
 	// covered by relay_data_plane_test and multi-hop is verified on real
-	// nodes.
-	t.Skip("multi-hop data-plane bridge stalls in the in-memory harness — see note")
 	nodeA, relay1, relay2, nodeB, peerA, relay1Key, _, peerB := createQuadNodes(t)
 
 	// Register relay handlers + production OnRelayDial wiring.
@@ -80,13 +78,22 @@ func TestMultiHopRelay_DataPlane(t *testing.T) {
 	defer conn.Close()
 
 	// The multi-hop tunnel is established (A→R1→R2→B). Write the
-	// payload — the tunnel must accept and forward it. (Echo readback
-	// is verified by single-hop data-plane tests and on real nodes;
-	// bridge timing in the in-memory test harness can lag.)
+	// payload and read back the echo — verifies the full data plane
+	// through both relay hops.
 	if _, err := conn.Write([]byte(payload)); err != nil {
 		t.Fatalf("write through multi-hop tunnel: %v", err)
 	}
-	t.Logf("payload written through multi-hop tunnel")
+	buf := make([]byte, len(payload)+5)
+	n, err := io.ReadFull(conn, buf)
+	if err != nil {
+		t.Fatalf("read echo through multi-hop tunnel: %v", err)
+	}
+	got := string(buf[:n])
+	want := "echo:" + payload
+	if got != want {
+		t.Fatalf("echo = %q, want %q", got, want)
+	}
+	t.Logf("multi-hop echo verified: %q", got)
 }
 
 // createQuadNodes builds A, R1, R2, B with real identities and
