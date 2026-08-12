@@ -1,5 +1,53 @@
 # Release Notes
 
+## v1.5.12 — 2026-08-12
+
+**Post-release hardening: multi-hop fixes, monitoring observability, memory optimization.**
+
+### Fixes
+- **anti-spoof × multi-hop relay**: `validateSourceIP` now accepts any
+  KNOWN mesh-member VIP inside the subnet — multi-hop relayed packets
+  (src = original initiator, ≠ tunnel peer) were dropped, breaking
+  Redmi↔tx. Unknown/foreign sources still rejected (mesh chain = trust
+  boundary).
+- **UDP ARQ data race**: `Close()` read `baseSeq` without `sendMu`
+  while `advanceBase()` (recvLoop) writes it under the lock — fixed;
+  full `-race` suite clean (25 packages).
+- **Monitor defaults**: no manual collectors — push to all known peers
+  (sessions + meta-learned) when the collector list is empty; monitor
+  auth accepts meta-learned peers.
+- **Config defaults**: mesh/gossip port 51820/7946 → 52888 (single-port
+  mux); stale WireGuard-era comments updated.
+
+### Observability
+- **`tun_health` in /api/stats**: packets sent/recv/dropped/spoofed,
+  bytes, last-activity (ms ago), uptime, UDP/TCP stream counts —
+  stalled data-plane detection (last_activity grows while sessions stay
+  up).
+- **pprof endpoint** on 127.0.0.1:6060 (heap/goroutine diagnosis).
+
+### Performance
+- **Monitor history shrink**: highRes tier 1440→720 slots (12h minute
+  granularity) + **gzip persistence** (monitor-history.json ~130MB →
+  ~15MB; legacy plain-JSON auto-detected on load). Combined with
+  `GOMEMLIMIT=512MiB` + `GOGC=50` (recommended in systemd
+  Environment), meshdesk RSS dropped 594→71MB (txcloud) and 617→147MB
+  (aliyun).
+
+### Docs
+- Missing referenced design docs created (CONFIG_INVENTORY,
+  PROXY_DESIGN, CIRCUIT_MANAGER_SPEC, PEERMANAGER_DESIGN, FRONTEND);
+  release asset naming unified (`meshdesk-linux-{arch}`).
+
+### Verified
+- 25/25 tests green + `-race` clean; 30-min stability observation on
+  real nodes (data plane + tun_health + memory) with zero anomalies
+- 4-node real mesh: aliyun data plane stable after the forwarder-freeze
+  investigation (restart cleared state; observability now surfaces it
+  early)
+
+---
+
 ## v1.5.11 — 2026-08-12
 
 **Multi-hop relay + config-pinned exits + exit path selection.**
