@@ -777,6 +777,21 @@ func (f *TunForwarder) validateSourceIP(packet []byte, peerID string) bool {
 		return true
 	}
 
+	// Multi-hop relay: the packet may originate from another mesh
+	// member (its VIP ≠ this tunnel peer's VIP) and be forwarded here
+	// through a relay chain. Accept when the source is a KNOWN mesh
+	// member's VirtualIP — the authenticated smux/relay chain plus
+	// mesh-subnet membership is the trust boundary. Unknown/foreign
+	// sources inside the subnet are still rejected.
+	if f.cfg.Router.IsInSubnet(srcIP) {
+		if _, ok := f.cfg.Router.ResolveIP(srcIP); ok {
+			if isDebugLogEnabled() {
+				log.Printf("[tun-forwarder] anti-spoof: multi-hop src %s (mesh member) via peer %s, accepting", srcIP, shortKey(peerID))
+			}
+			return true
+		}
+	}
+
 	// If the source IP is NOT in the mesh subnet, it may be from a
 	// subnet proxy (e.g. the peer is forwarding traffic from its LAN).
 	// Only accept it if the RouteManager is configured and the source
