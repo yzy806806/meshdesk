@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -428,12 +429,19 @@ func main() {
 			entryListen = ""
 		}
 	}
-	if entryListen != "" && (socks5ExitNode != "" || socks5ExitNodes != "" || len(cfg.Proxy.SOCKS5.AllowedPeers) > 0) {
+	if entryListen != "" && (socks5ExitNode != "" || socks5ExitNodes != "" || len(cfg.Proxy.SOCKS5.AllowedPeers) > 0 || cfg.Proxy.SOCKS5.ExitNode != "" || len(cfg.Proxy.SOCKS5.ExitNodes) > 0) {
+		// Exit nodes: config (proxy.socks5.exit_node / exit_nodes)
+		// first — the Dashboard-managed fixed-exit binding. CLI flags
+		// fill in when config has none.
 		var nodes []string
-		if socks5ExitNode != "" {
+		if cfg.Proxy.SOCKS5.ExitNode != "" {
+			nodes = append(nodes, cfg.Proxy.SOCKS5.ExitNode)
+		}
+		nodes = append(nodes, cfg.Proxy.SOCKS5.ExitNodes...)
+		if len(nodes) == 0 && socks5ExitNode != "" {
 			nodes = []string{socks5ExitNode}
 		}
-		if socks5ExitNodes != "" {
+		if len(nodes) == 0 && socks5ExitNodes != "" {
 			for _, p := range strings.Split(socks5ExitNodes, ",") {
 				if p = strings.TrimSpace(p); p != "" {
 					nodes = append(nodes, p)
@@ -444,7 +452,7 @@ func main() {
 			log.Printf("  SOCKS5 entry: listening on %s but no exit nodes configured — traffic has nowhere to go", entryListen)
 		}
 		go runSOCKS5Client(node, entryListen, nodes, entryAuthUser, entryAuthPass)
-		log.Printf("  SOCKS5 entry: %s (auth: %s)", entryListen, map[bool]string{true: "username/password", false: "none"}[entryAuthUser != ""])
+		log.Printf("  SOCKS5 entry: %s (auth: %s, exits: %d)", entryListen, map[bool]string{true: "username/password", false: "none"}[entryAuthUser != ""], len(nodes))
 	}
 
 	// Attempt to connect statically configured peers.
@@ -2427,22 +2435,33 @@ func runSOCKS5Client(node *mesh.MeshNode, listenAddr string, exitNodes []string,
 			targetPort := binary.BigEndian.Uint16(portBuf)
 			targetAddr := net.JoinHostPort(targetHost, fmt.Sprintf("%d", targetPort))
 
-			// Phase 3: pick a healthy exit (round-robin) and dial its
-			// SOCKS5 virtual port.
-			exitNodeID := health.pick()
-			if exitNodeID == "" {
+			// Phase 3: pick the best exit — healthy, lowest live RTT —
+			// and dial its SOCKS5 virtual port. On failure, fall back
+			// to the next-best exit (no more hard reject).
+			bestOrder := pickBestExits(health, node, exitNodes)
+			if len(bestOrder) == 0 {
 				log.Printf("SOCKS5 client: no healthy exit nodes available")
 				socks5Reply(c, 0x04)
 				return
 			}
-			log.Printf("SOCKS5 client: CONNECT %s via exit %s...", targetAddr, exitNodeID[:16])
 
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			meshConn, err := node.DialVirtualPort(ctx, exitNodeID, int(mesh.SOCKS5VirtualPort))
-			if err != nil {
-				log.Printf("SOCKS5 client: DialVirtualPort: %v", err)
+			var meshConn net.Conn
+			var dialErr error
+			for i, exitNodeID := range bestOrder {
+				log.Printf("SOCKS5 client: CONNECT %s via exit %s...%s (attempt %d/%d)",
+					targetAddr, exitNodeID[:min(len(exitNodeID), 16)], "...", i+1, len(bestOrder))
+
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				meshConn, dialErr = node.DialVirtualPort(ctx, exitNodeID, int(mesh.SOCKS5VirtualPort))
+				cancel()
+				if dialErr == nil {
+					break
+				}
+				log.Printf("SOCKS5 client: exit %s...: %v — trying next", exitNodeID[:min(len(exitNodeID), 16)], dialErr)
 				health.markDown(exitNodeID)
+			}
+			if dialErr != nil {
+				log.Printf("SOCKS5 client: all %d exit(s) failed, last error: %v", len(bestOrder), dialErr)
 				socks5Reply(c, 0x04)
 				return
 			}
@@ -2721,6 +2740,53 @@ func systemResolver() string {
 		}
 	}
 	return ""
+}
+
+// pickBestExits returns the exit nodes in preference order: healthy
+// exits sorted by live RTT (lowest first). Unknown-RTT exits go last
+// but stay eligible. When the config pins a single exit (exit_node),
+// that exit is tried first and the rest are fallbacks.
+func pickBestExits(h *exitHealth, node *mesh.MeshNode, exits []string) []string {
+	type scored struct {
+		key string
+		rtt time.Duration
+	}
+	seen := map[string]bool{}
+	var out []scored
+
+	// Healthy exits first (RTT-sorted).
+	h.mu.Lock()
+	for _, e := range exits {
+		if h.state[e] {
+			out = append(out, scored{key: e, rtt: node.PeerRTT(e)})
+			seen[e] = true
+		}
+	}
+	h.mu.Unlock()
+
+	// Untested exits (never probed yet) stay eligible, RTT-sorted.
+	for _, e := range exits {
+		if !seen[e] {
+			out = append(out, scored{key: e, rtt: node.PeerRTT(e)})
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := out[i].rtt, out[j].rtt
+		if ri == 0 {
+			ri = time.Duration(1 << 62)
+		}
+		if rj == 0 {
+			rj = time.Duration(1 << 62)
+		}
+		return ri < rj
+	})
+
+	order := make([]string, len(out))
+	for i, sc := range out {
+		order[i] = sc.key
+	}
+	return order
 }
 
 // exitHealth tracks SOCKS5 exit node health and does round-robin
