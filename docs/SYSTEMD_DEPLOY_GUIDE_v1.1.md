@@ -361,7 +361,7 @@ systemctl stop meshdesk
 
 # 2. 下载新版本（替换二进制）
 curl -fsSL -o /usr/local/bin/meshdesk \
-  https://github.com/yzy806806/meshdesk/releases/download/v1.1.1/meshdesk-linux-amd64
+  https://github.com/yzy806806/meshdesk/releases/download/v1.5.11/meshdesk-linux-amd64
 chmod +x /usr/local/bin/meshdesk
 
 # 3. 验证版本
