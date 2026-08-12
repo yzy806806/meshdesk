@@ -15,6 +15,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime"
@@ -59,6 +61,12 @@ var autoDialMu sync.Mutex
 var autoDialInFlight = make(map[string]bool)
 
 func main() {
+	// Local-only pprof endpoint for memory/goroutine diagnosis
+	// (127.0.0.1:6060 — never exposed).
+	go func() {
+		_ = http.ListenAndServe("127.0.0.1:6060", nil)
+	}()
+
 	// Handle "join-token" subcommand: meshdesk join-token <secret> [server-fp]
 	if len(os.Args) >= 2 && os.Args[1] == "join-token" {
 		runJoinTokenSubcommand(os.Args[2:])
