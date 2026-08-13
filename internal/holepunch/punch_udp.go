@@ -44,37 +44,33 @@ const (
 
 // punchUDP performs a coordinated two-way UDP hole punch. Returns the
 // peer's punched endpoint on success, "" on failure.
+//
+// EasyTier ordering (source-verified): the outbound socket opens FIRST
+// and its source port is exchanged via the coordination message — the
+// peer's data plane targets that source port, which its stateful
+// security group passes as ESTABLISHED (conntrack). Reporting the
+// listen address instead (as v1.6.1 did) makes the peer dial an
+// inbound port that drops large datagrams.
 func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
 	defer cancel()
 
-	// 1. Exchange punch params over the coordination stream. With no
-	//    advertised endpoints, the exchange itself is the discovery.
 	fallback := ""
 	if len(endpoints) > 0 {
 		fallback = endpoints[0]
 	}
-	peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, fallback)
-	if err != nil {
-		log.Printf("[holepunch] %s: coordination exchange failed: %v", short(peerKey), err)
-		return ""
-	}
-	if peerEP == "" || peerEP == "0.0.0.0:0" || peerEP == "[::]:0" {
-		// Mapped endpoint unavailable — fall back to the advertised
-		// endpoint (still useful when one side is behind NAT).
-		peerEP = fallback
-	}
-	if peerEP == "" {
+	if fallback == "" {
 		return ""
 	}
 
-	// 2. Open the local UDP socket — reuse the mesh mux socket when
-	//    available (same NAT mapping as the data plane), else bind
-	//    the punch port / ephemeral.
+	// 1. Open the local UDP socket FIRST — reuse the mesh mux socket
+	//    when available (same NAT mapping as the data plane), else
+	//    bind the punch port / ephemeral. Its LocalAddr port is our
+	//    outbound source port, exchanged as the conntrack target.
 	var conn *net.UDPConn
 	shared := false
 	if e.PunchConnProvider != nil {
-		if rc := mustUDPAddr(peerEP); rc != nil {
+		if rc := mustUDPAddr(fallback); rc != nil {
 			conn = e.PunchConnProvider(rc.IP)
 			shared = conn != nil
 		}
@@ -82,13 +78,33 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	if conn == nil {
 		local := &net.UDPAddr{Port: e.PunchPort}
 		var err error
-		conn, err = net.DialUDP("udp", local, mustUDPAddr(peerEP))
+		conn, err = net.DialUDP("udp", local, mustUDPAddr(fallback))
 		if err != nil {
-			conn, err = net.DialUDP("udp", nil, mustUDPAddr(peerEP))
+			conn, err = net.DialUDP("udp", nil, mustUDPAddr(fallback))
 			if err != nil {
 				return ""
 			}
 		}
+	}
+	// Record our outbound source port for the coordination exchange.
+	if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
+		e.mu.Lock()
+		e.OutboundPort = la.Port
+		e.mu.Unlock()
+	}
+
+	// 2. Exchange punch params over the coordination stream (carries
+	//    our outbound source port now).
+	peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, fallback)
+	if err != nil {
+		log.Printf("[holepunch] %s: coordination exchange failed: %v", short(peerKey), err)
+		return ""
+	}
+	if peerEP == "" || peerEP == "0.0.0.0:0" || peerEP == "[::]:0" {
+		peerEP = fallback
+	}
+	if peerEP == "" {
+		return ""
 	}
 	// Only close sockets we created — the shared mux socket is owned
 	// by the transport (closing it kills the mux UDP read loop).
@@ -96,46 +112,66 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 		defer conn.Close()
 	}
 
-	// 3. Send probes carrying the nonce; wait for a reply. On the
-	//    SHARED mux socket we must NOT set deadlines (that would break
-	//    the mux read loop) and must NOT block on ReadFrom (the mux
-	//    loop owns reads) — fire probes only; hole verification happens
-	//    when the data plane dials the punched endpoint.
+	// 3. Probe from an INDEPENDENT socket (EasyTier-style): the shared
+	//    mux socket's source port is 52888 (its listen port), so
+	//    exchanging it is a no-op. An independent outbound socket gets
+	//    a fresh source port whose NAT mapping the peer's stateful
+	//    security group passes as ESTABLISHED (conntrack) — the data
+	//    plane then targets that port and large datagrams flow.
 	probe := make([]byte, 6) // [0x50 0x4A] + nonce(4) — mux sockets echo these
 	probe[0], probe[1] = 0x50, 0x4A
 	binary.BigEndian.PutUint32(probe[2:], nonce)
 	reply := make([]byte, 16)
 
 	peerUDP := mustUDPAddr(peerEP)
+	// Independent probe socket — same family as the peer.
+	dialer := &net.Dialer{}
+	if shared {
+		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			dialer.LocalAddr = &net.UDPAddr{IP: la.IP}
+		}
+	}
+	pconn, derr := dialer.Dial("udp", peerUDP.String())
+	var pconnUDP *net.UDPConn
+	if derr == nil {
+		pconnUDP = pconn.(*net.UDPConn)
+		defer pconnUDP.Close()
+		// Our real outbound source port — the conntrack target.
+		if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
+			e.mu.Lock()
+			e.OutboundPort = la.Port
+			e.mu.Unlock()
+			log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), la.Port)
+		}
+	}
+	if pconnUDP == nil {
+		// Independent socket failed — fall back to the shared socket.
+		pconnUDP = conn
+	}
+
 	for i := 0; i < punchProbeCount; i++ {
-		// Send outbound probe (creates/refreshes our NAT mapping).
-		// Shared mux sockets are UNCONNECTED — must use WriteTo.
 		var werr error
-		if shared {
+		if pconnUDP == conn {
 			_, werr = conn.WriteTo(probe, peerUDP)
 		} else {
-			_, werr = conn.Write(probe)
+			_, werr = pconnUDP.WriteToUDP(probe, peerUDP)
 		}
-		if werr == nil && !shared {
-			// Try to read the peer's probe (echoed by its mux loop).
-			conn.SetReadDeadline(time.Now().Add(punchProbeGap * 2))
-			n, _, rerr := conn.ReadFrom(reply)
+		if werr == nil && pconnUDP != conn {
+			// Independent socket: we own reads — look for the echo.
+			pconnUDP.SetReadDeadline(time.Now().Add(punchProbeGap * 2))
+			n, _, rerr := pconnUDP.ReadFromUDP(reply)
 			if rerr == nil && n >= 6 && reply[0] == 0x50 && reply[1] == 0x4A && binary.BigEndian.Uint32(reply[2:]) == nonce {
-				// Hole open both ways.
 				return peerEP
 			}
-		} else if err == nil && shared {
-			// Shared socket: probes fired; the mux loop owns reads.
-			// A brief pause lets the peer's probes land.
-			time.Sleep(punchProbeGap)
-			// Optimistically report the hole — the data plane will
-			// verify it via DialUDPPeer and fall back to relay if
-			// the punch did not actually open.
+			// No echo (peer behind NAT or probe lost): optimistic
+			// report after the last probe — the data plane verifies
+			// via DialUDPPeer and falls back to relay.
 			if i == punchProbeCount-1 {
-				// Observation probe: fire from an ephemeral socket so
-				// the peer observes our outbound source port — its
-				// data-plane target (conntrack-matched, EasyTier).
-				go e.observeProbe(peerKey, peerUDP, nonce)
+				return peerEP
+			}
+		} else if werr == nil && pconnUDP == conn {
+			time.Sleep(punchProbeGap)
+			if i == punchProbeCount-1 {
 				return peerEP
 			}
 		}
@@ -145,7 +181,11 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 		case <-time.After(punchProbeGap):
 		}
 	}
-	return ""
+	// Optimistic report: the probes were fired from our independent
+	// outbound socket (conntrack mapping established) — the data
+	// plane verifies the hole via DialUDPPeer and falls back to
+	// relay if the punch did not actually open.
+	return peerEP
 }
 
 // exchangePunchParams dials the peer's coordination virtual port and
@@ -188,7 +228,7 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		req[4+len(our)+4] = 1
 	}
 	req[4+len(our)+5] = e.Inc
-	binary.BigEndian.PutUint16(req[4+len(our)+6:], uint16(e.ObservedPort))
+	binary.BigEndian.PutUint16(req[4+len(our)+6:], uint16(e.OutboundPort))
 	if _, err := conn.Write(req); err != nil {
 		return fallbackEP, nonce, nil
 	}
@@ -287,7 +327,7 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 		resp[4+len(our)+4] = 1
 	}
 	resp[4+len(our)+5] = e.Inc
-	binary.BigEndian.PutUint16(resp[4+len(our)+6:], uint16(e.ObservedPort))
+	binary.BigEndian.PutUint16(resp[4+len(our)+6:], uint16(e.OutboundPort))
 	if _, err := conn.Write(resp); err != nil {
 		return
 	}
