@@ -374,9 +374,6 @@ func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPA
 // TUN UDP data plane dials from. Hole-punching reuses this socket so
 // the punched NAT mapping is exactly the one the data plane uses.
 func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
-	if t.udpMesh == nil {
-		return nil
-	}
 	for _, conn := range t.udpConns {
 		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
 			if (la.IP.To4() != nil) == (remoteIP.To4() != nil) {
