@@ -100,9 +100,17 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	binary.BigEndian.PutUint32(probe[2:], nonce)
 	reply := make([]byte, 16)
 
+	peerUDP := mustUDPAddr(peerEP)
 	for i := 0; i < punchProbeCount; i++ {
 		// Send outbound probe (creates/refreshes our NAT mapping).
-		if _, err := conn.Write(probe); err == nil && !shared {
+		// Shared mux sockets are UNCONNECTED — must use WriteTo.
+		var werr error
+		if shared {
+			_, werr = conn.WriteTo(probe, peerUDP)
+		} else {
+			_, werr = conn.Write(probe)
+		}
+		if werr == nil && !shared {
 			// Try to read the peer's probe (echoed by its mux loop).
 			conn.SetReadDeadline(time.Now().Add(punchProbeGap * 2))
 			n, _, rerr := conn.ReadFrom(reply)
@@ -267,8 +275,13 @@ func (e *Engine) blindPunch(peerEP string, nonce uint32) {
 	probe := make([]byte, 6)
 	probe[0], probe[1] = 0x50, 0x4A
 	binary.BigEndian.PutUint32(probe[2:], nonce)
+	peerUDP := mustUDPAddr(peerEP)
 	for i := 0; i < punchProbeCount; i++ {
-		conn.Write(probe)
+		if shared {
+			conn.WriteTo(probe, peerUDP)
+		} else {
+			conn.Write(probe)
+		}
 		if shared {
 			// Shared mux socket: no reads, no deadlines (mux loop owns).
 			time.Sleep(punchProbeGap)
