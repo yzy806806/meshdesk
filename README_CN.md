@@ -1,261 +1,142 @@
 # MeshDesk
 
-**去中心化服务器 mesh 网络 + 监控 + WebSSH + SOCKS5 代理 — 单一二进制。**
+**去中心化服务器 Mesh——VPN + 监控 + WebSSH + SOCKS5 代理 + TUN 虚拟网络，单个 Go 二进制。**
 
-[English](./README.md) | [发布说明](docs/RELEASE_NOTES.md)
+[English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.2.1** (`a83c9f8`, 2026-08-06) + 补丁 `fef481a` (2026-08-07) — 12 项新功能：systemd 集成、version 命令、日志轮转、配置校验、Mesh DNS、流量统计、告警 UI、信号处理、配置热重载、CI 流水线、单端口 HTTP 复用、端口 52888 上的 /api/join 入网。详见[发布说明](docs/RELEASE_NOTES.md)和[已知问题](https://github.com/yzy806806/meshdesk/issues/1)。
+> **当前版本: v1.6.1** —— 独立 NAT 打洞引擎（对标 EasyTier：UDP/TCP/v6/对称 NAT 端口预测）、main.go 拆分到 internal/app、relay CPU 修复。
 
 ---
 
-## MeshDesk 是什么？
+## 为什么用 MeshDesk？
 
-MeshDesk 将五个工具合为一体：
+管理多台服务器通常要跑 Nezha（监控）+ EasyTier/WireGuard（组网）+ 代理工具——三个进程、三份配置。MeshDesk 一个二进制全搞定：
 
-1. **Mesh VPN** — P2P 去中心化网络互联，不依赖 EasyTier
-2. **服务器监控** — CPU、内存、磁盘、网络、服务状态
-3. **Web 终端** — 浏览器直接 SSH
-4. **SOCKS5 代理** — Reality TLS + smux 中继到出口节点，标准 SOCKS5 客户端
-5. **Dashboard** — 全功能节点管理、一键入网、配置编辑、代理控制
+| 功能 | Nezha | EasyTier | WireGuard | MeshDesk |
+|------|:-----:|:--------:|:---------:|:--------:|
+| 服务器监控 | ✅ | — | — | ✅ |
+| Mesh VPN / TUN | — | ✅ | ✅ | ✅ |
+| **NAT 打洞** | — | ✅ | — | ✅ |
+| WebSSH | ✅ | — | — | ✅ |
+| SOCKS5 代理 | — | — | — | ✅ |
+| 一键入网 | — | — | — | ✅ |
+| 抗 DPI（Reality TLS） | — | — | — | ✅ |
+| 单二进制 | — | ✅ | — | ✅ |
+| Dashboard 配置 | — | — | — | ✅ |
 
-每个节点运行同一个二进制。任意节点加 `--web` 即可成为控制面板。
+### 核心设计
 
-### 为什么不用 Nezha + EasyTier？
+- **Reality TLS** —— 所有 mesh 流量伪装成访问真实网站（如 `www.apple.com:443`）的 HTTPS，DPI 无法区分。不用 WireGuard、不用 KCP、无特征 UDP 模式。
+- **单端口** —— 一切跑在一个 TCP+UDP 端口（默认 52888）。MuxTransport 按首字节分流 Reality TLS / mesh smux / SOCKS5 / memberlist gossip。
+- **独立打洞引擎**（`internal/holepunch`，v1.6）—— 脱离 memberlist、对标 EasyTier：
+  - 协调走专用虚拟端口 `0x504A`（复用现有 smux/relay 会话——无需中心打洞服务器）
+  - UDP 双向打洞（nonce 验证洞，v4 + v6）
+  - TCP 打洞（conntrack 源端口交换 + 持续 SYN——状态化安全组放行 ESTABLISHED）
+  - **对称 NAT 端口预测**（NAT4E）：STUN 第三次探测检测可预测端口增量；锥型侧扫 50 端口窗口（生日攻击，EasyTier 同款）
+  - UDP ARQ 帧分片（<60B）——扛住丢大包的受限链路；流隔离（`|in`/`|out`）保证双向 key exchange 不混淆
+  - 洞直接接入 TUN UDP 多路径（`getUDPStream`）；relay 兜底保留
+- **零第三方 TUN** —— 裸 `/dev/net/tun` syscall 创建 TUN 设备（~150 行）。无 wireguard-go、无 gVisor、无外部依赖。
+- **确定性 IPAM** —— 虚拟 IP = `cidr_base + (pubkey_hash % host_count)`。无 DHCP、无协调、零冲突。
+- **响应式中继兜底** —— 直连不通（或链路丢大包）时，按 RTT 排序的 gossip relay 候选自动接管；工作路径缓存 60s（v1.6 CPU 修复——monitor 不再全量重扫）。见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
+- **自进化** —— 基于 Agora 多智能体框架构建，AI 团队自主实现、测试、审查、部署。
 
-| | Nezha | EasyTier | MeshDesk |
-|---|---|---|---|
-| 服务器监控 | ✅ | ❌ | ✅ |
-| Mesh VPN | ❌ | ✅ | ✅ |
-| WebSSH | ✅ | ❌ | ✅ |
-| 单一二进制 | ❌ | ✅ | ✅ |
-| 一键入网 | ❌ | ❌ | ✅ |
-| Dashboard 配置管理 | ❌ | ❌ | ✅ |
-| SOCKS5 代理 | ❌ | ❌ | ✅ |
+---
 
 ## 快速开始
 
-### 共享节点（有公网端口）
+### 1. 构建
 
 ```bash
-meshdesk gen-identity > /etc/meshdesk/identity.pem
-meshdesk gen-reality > keys.txt
-
-# 配置文件见 README.md
-meshdesk --web --config /etc/meshdesk/config.yaml
+go build -trimpath -ldflags "-s -w" -o meshdesk ./cmd/meshdesk
 ```
 
-### 普通节点（不暴露端口）
+### 2. 共享节点（公网可达、接受入站、`reality.enabled: true`）
 
-seed 指向共享节点即可：
+```yaml
+# /etc/meshdesk/config.yaml
+p2p:
+    enabled: true
+    advertise_endpoints:
+        - 1.2.3.4:52888          # 公网 IPv4
+        - '[2409:...]:52888'      # 公网 IPv6（可选）
+mesh:
+    port: 52888
+reality:
+    enabled: true
+    listen_port: 52888
+    dest: www.microsoft.com:443
+    server_names: [www.microsoft.com]
+    private_key: <生成的私钥>
+```
+
+### 3. 普通节点（仅出站、`reality.enabled: false`）
 
 ```yaml
 p2p:
-  enabled: true
-  seeds:
-    - "共享节点IP:52888"
-  gossip_probe_interval: 5
-reality:
-  enabled: false
-```
-
-### 一键入网（从 Dashboard）
-
-1. 打开 Dashboard → **Join** 页面
-2. 点击"生成安装命令"
-3. 复制命令到新节点 SSH 执行：
-
-```bash
-# 传统 Web 端口（8080）
-curl -sSL http://dashboard:8080/join?token=xxx | sudo sh
-
-# 单端口路径（52888）— v1.2.1+
-curl -sSL http://dashboard:52888/join?token=xxx | sudo sh
-```
-
-程序化入网可使用 `/api/join` 端点（POST），支持质询-响应认证，两种端口均可：
-
-```bash
-curl -X POST http://dashboard:52888/api/join \
-  -H "Content-Type: application/json" \
-  -d '{"token":"xxx","joiner_pubkey":"..."}'
-```
-
-自动下载二进制、生成 identity、写入配置、加入集群。
-
-## 架构
-
-### 协议栈
-
-```
-Layer 4 — MeshNode（gossip、WebSSH、文件传输、SOCKS5、代理）
-Layer 3 — smux 多路复用（所有流量共用一条加密连接）
-Layer 2b — AES-256-GCM 加密
-Layer 2a — X25519 ECDH 密钥交换
-Layer 1 — Reality TLS 握手（端口 52888，伪装 HTTPS 流量）
-Layer 0 — Ed25519 身份（PEM 文件持久化）
-```
-
-### MuxTransport 单端口复用
-
-端口 52888 通过首字节嗅探分流所有协议：
-
-| 首字节 | 协议 | 虚拟端口 | 说明 |
-|--------|------|----------|------|
-| 0x16 | Reality TLS | — | TLS ClientHello，加密 mesh 流量 |
-| 0x47/0x50/0x48 | HTTP | — | GET/POST/HEAD — Dashboard、入网服务（v1.2.1+） |
-| 0x4D | mesh-internal | — | smux session 建立 |
-| 0x53 | SOCKS5 入口 | 0x5350 | 手机/客户端代理入口 |
-| 0x45 | SOCKS5 出口 | 0x4558 | 出口节点处理 |
-| 0x52 | smux 中继 | 0x524C | 跨网络路由 |
-| 其他 | gossip | — | memberlist TCP push/pull |
-
-### 节点类型
-
-- **共享节点**（`reality.enabled: true`）：监听 52888 TCP+UDP，唯一暴露公网端口的节点
-- **普通节点**（`reality.enabled: false`）：不监听 TCP，仅 UDP gossip，出站连接共享节点
-
-### Zone 感知传输（v1.5.8+）
-
-节点携带自由字符串 zone 标签（`mesh.zone` + `peer.zone`，如 `cn`/`us`）：
-
-| 对端 zone | 数据面 | 会话 |
-|-----------|--------|------|
-| **同 zone**（值相等非空） | UDP 多路径（快） | UDP 直连 / 0x4D / 打洞 |
-| **跨 zone**（值不同） | **Reality only** | Reality（不 0x4D、不打洞） |
-| **未知**（空） | Reality only（保守） | Reality / 中继 |
-
-**设计意图**：同 zone = 同侧网络 → UDP P2P 快；跨 zone = 过墙 →
-必须 Reality TLS（UDP 过墙会被 QoS 限速且特征可识别，明确禁止）。
-未知 zone 保守走 Reality（Reality 哪都能用，UDP 过墙才是真风险）。
-
-```yaml
-mesh:
-  zone: cn
-
+    enabled: true
+    seeds:
+        - 1.2.3.4:52888
+    advertise_endpoints:          # 帮助打洞
+        - 6.7.8.9:52888
 peers:
-  - public_key: 0d4bf4b1...
-    zone: cn    # 同 zone → UDP P2P
-  - public_key: 7eb1844e...
-    zone: us    # 跨 zone → Reality only
-```
-
-zone 经 gossip 广播（NodeMeta.Zone），新节点自动学习。Dashboard 3D 拓扑：
-节点环色 = zone；连线颜色 = 传输方式（Reality 绿 / UDP 蓝 / 0x4D 黄 / 中继灰）；
-悬停连线显示 ping + 带宽。完整指南见 [docs/ZONE_AWARE_TRANSPORT.md](docs/ZONE_AWARE_TRANSPORT.md)
-
-### SOCKS5 入口与出口（v1.5.9+）
-
-所有节点默认都是 SOCKS5 **出口**（虚拟端口 `0x5350`，目标端口 80/443）。
-**入口**监听由 Dashboard Proxy 页管理（或 `--socks5-listen`）：
-
-```yaml
-proxy:
-  socks5:
-    entry_listen: 0.0.0.0:10811   # 局域网设备连这里
-    entry_username: mesh          # RFC 1929 认证（非回环监听必须）
-    entry_password: secret
-    exit_node: fc709e08...        # 固定出口（该入口流量从这出）
-    # exit_nodes: [a..., b...]    # 或多出口——自动选最低延迟
-```
-
-- **出口选路（v1.5.11）**：每连接选健康出口中实时 RTT 最低的；失败自动回退次优。
-- **多跳中继（v1.5.11）**：直连 RTT 慢（>300ms，典型跨 zone Reality）时优先试中继——
-  同 zone 中继可能更快；多跳链（A→R1→R2→B）有防环 + `p2p.max_relay_hops` 限制。
-- Proxy 页保存自动重启生效（需 systemd 托管）。
-
-### 反应式中继回退
-
-当两个节点无法直连时，per-pair `NatSession` 状态机自动尝试替代路径（STUN→DirectProbe→RelayFallback），从 gossip 广播的 `CapRelay` 元数据中按 RTT 择优选择中继节点。无需全局路由表，无需手动配置路径。单跳中继（A→relay→B）覆盖四节点拓扑；多跳中继（A→R1→R2→B）列为后续阶段 backlog。详见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
-
-### 监控自动路由
-
-- Dashboard 节点通过 gossip 广播 collector 身份
-- 其他节点自动发现 collector 并推送监控数据
-- Aggregator 之间互相转发（`Forwarded` 标志 + `SourceID+Sequence` 去重防循环）
-- `peers.cache` 持久化发现的 endpoint 和 collector 信息
-- `identity.pem` 持久化 Ed25519 身份（重启后 public key 不变）
-
-## TUN 虚拟网络
-
-MeshDesk 可以创建 TUN 虚拟网络接口，提供跨 mesh 的 Layer 3 IP 路由。启用 TUN 后，节点之间可以通过虚拟 IP 互相 ping，通过 mesh SSH 登录，以及通过子网代理访问远程子网。
-
-### 配置
-
-```yaml
+    - public_key: <共享节点公钥>
+      endpoint: 1.2.3.4:52888
+      zone: cn
+      reality:
+        server_name: www.microsoft.com
+        public_key: <共享节点 reality 公钥>
+        short_id: 0123456789abcdef
+        tls_fingerprint: chrome
 mesh:
-  tun_enabled: true
-  mesh_cidr: "10.144.144.0/24"
-  subnet_proxy:
-    - "172.26.0.0/18"
-  tun_name: "mesh0"     # 可选，默认 mesh0
-  tun_mtu: 1400         # 可选，默认 1400
+    port: 52888
+    virtual_ip: 10.100.0.3
 ```
 
-| 字段 | 类型 | 默认值 | 说明 |
-|-------|------|---------|------|
-| `tun_enabled` | bool | `false` | 启动时创建 TUN 设备。需要 `CAP_NET_ADMIN` 或 root 权限。 |
-| `mesh_cidr` | string | — | TUN 网络的 CIDR 子网。每个节点的虚拟 IP 从此范围中分配。 |
-| `subnet_proxy` | []string | — | 本节点宣告可达的本地 CIDR 子网。其他节点会自动添加经由本节点虚拟 IP 的内核路由。 |
-| `tun_name` | string | `mesh0` | TUN 接口名称。 |
-| `tun_mtu` | int | `1400` | TUN 接口 MTU。设低于 1500 以抵消 mesh 传输层的封装开销。 |
-| `static_virtual_ip` | string | — | 强制指定虚拟 IP，不使用 IPAM 分配。必须在 `mesh_cidr` 范围内。 |
-
-### 工作原理
-
-1. **IPAM**：当 `tun_enabled` 为 true 时，每个节点从 `mesh_cidr` 中确定性分配一个虚拟 IP。
-2. **路由**：每个节点维护通过 TUN 接口到达各 peer 虚拟 IP 的内核路由。路由表通过 gossip 在 peer 加入和离开时同步更新。
-3. **转发**：发往 peer 的 IP 包从 TUN 设备读取后，封装并通过 mesh 传输层（Reality TLS + smux）发送。
-4. **子网代理**：配置了 `subnet_proxy` 的节点通过 gossip 宣告其本地子网。Peer 节点自动安装到达这些子网的内核路由，实现对 mesh 网关后方设备的跨网络访问。
-
-### 支持的功能
-
-- **直接 ping**：`ping 10.144.144.2` 通过虚拟 IP 到达另一个 mesh 节点
-- **Mesh SSH**：`ssh user@10.144.144.2` 通过加密 mesh 隧道
-- **子网访问**：通过配置了 `subnet_proxy` 的 mesh 网关节点访问远程局域网内的设备
-
-## Dashboard
-
-| 页面 | 路径 | 说明 |
-|------|------|------|
-| 拓扑 | `/topology` | 3D mesh 拓扑，节点状态 |
-| 监控 | `/` | 所有节点 CPU/内存/负载 |
-| 配置 | `/config` | 编辑所有节点设置（4 级权限） |
-| 入网 | `/join` | 生成一键安装命令 |
-| 代理 | `/proxy` | SOCKS5 代理状态、入口/出口配置 |
-| 节点 | `/nodes` | 节点列表和详情 |
-| Peers | `/peers` | 已知 peer 管理 |
-| 文件 | `/files` | 文件传输 |
-| 终端 | `/terminal` | WebSSH |
-| 服务 | `/services` | 远程服务管理 |
-
-## SOCKS5 代理
-
-手机 → 共享节点:52888 → Reality TLS → SOCKS5 (0x5350) → mesh 中继 (0x524C) → 出口节点 (0x4558) → 互联网
-
-- 使用任意标准 SOCKS5 客户端（不需要 VLESS/xray）
-- 多路径中继 + 自动 failover
-- 出口节点控制允许端口（默认：80, 443）
-
-## 编译
+### 4. 运行
 
 ```bash
-go build -o meshdesk ./cmd/meshdesk/
-GOOS=linux GOARCH=arm64 go build -o meshdesk-arm64 ./cmd/meshdesk/
+sudo ./meshdesk --web --config /etc/meshdesk/config.yaml
+# dashboard: http://localhost:52888
 ```
+
+同 zone 且互可达的节点**自动打洞直连**（UDP/TCP）；其余走 relay——无需手动配置路径。
+
+---
 
 ## 文档
 
-- [架构](docs/ARCHITECTURE.md)
-- [发布说明](docs/RELEASE_NOTES.md)
-- [入网指南](docs/JOIN_GUIDE.md)
-- [SOCKS5 代理指南](docs/SOCKS5_PROXY_GUIDE.md)
-- [配置清单](docs/CONFIG_INVENTORY.md)
-- [代理设计](docs/PROXY_DESIGN.md)
-- [前端](docs/FRONTEND.md)
-- [威胁模型](THREAT_MODEL.md)
-- [设计决策：不建全局路由表](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)
-- [中继部署指南](docs/RELAY_DEPLOYMENT.md)
+| 文档 | 内容 |
+|------|------|
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | 总体设计、分层、数据面 |
+| [DEPENDENCY_TREE.md](docs/DEPENDENCY_TREE.md) | 外部 + 内部 + 运行时依赖树 |
+| [DESIGN_V16_SPLIT_AND_HOLEPUNCH.md](docs/DESIGN_V16_SPLIT_AND_HOLEPUNCH.md) | v1.6 拆分 + 打洞引擎设计与实现状态 |
+| [RELAY_DEPLOYMENT_GUIDE.md](docs/RELAY_DEPLOYMENT_GUIDE.md) | 中继节点部署 |
+| [ZONE_AWARE_TRANSPORT.md](docs/ZONE_AWARE_TRANSPORT.md) | Zone 感知路由规则 |
+| [JOIN_GUIDE.md](docs/JOIN_GUIDE.md) | 一键入网 |
+| [SOCKS5_PROXY_GUIDE.md](docs/SOCKS5_PROXY_GUIDE.md) | 代理入口/出口配置 |
+| [ACL_GUIDE_v1.1.md](docs/ACL_GUIDE_v1.1.md) | 节点间访问控制 |
+| [SYSTEMD_DEPLOY_GUIDE_v1.1.md](docs/SYSTEMD_DEPLOY_GUIDE_v1.1.md) | systemd 服务部署 |
+| [RELEASE_NOTES.md](docs/RELEASE_NOTES.md) | 版本历史 |
 
-## License
+---
 
-MIT
+## v1.6 架构一览
+
+```
+┌─ cmd/meshdesk（flags/子命令）
+├─ internal/app        组合根——三段式 Build → wire → Start/Stop
+├─ internal/holepunch  NAT 打洞引擎（Dialer 接口——不 import mesh）
+├─ internal/mesh       MeshNode：单端口 mux、UDP ARQ、relay、TUN 数据面
+├─ internal/session    X25519 + Ed25519 密钥交换
+├─ internal/crypto     AES-256-GCM SecureConn
+├─ internal/handshake  Reality TLS
+└─ internal/...        config / identity / p2p / tun / web / webssh / dns / proxy / monitor / join
+```
+
+完整依赖树见 [DEPENDENCY_TREE.md](docs/DEPENDENCY_TREE.md)。
+
+---
+
+## 许可证
+
+开源项目。基于 Agora 多智能体框架构建——AI 团队自主实现、测试、审查、部署功能。

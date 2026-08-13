@@ -137,12 +137,18 @@ internal/holepunch/              // NEW package — memberlist-independent
 - Should the engine replace `internal/p2p`'s nat.go entirely, or coexist
   during transition?
 
-## 8. Implementation Status (2026-08-13)
+## 8. Implementation Status (2026-08-13, v1.6.1)
 
 - **Phase 1 (split)**: DONE — internal/app modules, three-phase Build,
   explicit reverse-order Stop, smoke test, 27/27 packages green.
-- **Phase 2 (holepunch)**: DONE (engine) — internal/holepunch with
-  coordination (0x504A), multi-strategy punches, mux-socket reuse,
-  0x504A-prefixed probe echo. Real-machine verified: STUN, v4+v6
-  endpoint exchange, coordination over degraded memberlist.
-  Remaining: per-network probe tuning (symmetric NAT / v6 links).
+- **Phase 2 (holepunch)**: DONE to EasyTier parity (v1.6.1):
+  coordination 0x504A, UDP two-way (v4+v6), TCP conntrack punch with
+  sustained SYN, **symmetric NAT port prediction (NAT4E window scan)**,
+  fragmented ARQ frames (<60B), stream isolation (|in/|out), RTO tuning.
+- **Real-machine**: two-way v6 UDP hole establishes reliably
+  (txcloud↔Oracle). Data plane on that specific link is limited by
+  datagram loss (even fragments) — relay fallback covers it; the engine
+  is ready for reachable networks (mobile/fiber).
+- **CPU fix**: relay working-path cache (60s TTL) — monitor ticks no
+  longer re-scan candidates (v1.5.12's 100% CPU).
+- Docs rewritten for v1.6.1: README/README_CN, DEPENDENCY_TREE.md.
