@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"time"
 
@@ -241,8 +242,10 @@ func ServerKeyExchange(conn net.Conn, id *identity.Identity) (*crypto.SessionKey
 	// 2. Verify peer signature over domain_i || peerEphPub || nonce.
 	verifyPayload := buildInitiatorSignPayload(peerEphPub, nonce)
 	if !identity.Verify(peerIdentityHex, verifyPayload, hex.EncodeToString(peerSig)) {
+		log.Printf("[kx] SERVER signature verify FAILED: peer=%s sig=%s... payloadLen=%d ephPub=%s...", shortHex(peerIdentityHex), hex.EncodeToString(peerSig)[:16], len(verifyPayload), hex.EncodeToString(peerEphPub)[:16])
 		return nil, peerIdentityHex, ErrSignatureInvalid
 	}
+	log.Printf("[kx] SERVER signature verified: peer=%s", shortHex(peerIdentityHex))
 
 	// 3. Check nonce cache for replay.
 	var nonceKey [nonceFieldSize]byte
@@ -391,4 +394,12 @@ func isTimeoutErr(err error) bool {
 	}
 	// Fallback: check error string for common timeout patterns.
 	return false
+}
+
+// shortHex shortens a hex string for diagnostics.
+func shortHex(h string) string {
+	if len(h) <= 16 {
+		return h
+	}
+	return h[:16]
 }

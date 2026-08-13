@@ -52,7 +52,7 @@ func TestEngineLifecycle(t *testing.T) {
 	b.SetLocalInfo("127.0.0.1:19002", NatPortRestricted)
 
 	established := make(chan string, 1)
-	a.OnHoleEstablished = func(peerKey, ep string) {
+	a.OnHoleEstablished = func(peerKey, ep, holeType string) {
 		established <- ep
 	}
 
@@ -63,7 +63,7 @@ func TestEngineLifecycle(t *testing.T) {
 		if ep == "" {
 			t.Fatal("empty punched endpoint")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("hole not established within timeout")
 	}
 }

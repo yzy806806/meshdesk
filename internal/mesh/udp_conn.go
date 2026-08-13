@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -127,6 +128,9 @@ func (sc *udpStreamConn) Write(p []byte) (int, error) {
 		sc.inflight[seq] = frame
 		if _, err := sc.conn.WriteToUDP(frame, sc.peer); err != nil {
 			return total, err
+		}
+		if seq < 4 { // debug: first frames
+			log.Printf("[udpstream] write seq=%d to %s len=%d", seq, sc.peer, len(frame))
 		}
 		total += len(chunk)
 		p = p[len(chunk):]
