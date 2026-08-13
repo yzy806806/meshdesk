@@ -120,7 +120,7 @@ func (a *App) startHolePunch() {
 			// Wait briefly for the observation round-trip (peer echo
 			// from its ephemeral socket — the conntrack-matched
 			// data-plane target).
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(3 * time.Second)
 			obs := hp.PeerObservedPort(peerKey)
 			if obs <= 0 {
 				if mt := a.node.MuxTransport(); mt != nil {
