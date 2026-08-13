@@ -357,7 +357,7 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	// auth headers AND oversized length claims (a 12-byte datagram lying
 	// that plen=203 would slice out of range → panic → process crash).
 	if plen < 1+tunUDPAuthLen || plen > len(data)-udpFrameHeaderLen {
-		m.recordTUNAuthFail(key)
+		m.recordTUNAuthFail(key, "malformed first frame (plen out of range)")
 		return true // malformed first frame; drop quietly (consumed)
 	}
 	payload := data[udpFrameHeaderLen : udpFrameHeaderLen+plen]
@@ -371,12 +371,15 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	// Timestamp anti-replay window.
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil {
-		m.recordTUNAuthFail(key)
+		m.recordTUNAuthFail(key, "unparsable auth timestamp")
 		return true
 	}
 	now := time.Now().Unix()
 	if ts < now-int64(tunUDPAuthWindow.Seconds()) || ts > now+int64(tunUDPAuthWindow.Seconds()) {
-		m.recordTUNAuthFail(key)
+		// Clock skew between the two hosts is the usual cause — the
+		// TUN handshake then fails silently while mesh kx (no
+		// timestamp) keeps working. Log it loudly.
+		m.recordTUNAuthFail(key, fmt.Sprintf("timestamp outside ±10min window (ts=%d now=%d)", ts, now))
 		return true
 	}
 
@@ -385,12 +388,13 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	validator := m.tunAuthValidator
 	m.mu.Unlock()
 	if validator == nil {
+		log.Printf("[tun-udp-auth] %s: TUN UDP auth validator not wired — refusing (security)", key)
 		return true // no validator wired — refuse (security)
 	}
 	signedData := []byte(pubKeyHex + tsStr)
 	peerID, ok := validator(pubKeyHex, signedData, sigHex)
 	if !ok {
-		m.recordTUNAuthFail(key)
+		m.recordTUNAuthFail(key, "Ed25519 signature verification failed (unknown peer or bad sig)")
 		return true // auth failed; drop quietly
 	}
 
@@ -433,10 +437,9 @@ func (m *udpMeshManager) routeTUNPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 // recordTUNAuthFail counts an auth failure for a source address and
 // blocks the source once the threshold is exceeded within the window.
 // Caller must NOT hold m.mu.
-func (m *udpMeshManager) recordTUNAuthFail(key string) {
+func (m *udpMeshManager) recordTUNAuthFail(key, reason string) {
 	now := time.Now()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	st := m.tunAuthFails[key]
 	if st == nil {
 		st = &tunAuthFailState{}
@@ -448,11 +451,24 @@ func (m *udpMeshManager) recordTUNAuthFail(key string) {
 		st.windowStart = now
 	}
 	st.count++
+	blocked := false
 	if st.count >= tunAuthFailMax {
 		st.blockUntil = now.Add(tunAuthFailCooldown)
 		st.count = 0
+		blocked = true
+	}
+	m.mu.Unlock()
+	// Log the failure with its reason. Rate-limited by the DoS guard
+	// itself (at most tunAuthFailMax logs per window per source), so
+	// a flood cannot spam the log, and real handshake failures become
+	// visible instead of vanishing silently — the classic "frames
+	// arrive but no ACK" debugging black hole (clock skew, unknown
+	// peer key, bad signature all look identical on the wire).
+	if reason != "" {
+		log.Printf("[tun-udp-auth] %s: %s (blocked=%v)", key, reason, blocked)
 	}
 	// Opportunistic cleanup: don't let the failure map grow unbounded.
+	m.mu.Lock()
 	if len(m.tunAuthFails) > 1024 {
 		for k, s := range m.tunAuthFails {
 			if now.After(s.windowStart.Add(tunAuthFailWindow)) && now.After(s.blockUntil) {
@@ -460,6 +476,7 @@ func (m *udpMeshManager) recordTUNAuthFail(key string) {
 			}
 		}
 	}
+	m.mu.Unlock()
 }
 
 // recordMeshCreateLocked counts an unauthenticated mesh stream creation

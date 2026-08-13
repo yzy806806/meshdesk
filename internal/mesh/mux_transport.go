@@ -453,6 +453,14 @@ func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPA
 // (IPv4 socket for IPv4 peers, IPv6 for IPv6) — the same socket the
 // TUN UDP data plane dials from. Hole-punching reuses this socket so
 // the punched NAT mapping is exactly the one the data plane uses.
+//
+// Returns nil when no socket matches: the caller (pickUDPSocket) turns
+// that into an explicit error. Do NOT fall back to udpConns[0] — the
+// IPv6 socket is bound first, so a family mismatch would silently use
+// a [::] socket to send IPv4 frames (::ffff: mapped source), which
+// some NATs/firewalls drop — the exact bug dual-family binding fixed.
+// Note To4() returns non-nil for both plain IPv4 and v4-mapped IPv6
+// (::ffff:1.2.3.4), so both match the IPv4 socket correctly.
 func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
 	for _, conn := range t.udpConns {
 		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
@@ -460,9 +468,6 @@ func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
 				return conn
 			}
 		}
-	}
-	if len(t.udpConns) > 0 {
-		return t.udpConns[0]
 	}
 	return nil
 }
