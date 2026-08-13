@@ -817,6 +817,20 @@ func (t *MuxTransport) udpListenLoop() {
 						continue
 					}
 				}
+				// Observation probe (0x50 0x4B): reply from an
+				// EPHEMERAL socket so the peer observes our true
+				// outbound source port — its conntrack-matched
+				// data-plane target (EasyTier's trick: stateful
+				// security groups pass ESTABLISHED, and the
+				// restricted link carries large datagrams to these
+				// ports without loss).
+				if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4B {
+					if econn, derr := net.DialUDP("udp", nil, addr.(*net.UDPAddr)); derr == nil {
+						econn.Write(pkt)
+						econn.Close()
+					}
+					continue
+				}
 				// Route mesh-marked datagrams to the ARQ stream manager.
 				if udpAddr, ok := addr.(*net.UDPAddr); ok && t.udpMesh != nil {
 					if t.udpMesh.routeUDPPacket(conn, udpAddr, pkt, t.meshCh) {
