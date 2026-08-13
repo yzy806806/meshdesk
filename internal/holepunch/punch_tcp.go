@@ -88,38 +88,52 @@ func (e *Engine) punchTCP(peerKey string, endpoints []string) string {
 		got <- result{conn: conn}
 	}()
 
-	// Dial out to the peer's mapped endpoint (keeps our mapping alive).
-	dl := &net.Dialer{LocalAddr: ln.Addr(), Deadline: time.Now().Add(punchTimeout)}
-	outConn, outErr := dl.DialContext(ctx, "tcp", peerEP)
+	// Dial out to the peer's mapped endpoint, retrying at an interval
+	// (EasyTier-style sustained SYN): each attempt refreshes our NAT
+	// mapping and, once the peer's own outbound created its conntrack
+	// entry, our SYN passes as ESTABLISHED (stateful security groups).
+	// We never close an accepted conn until we know the outcome — a
+	// close sends RST and breaks the mapping.
+	dl := &net.Dialer{LocalAddr: ln.Addr()}
+	retry := time.NewTicker(250 * time.Millisecond)
+	defer retry.Stop()
+	dialDone := make(chan struct{})
+	go func() {
+		defer close(dialDone)
+		for {
+			outConn, outErr := dl.DialContext(ctx, "tcp", peerEP)
+			if outErr == nil {
+				outConn.SetDeadline(time.Now().Add(2 * time.Second))
+				if verifyNonce(outConn, nonce) {
+					outConn.Close()
+					select {
+					case got <- result{conn: nil}:
+					default:
+					}
+					return
+				}
+				outConn.Close()
+			}
+			select {
+			case <-retry.C:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// First success wins.
-	select {
-	case r := <-got:
-		// Inbound connect accepted — the peer's blind-connect landed
-		// (hole open). Close and report success; the real session is
-		// established by DialPeerByEndpoint over the punched path.
-		r.conn.Close()
-		return peerEP
-	default:
-	}
-	if outErr == nil {
-		// Our outbound connect reached something (their listener or a
-		// NAT reflection). Verify with a nonce exchange.
-		outConn.SetDeadline(time.Now().Add(2 * time.Second))
-		if verifyNonce(outConn, nonce) {
-			outConn.Close()
+	for {
+		select {
+		case r := <-got:
+			if r.conn != nil {
+				r.conn.Close()
+			}
 			return peerEP
+		case <-ctx.Done():
+			return ""
 		}
-		outConn.Close()
 	}
-
-	select {
-	case r := <-got:
-		r.conn.Close()
-		return peerEP
-	case <-ctx.Done():
-	}
-	return ""
 }
 
 // verifyNonce writes the nonce and reads it back — cheap proof the
