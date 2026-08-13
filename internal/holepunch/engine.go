@@ -334,3 +334,12 @@ func short(k string) string {
 	}
 	return k[:8]
 }
+
+// PeerObservedPort returns the peer's outbound source port observed on
+// our probe socket (0 for unknown) — the conntrack-matched data-plane
+// target.
+func (e *Engine) PeerObservedPort(peerKey string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.peerObsPort[peerKey]
+}
