@@ -14,7 +14,8 @@ import (
 // ──────────────────────────────────────────────────────────────────────────
 // UDP mesh data plane (T0.1/T0.2)
 //
-// The shared 52888 UDP socket carries both gossip (memberlist) and mesh
+// The shared mesh UDP socket (mesh port, 52888 by default from
+// cfg.Mesh.Port) carries both gossip (memberlist) and mesh
 // data. Datagrams are routed by first byte:
 //   - 0x4D (meshInternalMarker) → reliable per-remote stream (ARQ) →
 //     meshCh → key exchange + smux session
@@ -261,10 +262,47 @@ func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	}
 	tun, tunExists := m.tunStreams[key]
 	m.mu.Unlock()
-	if exists {
-		// Established mesh stream: feed everything from this addr.
+
+	// A DialUDPStream first frame (seq=0, payload=[0x4D marker])
+	// signals the PEER INITIATED a new mesh stream. Two-way punch
+	// makes both sides dial each other simultaneously — the peer's
+	// marker frame then lands on OUR |out stream (we also dialed).
+	// Two kx streams (|in + |out) for one peer address would cross:
+	// replies match |in first, so the CLIENT's msg2 gets eaten by the
+	// server stream and both kx fail with "Ed25519 signature
+	// verification failed" (observed peer=fc709e08...).
+	//
+	// Resolution (EasyTier-style first-punch-wins): when the peer's
+	// punch arrives while we have OUR OWN outbound stream pending,
+	// the peer's punch wins — tear down our |out (its DialUDPPeer
+	// returns an error and is harmless; OnHoleEstablished already
+	// recorded the hole) and serve the peer as the SERVER side via a
+	// fresh |in stream. Exactly one kx survives, no cross-talk.
+	isNewStream := len(data) >= udpFrameHeaderLen+1 &&
+		data[0] == udpFrameTypeData &&
+		binary.BigEndian.Uint32(data[1:5]) == 0 &&
+		data[udpFrameHeaderLen] == meshInternalMarker
+
+	if exists && !isNewStream {
+		// Established mesh stream, continuation frame: feed it.
 		sc.handlePacket(data)
 		return true
+	}
+	if isNewStream {
+		m.mu.Lock()
+		_, hasOut := m.streams[outKey]
+		if hasOut {
+			// Peer punched us while we were punching them: drop our
+			// outbound (client) stream so only the peer's kx runs.
+			delete(m.streams, outKey)
+		}
+		m.mu.Unlock()
+		if hasOut {
+			log.Printf("[udpmesh] two-way punch: peer won, dropping our |out for %s", key)
+		}
+		// Peer-initiated stream: route through the inbound path
+		// (creates the |in stream and strips the marker).
+		return m.routeMeshPacket(conn, addr, data, meshCh)
 	}
 	if tunExists {
 		// Established TUN stream: feed everything from this addr.

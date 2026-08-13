@@ -3,12 +3,15 @@ package mesh
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	sockaddr "github.com/hashicorp/go-sockaddr"
@@ -29,6 +32,17 @@ const muxUDPPacketBufSize = 65536
 
 // muxUDPRecvBufSize is the target SO_RCVBUF for UDP sockets.
 const muxUDPRecvBufSize = 2 * 1024 * 1024
+
+// punchKeepaliveInterval is how often the punchSocketPoller sends a
+// 6B probe from each punch socket to refresh the peer's stateful
+// firewall conntrack entry. Must be well under typical UDP conntrack
+// timeouts (~30s for most stateful firewalls incl. Oracle Cloud
+// security lists and iptables ESTABLISHED-only rules); 15s keeps the
+// hole open with minimal overhead. EasyTier keeps its tunnel socket
+// busy for exactly this reason — without it the peer's data-plane
+// frames become "new inbound" and are dropped once the mapping
+// expires.
+const punchKeepaliveInterval = 15 * time.Second
 
 // ──────────────────────────────────────────────────────────────────────────────
 // MuxTransportConfig
@@ -166,27 +180,48 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 	// behind CGNAT) must receive UDP probes from IPv4 peers AND send UDP
 	// to IPv6 peers. A single [::] socket with IPV6_V6ONLY=0 can receive
 	// both, but sending IPv4 packets from it uses ::ffff: mapped source
-	// addresses that some NATs mishandle — so we keep a dedicated IPv4
-	// socket for IPv4 traffic and a dedicated IPv6 socket for IPv6.
+	// addresses that some NATs mishandle — verified on txcloud: WriteToUDP
+	// from a [::] socket to a bare IPv4 address returns nil but the frame
+	// never leaves the box (tcpdump sees nothing), while a dedicated
+	// 0.0.0.0 socket sends fine. So we keep a dedicated IPv4 socket for
+	// IPv4 traffic and a dedicated IPv6 socket for IPv6.
 	// Explicit single-address binds (e.g. "127.0.0.1", "::1") stay as-is.
-	// Create the UDP listener. For wildcard binds ("0.0.0.0" or "::"),
-	// use a single [::] socket. On Linux with IPV6_V6ONLY=0 (default)
-	// it accepts BOTH IPv4 and IPv6 packets, and WriteTo from it to an
-	// IPv4 destination works (Go sends with an IPv4 source). This is
-	// essential for mixed IP-family meshes: an IPv6-only node (e.g. N1
-	// behind CGNAT) must receive UDP probes from IPv4 peers and send
-	// UDP to IPv6 peers. Explicit single-address binds (e.g. "127.0.0.1",
-	// "::1") stay as-is.
 	var udpConns []*net.UDPConn
 	udpBinds := []string{bindAddr}
 	if bindAddr == "0.0.0.0" || bindAddr == "::" {
-		udpBinds = []string{"::"}
+		// Order matters: bind the IPv6 socket FIRST with IPV6_V6ONLY=1
+		// (so it only takes the v6 half of the port), THEN the IPv4
+		// socket. Binding 0.0.0.0 first makes Go's udp4 socket also
+		// claim the v6-mapped space, so the subsequent [::] bind
+		// fails with "address already in use".
+		udpBinds = []string{"::", "0.0.0.0"}
 	}
 	for _, bind := range udpBinds {
 		udpAddr := &net.UDPAddr{IP: net.ParseIP(bind), Port: udpPort}
-		conn, err := net.ListenUDP("udp", udpAddr)
-		if err != nil {
-			return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
+		var conn *net.UDPConn
+		if bind == "::" {
+			// Set IPV6_V6ONLY=1 so the [::] socket does NOT also grab
+			// the IPv4 port — otherwise binding 0.0.0.0 fails with
+			// "address already in use" (Linux default V6ONLY=0 makes
+			// [::] cover both families).
+			lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
+				var sockErr error
+				c.Control(func(fd uintptr) {
+					sockErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 1)
+				})
+				return sockErr
+			}}
+			pc, err := lc.ListenPacket(context.Background(), "udp6", udpAddr.String())
+			if err != nil {
+				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
+			}
+			conn = pc.(*net.UDPConn)
+		} else {
+			var err error
+			conn, err = net.ListenUDP("udp", udpAddr)
+			if err != nil {
+				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
+			}
 		}
 		if err := setMuxUDPRecvBuf(conn); err != nil {
 			logger.Printf("[WARN] mux: failed to resize UDP recv buffer on %s: %v (continuing)", bind, err)
@@ -346,14 +381,15 @@ func (t *MuxTransport) DialUDP(remoteAddr string) (*udpStreamConn, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Source socket stays the mux socket (fixed listen port — e.g.
-	// 52888): the peer's conntrack entry was created by ITS outbound
-	// probe (peerSrc -> our listen port), so our datagrams MUST come
-	// from the listen port to match. The punched TARGET port (the
-	// peer's outbound source, remoteAddr) is what changes — the
-	// learned endpoint already carries it. Using the punch socket as
-	// the SOURCE breaks the peer-side conntrack match (its ephemeral
-	// port has no conntrack entry on the peer).
+	// Source socket stays the mux socket (fixed listen port — the
+	// mesh port, 52888 by default from cfg.Mesh.Port): the peer's
+	// conntrack entry was created by ITS outbound probe (peerSrc ->
+	// our listen port), so our datagrams MUST come from the listen
+	// port to match. The punched TARGET port (the peer's outbound
+	// source, remoteAddr) is what changes — the learned endpoint
+	// already carries it. Using the punch socket as the SOURCE breaks
+	// the peer-side conntrack match (its ephemeral port has no
+	// conntrack entry on the peer).
 	return t.udpMesh.DialUDPStream(local, udpAddr)
 }
 
@@ -366,13 +402,14 @@ func (t *MuxTransport) DialTUNUDP(remoteAddr string, authHeader []byte) (*udpStr
 	if err != nil {
 		return nil, err
 	}
-	// Source socket stays the mux socket (fixed listen port — e.g.
-	// 52888): the peer's conntrack entry was created by ITS outbound
-	// probe (peerSrc -> our listen port), so our datagrams MUST come
-	// from the listen port to match. The punched TARGET port (the
-	// peer's outbound source, remoteAddr) is what changes — the
-	// learned endpoint already carries it. Using the punch socket as
-	// the SOURCE was wrong: its ephemeral port (49425) breaks the
+	// Source socket stays the mux socket (fixed listen port — the
+	// mesh port, 52888 by default from cfg.Mesh.Port): the peer's
+	// conntrack entry was created by ITS outbound probe (peerSrc ->
+	// our listen port), so our datagrams MUST come from the listen
+	// port to match. The punched TARGET port (the peer's outbound
+	// source, remoteAddr) is what changes — the learned endpoint
+	// already carries it. Using the punch socket as the SOURCE was
+	// wrong: its ephemeral port (49425) breaks the
 	// peer-side conntrack match.
 	return t.udpMesh.DialTUNStream(local, udpAddr, authHeader)
 }
@@ -943,9 +980,17 @@ func (t *MuxTransport) udpListenLoop() {
 
 // punchSocketPoller periodically picks up newly registered punch
 // sockets and starts a reader goroutine for each (their datagrams are
-// data-plane frames — routed into the UDP mesh manager).
+// data-plane frames — routed into the UDP mesh manager). It also
+// keeps the punch sockets ALIVE: a stateful firewall (e.g. Oracle
+// Cloud security list / iptables ESTABLISHED-only) drops the peer's
+// data-plane frames once the conntrack entry expires (~30s of UDP
+// idle). Periodic 6B probes from the punch socket refresh the NAT
+// mapping so the hole stays open — EasyTier keeps its tunnel socket
+// busy for exactly this reason.
 func (t *MuxTransport) punchSocketPoller() {
 	seen := make(map[*net.UDPConn]bool)
+	keepalive := time.NewTicker(punchKeepaliveInterval)
+	defer keepalive.Stop()
 	for {
 		t.punchMu.Lock()
 		var fresh []*net.UDPConn
@@ -998,6 +1043,35 @@ func (t *MuxTransport) punchSocketPoller() {
 			}()
 		}
 		select {
+		case <-keepalive.C:
+			// Refresh the conntrack/NAT mapping of every punch
+			// socket: a 6B probe (0x50 0x4A) to the peer keeps the
+			// stateful firewall's ESTABLISHED entry alive so the
+			// data plane's frames keep flowing (EasyTier's tunnel
+			// socket stays busy for the same reason). The peer's
+			// punchSocketPoller echoes the probe back, confirming
+			// the hole is still open.
+			//
+			// Punch sockets are UNCONNECTED (ListenUDP) — use
+			// WriteToUDP with the peer address, which we recover
+			// from the endpoint-form registration key ("ip:port").
+			// Keys that are pure peer keys (hex) or IP-only resolve
+			// without a port and are skipped here; every punch
+			// socket is also registered under its endpoint key.
+			t.punchMu.Lock()
+			peers := make(map[*net.UDPConn]*net.UDPAddr)
+			for k, c := range t.punchSockets {
+				if ua, err := net.ResolveUDPAddr("udp", k); err == nil && ua.Port > 0 {
+					peers[c] = ua
+				}
+			}
+			for c, peer := range peers {
+				probe := make([]byte, 6)
+				probe[0], probe[1] = 0x50, 0x4A
+				binary.BigEndian.PutUint32(probe[2:], uint32(time.Now().UnixNano()))
+				c.WriteToUDP(probe, peer) // best-effort; errors ignored
+			}
+			t.punchMu.Unlock()
 		case <-time.After(2 * time.Second):
 		case <-t.shutdownCh:
 			return

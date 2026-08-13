@@ -2362,6 +2362,22 @@ func (n *MeshNode) TunForwarderStats() *TunForwarderStats {
 	return &st
 }
 
+// ResetPeerUDPCooldown clears the TUN data plane's UDP failure
+// cooldown for a peer (and any cached dead UDP stream) so the next
+// packet re-attempts the UDP path. Called when a hole-punch succeeds:
+// the learned endpoint may have changed (e.g. v6→v4) and a stale
+// cooldown from the old endpoint must not keep the data plane on
+// relay forever.
+func (n *MeshNode) ResetPeerUDPCooldown(peerKey string) {
+	n.mu.RLock()
+	ti := n.tunIntegration
+	n.mu.RUnlock()
+	if ti == nil || ti.Forwarder == nil {
+		return
+	}
+	ti.Forwarder.ResetUDPCooldown(peerKey)
+}
+
 // PeerVirtualIPs returns all peer → VirtualIP mappings known to the
 // router (config peers + meta-exchange learned peers), excluding self.
 // Used by the topology to show nodes discovered via the meta exchange
