@@ -126,47 +126,53 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	reply := make([]byte, 16)
 
 	peerUDP := mustUDPAddr(peerEP)
-	// Independent probe socket — UNCONNECTED (ListenUDP), same family
-	// as the peer. MUST NOT be a connected socket: the data plane
+	// Probe socket: MUST be UNCONNECTED (ListenUDP) — the data plane
 	// (udpStreamConn.Write → WriteToUDP, and routeUDPPacket readers)
-	// writes to arbitrary peer addresses — Go returns EISCONN
-	// ("use of WriteTo with pre-connected connection") on connected
-	// UDPConns, so probes and kx frames would never leave the box.
-	localIP := net.IPv4zero
+	// writes to arbitrary peer addresses — Go returns EISCONN ("use
+	// of WriteTo with pre-connected connection") on connected UDPConns.
+	//
+	// CRITICAL: when the shared mux socket is available, probe from
+	// IT (not an independent socket). The probe creates the NAT/
+	// conntrack mapping the peer's firewall uses to admit our frames —
+	// the data plane (DialUDP kx, DialTUNUDP TUN frames) sends from
+	// the SAME mux socket, so the mapping must be keyed on the mux
+	// socket's source port (e.g. 52988 on ordinary nodes). An
+	// independent probe socket with a random source port punches a
+	// mapping the data plane never uses — the peer admits nothing and
+	// every data-plane frame dies as a new connection (observed in
+	// v1.6.2: kx worked via the mux socket while the independent
+	// socket's hole carried nothing).
+	var pconnUDP *net.UDPConn
 	if shared {
-		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			localIP = la.IP
-		}
-	}
-	pconnUDP, derr := net.ListenUDP("udp", &net.UDPAddr{IP: localIP, Port: 0})
-	if derr != nil {
 		pconnUDP = conn
 	} else {
-		// The punch socket may be registered with the transport's
-		// punchSocketPoller reader — clear any deadline we set below
-		// so the poller's ReadFrom never hits a stale timeout.
-		defer pconnUDP.SetReadDeadline(time.Time{})
-		// KEEP the socket alive (EasyTier keeps its tunnel socket):
-		// the peer's data plane targets our source port, so the
-		// conntrack mapping must stay live. The data plane dials
-		// through this socket (AddPunchSocket).
-		e.mu.Lock()
-		e.punchConn[peerKey] = pconnUDP
-		e.OutboundPort = 0
-		if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok {
-			e.OutboundPort = la.Port
-		}
-		e.mu.Unlock()
-		if e.OutboundPort > 0 {
-			log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), e.OutboundPort)
-		}
-		// Register the socket with the transport NOW — the
-		// punchSocketPoller's reader loop must be running before the
-		// peer's kx frames arrive (hole established → data plane
-		// dials immediately). This was the missing link: the socket
-		// lived only in e.punchConn, no reader ever drained it.
-		if e.OnPunchSocket != nil {
-			e.OnPunchSocket(peerKey, pconnUDP)
+		var derr error
+		pconnUDP, derr = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+		if derr != nil {
+			pconnUDP = conn
+		} else {
+			// KEEP the socket alive (EasyTier keeps its tunnel
+			// socket): the peer's data plane targets our source
+			// port, so the conntrack mapping must stay live.
+			e.mu.Lock()
+			e.punchConn[peerKey] = pconnUDP
+			e.OutboundPort = 0
+			if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok {
+				e.OutboundPort = la.Port
+			}
+			e.mu.Unlock()
+			if e.OutboundPort > 0 {
+				log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), e.OutboundPort)
+			}
+			// Register the socket with the transport NOW — the
+			// punchSocketPoller's reader loop must be running before
+			// the peer's kx frames arrive (hole established → data
+			// plane dials immediately). This was the missing link:
+			// the socket lived only in e.punchConn, no reader ever
+			// drained it.
+			if e.OnPunchSocket != nil {
+				e.OnPunchSocket(peerKey, pconnUDP)
+			}
 		}
 	}
 
@@ -245,6 +251,24 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		} else {
 			our = "0.0.0.0:0"
 		}
+	}
+	// CRITICAL: the advertised endpoint's PORT is the TCP mesh port
+	// (52888) on ordinary nodes, but the peer must punch at our UDP
+	// DATA port — ordinary nodes use an OS-assigned random UDP port
+	// (UDPPort=-1, distinct from the TCP listener; Go breaks sends on
+	// shared ports, verified on txcloud). Rewrite the port to the
+	// punch socket's real outbound source port (e.OutboundPort, set
+	// by punchUDP from the socket it opens), keeping the advertised
+	// host. NOTE: conn here is the COORDINATION smux stream — its
+	// LocalAddr is the TCP port, NOT the UDP data port, so we must
+	// use e.OutboundPort, never conn.LocalAddr().
+	if e.OutboundPort > 0 {
+		if host, _, herr := net.SplitHostPort(our); herr == nil {
+			our = net.JoinHostPort(host, strconv.Itoa(e.OutboundPort))
+		}
+		log.Printf("[holepunch] %s: coordination our=%s (outboundPort=%d)", short(peerKey), our, e.OutboundPort)
+	} else {
+		log.Printf("[holepunch] %s: coordination our=%s (outboundPort unknown)", short(peerKey), our)
 	}
 	body := make([]byte, 4+len(our)+8)
 	binary.BigEndian.PutUint32(body, nonce)
@@ -359,16 +383,37 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 
 	// Ensure our outbound source port is valid BEFORE answering: the
 	// peer's data plane targets it (conntrack). If we haven't punched
-	// yet (we answer first), open an independent socket toward the
-	// peer's endpoint — the NAT mapping is created by the outbound
-	// probe and its source port becomes the conntrack target.
+	// yet (we answer first), open a socket toward the peer's endpoint
+	// — the NAT mapping is created by the outbound probe and its
+	// source port becomes the conntrack target.
+	//
+	// Prefer the SHARED mux socket (PunchConnProvider): the data
+	// plane (DialUDP/DialTUNUDP) sends from the same socket, so its
+	// source port (e.g. 52988 on ordinary nodes) must be the conntrack
+	// target. An independent socket with a random port would make the
+	// peer punch a port the data plane never sends from — conntrack
+	// mismatch, frames dropped (observed in v1.6.2: kx succeeded via
+	// the shared socket but the TUN plane's independent socket got no
+	// ACK).
 	if e.OutboundPort == 0 && peerEP != "" && peerEP != "0.0.0.0:0" && peerEP != "[::]:0" {
 		if pu := mustUDPAddr(peerEP); pu != nil {
-			// UNCONNECTED socket (ListenUDP): the probe below uses
-			// WriteToUDP, and the kept-alive socket must accept
-			// WriteToUDP data-plane frames later (a connected socket
-			// would EISCONN on every write).
-			if pc, derr := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); derr == nil {
+			var pc *net.UDPConn
+			if e.PunchConnProvider != nil {
+				if rc := e.PunchConnProvider(pu.IP); rc != nil {
+					pc = rc
+				}
+			}
+			if pc == nil {
+				// No shared socket (or family mismatch): open an
+				// UNCONNECTED socket (ListenUDP) — the probe below
+				// uses WriteToUDP, and the kept-alive socket must
+				// accept WriteToUDP data-plane frames later (a
+				// connected socket would EISCONN on every write).
+				if p, derr := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); derr == nil {
+					pc = p
+				}
+			}
+			if pc != nil {
 				e.mu.Lock()
 				if e.punchConn == nil {
 					e.punchConn = make(map[string]*net.UDPConn)
@@ -410,6 +455,36 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 		} else {
 			our = "0.0.0.0:0"
 		}
+	}
+	// CRITICAL (mirrors exchangePunchParams): the advertised port is
+	// the TCP mesh port on ordinary nodes, but the peer must punch at
+	// our UDP DATA port (ordinary nodes use an OS-assigned random UDP
+	// port, distinct from the TCP listener — Go breaks sends on
+	// shared ports). The punch socket's source port is the conntrack
+	// target.
+	//
+	// Resolve the punch socket port FRESH for this peer's family:
+	// e.OutboundPort is a single global value that punchUDP for a
+	// DIFFERENT peer (e.g. a v6 peer) may have overwritten — using it
+	// blindly would advertise the wrong family's port. PunchConnProvider
+	// returns the socket matched to the peer's IP family; take its
+	// actual LocalAddr port.
+	if e.PunchConnProvider != nil {
+		if pu := mustUDPAddr(peerEP); pu != nil {
+			if rc := e.PunchConnProvider(pu.IP); rc != nil {
+				if la, ok := rc.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
+					e.mu.Lock()
+					e.OutboundPort = la.Port
+					e.mu.Unlock()
+				}
+			}
+		}
+	}
+	if e.OutboundPort > 0 {
+		if host, _, herr := net.SplitHostPort(our); herr == nil {
+			our = net.JoinHostPort(host, strconv.Itoa(e.OutboundPort))
+		}
+		log.Printf("[holepunch] coordinator: reply our=%s (outboundPort=%d)", our, e.OutboundPort)
 	}
 	resp := make([]byte, 4+len(our)+8)
 	binary.BigEndian.PutUint32(resp, nonce)

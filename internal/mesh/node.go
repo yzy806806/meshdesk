@@ -298,7 +298,17 @@ func (n *MeshNode) Start() error {
 		muxCfg := MuxTransportConfig{
 			TCPListener: tcpListener,
 			BindAddr:    bindAddr,
-			UDPPort:     tcpPort,
+			// Ordinary nodes use a DISTINCT random UDP port: Go's
+			// runtime breaks public UDP sends when the socket shares
+			// its port with the TCP listener or with the other
+			// family's socket (verified on txcloud — WriteToUDP
+			// returns nil but nothing leaves the box). UDPPort=-1
+			// means "two family sockets, each on an OS-assigned
+			// random port" — the punch coordination exchange carries
+			// the real ports to the peer, so no fixed port is needed.
+			// Shared nodes keep single-port multiplexing (UDPPort
+			// unset → mirrors the TCP port on one [::] socket).
+			UDPPort: -1,
 		}
 		mt, err := NewMuxTransport(muxCfg)
 		if err != nil {
