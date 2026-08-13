@@ -102,7 +102,7 @@ func (m *udpMeshManager) routeMeshPacket(conn *net.UDPConn, addr *net.UDPAddr, d
 	if len(data) < udpFrameHeaderLen+1 {
 		return false
 	}
-	key := addr.String()
+	key := addr.String() + "|in"
 
 	m.mu.Lock()
 	sc, exists := m.streams[key]
@@ -176,7 +176,10 @@ func (m *udpMeshManager) routeMeshPacket(conn *net.UDPConn, addr *net.UDPAddr, d
 // remote's replies are fed to its ARQ state machine. The caller then
 // runs the mesh key exchange + smux over the returned conn.
 func (m *udpMeshManager) DialUDPStream(local *net.UDPConn, remote *net.UDPAddr) (*udpStreamConn, error) {
-	key := remote.String()
+	// Outbound stream — separate key from inbound (routeMeshPacket)
+	// so simultaneous two-way key exchanges (both sides punch) don't
+	// collide on the same ARQ state machine.
+	key := remote.String() + "|out"
 
 	m.mu.Lock()
 	if existing, ok := m.streams[key]; ok {
@@ -237,9 +240,12 @@ func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 		return false
 	}
 	key := addr.String()
+	// Inbound mesh streams are keyed |in (outbound DialUDPStream uses
+	// |out) — frames from this addr belong to the inbound stream.
+	meshKey := key + "|in"
 
 	m.mu.Lock()
-	sc, exists := m.streams[key]
+	sc, exists := m.streams[meshKey]
 	tun, tunExists := m.tunStreams[key]
 	m.mu.Unlock()
 	if exists {
