@@ -555,6 +555,10 @@ func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 		st.last = time.Now()
 		f.udpFail[peerKey] = st
 		f.udpMu.Unlock()
+		// Log the failure reason — without this, a silently failing
+		// UDP dial (e.g. no route, bad endpoint family, auth build
+		// error) keeps the data plane on relay with zero visibility.
+		log.Printf("[tun-udp] %s: UDP dial failed: %v", shortKey(peerKey), err)
 		return nil, err
 	}
 
@@ -592,6 +596,21 @@ func (f *TunForwarder) closeOutboundStream(peerKey string) {
 		st.last = time.Now()
 		f.udpFail[peerKey] = st
 	}
+	f.udpMu.Unlock()
+}
+
+// ResetUDPCooldown clears the per-peer UDP failure cooldown AND the
+// cached (possibly dead) UDP stream, so the next packet re-dials the
+// UDP path immediately. Called when a hole-punch succeeds — the
+// learned endpoint may have changed (v6→v4) and a stale cooldown from
+// the old endpoint must not keep the data plane on relay.
+func (f *TunForwarder) ResetUDPCooldown(peerKey string) {
+	f.udpMu.Lock()
+	if ue, ok := f.udpStreams[peerKey]; ok {
+		delete(f.udpStreams, peerKey)
+		ue.conn.Close()
+	}
+	delete(f.udpFail, peerKey)
 	f.udpMu.Unlock()
 }
 

@@ -265,10 +265,18 @@ func (n *MeshNode) cleanupDeadSession(peerIdentityHex string, deadSess *smux.Ses
 }
 
 func (n *MeshNode) resolvePeerEndpoint(peerIdentityHex string) string {
-	// Prefer the gossip-advertised endpoint (stable, survives NAT
-	// remapping). The routing table may hold the ephemeral source
-	// address of an inbound session, which is invalid after the
-	// connection drops.
+	// 1. Punch-learned endpoints first: OnHoleEstablished sets the
+	//    CONFIRMED data-plane target (e.g. the v4 endpoint after a
+	//    successful hole) via SetLearnedEndpoints. This is the most
+	//    current, reachable address — the gossip resolver below may
+	//    return a stale/other-family endpoint (v6-first meta) that
+	//    the punch already proved unreachable.
+	if eps := n.PeerEndpoints(peerIdentityHex); len(eps) > 0 {
+		return eps[0]
+	}
+	// 2. Gossip-advertised endpoint (stable, survives NAT remapping).
+	//    The routing table may hold the ephemeral source address of an
+	//    inbound session, which is invalid after the connection drops.
 	n.mu.RLock()
 	resolver := n.peerEndpointResolver
 	n.mu.RUnlock()
@@ -283,10 +291,6 @@ func (n *MeshNode) resolvePeerEndpoint(peerIdentityHex string) string {
 		if n.cfg.Peers[i].PublicKey == peerIdentityHex {
 			return n.cfg.Peers[i].Endpoint
 		}
-	}
-	// Meta-exchange-learned endpoints (works with degraded memberlist).
-	if eps := n.PeerEndpoints(peerIdentityHex); len(eps) > 0 {
-		return eps[0]
 	}
 	if entry, ok := n.routes.GetPeer(peerIdentityHex); ok && entry.Endpoint != "" {
 		return entry.Endpoint
