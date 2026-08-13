@@ -1,5 +1,36 @@
 # Release Notes
 
+## v1.6.1 — 2026-08-13
+
+**Hole-punching engine completes to EasyTier parity; relay CPU fix; docs rewrite.**
+
+### Hole punching (v1.6.0 line continued)
+- **Symmetric NAT port prediction (NAT4E)** — STUN third probe detects
+  predictable mapped-port increments (`EasySym` + `Inc`); the cone side
+  fires a 50-port window scan (`symWindowProbe`, birthday-attack) — the
+  EasyTier mechanism, ported
+- **TCP punch hardened** — conntrack-style source-port exchange
+  (`SrcPort` in the coordination protocol; stateful security groups
+  pass ESTABLISHED) + sustained-SYN retry (250ms) instead of a single
+  connect; fixed punch listener port (mesh port + 1)
+- **UDP ARQ stream isolation** (`|in`/`|out` keys) — simultaneous
+  two-way key exchanges no longer collide on one ARQ state machine
+- **Sub-60B frame fragmentation** (`udpMaxPayload` 1200→40) — survives
+  links that drop/corrupt larger datagrams (verified on txcloud↔Oracle
+  v6); reassembly covered by a loopback test
+- ARQ RTO 200ms→100ms, write timeout 30s→10s (lossy-link recovery)
+- Coordination timeout 15s→30s (slow relay links no longer fall back
+  to wrong-family punch targets)
+
+### Relay
+- **CPU fix**: working relay path cached per target (60s TTL) — the
+  monitor tick's `DialVirtualPort` no longer re-runs the full candidate
+  scan on healthy links (was 100% CPU)
+
+### Architecture / docs
+- main.go split (v1.6.0) retained; docs rewritten: README/README_CN,
+  new `docs/DEPENDENCY_TREE.md`, DESIGN_V16 implementation status
+
 ## v1.6.0 — 2026-08-13
 
 **main.go split + standalone hole-punching engine.**
