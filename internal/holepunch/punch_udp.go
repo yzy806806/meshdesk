@@ -259,6 +259,9 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		e.peerInc[peerKey] = int(int8(buf[4+epLen+5]))
 		e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
 		e.mu.Unlock()
+		log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d", short(peerKey), n, e.peerObsPort[peerKey])
+	} else {
+		log.Printf("[holepunch] %s: peer response n=%d (<12 — legacy encoding?)", short(peerKey), n)
 	}
 	if peerNonce != nonce {
 		return fallbackEP, nonce, nil
