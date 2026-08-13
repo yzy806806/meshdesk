@@ -110,7 +110,21 @@ func (a *App) startHolePunch() {
 	//    dials the hole (same-zone UDP data plane), then verify with
 	//    a quick DialUDPPeer.
 	hp.OnHoleEstablished = func(peerKey, punchedEP, holeType string) {
-		a.node.SetLearnedEndpoints(peerKey, []string{punchedEP})
+		// Data-plane target: prefer the observed peer outbound source
+		// port (conntrack-matched — stateful security groups pass
+		// ESTABLISHED and restricted links carry large datagrams to
+		// these ports without loss, EasyTier's trick). Fall back to
+		// the punched endpoint.
+		target := punchedEP
+		if holeType != "tcp" {
+			if obs := hp.PeerObservedPort(peerKey); obs > 0 {
+				if host, _, herr := net.SplitHostPort(punchedEP); herr == nil {
+					target = net.JoinHostPort(host, strconv.Itoa(obs))
+					log.Printf("  HolePunch: data-plane target %s (observed src port %d)", target, obs)
+				}
+			}
+		}
+		a.node.SetLearnedEndpoints(peerKey, []string{target})
 		if holeType == "tcp" {
 			// TCP hole: dial a full mesh session over the punched
 			// TCP endpoint — the reliable data plane (EasyTier-style).
@@ -129,9 +143,9 @@ func (a *App) startHolePunch() {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if stream, err := a.node.DialUDPPeer(ctx, punchedEP); err == nil {
+			if stream, err := a.node.DialUDPPeer(ctx, target); err == nil {
 				stream.Close()
-				log.Printf("  HolePunch: UDP multipath live to %s via %s", peerKey[:8], punchedEP)
+				log.Printf("  HolePunch: UDP multipath live to %s via %s", peerKey[:8], target)
 			} else {
 				log.Printf("  HolePunch: UDP dial over hole failed: %v", err)
 			}

@@ -443,20 +443,21 @@ func (e *Engine) observeProbe(peerKey string, target *net.UDPAddr, nonce uint32)
 	}
 	defer conn.Close()
 	probe := make([]byte, 6)
-	probe[0], probe[1] = 0x50, 0x4A
+	probe[0], probe[1] = 0x50, 0x4B // 0x504B = observation probe (peer replies from an ephemeral socket)
 	binary.BigEndian.PutUint32(probe[2:], nonce)
 	if _, err := conn.Write(probe); err != nil {
 		return
 	}
-	// The peer's echo carries its observed source — record it.
+	// The peer's echo from its EPHEMERAL socket carries its true
+	// outbound source port — the conntrack-matched data-plane target.
 	buf := make([]byte, 16)
 	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if n, _, err := conn.ReadFrom(buf); err == nil && n >= 6 && binary.BigEndian.Uint32(buf[2:]) == nonce {
-		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+	if n, from, err := conn.ReadFrom(buf); err == nil && n >= 6 && binary.BigEndian.Uint32(buf[2:]) == nonce {
+		if pa, ok := from.(*net.UDPAddr); ok && pa.Port > 0 {
 			e.mu.Lock()
-			e.observedSrcPort[peerKey] = la.Port
+			e.peerObsPort[peerKey] = pa.Port
 			e.mu.Unlock()
-			log.Printf("[holepunch] %s: observed our outbound src port %d (conntrack punch)", short(peerKey), la.Port)
+			log.Printf("[holepunch] %s: peer outbound src port %d (conntrack data-plane target)", short(peerKey), pa.Port)
 		}
 	}
 }
