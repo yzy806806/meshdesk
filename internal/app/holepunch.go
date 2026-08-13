@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -29,6 +30,28 @@ func (a *App) startHolePunch() {
 	// exactly what DialTUNUDP (data plane) uses.
 	if mt := a.node.MuxTransport(); mt != nil {
 		hp.PunchConnProvider = mt.UDPConnFor
+	}
+
+	// TCP hole-punch listener: a dedicated port (mesh port + 1) that
+	// both sides listen on; the peer blind-connects here to open the
+	// hole (EasyTier-style TCP punch). Accepted conns are dropped —
+	// their purpose is the NAT mapping.
+	if a.cfg.Mesh.Port > 0 {
+		hp.TcpPort = a.cfg.Mesh.Port + 1
+		if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", hp.TcpPort)); err == nil {
+			go func() {
+				for {
+					c, err := ln.Accept()
+					if err != nil {
+						return
+					}
+					c.Close()
+				}
+			}()
+			log.Printf("  HolePunch: TCP punch listener on :%d", hp.TcpPort)
+		} else {
+			log.Printf("  HolePunch: TCP punch listener failed: %v", err)
+		}
 	}
 	a.holepunch = hp
 
@@ -94,8 +117,23 @@ func (a *App) startHolePunch() {
 	//    endpoint as a learned endpoint so getUDPStream's resolver
 	//    dials the hole (same-zone UDP data plane), then verify with
 	//    a quick DialUDPPeer.
-	hp.OnHoleEstablished = func(peerKey, punchedEP string) {
+	hp.OnHoleEstablished = func(peerKey, punchedEP, holeType string) {
 		a.node.SetLearnedEndpoints(peerKey, []string{punchedEP})
+		if holeType == "tcp" {
+			// TCP hole: dial a full mesh session over the punched
+			// TCP endpoint — the reliable data plane (EasyTier-style).
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if stream, err := a.node.DialPeerByEndpoint(ctx, punchedEP); err == nil {
+					stream.Close()
+					log.Printf("  HolePunch: TCP session live to %s via %s", peerKey[:8], punchedEP)
+				} else {
+					log.Printf("  HolePunch: TCP session over hole failed: %v", err)
+				}
+			}()
+			return
+		}
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()

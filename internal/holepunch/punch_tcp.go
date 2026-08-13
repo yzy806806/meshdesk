@@ -2,7 +2,9 @@ package holepunch
 
 import (
 	"context"
+	"log"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -19,10 +21,25 @@ func (e *Engine) punchTCP(peerKey string, endpoints []string) string {
 	defer cancel()
 
 	// Exchange params (nonce + mapped endpoint) over the coordination
-	// stream, same as UDP.
+	// stream, same as UDP. The peer's TCP punch port (if announced)
+	// is our dial target — its public IP + TcpPort.
 	peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, endpoints[0])
 	if err != nil {
 		return ""
+	}
+	if peerEP == "" {
+		return ""
+	}
+	e.mu.Lock()
+	peerTCP := e.peerTCPPort[peerKey]
+	e.mu.Unlock()
+	if peerTCP <= 0 {
+		// The peer didn't announce a TCP punch port — TCP punching
+		// cannot work (both sides must listen + connect). Skip fast.
+		return ""
+	}
+	if host, _, herr := net.SplitHostPort(peerEP); herr == nil {
+		peerEP = net.JoinHostPort(host, strconv.Itoa(peerTCP))
 	}
 
 	// Bind the same local port we advertise (punch port, or ephemeral).
@@ -58,7 +75,10 @@ func (e *Engine) punchTCP(peerKey string, endpoints []string) string {
 	// First success wins.
 	select {
 	case r := <-got:
-		verifyAndClose(r.conn, nonce)
+		// Inbound connect accepted — the peer's blind-connect landed
+		// (hole open). Close and report success; the real session is
+		// established by DialPeerByEndpoint over the punched path.
+		r.conn.Close()
 		return peerEP
 	default:
 	}
@@ -75,7 +95,7 @@ func (e *Engine) punchTCP(peerKey string, endpoints []string) string {
 
 	select {
 	case r := <-got:
-		verifyAndClose(r.conn, nonce)
+		r.conn.Close()
 		return peerEP
 	case <-ctx.Done():
 	}
@@ -100,4 +120,18 @@ func verifyNonce(conn net.Conn, nonce uint32) bool {
 func verifyAndClose(conn net.Conn, nonce uint32) {
 	verifyNonce(conn, nonce)
 	conn.Close()
+}
+
+// tcpBlindConnect is the coordinator-side half of the TCP hole punch:
+// after the exchange, connect back to the peer's announced TCP port so
+// the hole opens both ways (EasyTier's trick). The connection itself
+// is short-lived — its purpose is opening the NAT mapping.
+func (e *Engine) tcpBlindConnect(target string, nonce uint32) {
+	dl := &net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dl.Dial("tcp", target)
+	if err != nil {
+		return
+	}
+	conn.Close()
+	log.Printf("[holepunch] TCP blind-connect to %s done", target)
 }
