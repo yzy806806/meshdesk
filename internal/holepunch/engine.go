@@ -76,6 +76,19 @@ type Engine struct {
 	// When nil, punch opens its own socket bound to PunchPort.
 	PunchConnProvider func(remoteIP net.IP) *net.UDPConn
 
+	// OnPunchSocket is called whenever the engine creates a kept-alive
+	// punch socket (independent outbound socket in punchUDP, or the
+	// pre-answer socket in HandleCoordinatorStream). The app layer
+	// registers it with the transport (AddPunchSocket/AddPunchSocketAddr)
+	// so the punchSocketPoller picks it up and its reader loop feeds
+	// received datagrams (key exchange frames, TUN data) into the UDP
+	// mesh manager. Without this registration the socket has NO reader
+	// goroutine and the peer's kx frames arrive into a black hole —
+	// the classic "hole established but key exchange EOF".
+	// key is the peer key (punchUDP) or the remote endpoint string
+	// (HandleCoordinatorStream pre-answer — no peer key there).
+	OnPunchSocket func(key string, conn *net.UDPConn)
+
 	// PublicPunchEP is the endpoint we advertise in the punch
 	// coordination exchange: the public IP (from STUN) + the mux
 	// socket port. This is the address the peer must punch at for the

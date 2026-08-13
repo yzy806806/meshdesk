@@ -124,17 +124,26 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	reply := make([]byte, 16)
 
 	peerUDP := mustUDPAddr(peerEP)
-	// Independent probe socket — same family as the peer.
-	dialer := &net.Dialer{}
+	// Independent probe socket — UNCONNECTED (ListenUDP), same family
+	// as the peer. MUST NOT be a connected socket: the data plane
+	// (udpStreamConn.Write → WriteToUDP, and routeUDPPacket readers)
+	// writes to arbitrary peer addresses — Go returns EISCONN
+	// ("use of WriteTo with pre-connected connection") on connected
+	// UDPConns, so probes and kx frames would never leave the box.
+	localIP := net.IPv4zero
 	if shared {
 		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			dialer.LocalAddr = &net.UDPAddr{IP: la.IP}
+			localIP = la.IP
 		}
 	}
-	pconn, derr := dialer.Dial("udp", peerUDP.String())
-	var pconnUDP *net.UDPConn
-	if derr == nil {
-		pconnUDP = pconn.(*net.UDPConn)
+	pconnUDP, derr := net.ListenUDP("udp", &net.UDPAddr{IP: localIP, Port: 0})
+	if derr != nil {
+		pconnUDP = conn
+	} else {
+		// The punch socket may be registered with the transport's
+		// punchSocketPoller reader — clear any deadline we set below
+		// so the poller's ReadFrom never hits a stale timeout.
+		defer pconnUDP.SetReadDeadline(time.Time{})
 		// KEEP the socket alive (EasyTier keeps its tunnel socket):
 		// the peer's data plane targets our source port, so the
 		// conntrack mapping must stay live. The data plane dials
@@ -149,10 +158,14 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 		if e.OutboundPort > 0 {
 			log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), e.OutboundPort)
 		}
-	}
-	if pconnUDP == nil {
-		// Independent socket failed — fall back to the shared socket.
-		pconnUDP = conn
+		// Register the socket with the transport NOW — the
+		// punchSocketPoller's reader loop must be running before the
+		// peer's kx frames arrive (hole established → data plane
+		// dials immediately). This was the missing link: the socket
+		// lived only in e.punchConn, no reader ever drained it.
+		if e.OnPunchSocket != nil {
+			e.OnPunchSocket(peerKey, pconnUDP)
+		}
 	}
 
 	for i := 0; i < punchProbeCount; i++ {
@@ -319,7 +332,11 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// probe and its source port becomes the conntrack target.
 	if e.OutboundPort == 0 && peerEP != "" && peerEP != "0.0.0.0:0" && peerEP != "[::]:0" {
 		if pu := mustUDPAddr(peerEP); pu != nil {
-			if pc, derr := net.DialUDP("udp", nil, pu); derr == nil {
+			// UNCONNECTED socket (ListenUDP): the probe below uses
+			// WriteToUDP, and the kept-alive socket must accept
+			// WriteToUDP data-plane frames later (a connected socket
+			// would EISCONN on every write).
+			if pc, derr := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0}); derr == nil {
 				e.mu.Lock()
 				if e.punchConn == nil {
 					e.punchConn = make(map[string]*net.UDPConn)
@@ -327,12 +344,22 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 				if la, ok := pc.LocalAddr().(*net.UDPAddr); ok {
 					e.OutboundPort = la.Port
 				}
+				// KEEP the pre-answer socket alive and keyed by the
+				// peer's endpoint (no peer key here): without the
+				// reference it is GC'd and the NAT mapping dies —
+				// the peer then punches a dead port.
+				e.punchConn[peerEP] = pc
 				// Fire a probe to create the NAT mapping.
 				pr := make([]byte, 6)
 				pr[0], pr[1] = 0x50, 0x4A
 				binary.BigEndian.PutUint32(pr[2:], nonce)
 				pc.WriteToUDP(pr, pu)
 				e.mu.Unlock()
+				// Register with the transport so a reader loop
+				// drains the peer's data-plane frames (kx/TUN).
+				if e.OnPunchSocket != nil {
+					e.OnPunchSocket(peerEP, pc)
+				}
 				log.Printf("[holepunch] coordinator: pre-answer outbound src port %d (conntrack target)", e.OutboundPort)
 			}
 		}

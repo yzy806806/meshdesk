@@ -29,6 +29,25 @@ func (a *App) startHolePunch() {
 	// exactly what DialTUNUDP (data plane) uses.
 	if mt := a.node.MuxTransport(); mt != nil {
 		hp.PunchConnProvider = mt.UDPConnFor
+		// Register every kept-alive punch socket with the transport:
+		// the punchSocketPoller then starts a reader loop that drains
+		// the peer's kx/TUN frames into the UDP mesh manager. Without
+		// this the hole "establishes" but the peer's frames arrive
+		// into a socket nobody reads → "key exchange ... EOF".
+		// Registered under BOTH the peer key (punchUDP) and the
+		// remote endpoint string (coordinator pre-answer) so
+		// PunchSocket() finds it by either lookup.
+		hp.OnPunchSocket = func(key string, conn *net.UDPConn) {
+			if mt := a.node.MuxTransport(); mt != nil {
+				mt.AddPunchSocket(key, conn)
+				// Also register under the IP-only form so a
+				// data-plane dial to a different port of the
+				// same peer still finds the punch socket.
+				if ua, err := net.ResolveUDPAddr("udp", key); err == nil {
+					mt.AddPunchSocketAddr(ua.IP.String(), conn)
+				}
+			}
+		}
 	}
 
 	// TCP hole-punch port (mesh port + 1): punchTCP opens its own
@@ -56,19 +75,12 @@ func (a *App) startHolePunch() {
 		log.Printf("  HolePunch: STUN discovery failed (%v) — using advertised endpoints", err)
 	}
 
-	// Public punch endpoint: prefer a public IPv6 advertise endpoint
-	// (v6 has no NAT — holes open directly), else the configured v4
-	// endpoint, else STUN.
-	for _, ep := range a.cfg.P2P.AdvertiseEndpoints {
-		if host, _, herr := net.SplitHostPort(ep); herr == nil {
-			if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
-				hp.PublicPunchEP = ep
-				log.Printf("  HolePunch: punch endpoint %s (config v6)", ep)
-				break
-			}
-		}
-	}
-	if hp.PublicPunchEP == "" && len(a.cfg.P2P.AdvertiseEndpoints) > 0 {
+	// Public punch endpoint: prefer the FIRST configured advertise
+	// endpoint (config order — admins list reachable endpoints first;
+	// forcing IPv6-first here is wrong when the v6 link is down, e.g.
+	// txcloud↔Oracle where v6 times out but v4 conntrack-punches).
+	// Fall back to STUN.
+	if len(a.cfg.P2P.AdvertiseEndpoints) > 0 {
 		hp.PublicPunchEP = a.cfg.P2P.AdvertiseEndpoints[0]
 		log.Printf("  HolePunch: punch endpoint %s (config)", hp.PublicPunchEP)
 	}
@@ -110,24 +122,17 @@ func (a *App) startHolePunch() {
 	//    dials the hole (same-zone UDP data plane), then verify with
 	//    a quick DialUDPPeer.
 	hp.OnHoleEstablished = func(peerKey, punchedEP, holeType string) {
-		// Data-plane target: prefer the observed peer outbound source
-		// port (conntrack-matched — stateful security groups pass
-		// ESTABLISHED and restricted links carry large datagrams to
-		// these ports without loss, EasyTier's trick). Fall back to
-		// the punched endpoint.
+		// Data-plane target: the punched endpoint itself. The old
+		// code rebuilt the target as host(punchedEP)+peerObsPort —
+		// but the peer's kx/data actually egresses from its MUX
+		// socket (52888, the exchanged PublicPunchEP): DialUDP uses
+		// the mux socket as source, so the conntrack-matched target
+		// IS the punched endpoint's port, not the ephemeral obsPort.
+		// (obsPort is the peer's INDEPENDENT probe socket port —
+		// wrong target, and when punchedEP was an unreachable v6 the
+		// rebuilt target pointed into the void.)
 		target := punchedEP
-		if holeType != "tcp" {
-			// Data-plane target: the peer's OUTBOUND source port as
-			// exchanged in the coordination message (EasyTier's
-			// conntrack trick — stateful security groups pass
-			// ESTABLISHED and carry large datagrams to these ports).
-			if obs := hp.PeerObservedPort(peerKey); obs > 0 {
-				if host, _, herr := net.SplitHostPort(punchedEP); herr == nil {
-					target = net.JoinHostPort(host, strconv.Itoa(obs))
-					log.Printf("  HolePunch: data-plane target %s (peer outbound src %d)", target, obs)
-				}
-			}
-		}
+		log.Printf("  HolePunch: data-plane target %s", target)
 		a.node.SetLearnedEndpoints(peerKey, []string{target})
 		if holeType == "tcp" {
 			// TCP hole: dial a full mesh session over the punched

@@ -187,6 +187,16 @@ func (m *udpMeshManager) DialUDPStream(local *net.UDPConn, remote *net.UDPAddr) 
 	m.streams[key] = sc
 	m.mu.Unlock()
 
+	// Reserve seq 0 for the 0x4D marker frame so subsequent Write()
+	// frames start at seq 1 — otherwise the first key-exchange frame
+	// collides with the marker's seq and is dropped as a duplicate by
+	// the receiver's ARQ dedup (recvNext already advanced past 0),
+	// corrupting msg1 → "Ed25519 signature verification failed" /
+	// "key exchange ... unexpected EOF". Mirrors DialTUNStream.
+	sc.sendMu.Lock()
+	sc.nextSeq = 1
+	sc.sendMu.Unlock()
+
 	// Send the first frame: ARQ DATA with payload = 0x4D marker.
 	payload := []byte{meshInternalMarker}
 	frame := make([]byte, udpFrameHeaderLen+len(payload))
