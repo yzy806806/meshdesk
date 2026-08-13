@@ -85,9 +85,12 @@ type MuxTransportConfig struct {
 //
 // All methods are safe for concurrent use.
 type MuxTransport struct {
-	tcpListener net.Listener   // shared TCP listener
-	udpConns    []*net.UDPConn // UDP sockets for memberlist packets (IPv4 + IPv6)
-	logger      *log.Logger
+	// observedSourceMu guards observedSource (recent 0x504B echo source).
+	observedSourceMu sync.Mutex
+	observedSource   *net.UDPAddr
+	tcpListener      net.Listener   // shared TCP listener
+	udpConns         []*net.UDPConn // UDP sockets for memberlist packets (IPv4 + IPv6)
+	logger           *log.Logger
 
 	streamCh   chan net.Conn           // gossip streams → memberlist
 	realityCh  chan net.Conn           // Reality TLS connections → reality listener
@@ -385,6 +388,17 @@ func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
 		return t.udpConns[0]
 	}
 	return nil
+}
+
+// ObservedSourcePort returns the most recent 0x504B echo source port
+// (0 if none) — the peer's conntrack-matched outbound source port.
+func (t *MuxTransport) ObservedSourcePort() int {
+	t.observedSourceMu.Lock()
+	defer t.observedSourceMu.Unlock()
+	if t.observedSource == nil {
+		return 0
+	}
+	return t.observedSource.Port
 }
 
 // TunUDPListener returns a listener that accepts inbound TUN-data UDP
@@ -817,14 +831,19 @@ func (t *MuxTransport) udpListenLoop() {
 						continue
 					}
 				}
-				// Observation probe (0x50 0x4B): reply from an
+				// Observation probe (0x50 0x4C): reply from an
 				// EPHEMERAL socket so the peer observes our true
 				// outbound source port — its conntrack-matched
 				// data-plane target (EasyTier's trick: stateful
 				// security groups pass ESTABLISHED, and the
 				// restricted link carries large datagrams to these
 				// ports without loss).
-				if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4B {
+				if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4C {
+					if ua, ok := addr.(*net.UDPAddr); ok {
+						t.observedSourceMu.Lock()
+						t.observedSource = ua
+						t.observedSourceMu.Unlock()
+					}
 					if econn, derr := net.DialUDP("udp", nil, addr.(*net.UDPAddr)); derr == nil {
 						econn.Write(pkt)
 						econn.Close()
