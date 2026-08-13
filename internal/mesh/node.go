@@ -160,6 +160,12 @@ type MeshNode struct {
 	// trying all peers with active sessions.
 	relayMetaProvider func() []RelayPeerInfo
 
+	// relayLastSuccess caches the last working relay per target so
+	// tryRelayFallback can skip the full candidate scan (which, when
+	// re-triggered every monitor tick, burned 100% CPU on healthy
+	// relay links).
+	relayLastSuccess map[string]relaySuccessEntry
+
 	// peerEndpointResolver returns the STABLE endpoint (advertised
 	// address, not the ephemeral source port of an inbound session)
 	// for a peer identity hex. Set by main.go to query the gossip

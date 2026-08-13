@@ -256,6 +256,15 @@ func (d *RelayDialer) DialViaRelay(
 	// Return bufConn (not raw stream) so any bytes the msgpack Decoder's
 	// bufio consumed beyond the response are replayed to the caller.
 	log.Printf("[mesh-relay] dialer: tunnel=%s accepted", tunnelID[:16])
+
+	// Record the working relay for this target so subsequent calls
+	// (e.g. every monitor tick) skip the full candidate scan.
+	d.node.mu.Lock()
+	if d.node.relayLastSuccess == nil {
+		d.node.relayLastSuccess = make(map[string]relaySuccessEntry)
+	}
+	d.node.relayLastSuccess[targetKey] = relaySuccessEntry{relayKey: relayKey, at: time.Now()}
+	d.node.mu.Unlock()
 	return bufConn, nil
 }
 
@@ -456,8 +465,35 @@ func (n *MeshNode) DialViaRelay(
 //   - The local node's own key is excluded.
 //   - Relay peers at capacity (LoadCircuits >= MaxCircuits) are skipped.
 //   - Relay peers behind symmetric NAT are skipped.
+//
+// relaySuccessEntry remembers the last working relay for a target.
+type relaySuccessEntry struct {
+	relayKey string
+	at       time.Time
+}
+
+// relaySuccessTTL is how long a working relay path is reused before
+// re-scanning candidates (keeps monitor-tick DialVirtualPort calls off
+// the full candidate scan — that scan burned 100% CPU on healthy links).
+const relaySuccessTTL = 60 * time.Second
+
 func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port uint16, path []string) (net.Conn, error) {
 	localKey := ""
+
+	// Fast path: reuse the last working relay (no candidate scan).
+	n.mu.RLock()
+	last, ok := n.relayLastSuccess[targetKey]
+	n.mu.RUnlock()
+	if ok && time.Since(last.at) < relaySuccessTTL {
+		conn, err := n.DialViaRelay(ctx, targetKey, []string{last.relayKey}, port, path)
+		if err == nil {
+			return conn, nil
+		}
+		// Working path broke — fall through to a full scan.
+		n.mu.Lock()
+		delete(n.relayLastSuccess, targetKey)
+		n.mu.Unlock()
+	}
 	if n.identity != nil {
 		localKey = n.identity.PublicKey
 	}
