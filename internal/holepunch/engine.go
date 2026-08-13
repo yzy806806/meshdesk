@@ -45,8 +45,9 @@ const (
 // Engine is the hole-punching state machine. Per-peer sessions are
 // created on demand from meta-exchange / lazy triggers.
 type Engine struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
+	mu          sync.Mutex
+	sessions    map[string]*Session
+	peerTCPPort map[string]int // peerKey -> TCP punch port (from coordination)
 
 	// Dialer is how the engine opens the coordination stream to a
 	// peer (over an existing smux session or relay).
@@ -60,8 +61,9 @@ type Engine struct {
 	PunchPort int
 
 	// OnHoleEstablished is called with the punched remote endpoint
-	// when a hole succeeds — the mesh layer feeds it to getUDPStream.
-	OnHoleEstablished func(peerKey, punchedEndpoint string)
+	// and hole type ("udp" / "tcp") when a hole succeeds — the mesh
+	// layer feeds it into the matching data path.
+	OnHoleEstablished func(peerKey, punchedEndpoint, holeType string)
 
 	// PunchConnProvider returns the shared UDP socket to punch from
 	// (the mesh mux socket — same NAT mapping the data plane uses).
@@ -74,6 +76,12 @@ type Engine struct {
 	// hole to match our data-plane NAT mapping. When empty, LocalEP
 	// or the conn local address is used as fallback.
 	PublicPunchEP string
+
+	// TcpPort is our local TCP listen port for TCP hole punching
+	// (both sides listen + connect simultaneously — EasyTier-style).
+	// Advertised in the punch coordination exchange so the peer knows
+	// where to blind-connect.
+	TcpPort int
 
 	// Cooldown between punch attempts per peer (exponential).
 	backoff map[string]time.Time
@@ -109,9 +117,10 @@ const (
 // New creates a hole-punch engine.
 func New(d Dialer) *Engine {
 	return &Engine{
-		sessions: make(map[string]*Session),
-		Dialer:   d,
-		backoff:  make(map[string]time.Time),
+		sessions:    make(map[string]*Session),
+		peerTCPPort: make(map[string]int),
+		Dialer:      d,
+		backoff:     make(map[string]time.Time),
 	}
 }
 
@@ -166,14 +175,24 @@ func (e *Engine) punch(peerKey string, endpoints []string, peerNat NatType) {
 	start := time.Now()
 	log.Printf("[holepunch] %s: punch attempt (nat=%v, endpoints=%d)", short(peerKey), peerNat, len(endpoints))
 
-	// Strategy 1: two-way UDP via coordinator.
-	if ep := e.punchUDP(peerKey, endpoints); ep != "" {
-		e.established(peerKey, ep)
+	// Strategy 1: two-way UDP via coordinator. Keep the UDP hole as a
+	// fallback: on some links UDP >60B datagrams are dropped (packet
+	// length filtering) while the 6B probes pass — the TCP hole is the
+	// reliable data plane there (EasyTier's tcp tunnel).
+	udpEP := e.punchUDP(peerKey, endpoints)
+	if udpEP != "" {
+		log.Printf("[holepunch] %s: UDP hole open at %s — also trying TCP", short(peerKey), udpEP)
+		if tcpEP := e.punchTCP(peerKey, endpoints); tcpEP != "" {
+			log.Printf("[holepunch] %s: TCP hole open at %s — preferring TCP", short(peerKey), tcpEP)
+			e.establishedTCP(peerKey, tcpEP)
+			return
+		}
+		e.established(peerKey, udpEP)
 		return
 	}
 	// Strategy 2: TCP punch.
 	if ep := e.punchTCP(peerKey, endpoints); ep != "" {
-		e.established(peerKey, ep)
+		e.establishedTCP(peerKey, ep)
 		return
 	}
 
@@ -203,6 +222,18 @@ func (e *Engine) punch(peerKey string, endpoints []string, peerNat NatType) {
 // established records a successful hole and hands the punched endpoint
 // to the mesh layer (getUDPStream).
 func (e *Engine) established(peerKey, ep string) {
+	e.establishedTyped(peerKey, ep, "udp")
+}
+
+// establishedTCP records a TCP hole (the reliable data plane on links
+// that drop UDP >60B).
+func (e *Engine) establishedTCP(peerKey, ep string) {
+	e.establishedTyped(peerKey, ep, "tcp")
+}
+
+// establishedTyped is the shared hole-success path; holeType is "udp"
+// or "tcp" so the app layer can wire the right data path.
+func (e *Engine) establishedTyped(peerKey, ep, holeType string) {
 	e.mu.Lock()
 	if s := e.sessions[peerKey]; s != nil {
 		s.mu.Lock()
@@ -211,9 +242,9 @@ func (e *Engine) established(peerKey, ep string) {
 	}
 	delete(e.backoff, peerKey)
 	e.mu.Unlock()
-	log.Printf("[holepunch] %s: hole established via %s", short(peerKey), ep)
+	log.Printf("[holepunch] %s: hole established via %s (%s)", short(peerKey), ep, holeType)
 	if e.OnHoleEstablished != nil {
-		e.OnHoleEstablished(peerKey, ep)
+		e.OnHoleEstablished(peerKey, ep, holeType)
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
 	"time"
 )
 
@@ -27,6 +28,7 @@ type punchMsg struct {
 	Nonce    uint32 // punch session nonce
 	MappedEP string // STUN-mapped public endpoint "host:port"
 	NatType  byte
+	TcpPort  uint16 // local TCP listen port for TCP hole punching
 }
 
 const (
@@ -168,9 +170,10 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 			our = "0.0.0.0:0"
 		}
 	}
-	req := make([]byte, 4+len(our))
+	req := make([]byte, 4+len(our)+2)
 	binary.BigEndian.PutUint32(req, nonce)
 	copy(req[4:], our)
+	binary.BigEndian.PutUint16(req[4+len(our):], uint16(e.TcpPort))
 	if _, err := conn.Write(req); err != nil {
 		return fallbackEP, nonce, nil
 	}
@@ -183,6 +186,14 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	}
 	peerNonce := binary.BigEndian.Uint32(buf)
 	peerEP := string(buf[4:n])
+	// Trailing 2 bytes carry the peer's TCP punch port (if present).
+	if n >= 6 {
+		epLen := n - 4 - 2
+		peerEP = string(buf[4 : 4+epLen])
+		e.mu.Lock()
+		e.peerTCPPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen:]))
+		e.mu.Unlock()
+	}
 	if peerNonce != nonce {
 		return fallbackEP, nonce, nil
 	}
@@ -215,6 +226,14 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	}
 	nonce := binary.BigEndian.Uint32(buf)
 	peerEP := string(buf[4:n])
+	peerTCP := 0
+	// Trailing 2 bytes (if present) are the peer's TCP punch port —
+	// strip them from the endpoint.
+	if n >= 6 && n-4 >= 3 {
+		epLen := n - 4 - 2
+		peerEP = string(buf[4 : 4+epLen])
+		peerTCP = int(binary.BigEndian.Uint16(buf[4+epLen:]))
+	}
 
 	// Reply with our mapped endpoint (best-effort). Fall back to the
 	// local conn address when STUN didn't provide a mapped endpoint —
@@ -230,11 +249,22 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 			our = "0.0.0.0:0"
 		}
 	}
-	resp := make([]byte, 4+len(our))
+	resp := make([]byte, 4+len(our)+2)
 	binary.BigEndian.PutUint32(resp, nonce)
 	copy(resp[4:], our)
+	binary.BigEndian.PutUint16(resp[4+len(our):], uint16(e.TcpPort))
 	if _, err := conn.Write(resp); err != nil {
 		return
+	}
+
+	// TCP blind-connect: the peer announced its TCP punch port —
+	// connect back so the hole opens both ways (EasyTier-style).
+	if peerTCP > 0 {
+		host, _, herr := net.SplitHostPort(peerEP)
+		if herr == nil {
+			target := net.JoinHostPort(host, strconv.Itoa(peerTCP))
+			go e.tcpBlindConnect(target, nonce)
+		}
 	}
 	log.Printf("[holepunch] coordinator: peer %s (mapped %s) -> our %s", shortEP(peerEP), peerEP, our)
 
