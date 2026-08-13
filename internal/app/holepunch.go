@@ -45,7 +45,13 @@ func (a *App) startHolePunch() {
 	//    config-advertised endpoints when STUN is unreachable).
 	if res, err := holepunch.DiscoverFrom(0, 5*time.Second); err == nil {
 		hp.SetLocalInfo(res.MappedEP, res.NatType)
-		log.Printf("  HolePunch: STUN mapped %s (nat=%v)", res.MappedEP, res.NatType)
+		hp.EasySym = res.EasySym
+		if res.Inc > 0 {
+			hp.Inc = 1
+		} else if res.Inc < 0 {
+			hp.Inc = 0xFE
+		}
+		log.Printf("  HolePunch: STUN mapped %s (nat=%v, easySym=%v inc=%d)", res.MappedEP, res.NatType, res.EasySym, res.Inc)
 	} else {
 		log.Printf("  HolePunch: STUN discovery failed (%v) — using advertised endpoints", err)
 	}
