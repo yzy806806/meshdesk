@@ -1,5 +1,35 @@
 # Release Notes
 
+## v1.6.0 — 2026-08-13
+
+**main.go split + standalone hole-punching engine.**
+
+### Architecture
+- **main.go split** (~2900 → ~650 lines): all assembly moved to
+  `internal/app` (app.go / mesh_node.go / p2p.go / tun.go /
+  services.go / proxy.go / monitor.go / join.go / web.go / reload.go /
+  signals.go / topology_paths.go). Three-phase Build (construct →
+  wire → unstarted App), explicit reverse-order Stop (pinned by the
+  smoke test), App.Reload for SIGHUP, EntryManager interface for
+  web→proxy decoupling. Pure mechanical refactor — no behavior change.
+- **Standalone hole-punching engine** (`internal/holepunch`):
+  memberlist-independent (meta-exchange + lazy triggers), coordinated
+  via virtual port 0x504A (endpoint exchange over smux/relay),
+  multi-strategy (two-way UDP → TCP → backoff), punches from the mux
+  UDP socket so the NAT mapping matches the data plane, probes carry
+  a 0x504A prefix that mux sockets echo for hole verification.
+  Real-machine verified: STUN discovery, v4+v6 public endpoint
+  exchange, coordination over degraded memberlist. (Probe success is
+  limited by symmetric NAT / unreachable v6 link in the test
+  topology — engine is complete, per-network tuning may be needed.)
+- Stale test scripts removed (ci/test-pipeline.sh, tests/wire_format_*).
+
+### Fixes
+- tun-forwarder getUDPStream zone gate: KNOWN cross-zone still
+  Reality-only; zone-unknown peers allowed (memberlist-degraded meshes
+  learn zones slowly; UDP failure falls back to TCP/relay).
+- UDP race in webssh Serve/Close (listener assignment under lock).
+
 ## v1.5.12 — 2026-08-12
 
 **Post-release hardening: multi-hop fixes, monitoring observability, memory optimization.**

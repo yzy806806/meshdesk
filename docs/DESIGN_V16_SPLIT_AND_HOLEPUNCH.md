@@ -136,3 +136,13 @@ internal/holepunch/              // NEW package — memberlist-independent
   or a new dedicated UDP session layer?
 - Should the engine replace `internal/p2p`'s nat.go entirely, or coexist
   during transition?
+
+## 8. Implementation Status (2026-08-13)
+
+- **Phase 1 (split)**: DONE — internal/app modules, three-phase Build,
+  explicit reverse-order Stop, smoke test, 27/27 packages green.
+- **Phase 2 (holepunch)**: DONE (engine) — internal/holepunch with
+  coordination (0x504A), multi-strategy punches, mux-socket reuse,
+  0x504A-prefixed probe echo. Real-machine verified: STUN, v4+v6
+  endpoint exchange, coordination over degraded memberlist.
+  Remaining: per-network probe tuning (symmetric NAT / v6 links).
