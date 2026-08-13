@@ -63,6 +63,18 @@ type Engine struct {
 	// when a hole succeeds — the mesh layer feeds it to getUDPStream.
 	OnHoleEstablished func(peerKey, punchedEndpoint string)
 
+	// PunchConnProvider returns the shared UDP socket to punch from
+	// (the mesh mux socket — same NAT mapping the data plane uses).
+	// When nil, punch opens its own socket bound to PunchPort.
+	PunchConnProvider func(remoteIP net.IP) *net.UDPConn
+
+	// PublicPunchEP is the endpoint we advertise in the punch
+	// coordination exchange: the public IP (from STUN) + the mux
+	// socket port. This is the address the peer must punch at for the
+	// hole to match our data-plane NAT mapping. When empty, LocalEP
+	// or the conn local address is used as fallback.
+	PublicPunchEP string
+
 	// Cooldown between punch attempts per peer (exponential).
 	backoff map[string]time.Time
 }
