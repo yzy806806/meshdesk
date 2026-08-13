@@ -437,27 +437,23 @@ const symPunchGap = 20 * time.Millisecond
 // large datagrams to conntrack-matched ports without loss). The peer
 // echoes it back; we record its source as peerObsPort.
 func (e *Engine) observeProbe(peerKey string, target *net.UDPAddr, nonce uint32) {
-	conn, err := net.DialUDP("udp", nil, target)
-	if err != nil {
+	// Use the shared mux socket (fixed source port 52888): it has an
+	// existing conntrack entry toward the peer, so the probe passes
+	// the peer's stateful security group. A random-source probe would
+	// be dropped (no conntrack) — observed empirically.
+	if e.PunchConnProvider == nil {
 		return
 	}
-	defer conn.Close()
+	conn := e.PunchConnProvider(target.IP)
+	if conn == nil {
+		return
+	}
 	probe := make([]byte, 6)
-	probe[0], probe[1] = 0x50, 0x4B // 0x504B = observation probe (peer replies from an ephemeral socket)
+	probe[0], probe[1] = 0x50, 0x4C // 0x504C = observation probe (peer replies from an ephemeral socket)
 	binary.BigEndian.PutUint32(probe[2:], nonce)
-	if _, err := conn.Write(probe); err != nil {
-		return
-	}
-	// The peer's echo from its EPHEMERAL socket carries its true
-	// outbound source port — the conntrack-matched data-plane target.
-	buf := make([]byte, 16)
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if n, from, err := conn.ReadFrom(buf); err == nil && n >= 6 && binary.BigEndian.Uint32(buf[2:]) == nonce {
-		if pa, ok := from.(*net.UDPAddr); ok && pa.Port > 0 {
-			e.mu.Lock()
-			e.peerObsPort[peerKey] = pa.Port
-			e.mu.Unlock()
-			log.Printf("[holepunch] %s: peer outbound src port %d (conntrack data-plane target)", short(peerKey), pa.Port)
-		}
-	}
+	conn.WriteToUDP(probe, target)
+	// The peer's echo comes from its EPHEMERAL socket — its true
+	// outbound source port. The shared mux read loop observes it and
+	// records it via RecordObservedSource (the loop owns reads).
+	log.Printf("[holepunch] %s: observation probe sent (echo observed by mux loop)", short(peerKey))
 }
