@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/holepunch"
@@ -24,15 +25,46 @@ func (a *App) startHolePunch() {
 		return
 	}
 	hp := holepunch.New(&appHolepunchDialer{node: a.node})
+	// Punch from the mesh mux UDP socket — the punched NAT mapping is
+	// exactly what DialTUNUDP (data plane) uses.
+	if mt := a.node.MuxTransport(); mt != nil {
+		hp.PunchConnProvider = mt.UDPConnFor
+	}
 	a.holepunch = hp
 
 	// 1. STUN discovery (best-effort — punching still works with the
 	//    config-advertised endpoints when STUN is unreachable).
-	if res, err := holepunch.Discover(5 * time.Second); err == nil {
+	if res, err := holepunch.DiscoverFrom(0, 5*time.Second); err == nil {
 		hp.SetLocalInfo(res.MappedEP, res.NatType)
 		log.Printf("  HolePunch: STUN mapped %s (nat=%v)", res.MappedEP, res.NatType)
 	} else {
 		log.Printf("  HolePunch: STUN discovery failed (%v) — using advertised endpoints", err)
+	}
+
+	// Public punch endpoint: prefer a public IPv6 advertise endpoint
+	// (v6 has no NAT — holes open directly), else the configured v4
+	// endpoint, else STUN.
+	for _, ep := range a.cfg.P2P.AdvertiseEndpoints {
+		if host, _, herr := net.SplitHostPort(ep); herr == nil {
+			if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+				hp.PublicPunchEP = ep
+				log.Printf("  HolePunch: punch endpoint %s (config v6)", ep)
+				break
+			}
+		}
+	}
+	if hp.PublicPunchEP == "" && len(a.cfg.P2P.AdvertiseEndpoints) > 0 {
+		hp.PublicPunchEP = a.cfg.P2P.AdvertiseEndpoints[0]
+		log.Printf("  HolePunch: punch endpoint %s (config)", hp.PublicPunchEP)
+	}
+	if hp.PublicPunchEP == "" && a.cfg.Mesh.Port > 0 {
+		// Fall back to STUN public IP + mesh port.
+		if res, err := holepunch.DiscoverFrom(0, 5*time.Second); err == nil {
+			if host, _, herr := net.SplitHostPort(res.MappedEP); herr == nil {
+				hp.PublicPunchEP = net.JoinHostPort(host, strconv.Itoa(a.cfg.Mesh.Port))
+				log.Printf("  HolePunch: punch endpoint %s (STUN)", hp.PublicPunchEP)
+			}
+		}
 	}
 
 	// 2. Register the coordination port.
