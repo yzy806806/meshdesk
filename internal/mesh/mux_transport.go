@@ -362,7 +362,10 @@ func (t *MuxTransport) DialTUNUDP(remoteAddr string, authHeader []byte) (*udpStr
 	// port is the conntrack mapping the peer's data plane targets
 	// (stateful security groups pass ESTABLISHED — large datagrams
 	// flow; the mux socket's listen-port mapping drops them).
-	if ps := t.PunchSocket(udpAddr.String()); ps != nil {
+	// Look up by BOTH the peer key and the remote addr (AddPunchSocket
+	// registers under the peer key; the pre-answer coordinator socket
+	// registers under the remote addr).
+	if ps := t.PunchSocket(remoteAddr); ps != nil {
 		local = ps
 	}
 	return t.udpMesh.DialTUNStream(local, udpAddr, authHeader)
@@ -414,11 +417,34 @@ func (t *MuxTransport) AddPunchSocket(peerKey string, conn *net.UDPConn) {
 	t.punchSockets[peerKey] = conn
 }
 
-// PunchSocket returns the registered punch socket for a peer (nil if none).
-func (t *MuxTransport) PunchSocket(peerKey string) *net.UDPConn {
+// AddPunchSocketAddr registers a punch socket keyed by the remote
+// address (used by the coordinator's pre-answer socket, which has no
+// peer key).
+func (t *MuxTransport) AddPunchSocketAddr(remoteAddr string, conn *net.UDPConn) {
 	t.punchMu.Lock()
 	defer t.punchMu.Unlock()
-	return t.punchSockets[peerKey]
+	if t.punchSockets == nil {
+		t.punchSockets = make(map[string]*net.UDPConn)
+	}
+	t.punchSockets[remoteAddr] = conn
+}
+
+// PunchSocket returns the registered punch socket for a peer (nil if none).
+func (t *MuxTransport) PunchSocket(key string) *net.UDPConn {
+	t.punchMu.Lock()
+	defer t.punchMu.Unlock()
+	if c := t.punchSockets[key]; c != nil {
+		return c
+	}
+	// Fall back to IP-only match (the key may carry a different port).
+	if ua, err := net.ResolveUDPAddr("udp", key); err == nil {
+		for k, c := range t.punchSockets {
+			if ku, kerr := net.ResolveUDPAddr("udp", k); kerr == nil && ku.IP.Equal(ua.IP) {
+				return c
+			}
+		}
+	}
+	return nil
 }
 
 // ObservedSourcePort returns the most recent 0x504B echo source port
