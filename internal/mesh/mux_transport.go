@@ -189,12 +189,21 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 	var udpConns []*net.UDPConn
 	udpBinds := []string{bindAddr}
 	if bindAddr == "0.0.0.0" || bindAddr == "::" {
-		// Order matters: bind the IPv6 socket FIRST with IPV6_V6ONLY=1
-		// (so it only takes the v6 half of the port), THEN the IPv4
-		// socket. Binding 0.0.0.0 first makes Go's udp4 socket also
-		// claim the v6-mapped space, so the subsequent [::] bind
-		// fails with "address already in use".
-		udpBinds = []string{"::", "0.0.0.0"}
+		if udpPort == 0 {
+			// Ephemeral port (tests): bind a single [::] socket. Two
+			// :0 binds race for distinct ports and the second bind
+			// can collide with a parallel test instance.
+			udpBinds = []string{"::"}
+		} else {
+			// Fixed port: bind BOTH families so IPv4 traffic uses a
+			// real IPv4 source (a [::]-only socket sends IPv4 frames
+			// as ::ffff: mapped — some NATs/firewalls drop them,
+			// verified on txcloud). Order matters: bind IPv6 FIRST
+			// with IPV6_V6ONLY=1 (so it only takes the v6 half),
+			// THEN IPv4 — binding 0.0.0.0 first makes Go's udp4
+			// socket claim the v6-mapped space too.
+			udpBinds = []string{"::", "0.0.0.0"}
+		}
 	}
 	for _, bind := range udpBinds {
 		udpAddr := &net.UDPAddr{IP: net.ParseIP(bind), Port: udpPort}
@@ -216,9 +225,18 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
 			}
 			conn = pc.(*net.UDPConn)
+			logger.Printf("[mux] UDP v6 socket bound on %s (V6ONLY=1)", conn.LocalAddr())
 		} else {
+			// MUST pick the network by family explicitly: Go's "udp"
+			// network with a 0.0.0.0 address actually binds [::] (v6
+			// dual-stack), which collides with the [::] socket bound
+			// above; and a bare v6 address (::1) must not go to udp4.
+			network := "udp4"
+			if udpAddr.IP.To4() == nil {
+				network = "udp6"
+			}
 			var err error
-			conn, err = net.ListenUDP("udp", udpAddr)
+			conn, err = net.ListenUDP(network, udpAddr)
 			if err != nil {
 				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
 			}
