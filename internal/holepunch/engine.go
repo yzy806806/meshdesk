@@ -49,6 +49,8 @@ type Engine struct {
 	sessions    map[string]*Session
 	peerTCPPort map[string]int // peerKey -> TCP punch port (from coordination)
 	peerSrcPort map[string]int // peerKey -> peer outbound TCP source port (conntrack punch)
+	peerEasySym map[string]bool
+	peerInc     map[string]int
 
 	// Dialer is how the engine opens the coordination stream to a
 	// peer (over an existing smux session or relay).
@@ -90,6 +92,12 @@ type Engine struct {
 	// and stateful security groups pass it as ESTABLISHED.
 	SrcPort int
 
+	// EasySym marks our NAT as symmetric with a predictable mapped-port
+	// increment (NAT4E) — the peer scans our base port ± window.
+	EasySym bool
+	// Inc is our mapped-port increment direction (+1 / -1).
+	Inc byte
+
 	// Cooldown between punch attempts per peer (exponential).
 	backoff map[string]time.Time
 }
@@ -127,6 +135,8 @@ func New(d Dialer) *Engine {
 		sessions:    make(map[string]*Session),
 		peerTCPPort: make(map[string]int),
 		peerSrcPort: make(map[string]int),
+		peerEasySym: make(map[string]bool),
+		peerInc:     make(map[string]int),
 		Dialer:      d,
 		backoff:     make(map[string]time.Time),
 	}
