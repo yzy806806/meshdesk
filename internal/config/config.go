@@ -216,6 +216,13 @@ type ACLConfig struct {
 // mesh transport (Reality TLS + smux + AES-256-GCM overhead).
 const DefaultTunMTU = 1400
 
+// DefaultMeshPort is the default mesh listen port (both TCP mux and
+// UDP gossip) used when config leaves Mesh.Port / GossipPort unset.
+// It is NOT hardcoded in the transport/holepunch layers — those read
+// cfg.Mesh.Port. This constant exists only so defaults, CLI tools and
+// web handlers reference one source of truth instead of magic numbers.
+const DefaultMeshPort = 52888
+
 // ProxyConfig holds settings for the anonymous proxy subsystem
 // (multi-path dispersed transport). See docs/PROXY_DESIGN.md.
 type ProxyConfig struct {
@@ -1043,10 +1050,10 @@ func Load(path string) (*Config, error) {
 			"The config field is ignored and should be removed.")
 	}
 	if cfg.Mesh.Port == 0 {
-		cfg.Mesh.Port = 52888
+		cfg.Mesh.Port = DefaultMeshPort
 	}
 	if cfg.Mesh.GossipPort == 0 {
-		cfg.Mesh.GossipPort = 52888
+		cfg.Mesh.GossipPort = DefaultMeshPort
 	}
 	// TUN config defaults for MeshConfig fields.
 	if cfg.Mesh.TunMTU == 0 {

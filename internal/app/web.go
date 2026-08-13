@@ -159,8 +159,9 @@ func (a *App) startWeb() {
 	}
 
 	// If the node has a MuxTransport (shared node mode), serve the
-	// Dashboard on the multiplexed port (52888) instead of a separate
-	// port. This allows single-port deployment: Reality + gossip + mesh
+	// Dashboard on the multiplexed port (the mesh port, 52888 by
+	// default — cfg.Mesh.Port) instead of a separate port. This
+	// allows single-port deployment: Reality + gossip + mesh +
 	// + Dashboard + join all on one TCP port.
 	if muxTransport := a.node.MuxTransport(); muxTransport != nil {
 		httpLn := muxTransport.HTTPListener()

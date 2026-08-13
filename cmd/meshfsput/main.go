@@ -32,10 +32,14 @@ func main() {
 	}
 	// This tool is a test client — no monitoring pushes.
 	cfg.Monitoring.Collectors = nil
-	// Avoid binding the port the running daemon already holds.
-	if cfg.Mesh.Port == 52888 || cfg.Mesh.GossipPort == 52888 {
-		cfg.Mesh.Port = 52889
-		cfg.Mesh.GossipPort = 52889
+	// Avoid binding the port the running daemon already holds: if the
+	// config uses the default mesh port (or the daemon's actual port),
+	// shift this test client to the next port. Note this compares
+	// against the DEFAULTS, not a hardcoded 52888 — a custom port in
+	// the config is respected as-is.
+	if cfg.Mesh.Port == config.DefaultMeshPort || cfg.Mesh.GossipPort == config.DefaultMeshPort {
+		cfg.Mesh.Port++
+		cfg.Mesh.GossipPort = cfg.Mesh.Port
 	}
 
 	node, err := mesh.New(cfg)
