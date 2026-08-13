@@ -155,7 +155,7 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		return fallbackEP, nonce, nil
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(15 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	// Send our punch endpoint: public IP + mux port when known (this
 	// is what the peer must punch at for the data-plane NAT mapping).
@@ -217,7 +217,7 @@ func mustUDPAddr(ep string) *net.UDPAddr {
 // Registered by the app layer on shared nodes.
 func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(15 * time.Second))
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
 	buf := make([]byte, 512)
 	n, err := conn.Read(buf)

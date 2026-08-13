@@ -179,8 +179,10 @@ func ClientKeyExchange(conn net.Conn, id *identity.Identity) (*crypto.SessionKey
 	verifyPayload := buildResponderSignPayload(ephPub[:], peerEphPub, nonce[:])
 	peerIdentityHex := hex.EncodeToString(peerIdentityPub)
 	if !identity.Verify(peerIdentityHex, verifyPayload, hex.EncodeToString(peerSig)) {
+		log.Printf("[kx] CLIENT signature verify FAILED: peer=%s sig=%s... eph=%s... payloadLen=%d", shortHex(peerIdentityHex), hex.EncodeToString(peerSig)[:16], hex.EncodeToString(peerEphPub)[:16], len(verifyPayload))
 		return nil, peerIdentityHex, ErrSignatureInvalid
 	}
+	log.Printf("[kx] CLIENT signature verified: peer=%s", shortHex(peerIdentityHex))
 
 	// 8. Compute sharedSecret = X25519(ourEphPriv, peerEphPub).
 	sharedSecret, err := curve25519.X25519(ephPriv[:], peerEphPub)
