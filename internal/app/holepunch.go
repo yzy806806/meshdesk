@@ -117,22 +117,14 @@ func (a *App) startHolePunch() {
 		// the punched endpoint.
 		target := punchedEP
 		if holeType != "tcp" {
-			// Wait briefly for the observation round-trip (peer echo
-			// from its ephemeral socket — the conntrack-matched
-			// data-plane target).
-			time.Sleep(3 * time.Second)
-			obs := hp.PeerObservedPort(peerKey)
-			if obs <= 0 {
-				if mt := a.node.MuxTransport(); mt != nil {
-					if p := mt.ObservedSourcePort(); p > 0 {
-						obs = p
-					}
-				}
-			}
-			if obs > 0 {
+			// Data-plane target: the peer's OUTBOUND source port as
+			// exchanged in the coordination message (EasyTier's
+			// conntrack trick — stateful security groups pass
+			// ESTABLISHED and carry large datagrams to these ports).
+			if obs := hp.PeerObservedPort(peerKey); obs > 0 {
 				if host, _, herr := net.SplitHostPort(punchedEP); herr == nil {
 					target = net.JoinHostPort(host, strconv.Itoa(obs))
-					log.Printf("  HolePunch: data-plane target %s (observed src port %d)", target, obs)
+					log.Printf("  HolePunch: data-plane target %s (peer outbound src %d)", target, obs)
 				}
 			}
 		}
