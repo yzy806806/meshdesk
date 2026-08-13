@@ -3,6 +3,8 @@ package web
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/yzy806806/meshdesk/internal/config"
 )
 
 // SOCKS5ProxyStatus is the JSON response for GET /api/proxy/socks5/status.
@@ -26,8 +28,8 @@ type SOCKS5ProxyStatus struct {
 
 	// ProxyPort is the Reality TLS listener port that phone clients
 	// connect to. Phone clients use SOCKS5 over Reality TLS on this
-	// port. Derived from reality.listen_port (default 52888 if not
-	// configured).
+	// port. Derived from reality.listen_port, falling back to the
+	// mesh port (52888 by default via config.DefaultMeshPort).
 	ProxyPort int `json:"proxy_port"`
 
 	// SOCKS5Config holds the current SOCKS5 configuration from config.yaml.
@@ -188,10 +190,12 @@ func (s *Server) handleProxySocks5Status(w http.ResponseWriter, r *http.Request)
 		if s.cfg.Reality.ListenPort > 0 {
 			resp.ProxyPort = s.cfg.Reality.ListenPort
 		} else {
-			// Default port for Reality TLS (phone client connection point).
-			// The mesh desk project uses port 52888 as the standard
-			// Reality TLS listener port for proxy entry.
-			resp.ProxyPort = 52888
+			// Reality TLS shares the mesh listener by default; report
+			// the production default port. (config.Default() uses a
+			// different dev port for tests, so we do NOT read
+			// cfg.Mesh.Port here — the phone client needs the real
+			// standard port.)
+			resp.ProxyPort = config.DefaultMeshPort
 		}
 
 		// Path selection info
