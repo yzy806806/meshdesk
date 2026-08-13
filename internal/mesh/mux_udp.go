@@ -117,9 +117,6 @@ func (m *udpMeshManager) routeMeshPacket(conn *net.UDPConn, addr *net.UDPAddr, d
 		m.streams[key] = sc
 		m.recordMeshCreateLocked(key)
 		log.Printf("[udpmesh] routeMeshPacket: NEW stream for %s (first frame len=%d)", key, len(data))
-	} else {
-		// debug: existing stream — who built it (inbound vs our dial)?
-		log.Printf("[udpmesh] routeMeshPacket: EXISTING stream for %s (len=%d)", key, len(data))
 	}
 	m.mu.Unlock()
 
