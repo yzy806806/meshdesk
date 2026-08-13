@@ -823,6 +823,11 @@ func (t *MuxTransport) shutdownDone() <-chan struct{} {
 func (t *MuxTransport) udpListenLoop() {
 	defer t.wg.Done()
 
+	// Kept-alive punch sockets (registered after a punch) feed the
+	// packet path too — polled in a background loop so they are picked
+	// up whenever AddPunchSocket registers one.
+	go t.punchSocketPoller()
+
 	// One reader goroutine per UDP socket (IPv4 + IPv6), all feeding
 	// the same packetChIn channel (or the mesh manager for 0x4D).
 	var readers sync.WaitGroup
@@ -901,9 +906,14 @@ func (t *MuxTransport) udpListenLoop() {
 			}
 		}()
 	}
-	// Kept-alive punch sockets (registered after a successful punch)
-	// also feed the packet path — the peer's data plane dials our
-	// punch socket's source port.
+	readers.Wait()
+}
+
+// punchSocketPoller periodically picks up newly registered punch
+// sockets and starts a reader goroutine for each (their datagrams are
+// data-plane frames — routed into the UDP mesh manager).
+func (t *MuxTransport) punchSocketPoller() {
+	seen := make(map[*net.UDPConn]bool)
 	for {
 		t.punchMu.Lock()
 		var fresh []*net.UDPConn
@@ -916,9 +926,7 @@ func (t *MuxTransport) udpListenLoop() {
 		t.punchMu.Unlock()
 		for _, c := range fresh {
 			c := c
-			readers.Add(1)
 			go func() {
-				defer readers.Done()
 				buf := make([]byte, muxUDPPacketBufSize)
 				for {
 					n, addr, err := c.ReadFrom(buf)
