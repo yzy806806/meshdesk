@@ -346,6 +346,14 @@ func (t *MuxTransport) DialUDP(remoteAddr string) (*udpStreamConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Source socket stays the mux socket (fixed listen port — e.g.
+	// 52888): the peer's conntrack entry was created by ITS outbound
+	// probe (peerSrc -> our listen port), so our datagrams MUST come
+	// from the listen port to match. The punched TARGET port (the
+	// peer's outbound source, remoteAddr) is what changes — the
+	// learned endpoint already carries it. Using the punch socket as
+	// the SOURCE breaks the peer-side conntrack match (its ephemeral
+	// port has no conntrack entry on the peer).
 	return t.udpMesh.DialUDPStream(local, udpAddr)
 }
 
@@ -358,16 +366,14 @@ func (t *MuxTransport) DialTUNUDP(remoteAddr string, authHeader []byte) (*udpStr
 	if err != nil {
 		return nil, err
 	}
-	// Prefer a kept-alive punch socket for this target: its source
-	// port is the conntrack mapping the peer's data plane targets
-	// (stateful security groups pass ESTABLISHED — large datagrams
-	// flow; the mux socket's listen-port mapping drops them).
-	// Look up by BOTH the peer key and the remote addr (AddPunchSocket
-	// registers under the peer key; the pre-answer coordinator socket
-	// registers under the remote addr).
-	if ps := t.PunchSocket(remoteAddr); ps != nil {
-		local = ps
-	}
+	// Source socket stays the mux socket (fixed listen port — e.g.
+	// 52888): the peer's conntrack entry was created by ITS outbound
+	// probe (peerSrc -> our listen port), so our datagrams MUST come
+	// from the listen port to match. The punched TARGET port (the
+	// peer's outbound source, remoteAddr) is what changes — the
+	// learned endpoint already carries it. Using the punch socket as
+	// the SOURCE was wrong: its ephemeral port (49425) breaks the
+	// peer-side conntrack match.
 	return t.udpMesh.DialTUNStream(local, udpAddr, authHeader)
 }
 
@@ -960,6 +966,12 @@ func (t *MuxTransport) punchSocketPoller() {
 						if t.shutdown.Load() == 1 {
 							return
 						}
+						// Transient error (e.g. a leftover read
+						// deadline from punchUDP's echo probe):
+						// back off briefly — a tight loop here
+						// would burn CPU and starve the packet
+						// path.
+						time.Sleep(100 * time.Millisecond)
 						continue
 					}
 					if n < 1 {
@@ -968,6 +980,15 @@ func (t *MuxTransport) punchSocketPoller() {
 					// Copy — the buffer is reused.
 					pkt := make([]byte, n)
 					copy(pkt, buf[:n])
+					// Hole-punch probe echo: a 6-byte datagram headed by
+					// 0x50 0x4A carries a punch nonce — echo it back on
+					// the same socket so the peer's NAT mapping confirms
+					// the hole both ways (mirrors udpListenLoop).
+					if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4A {
+						if _, werr := c.WriteToUDP(pkt, addr.(*net.UDPAddr)); werr == nil {
+							continue
+						}
+					}
 					// Punch-socket datagrams are data-plane frames:
 					// route them into the UDP mesh manager directly.
 					if ua, ok := addr.(*net.UDPAddr); ok && t.udpMesh != nil {
