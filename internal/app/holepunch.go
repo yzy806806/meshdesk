@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net"
 	"strconv"
@@ -32,26 +31,13 @@ func (a *App) startHolePunch() {
 		hp.PunchConnProvider = mt.UDPConnFor
 	}
 
-	// TCP hole-punch listener: a dedicated port (mesh port + 1) that
-	// both sides listen on; the peer blind-connects here to open the
-	// hole (EasyTier-style TCP punch). Accepted conns are dropped —
-	// their purpose is the NAT mapping.
+	// TCP hole-punch port (mesh port + 1): punchTCP opens its own
+	// listener here (fixed port = fixed source port = conntrack match).
+	// No resident listener — punchTCP owns it during each attempt.
 	if a.cfg.Mesh.Port > 0 {
 		hp.TcpPort = a.cfg.Mesh.Port + 1
-		if ln, err := net.Listen("tcp", fmt.Sprintf(":%d", hp.TcpPort)); err == nil {
-			go func() {
-				for {
-					c, err := ln.Accept()
-					if err != nil {
-						return
-					}
-					c.Close()
-				}
-			}()
-			log.Printf("  HolePunch: TCP punch listener on :%d", hp.TcpPort)
-		} else {
-			log.Printf("  HolePunch: TCP punch listener failed: %v", err)
-		}
+		hp.SrcPort = hp.TcpPort
+		log.Printf("  HolePunch: TCP punch port :%d (conntrack punch)", hp.TcpPort)
 	}
 	a.holepunch = hp
 
