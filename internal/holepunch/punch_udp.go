@@ -32,6 +32,7 @@ type punchMsg struct {
 	SrcPort  uint16 // our outbound TCP source port (EasyTier-style conntrack punch)
 	EasySym  byte   // 1 if symmetric NAT with predictable increment (NAT4E)
 	Inc      byte   // mapped-port increment direction: 1=inc, 255=dec (0xFE)
+	ObsPort  uint16 // observed peer outbound source port (conntrack-matched punch target)
 }
 
 const (
@@ -131,6 +132,10 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 			// verify it via DialUDPPeer and fall back to relay if
 			// the punch did not actually open.
 			if i == punchProbeCount-1 {
+				// Observation probe: fire from an ephemeral socket so
+				// the peer observes our outbound source port — its
+				// data-plane target (conntrack-matched, EasyTier).
+				go e.observeProbe(peerKey, peerUDP, nonce)
 				return peerEP
 			}
 		}
@@ -173,7 +178,7 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 			our = "0.0.0.0:0"
 		}
 	}
-	req := make([]byte, 4+len(our)+6)
+	req := make([]byte, 4+len(our)+8)
 	binary.BigEndian.PutUint32(req, nonce)
 	copy(req[4:], our)
 	binary.BigEndian.PutUint16(req[4+len(our):], uint16(e.TcpPort))
@@ -183,6 +188,7 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		req[4+len(our)+4] = 1
 	}
 	req[4+len(our)+5] = e.Inc
+	binary.BigEndian.PutUint16(req[4+len(our)+6:], uint16(e.ObservedPort))
 	if _, err := conn.Write(req); err != nil {
 		return fallbackEP, nonce, nil
 	}
@@ -196,15 +202,16 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	peerNonce := binary.BigEndian.Uint32(buf)
 	peerEP := string(buf[4:n])
 	// Trailing bytes carry the peer's TCP punch port + outbound source
-	// port + EasySym/Inc (EasyTier-style conntrack + NAT4E punch).
-	if n >= 10 {
-		epLen := n - 4 - 6
+	// port + EasySym/Inc + observed source port (conntrack punch).
+	if n >= 12 {
+		epLen := n - 4 - 8
 		peerEP = string(buf[4 : 4+epLen])
 		e.mu.Lock()
 		e.peerTCPPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen:]))
 		e.peerSrcPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
 		e.peerEasySym[peerKey] = buf[4+epLen+4] == 1
 		e.peerInc[peerKey] = int(int8(buf[4+epLen+5]))
+		e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
 		e.mu.Unlock()
 	}
 	if peerNonce != nonce {
@@ -243,15 +250,17 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	peerSrc := 0
 	peerEasySym := false
 	peerInc := 0
+	peerObs := 0
 	// Trailing bytes carry the peer's TCP punch port + outbound source
-	// port + EasySym/Inc — strip them from the endpoint.
-	if n >= 10 {
-		epLen := n - 4 - 6
+	// port + EasySym/Inc + observed src port — strip them.
+	if n >= 12 {
+		epLen := n - 4 - 8
 		peerEP = string(buf[4 : 4+epLen])
 		peerTCP = int(binary.BigEndian.Uint16(buf[4+epLen:]))
 		peerSrc = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
 		peerEasySym = buf[4+epLen+4] == 1
 		peerInc = int(int8(buf[4+epLen+5]))
+		peerObs = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
 	}
 
 	// Reply with our mapped endpoint (best-effort). Fall back to the
@@ -268,7 +277,7 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 			our = "0.0.0.0:0"
 		}
 	}
-	resp := make([]byte, 4+len(our)+6)
+	resp := make([]byte, 4+len(our)+8)
 	binary.BigEndian.PutUint32(resp, nonce)
 	copy(resp[4:], our)
 	binary.BigEndian.PutUint16(resp[4+len(our):], uint16(e.TcpPort))
@@ -278,6 +287,7 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 		resp[4+len(our)+4] = 1
 	}
 	resp[4+len(our)+5] = e.Inc
+	binary.BigEndian.PutUint16(resp[4+len(our)+6:], uint16(e.ObservedPort))
 	if _, err := conn.Write(resp); err != nil {
 		return
 	}
@@ -294,6 +304,13 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 				go e.symWindowProbe(host, base, peerInc, nonce)
 			}
 		}
+	}
+
+	// The peer reports the source port it observed on OUR probes — the
+	// conntrack-matched target for ITS data plane (informational here;
+	// the coordinator has no peerKey to key it by).
+	if peerObs > 0 {
+		log.Printf("[holepunch] coordinator: peer observed our src port %d", peerObs)
 	}
 
 	// TCP blind-connect: prefer the peer's outbound source port
@@ -412,3 +429,34 @@ const symPunchWindow = 50
 // symPunchGap paces the window probes (EasyTier-style sustained fire,
 // gentle enough not to burn CPU).
 const symPunchGap = 20 * time.Millisecond
+
+// observeProbe fires a probe from an EPHEMERAL socket so the peer can
+// observe our outbound source port — that port becomes the peer's
+// conntrack-matched data-plane target (EasyTier's trick: stateful
+// security groups pass ESTABLISHED, and the restricted link carries
+// large datagrams to conntrack-matched ports without loss). The peer
+// echoes it back; we record its source as peerObsPort.
+func (e *Engine) observeProbe(peerKey string, target *net.UDPAddr, nonce uint32) {
+	conn, err := net.DialUDP("udp", nil, target)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	probe := make([]byte, 6)
+	probe[0], probe[1] = 0x50, 0x4A
+	binary.BigEndian.PutUint32(probe[2:], nonce)
+	if _, err := conn.Write(probe); err != nil {
+		return
+	}
+	// The peer's echo carries its observed source — record it.
+	buf := make([]byte, 16)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if n, _, err := conn.ReadFrom(buf); err == nil && n >= 6 && binary.BigEndian.Uint32(buf[2:]) == nonce {
+		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			e.mu.Lock()
+			e.observedSrcPort[peerKey] = la.Port
+			e.mu.Unlock()
+			log.Printf("[holepunch] %s: observed our outbound src port %d (conntrack punch)", short(peerKey), la.Port)
+		}
+	}
+}
