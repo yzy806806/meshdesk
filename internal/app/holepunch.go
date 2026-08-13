@@ -125,7 +125,8 @@ func (a *App) startHolePunch() {
 		// Data-plane target: the punched endpoint itself. The old
 		// code rebuilt the target as host(punchedEP)+peerObsPort —
 		// but the peer's kx/data actually egresses from its MUX
-		// socket (52888, the exchanged PublicPunchEP): DialUDP uses
+		// socket (the exchanged PublicPunchEP — the mesh port,
+		// 52888 by default from cfg.Mesh.Port): DialUDP uses
 		// the mux socket as source, so the conntrack-matched target
 		// IS the punched endpoint's port, not the ephemeral obsPort.
 		// (obsPort is the peer's INDEPENDENT probe socket port —
@@ -134,6 +135,12 @@ func (a *App) startHolePunch() {
 		target := punchedEP
 		log.Printf("  HolePunch: data-plane target %s", target)
 		a.node.SetLearnedEndpoints(peerKey, []string{target})
+		// The TUN data plane may be stuck in UDP failure cooldown from
+		// a previous endpoint (e.g. unreachable v6). A successful hole
+		// means the endpoint CHANGED — reset the cooldown so the next
+		// TUN packet immediately re-attempts the UDP path instead of
+		// staying on relay for up to 10 minutes.
+		a.node.ResetPeerUDPCooldown(peerKey)
 		if holeType == "tcp" {
 			// TCP hole: dial a full mesh session over the punched
 			// TCP endpoint — the reliable data plane (EasyTier-style).
@@ -150,6 +157,19 @@ func (a *App) startHolePunch() {
 			return
 		}
 		go func() {
+			// Two-way punch arbitration: both sides may punch each
+			// other simultaneously. If BOTH dialed (|in + |out kx
+			// streams for one address), replies match |in first and
+			// each CLIENT reads the OTHER's CLIENT msg1 → Ed25519
+			// signature failures on both sides. First-punch-wins by
+			// peer-key ordering: the peer with the SMALLER key dials
+			// (CLIENT kx), the LARGER key waits and serves the
+			// incoming stream (SERVER kx via handleConnection). Only
+			// one kx runs per peer pair.
+			if a.node.Identity().PublicKey > peerKey {
+				log.Printf("  HolePunch: peer %s has larger key — waiting as SERVER (no dial)", peerKey[:8])
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if stream, err := a.node.DialUDPPeer(ctx, target); err == nil {
@@ -189,6 +209,15 @@ func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {
 	}
 	if !a.node.SameZone(peerKey) && a.node.PeerZone(peerKey) != "" {
 		// Known different zone — never punch (Reality-only).
+		return
+	}
+	// Already have a live session (client or server side, e.g. the
+	// peer punched US first)? Skip — a second simultaneous punch
+	// creates two kx streams (|in+|out) for one peer address whose
+	// replies cross (CLIENT msg2 eaten by the server stream →
+	// "Ed25519 signature verification failed"). First punch wins;
+	// the data plane switches to UDP via the learned endpoint.
+	if a.node.HasPeerSession(peerKey) {
 		return
 	}
 	var endpoints []string

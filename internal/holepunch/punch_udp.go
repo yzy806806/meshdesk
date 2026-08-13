@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"strconv"
@@ -113,7 +114,8 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	}
 
 	// 3. Probe from an INDEPENDENT socket (EasyTier-style): the shared
-	//    mux socket's source port is 52888 (its listen port), so
+	//    mux socket's source port is the mesh listen port (e.g. 52888
+	//    by default — the actual port comes from cfg.Mesh.Port), so
 	//    exchanging it is a no-op. An independent outbound socket gets
 	//    a fresh source port whose NAT mapping the peer's stateful
 	//    security group passes as ESTABLISHED (conntrack) — the data
@@ -226,6 +228,13 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 
 	// Send our punch endpoint: public IP + mux port when known (this
 	// is what the peer must punch at for the data-plane NAT mapping).
+	// Frame format: [len u16][nonce u32][our][tcpPort u16][srcPort u16]
+	// [easySym u8][inc u8][obsPort u16]. The len prefix lets the
+	// receiver io.ReadFull the exact frame — a single conn.Read may
+	// return a PARTIAL frame on a smux stream (real bug: N1 read
+	// aliyun's endpoint as "203.0.113.10:528" and aliyun parsed
+	// "[n1.example.com]:52888Ι" from a 1-byte-overread — the ep was
+	// truncated/mangled by stream fragmentation).
 	our := e.PublicPunchEP
 	if our == "" {
 		our = e.LocalEP
@@ -237,44 +246,55 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 			our = "0.0.0.0:0"
 		}
 	}
-	req := make([]byte, 4+len(our)+8)
-	binary.BigEndian.PutUint32(req, nonce)
-	copy(req[4:], our)
-	binary.BigEndian.PutUint16(req[4+len(our):], uint16(e.TcpPort))
-	binary.BigEndian.PutUint16(req[4+len(our)+2:], uint16(e.SrcPort))
-	req[4+len(our)+4] = 0
+	body := make([]byte, 4+len(our)+8)
+	binary.BigEndian.PutUint32(body, nonce)
+	copy(body[4:], our)
+	binary.BigEndian.PutUint16(body[4+len(our):], uint16(e.TcpPort))
+	binary.BigEndian.PutUint16(body[4+len(our)+2:], uint16(e.SrcPort))
+	body[4+len(our)+4] = 0
 	if e.EasySym {
-		req[4+len(our)+4] = 1
+		body[4+len(our)+4] = 1
 	}
-	req[4+len(our)+5] = e.Inc
-	binary.BigEndian.PutUint16(req[4+len(our)+6:], uint16(e.OutboundPort))
+	body[4+len(our)+5] = e.Inc
+	binary.BigEndian.PutUint16(body[4+len(our)+6:], uint16(e.OutboundPort))
+	req := make([]byte, 2+len(body))
+	binary.BigEndian.PutUint16(req, uint16(len(body)))
+	copy(req[2:], body)
 	if _, err := conn.Write(req); err != nil {
 		return fallbackEP, nonce, nil
 	}
 
-	// Read the peer's reply: nonce + their mapped endpoint.
-	buf := make([]byte, 512)
-	n, err := conn.Read(buf)
-	if err != nil || n < 4 {
+	// Read the peer's reply: [len u16][nonce u32][their endpoint]...
+	// ReadFull the whole frame — partial reads corrupt the endpoint.
+	var lenBuf [2]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
 		return fallbackEP, nonce, nil
 	}
-	peerNonce := binary.BigEndian.Uint32(buf)
-	peerEP := string(buf[4:n])
+	bodyLen := int(binary.BigEndian.Uint16(lenBuf[:]))
+	if bodyLen < 4 || bodyLen > 512 {
+		return fallbackEP, nonce, nil
+	}
+	body = make([]byte, bodyLen)
+	if _, err := io.ReadFull(conn, body); err != nil {
+		return fallbackEP, nonce, nil
+	}
+	peerNonce := binary.BigEndian.Uint32(body)
+	peerEP := string(body[4:])
 	// Trailing bytes carry the peer's TCP punch port + outbound source
 	// port + EasySym/Inc + observed source port (conntrack punch).
-	if n >= 12 {
-		epLen := n - 4 - 8
-		peerEP = string(buf[4 : 4+epLen])
+	if bodyLen >= 12 {
+		epLen := bodyLen - 4 - 8
+		peerEP = string(body[4 : 4+epLen])
 		e.mu.Lock()
-		e.peerTCPPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen:]))
-		e.peerSrcPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
-		e.peerEasySym[peerKey] = buf[4+epLen+4] == 1
-		e.peerInc[peerKey] = int(int8(buf[4+epLen+5]))
-		e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
+		e.peerTCPPort[peerKey] = int(binary.BigEndian.Uint16(body[4+epLen:]))
+		e.peerSrcPort[peerKey] = int(binary.BigEndian.Uint16(body[4+epLen+2:]))
+		e.peerEasySym[peerKey] = body[4+epLen+4] == 1
+		e.peerInc[peerKey] = int(int8(body[4+epLen+5]))
+		e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(body[4+epLen+6:]))
 		e.mu.Unlock()
-		log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d", short(peerKey), n, e.peerObsPort[peerKey])
+		log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d", short(peerKey), bodyLen, e.peerObsPort[peerKey])
 	} else {
-		log.Printf("[holepunch] %s: peer response n=%d (<12 — legacy encoding?)", short(peerKey), n)
+		log.Printf("[holepunch] %s: peer response n=%d (<12 — legacy encoding?)", short(peerKey), bodyLen)
 	}
 	if peerNonce != nonce {
 		return fallbackEP, nonce, nil
@@ -301,13 +321,25 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	buf := make([]byte, 512)
-	n, err := conn.Read(buf)
-	if err != nil || n < 4 {
+	// Read the [len u16]-prefixed frame fully — a single conn.Read may
+	// return a PARTIAL frame on a smux stream (fragmentation corrupted
+	// the endpoint: N1 parsed aliyun's "203.0.113.10:52888" as
+	// "203.0.113.10:528", and aliyun got "[n1.example.com]:52888Ι"
+	// from a 1-byte overread).
+	var lenBuf [2]byte
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+		return
+	}
+	bodyLen := int(binary.BigEndian.Uint16(lenBuf[:]))
+	if bodyLen < 4 || bodyLen > 512 {
+		return
+	}
+	buf := make([]byte, bodyLen)
+	if _, err := io.ReadFull(conn, buf); err != nil {
 		return
 	}
 	nonce := binary.BigEndian.Uint32(buf)
-	peerEP := string(buf[4:n])
+	peerEP := string(buf[4:])
 	peerTCP := 0
 	peerSrc := 0
 	peerEasySym := false
@@ -315,8 +347,8 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	peerObs := 0
 	// Trailing bytes carry the peer's TCP punch port + outbound source
 	// port + EasySym/Inc + observed src port — strip them.
-	if n >= 12 {
-		epLen := n - 4 - 8
+	if bodyLen >= 12 {
+		epLen := bodyLen - 4 - 8
 		peerEP = string(buf[4 : 4+epLen])
 		peerTCP = int(binary.BigEndian.Uint16(buf[4+epLen:]))
 		peerSrc = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
@@ -390,7 +422,12 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	}
 	resp[4+len(our)+5] = e.Inc
 	binary.BigEndian.PutUint16(resp[4+len(our)+6:], uint16(e.OutboundPort))
-	if _, err := conn.Write(resp); err != nil {
+	// [len u16] prefix so the initiator can ReadFull the exact frame
+	// (a single Read on a smux stream may fragment).
+	framed := make([]byte, 2+len(resp))
+	binary.BigEndian.PutUint16(framed, uint16(len(resp)))
+	copy(framed[2:], resp)
+	if _, err := conn.Write(framed); err != nil {
 		return
 	}
 
@@ -539,7 +576,8 @@ const symPunchGap = 20 * time.Millisecond
 // large datagrams to conntrack-matched ports without loss). The peer
 // echoes it back; we record its source as peerObsPort.
 func (e *Engine) observeProbe(peerKey string, target *net.UDPAddr, nonce uint32) {
-	// Use the shared mux socket (fixed source port 52888): it has an
+	// Use the shared mux socket (fixed source port = the mesh listen
+	// port, e.g. 52888 by default from cfg.Mesh.Port): it has an
 	// existing conntrack entry toward the peer, so the probe passes
 	// the peer's stateful security group. A random-source probe would
 	// be dropped (no conntrack) — observed empirically.
