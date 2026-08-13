@@ -45,12 +45,14 @@ const (
 // Engine is the hole-punching state machine. Per-peer sessions are
 // created on demand from meta-exchange / lazy triggers.
 type Engine struct {
-	mu          sync.Mutex
-	sessions    map[string]*Session
-	peerTCPPort map[string]int // peerKey -> TCP punch port (from coordination)
-	peerSrcPort map[string]int // peerKey -> peer outbound TCP source port (conntrack punch)
-	peerEasySym map[string]bool
-	peerInc     map[string]int
+	mu              sync.Mutex
+	sessions        map[string]*Session
+	peerTCPPort     map[string]int // peerKey -> TCP punch port (from coordination)
+	peerSrcPort     map[string]int // peerKey -> peer outbound TCP source port (conntrack punch)
+	peerEasySym     map[string]bool
+	peerInc         map[string]int
+	peerObsPort     map[string]int
+	observedSrcPort map[string]int // our outbound src port the peer echoed back
 
 	// Dialer is how the engine opens the coordination stream to a
 	// peer (over an existing smux session or relay).
@@ -98,6 +100,11 @@ type Engine struct {
 	// Inc is our mapped-port increment direction (+1 / -1).
 	Inc byte
 
+	// ObservedPort is the peer's outbound source port as observed on
+	// our probe socket — the conntrack-matched punch target (the
+	// EasyTier trick: stateful security groups pass ESTABLISHED).
+	ObservedPort int
+
 	// Cooldown between punch attempts per peer (exponential).
 	backoff map[string]time.Time
 }
@@ -132,13 +139,15 @@ const (
 // New creates a hole-punch engine.
 func New(d Dialer) *Engine {
 	return &Engine{
-		sessions:    make(map[string]*Session),
-		peerTCPPort: make(map[string]int),
-		peerSrcPort: make(map[string]int),
-		peerEasySym: make(map[string]bool),
-		peerInc:     make(map[string]int),
-		Dialer:      d,
-		backoff:     make(map[string]time.Time),
+		sessions:        make(map[string]*Session),
+		peerTCPPort:     make(map[string]int),
+		peerSrcPort:     make(map[string]int),
+		peerEasySym:     make(map[string]bool),
+		peerInc:         make(map[string]int),
+		peerObsPort:     make(map[string]int),
+		observedSrcPort: make(map[string]int),
+		Dialer:          d,
+		backoff:         make(map[string]time.Time),
 	}
 }
 
