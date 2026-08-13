@@ -100,10 +100,11 @@ type Engine struct {
 	// Inc is our mapped-port increment direction (+1 / -1).
 	Inc byte
 
-	// ObservedPort is the peer's outbound source port as observed on
-	// our probe socket — the conntrack-matched punch target (the
-	// EasyTier trick: stateful security groups pass ESTABLISHED).
-	ObservedPort int
+	// OutboundPort is OUR outbound socket source port (the punch
+	// socket's LocalAddr). Exchanged in the coordination message so
+	// the peer targets it for data — its stateful security group
+	// passes it as ESTABLISHED (EasyTier's conntrack trick).
+	OutboundPort int
 
 	// Cooldown between punch attempts per peer (exponential).
 	backoff map[string]time.Time
