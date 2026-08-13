@@ -32,26 +32,46 @@ func (e *Engine) punchTCP(peerKey string, endpoints []string) string {
 	}
 	e.mu.Lock()
 	peerTCP := e.peerTCPPort[peerKey]
+	peerSrc := e.peerSrcPort[peerKey]
 	e.mu.Unlock()
-	if peerTCP <= 0 {
+	// Prefer the peer's outbound source port (conntrack punch —
+	// stateful security groups pass ESTABLISHED); fall back to its
+	// punch listen port.
+	port := peerSrc
+	if port <= 0 {
+		port = peerTCP
+	}
+	if port <= 0 {
 		// The peer didn't announce a TCP punch port — TCP punching
 		// cannot work (both sides must listen + connect). Skip fast.
 		return ""
 	}
 	if host, _, herr := net.SplitHostPort(peerEP); herr == nil {
-		peerEP = net.JoinHostPort(host, strconv.Itoa(peerTCP))
+		peerEP = net.JoinHostPort(host, strconv.Itoa(port))
 	}
-
-	// Bind the same local port we advertise (punch port, or ephemeral).
-	local := &net.TCPAddr{Port: e.PunchPort}
-	ln, err := net.ListenTCP("tcp", local)
-	if err != nil {
+	// Bind the punch port (fixed source port = conntrack match). If
+	// the fixed port is taken, fall back to ephemeral — but then the
+	// peer cannot blind-connect to the announced SrcPort.
+	bindPort := e.TcpPort
+	if bindPort <= 0 {
+		bindPort = e.PunchPort
+	}
+	ln, err := net.ListenTCP("tcp", &net.TCPAddr{Port: bindPort})
+	if err != nil && bindPort != 0 {
+		// Fixed port busy (e.g. another punch in flight) — ephemeral
+		// is a degraded mode (no conntrack match).
 		ln, err = net.ListenTCP("tcp", &net.TCPAddr{Port: 0})
-		if err != nil {
-			return ""
-		}
+	}
+	if err != nil {
+		return ""
 	}
 	defer ln.Close()
+
+	// Our outbound source port is what the peer must blind-connect to
+	// (conntrack punch): the bound listener port.
+	if p := ln.Addr().(*net.TCPAddr).Port; p > 0 {
+		e.SrcPort = p
+	}
 
 	// Concurrently: listen for the peer's inbound connect AND dial out.
 	type result struct {

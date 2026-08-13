@@ -48,6 +48,7 @@ type Engine struct {
 	mu          sync.Mutex
 	sessions    map[string]*Session
 	peerTCPPort map[string]int // peerKey -> TCP punch port (from coordination)
+	peerSrcPort map[string]int // peerKey -> peer outbound TCP source port (conntrack punch)
 
 	// Dialer is how the engine opens the coordination stream to a
 	// peer (over an existing smux session or relay).
@@ -82,6 +83,12 @@ type Engine struct {
 	// Advertised in the punch coordination exchange so the peer knows
 	// where to blind-connect.
 	TcpPort int
+
+	// SrcPort is our outbound TCP source port for the conntrack punch
+	// (EasyTier-style): after our first outbound connect, the NAT
+	// mapping is keyed by this source port; the peer connects to it
+	// and stateful security groups pass it as ESTABLISHED.
+	SrcPort int
 
 	// Cooldown between punch attempts per peer (exponential).
 	backoff map[string]time.Time
@@ -119,6 +126,7 @@ func New(d Dialer) *Engine {
 	return &Engine{
 		sessions:    make(map[string]*Session),
 		peerTCPPort: make(map[string]int),
+		peerSrcPort: make(map[string]int),
 		Dialer:      d,
 		backoff:     make(map[string]time.Time),
 	}
