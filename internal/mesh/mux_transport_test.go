@@ -1111,3 +1111,87 @@ func TestMuxTransport_String(t *testing.T) {
 		t.Fatal("empty string")
 	}
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Dual-family UDP binding (fixed port)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// TestMuxTransport_DualFamilyUDPFixedPort pins the dual-family binding:
+// a fixed (non-zero) UDP port must produce TWO sockets — an IPv6 [::]
+// socket (V6ONLY=1) and an IPv4 0.0.0.0 socket — and UDPConnFor must
+// return the right socket per remote family. This path is only taken
+// with a fixed port; the ephemeral (UDPPort=0) tests exercise the
+// single-socket branch, so without this test the dual-family code has
+// zero coverage.
+func TestMuxTransport_DualFamilyUDPFixedPort(t *testing.T) {
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer tcpLn.Close()
+	port := tcpLn.Addr().(*net.TCPAddr).Port
+
+	mt, err := NewMuxTransport(MuxTransportConfig{
+		TCPListener: tcpLn,
+		BindAddr:    "0.0.0.0",
+		UDPPort:     port,
+	})
+	if err != nil {
+		t.Fatalf("NewMuxTransport (fixed port): %v", err)
+	}
+	defer mt.Shutdown()
+
+	if len(mt.udpConns) != 2 {
+		t.Fatalf("expected 2 UDP sockets, got %d", len(mt.udpConns))
+	}
+	var v4, v6 *net.UDPConn
+	for _, c := range mt.udpConns {
+		la := c.LocalAddr().(*net.UDPAddr)
+		if la.IP.To4() != nil {
+			v4 = c
+		} else {
+			v6 = c
+		}
+	}
+	if v4 == nil || v6 == nil {
+		t.Fatalf("expected one IPv4 and one IPv6 socket (v4=%v v6=%v)", v4 != nil, v6 != nil)
+	}
+	if p := v4.LocalAddr().(*net.UDPAddr).Port; p != port {
+		t.Errorf("IPv4 socket port = %d, want %d", p, port)
+	}
+	if p := v6.LocalAddr().(*net.UDPAddr).Port; p != port {
+		t.Errorf("IPv6 socket port = %d, want %d", p, port)
+	}
+
+	// UDPConnFor must select by family.
+	if got := mt.UDPConnFor(net.ParseIP("8.8.8.8")); got != v4 {
+		t.Error("UDPConnFor(IPv4) did not return the IPv4 socket")
+	}
+	if got := mt.UDPConnFor(net.ParseIP("2606:4700::1111")); got != v6 {
+		t.Error("UDPConnFor(IPv6) did not return the IPv6 socket")
+	}
+	// v4-mapped IPv6 (::ffff:8.8.8.8) is treated as IPv4.
+	if got := mt.UDPConnFor(net.ParseIP("::ffff:8.8.8.8")); got != v4 {
+		t.Error("UDPConnFor(v4-mapped IPv6) did not return the IPv4 socket")
+	}
+}
+
+// TestMuxTransport_UDPConnForNoMatch ensures a family mismatch returns
+// nil (an explicit error upstream) instead of silently falling back to
+// the first socket — the regression that made [::] sockets send IPv4
+// frames with a ::ffff: mapped source that some firewalls drop.
+func TestMuxTransport_UDPConnForNoMatch(t *testing.T) {
+	mt, err := NewMuxTransport(MuxTransportConfig{
+		BindAddr: "127.0.0.1",
+		UDPPort:  0,
+	})
+	if err != nil {
+		t.Fatalf("NewMuxTransport: %v", err)
+	}
+	defer mt.Shutdown()
+	// The loopback bind produces an IPv4 socket; a pure IPv6 remote
+	// must NOT match it.
+	if got := mt.UDPConnFor(net.ParseIP("2606:4700::1111")); got != nil {
+		t.Errorf("UDPConnFor(IPv6) on IPv4-only transport = %v, want nil", got.LocalAddr())
+	}
+}
