@@ -309,6 +309,32 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 		peerObs = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
 	}
 
+	// Ensure our outbound source port is valid BEFORE answering: the
+	// peer's data plane targets it (conntrack). If we haven't punched
+	// yet (we answer first), open an independent socket toward the
+	// peer's endpoint — the NAT mapping is created by the outbound
+	// probe and its source port becomes the conntrack target.
+	if e.OutboundPort == 0 && peerEP != "" && peerEP != "0.0.0.0:0" && peerEP != "[::]:0" {
+		if pu := mustUDPAddr(peerEP); pu != nil {
+			if pc, derr := net.DialUDP("udp", nil, pu); derr == nil {
+				e.mu.Lock()
+				if e.punchConn == nil {
+					e.punchConn = make(map[string]*net.UDPConn)
+				}
+				if la, ok := pc.LocalAddr().(*net.UDPAddr); ok {
+					e.OutboundPort = la.Port
+				}
+				// Fire a probe to create the NAT mapping.
+				pr := make([]byte, 6)
+				pr[0], pr[1] = 0x50, 0x4A
+				binary.BigEndian.PutUint32(pr[2:], nonce)
+				pc.WriteToUDP(pr, pu)
+				e.mu.Unlock()
+				log.Printf("[holepunch] coordinator: pre-answer outbound src port %d (conntrack target)", e.OutboundPort)
+			}
+		}
+	}
+
 	// Reply with our mapped endpoint (best-effort). Fall back to the
 	// local conn address when STUN didn't provide a mapped endpoint —
 	// "0.0.0.0:0" would make the peer's punch target invalid.
