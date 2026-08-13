@@ -135,13 +135,19 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	var pconnUDP *net.UDPConn
 	if derr == nil {
 		pconnUDP = pconn.(*net.UDPConn)
-		defer pconnUDP.Close()
-		// Our real outbound source port — the conntrack target.
-		if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
-			e.mu.Lock()
+		// KEEP the socket alive (EasyTier keeps its tunnel socket):
+		// the peer's data plane targets our source port, so the
+		// conntrack mapping must stay live. The data plane dials
+		// through this socket (AddPunchSocket).
+		e.mu.Lock()
+		e.punchConn[peerKey] = pconnUDP
+		e.OutboundPort = 0
+		if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok {
 			e.OutboundPort = la.Port
-			e.mu.Unlock()
-			log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), la.Port)
+		}
+		e.mu.Unlock()
+		if e.OutboundPort > 0 {
+			log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), e.OutboundPort)
 		}
 	}
 	if pconnUDP == nil {

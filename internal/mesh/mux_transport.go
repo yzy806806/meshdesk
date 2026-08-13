@@ -88,9 +88,15 @@ type MuxTransport struct {
 	// observedSourceMu guards observedSource (recent 0x504B echo source).
 	observedSourceMu sync.Mutex
 	observedSource   *net.UDPAddr
-	tcpListener      net.Listener   // shared TCP listener
-	udpConns         []*net.UDPConn // UDP sockets for memberlist packets (IPv4 + IPv6)
-	logger           *log.Logger
+
+	// punchSockets are independent hole-punch sockets kept alive after
+	// a successful punch — the data plane dials through them so the
+	// source port matches the conntrack mapping the peer opened.
+	punchMu      sync.Mutex
+	punchSockets map[string]*net.UDPConn // peer key -> socket
+	tcpListener  net.Listener            // shared TCP listener
+	udpConns     []*net.UDPConn          // UDP sockets for memberlist packets (IPv4 + IPv6)
+	logger       *log.Logger
 
 	streamCh   chan net.Conn           // gossip streams → memberlist
 	realityCh  chan net.Conn           // Reality TLS connections → reality listener
@@ -352,6 +358,13 @@ func (t *MuxTransport) DialTUNUDP(remoteAddr string, authHeader []byte) (*udpStr
 	if err != nil {
 		return nil, err
 	}
+	// Prefer a kept-alive punch socket for this target: its source
+	// port is the conntrack mapping the peer's data plane targets
+	// (stateful security groups pass ESTABLISHED — large datagrams
+	// flow; the mux socket's listen-port mapping drops them).
+	if ps := t.PunchSocket(udpAddr.String()); ps != nil {
+		local = ps
+	}
 	return t.udpMesh.DialTUNStream(local, udpAddr, authHeader)
 }
 
@@ -388,6 +401,24 @@ func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
 		return t.udpConns[0]
 	}
 	return nil
+}
+
+// AddPunchSocket registers a kept-alive hole-punch socket for a peer
+// (source port = the conntrack mapping the peer's data plane targets).
+func (t *MuxTransport) AddPunchSocket(peerKey string, conn *net.UDPConn) {
+	t.punchMu.Lock()
+	defer t.punchMu.Unlock()
+	if t.punchSockets == nil {
+		t.punchSockets = make(map[string]*net.UDPConn)
+	}
+	t.punchSockets[peerKey] = conn
+}
+
+// PunchSocket returns the registered punch socket for a peer (nil if none).
+func (t *MuxTransport) PunchSocket(peerKey string) *net.UDPConn {
+	t.punchMu.Lock()
+	defer t.punchMu.Unlock()
+	return t.punchSockets[peerKey]
 }
 
 // ObservedSourcePort returns the most recent 0x504B echo source port
@@ -795,7 +826,9 @@ func (t *MuxTransport) udpListenLoop() {
 	// One reader goroutine per UDP socket (IPv4 + IPv6), all feeding
 	// the same packetChIn channel (or the mesh manager for 0x4D).
 	var readers sync.WaitGroup
+	seen := make(map[*net.UDPConn]bool)
 	for _, conn := range t.udpConns {
+		seen[conn] = true
 		conn := conn
 		readers.Add(1)
 		go func() {
@@ -868,7 +901,53 @@ func (t *MuxTransport) udpListenLoop() {
 			}
 		}()
 	}
-	readers.Wait()
+	// Kept-alive punch sockets (registered after a successful punch)
+	// also feed the packet path — the peer's data plane dials our
+	// punch socket's source port.
+	for {
+		t.punchMu.Lock()
+		var fresh []*net.UDPConn
+		for _, c := range t.punchSockets {
+			if !seen[c] {
+				seen[c] = true
+				fresh = append(fresh, c)
+			}
+		}
+		t.punchMu.Unlock()
+		for _, c := range fresh {
+			c := c
+			readers.Add(1)
+			go func() {
+				defer readers.Done()
+				buf := make([]byte, muxUDPPacketBufSize)
+				for {
+					n, addr, err := c.ReadFrom(buf)
+					if err != nil {
+						if t.shutdown.Load() == 1 {
+							return
+						}
+						continue
+					}
+					if n < 1 {
+						continue
+					}
+					// Copy — the buffer is reused.
+					pkt := make([]byte, n)
+					copy(pkt, buf[:n])
+					// Punch-socket datagrams are data-plane frames:
+					// route them into the UDP mesh manager directly.
+					if ua, ok := addr.(*net.UDPAddr); ok && t.udpMesh != nil {
+						t.udpMesh.routeUDPPacket(c, ua, pkt, t.meshCh)
+					}
+				}
+			}()
+		}
+		select {
+		case <-time.After(2 * time.Second):
+		case <-t.shutdownCh:
+			return
+		}
+	}
 }
 
 // setMuxUDPRecvBuf attempts to set the UDP receive buffer to a large size.
