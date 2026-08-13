@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -166,79 +167,111 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		tcpPort = tcpPortFromListener(cfg.TCPListener)
 	}
 	udpPort := cfg.UDPPort
-	if udpPort == 0 {
+	randUDP := udpPort == -1 // ordinary node: two family sockets, random ports
+	if udpPort <= 0 && !randUDP {
 		udpPort = tcpPort
+	}
+	if randUDP {
+		udpPort = 0 // each bind below uses :0 → OS-assigned
 	}
 	// When both TCPListener and UDPPort are unset, udpPort is 0.
 	// net.ListenUDP with port 0 lets the OS pick a free port — valid
 	// for testing, though production deployments should set UDPPort
 	// explicitly so the advertised port is stable across restarts.
 
-	// Create the UDP listener(s). For wildcard binds ("0.0.0.0" or "::"),
-	// bind BOTH an IPv4 socket (0.0.0.0) and an IPv6 socket ([::]). This
-	// is required for mixed IP-family meshes: an IPv6-only node (e.g. N1
-	// behind CGNAT) must receive UDP probes from IPv4 peers AND send UDP
-	// to IPv6 peers. A single [::] socket with IPV6_V6ONLY=0 can receive
-	// both, but sending IPv4 packets from it uses ::ffff: mapped source
-	// addresses that some NATs mishandle — verified on txcloud: WriteToUDP
-	// from a [::] socket to a bare IPv4 address returns nil but the frame
-	// never leaves the box (tcpdump sees nothing), while a dedicated
-	// 0.0.0.0 socket sends fine. So we keep a dedicated IPv4 socket for
-	// IPv4 traffic and a dedicated IPv6 socket for IPv6.
+	// Create the UDP listener(s). Three modes, chosen to dodge a Go
+	// runtime quirk verified on txcloud: when a UDP socket shares its
+	// port with ANOTHER UDP socket of the other family (or with the
+	// TCP listener), its public-send silently fails — WriteToUDP
+	// returns nil but the datagram never leaves the box. Hence:
+	//
+	//   A. Distinct UDP ports (UDPPort=-1, ordinary nodes): bind
+	//      udp4:0 + udp6:0 — two family sockets, each on an
+	//      OS-assigned random port (different by construction), so
+	//      each sends cleanly. The real ports are exchanged via the
+	//      punch coordination message.
+	//   B. Single-port multiplex (UDPPort unset, shared nodes with
+	//      TCP on the same port): bind a single [::] dual-stack
+	//      socket. Receives v4+v6; sends small frames (gossip, punch
+	//      coordination) fine — shared nodes do not pump the big TUN
+	//      data plane (relay traffic rides TCP).
+	//   C. Ephemeral (udpPort==0, tests): single [::] socket.
+	//
 	// Explicit single-address binds (e.g. "127.0.0.1", "::1") stay as-is.
 	var udpConns []*net.UDPConn
 	udpBinds := []string{bindAddr}
-	if bindAddr == "0.0.0.0" || bindAddr == "::" {
-		if udpPort == 0 {
-			// Ephemeral port (tests): bind a single [::] socket. Two
-			// :0 binds race for distinct ports and the second bind
-			// can collide with a parallel test instance.
+	switch {
+	case bindAddr == "0.0.0.0" || bindAddr == "::":
+		if randUDP {
+			// Mode A: two family sockets, random ports each.
+			udpBinds = []string{"0.0.0.0", "::"}
+		} else if udpPort == 0 {
+			// Mode C: ephemeral — single [::] socket (avoids two
+			// :0 binds racing for distinct ports).
+			udpBinds = []string{"::"}
+		} else if udpPort == tcpPort && tcpPort != 0 {
+			// Mode B: single-port multiplex — one [::] dual-stack
+			// socket carries gossip + coordination. Same port as
+			// TCP is fine (different protocol); two UDP sockets on
+			// the same port would break sends.
 			udpBinds = []string{"::"}
 		} else {
-			// Fixed port: bind BOTH families so IPv4 traffic uses a
-			// real IPv4 source (a [::]-only socket sends IPv4 frames
-			// as ::ffff: mapped — some NATs/firewalls drop them,
-			// verified on txcloud). Order matters: bind IPv6 FIRST
-			// with IPV6_V6ONLY=1 (so it only takes the v6 half),
-			// THEN IPv4 — binding 0.0.0.0 first makes Go's udp4
-			// socket claim the v6-mapped space too.
-			udpBinds = []string{"::", "0.0.0.0"}
+			// Explicit distinct fixed port: one socket per family,
+			// DIFFERENT ports (udpPort for v4, udpPort+1 for v6),
+			// so neither socket's public send is broken by sharing.
+			udpBinds = []string{"0.0.0.0", "::"}
 		}
 	}
 	for _, bind := range udpBinds {
-		udpAddr := &net.UDPAddr{IP: net.ParseIP(bind), Port: udpPort}
+		port := udpPort
+		if len(udpBinds) == 2 && !randUDP {
+			// Explicit distinct fixed ports: v6 socket gets
+			// udpPort+1 so the two family sockets never share.
+			if bind == "::" {
+				port++
+			}
+		}
+		udpAddr := &net.UDPAddr{IP: net.ParseIP(bind), Port: port}
 		var conn *net.UDPConn
-		if bind == "::" {
-			// Set IPV6_V6ONLY=1 so the [::] socket does NOT also grab
-			// the IPv4 port — otherwise binding 0.0.0.0 fails with
-			// "address already in use" (Linux default V6ONLY=0 makes
-			// [::] cover both families).
-			lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
-				var sockErr error
-				c.Control(func(fd uintptr) {
-					sockErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 1)
-				})
-				return sockErr
-			}}
-			pc, err := lc.ListenPacket(context.Background(), "udp6", udpAddr.String())
-			if err != nil {
-				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
+		isV6Bind := strings.Contains(bind, ":") // "::", "::1", "fe80::..." etc.
+		if isV6Bind {
+			if bind == "::" && len(udpBinds) == 2 {
+				// Mode A: set IPV6_V6ONLY=1 so the [::] socket does
+				// NOT also grab the IPv4 port — otherwise binding
+				// 0.0.0.0 fails with "address already in use"
+				// (Linux default V6ONLY=0 makes [::] cover both
+				// families). In Mode B/C (single socket) we keep
+				// V6ONLY=0 so v4+v6 both arrive.
+				lc := net.ListenConfig{Control: func(network, address string, c syscall.RawConn) error {
+					var sockErr error
+					c.Control(func(fd uintptr) {
+						sockErr = syscall.SetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY, 1)
+					})
+					return sockErr
+				}}
+				pc, err := lc.ListenPacket(context.Background(), "udp6", udpAddr.String())
+				if err != nil {
+					return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, port, err)
+				}
+				conn = pc.(*net.UDPConn)
+			} else {
+				// Explicit v6 address (::1, ::, or Mode B/C [::]):
+				// plain ListenUDP("udp6") — no V6ONLY needed.
+				var err error
+				conn, err = net.ListenUDP("udp6", udpAddr)
+				if err != nil {
+					return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, port, err)
+				}
 			}
-			conn = pc.(*net.UDPConn)
-			logger.Printf("[mux] UDP v6 socket bound on %s (V6ONLY=1)", conn.LocalAddr())
+			logger.Printf("[mux] UDP v6 socket bound on %s", conn.LocalAddr())
 		} else {
-			// MUST pick the network by family explicitly: Go's "udp"
-			// network with a 0.0.0.0 address actually binds [::] (v6
-			// dual-stack), which collides with the [::] socket bound
-			// above; and a bare v6 address (::1) must not go to udp4.
-			network := "udp4"
-			if udpAddr.IP.To4() == nil {
-				network = "udp6"
-			}
+			// MUST use "udp4" explicitly: Go's "udp" network with a
+			// 0.0.0.0 address actually binds [::] (v6 dual-stack),
+			// which collides with the [::] socket bound above.
 			var err error
-			conn, err = net.ListenUDP(network, udpAddr)
+			conn, err = net.ListenUDP("udp4", udpAddr)
 			if err != nil {
-				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, udpPort, err)
+				return nil, fmt.Errorf("mux: failed to listen UDP on %s:%d: %w", bind, port, err)
 			}
 		}
 		if err := setMuxUDPRecvBuf(conn); err != nil {

@@ -1117,24 +1117,26 @@ func TestMuxTransport_String(t *testing.T) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // TestMuxTransport_DualFamilyUDPFixedPort pins the dual-family binding:
-// a fixed (non-zero) UDP port must produce TWO sockets — an IPv6 [::]
-// socket (V6ONLY=1) and an IPv4 0.0.0.0 socket — and UDPConnFor must
-// return the right socket per remote family. This path is only taken
-// with a fixed port; the ephemeral (UDPPort=0) tests exercise the
-// single-socket branch, so without this test the dual-family code has
-// zero coverage.
+// a fixed UDP port DISTINCT from the TCP port (ordinary-node mode)
+// must produce TWO sockets — an IPv4 0.0.0.0 socket on udpPort and
+// an IPv6 [::] socket on udpPort+1 (DIFFERENT ports, dodging the Go
+// shared-port send bug) — and UDPConnFor must return the right
+// socket per remote family. The ephemeral (UDPPort=0) tests exercise
+// the single-socket branch, so without this test the dual-family
+// code has zero coverage.
 func TestMuxTransport_DualFamilyUDPFixedPort(t *testing.T) {
 	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen tcp: %v", err)
 	}
 	defer tcpLn.Close()
-	port := tcpLn.Addr().(*net.TCPAddr).Port
+	tcpPort := tcpLn.Addr().(*net.TCPAddr).Port
+	udpPort := tcpPort + 100 // explicit distinct UDP port
 
 	mt, err := NewMuxTransport(MuxTransportConfig{
 		TCPListener: tcpLn,
 		BindAddr:    "0.0.0.0",
-		UDPPort:     port,
+		UDPPort:     udpPort,
 	})
 	if err != nil {
 		t.Fatalf("NewMuxTransport (fixed port): %v", err)
@@ -1156,11 +1158,11 @@ func TestMuxTransport_DualFamilyUDPFixedPort(t *testing.T) {
 	if v4 == nil || v6 == nil {
 		t.Fatalf("expected one IPv4 and one IPv6 socket (v4=%v v6=%v)", v4 != nil, v6 != nil)
 	}
-	if p := v4.LocalAddr().(*net.UDPAddr).Port; p != port {
-		t.Errorf("IPv4 socket port = %d, want %d", p, port)
+	if p := v4.LocalAddr().(*net.UDPAddr).Port; p != udpPort {
+		t.Errorf("IPv4 socket port = %d, want %d", p, udpPort)
 	}
-	if p := v6.LocalAddr().(*net.UDPAddr).Port; p != port {
-		t.Errorf("IPv6 socket port = %d, want %d", p, port)
+	if p := v6.LocalAddr().(*net.UDPAddr).Port; p != udpPort+1 {
+		t.Errorf("IPv6 socket port = %d, want %d", p, udpPort+1)
 	}
 
 	// UDPConnFor must select by family.
@@ -1193,5 +1195,46 @@ func TestMuxTransport_UDPConnForNoMatch(t *testing.T) {
 	// must NOT match it.
 	if got := mt.UDPConnFor(net.ParseIP("2606:4700::1111")); got != nil {
 		t.Errorf("UDPConnFor(IPv6) on IPv4-only transport = %v, want nil", got.LocalAddr())
+	}
+}
+
+// TestMuxTransport_DualFamilyRandomUDP pins the ordinary-node random
+// mode (UDPPort=-1): TWO sockets (v4 + v6), each on an OS-assigned
+// random port, and the two ports MUST differ (a shared port would
+// trigger the Go send bug).
+func TestMuxTransport_DualFamilyRandomUDP(t *testing.T) {
+	tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	defer tcpLn.Close()
+
+	mt, err := NewMuxTransport(MuxTransportConfig{
+		TCPListener: tcpLn,
+		BindAddr:    "0.0.0.0",
+		UDPPort:     -1,
+	})
+	if err != nil {
+		t.Fatalf("NewMuxTransport (random UDP): %v", err)
+	}
+	defer mt.Shutdown()
+
+	if len(mt.udpConns) != 2 {
+		t.Fatalf("expected 2 UDP sockets, got %d", len(mt.udpConns))
+	}
+	var v4Port, v6Port int
+	for _, c := range mt.udpConns {
+		la := c.LocalAddr().(*net.UDPAddr)
+		if la.IP.To4() != nil {
+			v4Port = la.Port
+		} else {
+			v6Port = la.Port
+		}
+	}
+	if v4Port == 0 || v6Port == 0 {
+		t.Fatalf("expected OS-assigned random ports (v4=%d v6=%d)", v4Port, v6Port)
+	}
+	if v4Port == v6Port {
+		t.Errorf("v4 and v6 sockets share port %d — Go shared-port send bug would break sends", v4Port)
 	}
 }

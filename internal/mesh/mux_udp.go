@@ -6,6 +6,7 @@ import (
 	"log"
 
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -574,6 +575,13 @@ func (m *udpMeshManager) DialTUNStream(local *net.UDPConn, remote *net.UDPAddr, 
 		m.mu.Unlock()
 		sc.Close()
 		return nil, err
+	}
+	// Debug: confirm the frame left through the intended socket.
+	// (MESHDESK_DEBUG=1) — without this, a WriteToUDP that returns
+	// nil but never hits the wire (wrong family socket, ::ffff:
+	// mapped source) surfaces only as a silent "no ACK" timeout.
+	if os.Getenv("MESHDESK_DEBUG") != "" {
+		log.Printf("[tun-udp] handshake frame sent via local=%s to %s (len=%d)", local.LocalAddr(), remote, len(frame))
 	}
 
 	// Confirm the path: wait for the peer's ACK of the handshake
