@@ -52,7 +52,8 @@ type Engine struct {
 	peerEasySym     map[string]bool
 	peerInc         map[string]int
 	peerObsPort     map[string]int
-	observedSrcPort map[string]int // our outbound src port the peer echoed back
+	punchConn       map[string]*net.UDPConn // kept-alive punch sockets (data plane dials through)
+	observedSrcPort map[string]int          // our outbound src port the peer echoed back
 
 	// Dialer is how the engine opens the coordination stream to a
 	// peer (over an existing smux session or relay).
@@ -146,6 +147,7 @@ func New(d Dialer) *Engine {
 		peerEasySym:     make(map[string]bool),
 		peerInc:         make(map[string]int),
 		peerObsPort:     make(map[string]int),
+		punchConn:       make(map[string]*net.UDPConn),
 		observedSrcPort: make(map[string]int),
 		Dialer:          d,
 		backoff:         make(map[string]time.Time),
