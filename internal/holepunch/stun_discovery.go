@@ -27,6 +27,12 @@ func SetStunServers(servers []string) {
 type DiscoveryResult struct {
 	MappedEP string
 	NatType  NatType
+	// EasySym marks a symmetric NAT with a predictable port increment
+	// (NAT4E): EasyTier-style port prediction can punch through it.
+	EasySym bool
+	// Inc is the per-flow mapped-port increment direction: +1 if the
+	// NAT assigns increasing ports, -1 if decreasing, 0 unknown.
+	Inc int
 }
 
 // Discover runs STUN binding requests against the server list and
@@ -80,8 +86,29 @@ func probeServer(server string, srcPort int, timeout time.Duration) (DiscoveryRe
 	}
 	_ = ep2
 
-	nat := classify(mapped1, mapped2)
-	return DiscoveryResult{MappedEP: ep1, NatType: nat}, nil
+	// Third request: another destination (server 3) for EasySymmetric
+	// increment detection — the mapped port sequence across
+	// destinations reveals NAT4E (predictable increment).
+	var nat NatType = classify(mapped1, mapped2)
+	easySym, inc := false, 0
+	{
+		altServer := ""
+		for _, srv := range stunServers {
+			if srv != server {
+				altServer = srv
+				break
+			}
+		}
+		if altServer != "" {
+			ah, aportStr, _ := net.SplitHostPort(altServer)
+			aport, _ := strconv.Atoi(aportStr)
+			_, mapped3, err3 := stunRequestSameConn(altServer, ah, aport, localPort, timeout)
+			if err3 == nil {
+				nat, easySym, inc = classify3(mapped1, mapped2, mapped3)
+			}
+		}
+	}
+	return DiscoveryResult{MappedEP: ep1, NatType: nat, EasySym: easySym, Inc: inc}, nil
 }
 
 // stunRequest sends one binding request and returns our mapped endpoint
@@ -146,6 +173,41 @@ func stunRequestSameConn(server, host string, port, srcPort int, timeout time.Du
 	}
 	defer conn.Close()
 	return stunRoundTrip(conn, timeout)
+}
+
+// classify distinguishes port-restricted from symmetric using the two
+// mapped endpoints; the third probe detects an EasySymmetric increment.
+func classify3(mapped1, mapped2, mapped3 string) (NatType, bool, int) {
+	nat := classify(mapped1, mapped2)
+	if nat != NatSymmetric {
+		return nat, false, 0
+	}
+	// Symmetric: check whether the per-destination port increments
+	// predictably across two different destinations (NAT4E).
+	_, p1, _ := net.SplitHostPort(mapped1)
+	_, p2, _ := net.SplitHostPort(mapped2)
+	_, p3, _ := net.SplitHostPort(mapped3)
+	a, b, c := atoiSafe(p1), atoiSafe(p2), atoiSafe(p3)
+	if a == 0 || b == 0 || c == 0 {
+		return nat, false, 0
+	}
+	d1, d2 := b-a, c-b
+	if d1 != 0 && d1 == d2 {
+		inc := 1
+		if d1 < 0 {
+			inc = -1
+		}
+		return nat, true, inc
+	}
+	return nat, false, 0
+}
+
+func atoiSafe(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // classify distinguishes port-restricted from symmetric using the two

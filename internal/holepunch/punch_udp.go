@@ -30,6 +30,8 @@ type punchMsg struct {
 	NatType  byte
 	TcpPort  uint16 // local TCP listen port for TCP hole punching
 	SrcPort  uint16 // our outbound TCP source port (EasyTier-style conntrack punch)
+	EasySym  byte   // 1 if symmetric NAT with predictable increment (NAT4E)
+	Inc      byte   // mapped-port increment direction: 1=inc, 255=dec (0xFE)
 }
 
 const (
@@ -171,11 +173,16 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 			our = "0.0.0.0:0"
 		}
 	}
-	req := make([]byte, 4+len(our)+4)
+	req := make([]byte, 4+len(our)+6)
 	binary.BigEndian.PutUint32(req, nonce)
 	copy(req[4:], our)
 	binary.BigEndian.PutUint16(req[4+len(our):], uint16(e.TcpPort))
 	binary.BigEndian.PutUint16(req[4+len(our)+2:], uint16(e.SrcPort))
+	req[4+len(our)+4] = 0
+	if e.EasySym {
+		req[4+len(our)+4] = 1
+	}
+	req[4+len(our)+5] = e.Inc
 	if _, err := conn.Write(req); err != nil {
 		return fallbackEP, nonce, nil
 	}
@@ -189,13 +196,15 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	peerNonce := binary.BigEndian.Uint32(buf)
 	peerEP := string(buf[4:n])
 	// Trailing bytes carry the peer's TCP punch port + outbound source
-	// port (EasyTier-style conntrack punch).
-	if n >= 8 {
-		epLen := n - 4 - 4
+	// port + EasySym/Inc (EasyTier-style conntrack + NAT4E punch).
+	if n >= 10 {
+		epLen := n - 4 - 6
 		peerEP = string(buf[4 : 4+epLen])
 		e.mu.Lock()
 		e.peerTCPPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen:]))
 		e.peerSrcPort[peerKey] = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
+		e.peerEasySym[peerKey] = buf[4+epLen+4] == 1
+		e.peerInc[peerKey] = int(int8(buf[4+epLen+5]))
 		e.mu.Unlock()
 	}
 	if peerNonce != nonce {
@@ -232,13 +241,17 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	peerEP := string(buf[4:n])
 	peerTCP := 0
 	peerSrc := 0
+	peerEasySym := false
+	peerInc := 0
 	// Trailing bytes carry the peer's TCP punch port + outbound source
-	// port — strip them from the endpoint.
-	if n >= 8 {
-		epLen := n - 4 - 4
+	// port + EasySym/Inc — strip them from the endpoint.
+	if n >= 10 {
+		epLen := n - 4 - 6
 		peerEP = string(buf[4 : 4+epLen])
 		peerTCP = int(binary.BigEndian.Uint16(buf[4+epLen:]))
 		peerSrc = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
+		peerEasySym = buf[4+epLen+4] == 1
+		peerInc = int(int8(buf[4+epLen+5]))
 	}
 
 	// Reply with our mapped endpoint (best-effort). Fall back to the
@@ -255,13 +268,32 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 			our = "0.0.0.0:0"
 		}
 	}
-	resp := make([]byte, 4+len(our)+4)
+	resp := make([]byte, 4+len(our)+6)
 	binary.BigEndian.PutUint32(resp, nonce)
 	copy(resp[4:], our)
 	binary.BigEndian.PutUint16(resp[4+len(our):], uint16(e.TcpPort))
 	binary.BigEndian.PutUint16(resp[4+len(our)+2:], uint16(e.SrcPort))
+	resp[4+len(our)+4] = 0
+	if e.EasySym {
+		resp[4+len(our)+4] = 1
+	}
+	resp[4+len(our)+5] = e.Inc
 	if _, err := conn.Write(resp); err != nil {
 		return
+	}
+
+	// NAT4E window punch: if the peer is an easy-symmetric NAT, fire
+	// probes at its predicted mapped-port window (base + inc*k) so the
+	// per-destination mapping is hit — the cone-side classic trick.
+	if peerEasySym && peerInc != 0 {
+		host, _, herr := net.SplitHostPort(peerEP)
+		if herr == nil && e.PunchConnProvider != nil {
+			_, portStr, _ := net.SplitHostPort(peerEP)
+			base := atoiSafe(portStr)
+			if base > 0 {
+				go e.symWindowProbe(host, base, peerInc, nonce)
+			}
+		}
 	}
 
 	// TCP blind-connect: prefer the peer's outbound source port
@@ -347,3 +379,36 @@ func shortEP(ep string) string {
 }
 
 var _ = fmt.Sprintf // keep fmt for future use
+
+// symWindowProbe fires UDP probes across the peer's predicted
+// symmetric-NAT mapped-port window (EasyTier's NAT4E birthday attack):
+// base + inc*k for k in [1, symPunchWindow]. The peer's per-destination
+// mapping lands inside this window for predictable-increment NATs, so
+// one probe hits and opens the hole. Uses the shared mux socket so the
+// data-plane mapping is preserved.
+func (e *Engine) symWindowProbe(host string, base, inc int, nonce uint32) {
+	conn := e.PunchConnProvider(net.ParseIP(host))
+	if conn == nil {
+		return
+	}
+	probe := make([]byte, 6)
+	probe[0], probe[1] = 0x50, 0x4A
+	binary.BigEndian.PutUint32(probe[2:], uint32(nonce))
+	for k := 1; k <= symPunchWindow; k++ {
+		port := base + inc*k
+		if port <= 0 || port > 65535 {
+			continue
+		}
+		conn.WriteToUDP(probe, &net.UDPAddr{IP: net.ParseIP(host), Port: port})
+		time.Sleep(symPunchGap)
+	}
+	log.Printf("[holepunch] sym window probe done: %s base=%d inc=%d x%d", host, base, inc, symPunchWindow)
+}
+
+// symPunchWindow is how many consecutive ports to scan for NAT4E
+// (EasyTier uses 50).
+const symPunchWindow = 50
+
+// symPunchGap paces the window probes (EasyTier-style sustained fire,
+// gentle enough not to burn CPU).
+const symPunchGap = 20 * time.Millisecond
