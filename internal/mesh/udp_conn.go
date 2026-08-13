@@ -46,7 +46,9 @@ const (
 	// udpWriteTimeout bounds how long Write waits for the sliding
 	// window to drain before giving up (dead peer → error → caller
 	// falls back to TCP). 30s ≈ 150 RTO retransmits.
-	udpWriteTimeout = 30 * time.Second
+	// 10s write timeout: on lossy links the kx should fall back to
+	// relay quickly instead of wedging Write for 30s.
+	udpWriteTimeout = 10 * time.Second
 )
 
 var (
@@ -90,11 +92,14 @@ type udpStreamConn struct {
 // ReadFrom/WriteTo are simple.
 func newUDPStreamConn(conn *net.UDPConn, peer *net.UDPAddr) *udpStreamConn {
 	sc := &udpStreamConn{
-		conn:      conn,
-		peer:      peer,
-		inflight:  make(map[uint32][]byte),
-		ackRecv:   make(chan uint32, 4096),
-		rto:       200 * time.Millisecond,
+		conn:     conn,
+		peer:     peer,
+		inflight: make(map[uint32][]byte),
+		ackRecv:  make(chan uint32, 4096),
+		// 100ms RTO: the punch-data link (txcloud<->Oracle) drops a
+		// fraction of small datagrams — a shorter RTO recovers lost
+		// fragments faster before the peer's kx times out and closes.
+		rto:       100 * time.Millisecond,
 		recvBuf:   make(map[uint32][]byte),
 		recvReady: make(chan struct{}, 1),
 		finRecv:   make(chan struct{}),
