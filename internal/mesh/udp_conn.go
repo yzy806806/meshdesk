@@ -34,7 +34,11 @@ const (
 	udpFrameTypeFin  = 0x03
 
 	udpFrameHeaderLen = 11
-	udpMaxPayload     = 1200 // fits typical MTU with room for smux frames
+	// Small payloads: the txcloud<->Oracle v6 link drops/corrupts
+	// UDP datagrams above ~60B. Splitting into sub-60B frames keeps
+	// the ARQ stream alive on such restricted links (verified
+	// empirically — 12B marker frames traverse fine).
+	udpMaxPayload = 40
 
 	udpWindowSize = 32 // sliding window (in-flight frames)
 	udpMaxSeq     = uint32(1 << 30)
