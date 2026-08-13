@@ -238,11 +238,17 @@ func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	}
 	key := addr.String()
 	// Inbound mesh streams are keyed |in (outbound DialUDPStream uses
-	// |out) — frames from this addr belong to the inbound stream.
+	// |out). Frames from this addr belong to whichever stream exists:
+	// the inbound stream for OUR outbound dial's replies, or the
+	// outbound stream for OUR initiated exchange's responses.
 	meshKey := key + "|in"
+	outKey := key + "|out"
 
 	m.mu.Lock()
 	sc, exists := m.streams[meshKey]
+	if !exists {
+		sc, exists = m.streams[outKey]
+	}
 	tun, tunExists := m.tunStreams[key]
 	m.mu.Unlock()
 	if exists {
