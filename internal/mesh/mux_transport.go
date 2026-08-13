@@ -362,23 +362,32 @@ func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPA
 	if err != nil {
 		return nil, nil, fmt.Errorf("mux: resolve %s: %w", remoteAddr, err)
 	}
-	// Pick a local UDP socket matching the remote family.
-	var local *net.UDPConn
-	for _, conn := range t.udpConns {
-		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
-			if (la.IP.To4() != nil) == (udpAddr.IP.To4() != nil) {
-				local = conn
-				break
-			}
-		}
-	}
-	if local == nil && len(t.udpConns) > 0 {
-		local = t.udpConns[0]
-	}
+	local := t.UDPConnFor(udpAddr.IP)
 	if local == nil {
 		return nil, nil, fmt.Errorf("mux: no UDP socket available")
 	}
 	return local, udpAddr, nil
+}
+
+// UDPConnFor returns the mux UDP socket matching the remote IP family
+// (IPv4 socket for IPv4 peers, IPv6 for IPv6) — the same socket the
+// TUN UDP data plane dials from. Hole-punching reuses this socket so
+// the punched NAT mapping is exactly the one the data plane uses.
+func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
+	if t.udpMesh == nil {
+		return nil
+	}
+	for _, conn := range t.udpConns {
+		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			if (la.IP.To4() != nil) == (remoteIP.To4() != nil) {
+				return conn
+			}
+		}
+	}
+	if len(t.udpConns) > 0 {
+		return t.udpConns[0]
+	}
+	return nil
 }
 
 // TunUDPListener returns a listener that accepts inbound TUN-data UDP
@@ -802,6 +811,15 @@ func (t *MuxTransport) udpListenLoop() {
 				// corrupted gossip packets under load).
 				pkt := make([]byte, n)
 				copy(pkt, buf[:n])
+				// Hole-punch probe echo: a 6-byte datagram headed by
+				// 0x50 0x4A carries a punch nonce — echo it back on
+				// the same socket so the peer's NAT mapping confirms
+				// the hole both ways.
+				if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4A {
+					if _, werr := conn.WriteTo(pkt, addr); werr == nil {
+						continue
+					}
+				}
 				// Route mesh-marked datagrams to the ARQ stream manager.
 				if udpAddr, ok := addr.(*net.UDPAddr); ok && t.udpMesh != nil {
 					if t.udpMesh.routeUDPPacket(conn, udpAddr, pkt, t.meshCh) {
