@@ -29,7 +29,7 @@ MeshDesk does all of it in one binary:
 ### Key Design Choices
 
 - **Reality TLS** — All mesh traffic is disguised as HTTPS to a real website (e.g. `www.apple.com:443`). DPI cannot distinguish it from legitimate traffic. No WireGuard, no KCP, no recognizable UDP patterns.
-- **Single port** — Everything runs on one TCP+UDP port (default 52888). MuxTransport sniffs the first byte to route Reality TLS, mesh-internal smux, SOCKS5, and memberlist gossip.
+- **Single port** — All mesh traffic runs on one TCP+UDP port (default 52888). MuxTransport sniffs the first byte to route Reality TLS, mesh-internal smux, SOCKS5, and memberlist gossip. The Dashboard is deliberately NOT served on this port (anti-fingerprinting): HTTP probes hitting the mesh port are proxied to the Reality camouflage site. The Dashboard listens on the dedicated web port (`node.web`, default `:8080`).
 - **Standalone hole-punching engine** (`internal/holepunch`, v1.6) — memberlist-independent, EasyTier-parity:
   - Coordination over a dedicated virtual port (`0x504A`) through existing smux/relay sessions — no central punch server needed
   - UDP two-way punching with nonce-verified holes (v4 + v6)
@@ -101,7 +101,7 @@ mesh:
 
 ```bash
 sudo ./meshdesk --web --config /etc/meshdesk/config.yaml
-# dashboard: http://localhost:52888
+# dashboard: http://localhost:8080  (node.web port — NOT the mesh port)
 ```
 
 Nodes that share a zone and can reach each other **auto-punch to a
