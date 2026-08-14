@@ -58,12 +58,13 @@ an attacker intercepts the token.
 The Dashboard displays a one-line command:
 
 ```bash
-# Legacy web port (8080)
 curl -fsSL http://<bootstrap>:8080/join?token=<base64-token> | sh
-
-# Single-port path (52888) — v1.2.1+, no separate web port needed
-curl -fsSL http://<bootstrap>:52888/join?token=<base64-token> | sh
 ```
+
+> **Port note:** the join endpoint is served on the Dashboard **web
+> port** (`node.web`, default `:8080`). The single-port path on the
+> mesh port (52888) was removed by the reality-discipline refactor —
+> HTTP is no longer served on the mesh port (anti-fingerprinting).
 
 This command:
 - Downloads meshdesk binary for the target platform
@@ -78,11 +79,7 @@ SSH into the new node and paste the command:
 
 ```bash
 ssh root@new-node
-# Legacy web port (8080)
 curl -fsSL http://aliyun.example.com:8080/join?token=ZXhhbXBsZS10b2tlbg== | sh
-
-# Single-port path (52888) — v1.2.1+
-curl -fsSL http://aliyun.example.com:52888/join?token=ZXhhbXBsZS10b2tlbg== | sh
 ```
 
 The install script:
