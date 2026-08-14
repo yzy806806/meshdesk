@@ -1,5 +1,42 @@
 # Release Notes
 
+## v1.6.4 — 2026-08-14
+
+**Auto-reporting to the dashboard (META-based collector discovery) + deployment hardening.**
+
+### Monitor auto-routing (adc4e2f)
+- **META-based collector discovery** — the session meta exchange
+  (0x4D45) now carries `Collector=true` for nodes running the web
+  dashboard. Gossip-based CapCollector discovery never reaches
+  relay-attached nodes (degraded memberlist), so phones/NAT nodes
+  joined via relay pushed metrics to nobody. Now every peer — relay
+  or direct — learns where the dashboard is and auto-pushes CPU/mem/
+  traffic metrics with zero config.
+- Collector capability floods through the peer list (a relay hop can
+  learn the dashboard node from a third peer).
+- Verified live: Oracle auto-discovers txcloud's dashboard and pushes;
+  monitor-history tracks 3 nodes (n1, txcloud, oracle-arm with CPU).
+
+### Deployment hardening (f7c607a)
+- **ARQ window 32→128** — UDP hole throughput ~40kbps → ~300kbps
+  (measured 224kbps 100% arrival over the live txcloud↔Oracle hole;
+  560kbps drops, safe with the adaptive RTO). BDP = window×frame/RTT
+  was the limit; a bigger window only matters when ACKs flow.
+- **mesh0 firewall rule** — injected packets on mesh0 are trusted mesh
+  traffic, but a stateful INPUT REJECT (cloud images) drops all NEW
+  connections from the tunnel (ICMP passes, TCP/UDP behind a mesh VIP
+  unreachable). The systemd unit adds `-i mesh0 -j ACCEPT` idempotently
+  on ExecStartPre; install.sh persists it (netfilter-persistent /
+  /etc/iptables/rules.v4).
+- systemd unit: `TimeoutStopSec=15` (graceful-stop bound) +
+  `ExecStopPost` cleans the TUN.
+
+### Verified
+- txcloud↔Oracle UDP hole: 100+ min idle, 0 session loss
+- 224kbps sustained UDP through the tunnel, 100% arrival
+- SSH over mesh VIP both directions
+- easytier fully removed from all four nodes
+
 ## v1.6.3 — 2026-08-14
 
 **UDP hole punching reaches production stability — EasyTier-parity confirmed end-to-end.**
