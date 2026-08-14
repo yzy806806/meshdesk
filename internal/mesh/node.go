@@ -197,6 +197,16 @@ type MeshNode struct {
 	// Guarded by sessionsMu.
 	learnedEndpoints map[string][]string
 
+	// holeEndpoints caches the CONFIRMED data-plane endpoint punched
+	// for a peer (OnHoleEstablished). Kept SEPARATE from
+	// learnedEndpoints because the meta exchange overwrites that map
+	// with gossip-advertised endpoints (52888) that are NOT the
+	// punched UDP port — using them for the TUN data plane dials a
+	// dead port (observed: tun-udp no-ACK against 52888 while the
+	// live hole was on a random UDP port). Hole endpoints win.
+	// Guarded by sessionsMu.
+	holeEndpoints map[string][]string
+
 	// rttCache caches PeerRTT results so topology renders and exit
 	// selection don't hammer the session echo port on every call.
 	// Guarded by sessionsMu. rttCacheTTL bounds staleness.
@@ -238,6 +248,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		peerTransport:        make(map[string]string),
 		learnedZones:         make(map[string]string),
 		learnedEndpoints:     make(map[string][]string),
+		holeEndpoints:        make(map[string][]string),
 		rttCache:             make(map[string]rttCacheEntry),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
@@ -2296,22 +2307,43 @@ func (n *MeshNode) LocalEndpoints() []string {
 	return append([]string(nil), n.cfg.P2P.AdvertiseEndpoints...)
 }
 
-// PeerEndpoints returns the endpoints known for a peer: config first,
-// meta-exchange-learned as fallback.
+// PeerEndpoints returns the endpoints known for a peer: hole-punched
+// endpoint first (confirmed data-plane target — highest priority),
+// config second, meta-exchange-learned as fallback.
 func (n *MeshNode) PeerEndpoints(peerKey string) []string {
-	n.peersMu.RLock()
-	for i := range n.cfg.Peers {
-		if n.cfg.Peers[i].PublicKey == peerKey && n.cfg.Peers[i].Endpoint != "" {
-			ep := n.cfg.Peers[i].Endpoint
-			n.peersMu.RUnlock()
-			return []string{ep}
-		}
-	}
-	n.peersMu.RUnlock()
 	n.sessionsMu.Lock()
+	if eps := append([]string(nil), n.holeEndpoints[peerKey]...); len(eps) > 0 {
+		n.sessionsMu.Unlock()
+		return eps
+	}
 	eps := append([]string(nil), n.learnedEndpoints[peerKey]...)
 	n.sessionsMu.Unlock()
-	return eps
+	if len(eps) > 0 {
+		return eps
+	}
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
+	for i := range n.cfg.Peers {
+		if n.cfg.Peers[i].PublicKey == peerKey && n.cfg.Peers[i].Endpoint != "" {
+			return []string{n.cfg.Peers[i].Endpoint}
+		}
+	}
+	return nil
+}
+
+// SetHoleEndpoint records the CONFIRMED data-plane endpoint for a
+// peer, as established by hole punching (OnHoleEstablished). This is
+// kept separate from SetLearnedEndpoints (meta exchange) so the
+// punched UDP port — a random port on ordinary nodes — is never
+// overwritten by gossip-advertised endpoints (which carry the TCP
+// port, a dead UDP target).
+func (n *MeshNode) SetHoleEndpoint(peerKey string, ep string) {
+	if peerKey == "" || ep == "" {
+		return
+	}
+	n.sessionsMu.Lock()
+	n.holeEndpoints[peerKey] = []string{ep}
+	n.sessionsMu.Unlock()
 }
 
 // SetLearnedEndpoints records a peer's endpoints learned via the meta

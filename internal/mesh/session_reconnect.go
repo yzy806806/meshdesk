@@ -203,6 +203,23 @@ func (n *MeshNode) tryReconnect(ctx context.Context, peerIdentityHex, endpoint s
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// A hole-punched endpoint carries a RANDOM UDP port on ordinary
+	// nodes (the peer's data-plane socket). A TCP dial to it always
+	// fails (nothing listens on TCP there). Re-establish the session
+	// over the UDP data plane instead: DialUDPPeer runs the kx and
+	// registers the smux session over the punched hole.
+	if n.isHoleEndpoint(peerIdentityHex, endpoint) {
+		if conn, err := n.DialUDPPeer(dialCtx, endpoint); err == nil {
+			conn.Close()
+			log.Printf("[mesh] reconnect via UDP hole to %s for peer %s", endpoint, shortPeerID(peerIdentityHex))
+			return nil
+		}
+		// UDP path failed (hole stale) — fall through to TCP dial as
+		// a last resort; the caller's backoff + the punch engine's
+		// next attempt will refresh the hole.
+		log.Printf("[mesh] reconnect UDP hole to %s failed for peer %s, falling back to TCP", endpoint, shortPeerID(peerIdentityHex))
+	}
+
 	stream, err := n.DialPeerByEndpoint(dialCtx, endpoint)
 	if err != nil {
 		if n.hasPeerConfigByAddress(endpoint) {
@@ -217,6 +234,19 @@ func (n *MeshNode) tryReconnect(ctx context.Context, peerIdentityHex, endpoint s
 	}
 	stream.Close()
 	return nil
+}
+
+// isHoleEndpoint reports whether endpoint is the hole-punched data
+// plane endpoint recorded for the peer (SetHoleEndpoint).
+func (n *MeshNode) isHoleEndpoint(peerIdentityHex, endpoint string) bool {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+	for _, ep := range n.holeEndpoints[peerIdentityHex] {
+		if ep == endpoint {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *MeshNode) getWatchableSession(peerIdentityHex string) *smux.Session {

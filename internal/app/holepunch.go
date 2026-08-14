@@ -134,7 +134,11 @@ func (a *App) startHolePunch() {
 		// rebuilt target pointed into the void.)
 		target := punchedEP
 		log.Printf("  HolePunch: data-plane target %s", target)
-		a.node.SetLearnedEndpoints(peerKey, []string{target})
+		// Record the CONFIRMED hole endpoint in the dedicated hole
+		// map (NOT SetLearnedEndpoints — the meta exchange overwrites
+		// that with gossip endpoints carrying the TCP port, which is
+		// a dead UDP target once ordinary nodes use random UDP ports).
+		a.node.SetHoleEndpoint(peerKey, target)
 		// The TUN data plane may be stuck in UDP failure cooldown from
 		// a previous endpoint (e.g. unreachable v6). A successful hole
 		// means the endpoint CHANGED — reset the cooldown so the next

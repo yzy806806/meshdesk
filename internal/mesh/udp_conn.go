@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,9 +66,10 @@ type udpStreamConn struct {
 	sendMu   sync.Mutex
 	nextSeq  uint32
 	baseSeq  uint32 // lowest unacked seq
-	inflight map[uint32][]byte
+	inflight map[uint32]udpInflightFrame
 	ackRecv  chan uint32
-	rto      time.Duration
+	rtoNs    atomic.Int64 // adaptive retransmit timeout, nanoseconds
+	srttNs   atomic.Int64 // smoothed RTT, nanoseconds
 	closed   bool
 
 	// recv side
@@ -86,6 +88,54 @@ type udpStreamConn struct {
 	handlePacketHook func(ftype byte)
 }
 
+// udpInflightFrame is an unacknowledged sent frame plus its send time
+// (used for adaptive RTT sampling).
+type udpInflightFrame struct {
+	data   []byte
+	sentAt time.Time
+}
+
+const (
+	// udpRTOMin bounds the adaptive RTO from below. The mesh data
+	// plane rides real WAN links (txcloud↔Oracle RTT ~257ms), and a
+	// fixed 100ms RTO there retransmits every frame ~2.5x before its
+	// ACK arrives — flooding the window, wedging Write, and starving
+	// smux keepalive until the session dies (observed: UDP session
+	// lost ~2.5min after establish, correlated with TUN traffic).
+	udpRTOMin = 300 * time.Millisecond
+	udpRTOMax = 5 * time.Second
+)
+
+// rto returns the current adaptive retransmit timeout.
+func (sc *udpStreamConn) rto() time.Duration {
+	return time.Duration(sc.rtoNs.Load())
+}
+
+// sampleRTT updates the smoothed RTT (EWMA, KCP/TCP-style) and the
+// adaptive RTO: RTO = max(srtt*2, udpRTOMin), capped at udpRTOMax.
+// Called on every ACK that acknowledges at least one inflight frame.
+func (sc *udpStreamConn) sampleRTT(rtt time.Duration) {
+	if rtt <= 0 {
+		return
+	}
+	const alpha = 0.125 // EWMA smoothing (TCP SRTT)
+	prev := time.Duration(sc.srttNs.Load())
+	if prev == 0 {
+		sc.srttNs.Store(int64(rtt))
+	} else {
+		smoothed := time.Duration(float64(prev)*(1-alpha) + float64(rtt)*alpha)
+		sc.srttNs.Store(int64(smoothed))
+	}
+	rto := 2 * time.Duration(sc.srttNs.Load())
+	if rto < udpRTOMin {
+		rto = udpRTOMin
+	}
+	if rto > udpRTOMax {
+		rto = udpRTOMax
+	}
+	sc.rtoNs.Store(int64(rto))
+}
+
 // newUDPStreamConn creates a reliable stream for the given peer on the
 // shared UDP socket. The socket must be connected (DialUDP) or the
 // caller must use WriteToUDP semantics — we use a connected socket so
@@ -94,17 +144,14 @@ func newUDPStreamConn(conn *net.UDPConn, peer *net.UDPAddr) *udpStreamConn {
 	sc := &udpStreamConn{
 		conn:     conn,
 		peer:     peer,
-		inflight: make(map[uint32][]byte),
+		inflight: make(map[uint32]udpInflightFrame),
 		ackRecv:  make(chan uint32, 4096),
-		// 100ms RTO: the punch-data link (txcloud<->Oracle) drops a
-		// fraction of small datagrams — a shorter RTO recovers lost
-		// fragments faster before the peer's kx times out and closes.
-		rto:       100 * time.Millisecond,
 		recvBuf:   make(map[uint32][]byte),
 		recvReady: make(chan struct{}, 1),
 		finRecv:   make(chan struct{}),
 		done:      make(chan struct{}),
 	}
+	sc.rtoNs.Store(int64(udpRTOMin))
 	go sc.recvLoop()
 	go sc.retransmitLoop()
 	return sc
@@ -134,7 +181,8 @@ func (sc *udpStreamConn) Write(p []byte) (int, error) {
 		binary.BigEndian.PutUint16(frame[9:11], uint16(len(chunk)))
 		copy(frame[udpFrameHeaderLen:], chunk)
 
-		sc.inflight[seq] = frame
+		sentAt := time.Now()
+		sc.inflight[seq] = udpInflightFrame{data: frame, sentAt: sentAt}
 		if _, err := sc.conn.WriteToUDP(frame, sc.peer); err != nil {
 			return total, err
 		}
@@ -157,17 +205,10 @@ func (sc *udpStreamConn) Write(p []byte) (int, error) {
 			case ack := <-sc.ackRecv:
 				// Inline advanceBase — we already hold sendMu, and
 				// advanceBase would re-Lock (non-reentrant) → deadlock.
-				for seq := range sc.inflight {
-					if !seqBefore(ack, seq) {
-						delete(sc.inflight, seq)
-					}
-				}
-				if !seqBefore(ack, sc.baseSeq) {
-					sc.baseSeq = (ack + 1) % udpMaxSeq
-				}
+				sc.ackLocked(ack)
 			case <-sc.done:
 				return total, errUDPClosed
-			case <-time.After(sc.rto):
+			case <-time.After(sc.rto()):
 				sc.retransmitLocked()
 			}
 		}
@@ -310,31 +351,61 @@ func (sc *udpStreamConn) sendAck(seq uint32) {
 	sc.conn.WriteToUDP(frame, sc.peer)
 }
 
-func (sc *udpStreamConn) advanceBase(ack uint32) {
-	sc.sendMu.Lock()
-	defer sc.sendMu.Unlock()
-	// Remove all frames <= ack.
-	for seq := range sc.inflight {
+// ackLocked processes a cumulative ACK while holding sendMu: removes
+// acknowledged frames, advances baseSeq, and samples RTT for the
+// adaptive RTO. The ack that releases the OLDEST frame's send time is
+// the cleanest RTT sample; we use the newest acknowledged frame's
+// send time (closest to the ack's arrival) for the RTT estimate.
+func (sc *udpStreamConn) ackLocked(ack uint32) {
+	var newest time.Time
+	for seq, f := range sc.inflight {
 		if !seqBefore(ack, seq) {
 			delete(sc.inflight, seq)
+			if f.sentAt.After(newest) {
+				newest = f.sentAt
+			}
 		}
 	}
 	if !seqBefore(ack, sc.baseSeq) {
 		sc.baseSeq = (ack + 1) % udpMaxSeq
 	}
+	if !newest.IsZero() {
+		sc.sampleRTT(time.Since(newest))
+	}
+}
+
+// advanceBase removes acknowledged frames from the inflight window and
+// advances the base sequence. Also samples RTT for the adaptive RTO.
+func (sc *udpStreamConn) advanceBase(ack uint32) {
+	sc.sendMu.Lock()
+	defer sc.sendMu.Unlock()
+	sc.ackLocked(ack)
 }
 
 func (sc *udpStreamConn) retransmitLocked() {
-	// Retransmit all unacked frames (simplified — full window retransmit
-	// on timeout, adequate for low-latency mesh links).
-	for seq, frame := range sc.inflight {
-		sc.conn.WriteToUDP(frame, sc.peer)
+	// Retransmit only frames whose RTO has elapsed (adaptive per-frame
+	// timeout). The old "full window every 100ms" behavior flooded the
+	// link on WAN RTTs > RTO — with a 257ms RTT and 100ms RTO every
+	// frame went out ~2.5x before its ACK arrived, wedging Write and
+	// starving smux keepalive (session death).
+	now := time.Now()
+	rto := sc.rto()
+	for seq, f := range sc.inflight {
+		if now.Sub(f.sentAt) >= rto {
+			sc.conn.WriteToUDP(f.data, sc.peer)
+			f.sentAt = now
+			sc.inflight[seq] = f
+		}
 		_ = seq
 	}
 }
 
 func (sc *udpStreamConn) retransmitLoop() {
-	ticker := time.NewTicker(sc.rto)
+	// Wake frequently (rto/2) and let retransmitLocked decide per-frame
+	// — the adaptive rto changes as RTT is sampled, so a fixed ticker
+	// is wrong; a short tick just means more timely retransmits.
+	tick := udpRTOMin / 2
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
 		select {
