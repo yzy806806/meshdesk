@@ -66,15 +66,56 @@ func (a *App) wireMeshNodeCallbacks() {
 	}
 
 	// Relay metadata provider — RTT-sorted, health-filtered relay
-	// candidates from gossip NodeMeta, supplemented by static peers.
+	// candidates. Sources (memberlist-retirement phase 1):
+	//   1. META-learned relay knowledge (works when memberlist is
+	//      degraded — relay-attached nodes only have this source),
+	//   2. gossip NodeMeta (overlays fresher load/RTT where known),
+	//   3. static config peers.
 	node.SetRelayMetaProvider(func() []mesh.RelayPeerInfo {
 		var result []mesh.RelayPeerInfo
 		seen := make(map[string]bool)
+		// 1. META-learned candidates first (memberlist-independent).
+		for _, key := range node.SessionPeerKeys() {
+			info, ok := node.PeerRelayMetaInfo(key)
+			if !ok || !info.CapRelay {
+				continue
+			}
+			seen[key] = true
+			result = append(result, mesh.RelayPeerInfo{
+				PeerKey:      key,
+				RTT:          node.PeerRTT(key),
+				CapRelay:     true,
+				MaxCircuits:  info.MaxCircuits,
+				LoadCircuits: info.LoadCircuits,
+				NatType:      info.NatType,
+			})
+		}
+		// 2. Gossip overlay: fresher load numbers replace META-learned
+		// entries; gossip-only peers are added.
 		if a.gossipLayer != nil {
 			for _, meta := range a.gossipLayer.KnownPeers() {
 				var rtt time.Duration
 				if meta.RTTUs > 0 {
 					rtt = time.Duration(meta.RTTUs) * time.Microsecond
+				}
+				if seen[meta.PublicKey] {
+					for i := range result {
+						if result[i].PeerKey == meta.PublicKey {
+							if rtt > 0 {
+								result[i].RTT = rtt
+							}
+							result[i].CapRelay = result[i].CapRelay || meta.CapRelay
+							if meta.MaxCircuits > 0 {
+								result[i].MaxCircuits = meta.MaxCircuits
+							}
+							result[i].LoadCircuits = meta.LoadCircuits
+							if meta.NatType != "" {
+								result[i].NatType = meta.NatType
+							}
+							break
+						}
+					}
+					continue
 				}
 				seen[meta.PublicKey] = true
 				result = append(result, mesh.RelayPeerInfo{
@@ -87,6 +128,7 @@ func (a *App) wireMeshNodeCallbacks() {
 				})
 			}
 		}
+		// 3. Static config peers.
 		for _, pc := range cfg.Peers {
 			if pc.PublicKey == "" || seen[pc.PublicKey] {
 				continue
@@ -98,6 +140,26 @@ func (a *App) wireMeshNodeCallbacks() {
 			})
 		}
 		return result
+	})
+
+	// Local relay/NAT knowledge advertised in META (memberlist-
+	// retirement phase 1) — sourced from the gossip layer's local meta
+	// while gossip exists; the closure guards the not-yet-started case.
+	node.SetLocalMetaExtras(func() mesh.MetaRelayInfo {
+		if a.gossipLayer == nil {
+			return mesh.MetaRelayInfo{}
+		}
+		meta := a.gossipLayer.LocalMeta()
+		if meta == nil {
+			return mesh.MetaRelayInfo{}
+		}
+		return mesh.MetaRelayInfo{
+			Role:         meta.Role,
+			NatType:      meta.NatType,
+			CapRelay:     meta.CapRelay,
+			MaxCircuits:  meta.MaxCircuits,
+			LoadCircuits: meta.LoadCircuits,
+		}
 	})
 
 	// Peer endpoint resolver — dial the peer's STABLE advertised
