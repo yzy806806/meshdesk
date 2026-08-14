@@ -222,8 +222,15 @@ func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {
 	if a.holepunch == nil {
 		return
 	}
-	if !a.node.SameZone(peerKey) && a.node.PeerZone(peerKey) != "" {
-		// Known different zone — never punch (Reality-only).
+	// Fail-closed zone gate: punch ONLY when both zones are known and
+	// equal. Punching sends raw (undisguised) UDP probes; a peer whose
+	// zone is still unknown might sit on the other side of the
+	// anti-DPI boundary, where undisguised probes are exactly what the
+	// Reality transport exists to avoid. Zone-unknown peers stay on
+	// Reality until META/gossip delivers their zone — the lazy scan
+	// retries every 30s, so the punch fires as soon as the zone is
+	// learned.
+	if a.node.PeerZone(peerKey) == "" || !a.node.SameZone(peerKey) {
 		return
 	}
 	// Already have a live session (client or server side, e.g. the
