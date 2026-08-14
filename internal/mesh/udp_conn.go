@@ -70,6 +70,7 @@ type udpStreamConn struct {
 	ackRecv  chan uint32
 	rtoNs    atomic.Int64 // adaptive retransmit timeout, nanoseconds
 	srttNs   atomic.Int64 // smoothed RTT, nanoseconds
+	rttvarNs atomic.Int64 // RTT variance (TCP rttvar), nanoseconds
 	closed   bool
 
 	// recv side
@@ -97,12 +98,13 @@ type udpInflightFrame struct {
 
 const (
 	// udpRTOMin bounds the adaptive RTO from below. The mesh data
-	// plane rides real WAN links (txcloud↔Oracle RTT ~257ms), and a
-	// fixed 100ms RTO there retransmits every frame ~2.5x before its
-	// ACK arrives — flooding the window, wedging Write, and starving
-	// smux keepalive until the session dies (observed: UDP session
-	// lost ~2.5min after establish, correlated with TUN traffic).
-	udpRTOMin = 300 * time.Millisecond
+	// plane rides real WAN links (txcloud↔Oracle RTT ~257ms steady,
+	// but spikes to 1.5s+ under loss), and a too-short RTO
+	// retransmits every frame before its ACK arrives — flooding the
+	// window, wedging Write, and starving smux keepalive until the
+	// session dies. RTO = srtt + 4×rttvar (TCP standard) with this
+	// floor keeps retransmits honest on jittery links.
+	udpRTOMin = 500 * time.Millisecond
 	udpRTOMax = 5 * time.Second
 )
 
@@ -111,22 +113,31 @@ func (sc *udpStreamConn) rto() time.Duration {
 	return time.Duration(sc.rtoNs.Load())
 }
 
-// sampleRTT updates the smoothed RTT (EWMA, KCP/TCP-style) and the
-// adaptive RTO: RTO = max(srtt*2, udpRTOMin), capped at udpRTOMax.
-// Called on every ACK that acknowledges at least one inflight frame.
+// sampleRTT updates the smoothed RTT and variance (TCP SRTT/RTTVAR,
+// RFC 6298) and the adaptive RTO = srtt + 4×rttvar, clamped to
+// [udpRTOMin, udpRTOMax]. Called on every ACK that acknowledges at
+// least one inflight frame.
 func (sc *udpStreamConn) sampleRTT(rtt time.Duration) {
 	if rtt <= 0 {
 		return
 	}
-	const alpha = 0.125 // EWMA smoothing (TCP SRTT)
-	prev := time.Duration(sc.srttNs.Load())
-	if prev == 0 {
-		sc.srttNs.Store(int64(rtt))
+	const (
+		alpha = 0.125 // SRTT EWMA (RFC 6298)
+		beta  = 0.25  // RTTVAR EWMA
+	)
+	prevSrtt := time.Duration(sc.srttNs.Load())
+	var srtt time.Duration
+	if prevSrtt == 0 {
+		srtt = rtt
 	} else {
-		smoothed := time.Duration(float64(prev)*(1-alpha) + float64(rtt)*alpha)
-		sc.srttNs.Store(int64(smoothed))
+		srtt = time.Duration(float64(prevSrtt)*(1-alpha) + float64(rtt)*alpha)
 	}
-	rto := 2 * time.Duration(sc.srttNs.Load())
+	sc.srttNs.Store(int64(srtt))
+	// RTTVAR = (1-β)×RTTVAR + β×|SRTT - RTT|
+	rttvar := time.Duration(float64(time.Duration(sc.rttvarNs.Load()))*(1-beta) + float64(absDur(rtt-srtt))*beta)
+	sc.rttvarNs.Store(int64(rttvar))
+
+	rto := srtt + 4*rttvar
 	if rto < udpRTOMin {
 		rto = udpRTOMin
 	}
@@ -134,6 +145,13 @@ func (sc *udpStreamConn) sampleRTT(rtt time.Duration) {
 		rto = udpRTOMax
 	}
 	sc.rtoNs.Store(int64(rto))
+}
+
+func absDur(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // newUDPStreamConn creates a reliable stream for the given peer on the
