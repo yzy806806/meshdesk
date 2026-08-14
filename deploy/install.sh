@@ -272,6 +272,32 @@ chmod 644 "$SERVICE_FILE"
 systemctl daemon-reload
 
 # ============================================================================
+# Firewall: trust the mesh0 TUN interface
+# ============================================================================
+# Injected packets arriving on mesh0 are trusted mesh traffic. A stateful
+# INPUT chain with a final REJECT (common on cloud images) drops every NEW
+# connection from the tunnel otherwise — the mesh works for ICMP (often
+# whitelisted) but every TCP/UDP service behind a mesh VIP is unreachable.
+# The systemd unit re-adds this idempotently on every start; here we also
+# try to persist it across reboots.
+info "Configuring firewall: accept mesh0 TUN traffic"
+/sbin/iptables -C INPUT -i mesh0 -j ACCEPT 2>/dev/null || /sbin/iptables -I INPUT -i mesh0 -j ACCEPT || warn "iptables unavailable — add '-i mesh0 -j ACCEPT' manually"
+
+# Persist (best effort): Ubuntu/Debian netfilter-persistent, or a raw
+# rules file on systems with iptables-persistent installed later.
+if command -v netfilter-persistent >/dev/null 2>&1; then
+    if command -v iptables-save >/dev/null 2>&1; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null && info "Firewall rules persisted to /etc/iptables/rules.v4" || warn "iptables-save failed — rules are runtime-only"
+    fi
+elif command -v iptables-save >/dev/null 2>&1; then
+    # No netfilter-persistent: write rules.v4 and tell the user how to
+    # load it on boot.
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null && warn "No netfilter-persistent found — rules saved to /etc/iptables/rules.v4 (load with: iptables-restore < /etc/iptables/rules.v4, or install iptables-persistent)"
+fi
+
+# ============================================================================
 # Join protocol (optional)
 # ============================================================================
 if [ -n "$JOIN_URL" ] && [ -n "$JOIN_TOKEN" ]; then
