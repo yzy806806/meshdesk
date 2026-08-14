@@ -3,7 +3,6 @@ package smux
 import (
 	"bufio"
 	"context"
-	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -300,16 +299,17 @@ func (s *Session) dispatch(f *frame) {
 		case FrameSyn:
 			s.handleHandshakeSyn(f)
 		case FramePing:
-			// PING echoes its 4-byte payload back. Guard against
-			// malformed frames with Length < 4 — Uint32 on a short
-			// payload would panic the reader goroutine (process crash).
-			if len(f.Payload) >= 4 {
-				resp := newPingFrame(binary.BigEndian.Uint32(f.Payload))
-				select {
-				case s.writeCh <- resp:
-				case <-s.doneCh:
-				}
-			}
+			// PING echo REMOVED: echoing every PING/PONG (same frame
+			// type) caused an infinite ping-pong — A pings, B echoes,
+			// A echoes B's echo, ... (~100fps of FramePing on the UDP
+			// hole session, observed via writer histogram). Liveness
+			// tracking needs only ANY incoming frame (lastActivity is
+			// updated above), so a reply is unnecessary: each side
+			// sends its own keepalive PING on PingInterval.
+			//
+			// (Kept the malformed-payload guard as a no-op comment —
+			// Uint32 on a short payload would panic the reader.)
+			_ = f.Payload
 		case FrameGoAway:
 			s.Close()
 		}

@@ -985,14 +985,17 @@ func (t *MuxTransport) udpListenLoop() {
 				// corrupted gossip packets under load).
 				pkt := make([]byte, n)
 				copy(pkt, buf[:n])
-				// Hole-punch probe echo: a 6-byte datagram headed by
-				// 0x50 0x4A carries a punch nonce — echo it back on
-				// the same socket so the peer's NAT mapping confirms
-				// the hole both ways.
+				// Hole-punch probe echo REMOVED: echoing every 0x50 0x4A
+				// datagram caused an infinite ping-pong — A's probe is
+				// echoed by B, A's listener echoes B's echo, B echoes
+				// again, ad infinitum (~400fps of 6B frames, observed
+				// on txcloud↔Oracle). Keepalive probes are one-way:
+				// each side sends its own to refresh the conntrack
+				// mapping, no reply needed. The punchUDP handshake's
+				// echo-confirmation is handled inside punchUDP (its
+				// own ReadFrom), not by this listener.
 				if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4A {
-					if _, werr := conn.WriteTo(pkt, addr); werr == nil {
-						continue
-					}
+					continue
 				}
 				// Observation probe (0x50 0x4C): reply from an
 				// EPHEMERAL socket so the peer observes our true
@@ -1081,14 +1084,13 @@ func (t *MuxTransport) punchSocketPoller() {
 					// Copy — the buffer is reused.
 					pkt := make([]byte, n)
 					copy(pkt, buf[:n])
-					// Hole-punch probe echo: a 6-byte datagram headed by
-					// 0x50 0x4A carries a punch nonce — echo it back on
-					// the same socket so the peer's NAT mapping confirms
-					// the hole both ways (mirrors udpListenLoop).
+					// Hole-punch probe echo REMOVED (mirrors
+					// udpListenLoop): echoing 0x50 0x4A caused an
+					// infinite 6B ping-pong storm between the two
+					// peers' listeners (~400fps). Keepalive probes
+					// are one-way conntrack refreshers.
 					if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4A {
-						if _, werr := c.WriteToUDP(pkt, addr.(*net.UDPAddr)); werr == nil {
-							continue
-						}
+						continue
 					}
 					// Punch-socket datagrams are data-plane frames:
 					// route them into the UDP mesh manager directly.
