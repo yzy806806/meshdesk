@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -234,6 +235,18 @@ func (me *MetaExchanger) boundMapsLocked() {
 	}
 }
 
+// countCollectorPeers returns how many peers in a meta message carry
+// the Collector flag (debug helper for the send path).
+func countCollectorPeers(msg MetaMessage) int {
+	n := 0
+	for _, pm := range msg.Peers {
+		if pm.Collector {
+			n++
+		}
+	}
+	return n
+}
+
 // NotifyPeerJoined is called when a session is established with a new
 // peer (or reconnected): send our full knowledge to that peer.
 func (me *MetaExchanger) NotifyPeerJoined(peerKey string) {
@@ -272,7 +285,7 @@ func (me *MetaExchanger) Broadcast() {
 func (me *MetaExchanger) localMeta() PeerMeta {
 	vip := me.node.LocalVirtualIP()
 	isCol := me.node.localIsCollectorFlag()
-	if isDebugLogEnabled() {
+	if os.Getenv("MESHDESK_DEBUG") != "" {
 		log.Printf("[meta] localMeta: collector=%v", isCol)
 	}
 	return PeerMeta{
@@ -309,6 +322,10 @@ func (me *MetaExchanger) knownPeers() []PeerMeta {
 
 // sendTo delivers a meta message to a specific peer over its session.
 func (me *MetaExchanger) sendTo(peerKey string, msg MetaMessage) {
+	if os.Getenv("MESHDESK_DEBUG") != "" {
+		log.Printf("[meta] sendTo %s: self.Collector=%v peersWithCollector=%d",
+			shortKey(peerKey), msg.Self.Collector, countCollectorPeers(msg))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	conn, err := me.node.DialVirtualPort(ctx, peerKey, MetaVirtualPort)
