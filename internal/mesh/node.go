@@ -177,6 +177,19 @@ type MeshNode struct {
 	// layer to MetaExchanger.Broadcast.
 	metaBroadcaster func()
 
+	// peerRelayMeta stores relay/NAT knowledge learned via META
+	// (Role/NatType/CapRelay/MaxCircuits/LoadCircuits) — the
+	// gossip-NodeMeta-exclusive fields migrated to the session meta
+	// plane (memberlist-retirement phase 1) so relay selection works
+	// when memberlist is degraded. Flooded onward by knownPeers().
+	// Guarded by mu.
+	peerRelayMeta map[string]MetaRelayInfo
+
+	// metaExtrasProvider returns this node's own relay/NAT knowledge
+	// for localMeta() (memberlist-retirement phase 1). Set by the app
+	// layer; nil → empty info.
+	metaExtrasProvider func() MetaRelayInfo
+
 	// relayMetaProvider is a callback that returns metadata for all
 	// known relay-capable peers from the gossip layer. Each entry is
 	// (peerKey, rtt, capRelay, maxCircuits, loadCircuits, natType).
@@ -276,6 +289,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		learnedEndpoints:     make(map[string][]string),
 		holeEndpoints:        make(map[string][]string),
 		collectorPeers:       make(map[string]bool),
+		peerRelayMeta:        make(map[string]MetaRelayInfo),
 		rttCache:             make(map[string]rttCacheEntry),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
@@ -1058,6 +1072,67 @@ func (n *MeshNode) localIsCollectorFlag() bool {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
 	return n.localIsCollector
+}
+
+// SetLocalMetaExtras installs the provider of this node's own relay/NAT
+// knowledge (Role/NatType/CapRelay/MaxCircuits/LoadCircuits) advertised
+// in META — memberlist-retirement phase 1: these fields used to come
+// from gossip NodeMeta exclusively.
+func (n *MeshNode) SetLocalMetaExtras(provider func() MetaRelayInfo) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.metaExtrasProvider = provider
+}
+
+// localMetaExtras returns this node's relay/NAT knowledge for localMeta().
+func (n *MeshNode) localMetaExtras() MetaRelayInfo {
+	n.mu.RLock()
+	p := n.metaExtrasProvider
+	n.mu.RUnlock()
+	if p == nil {
+		return MetaRelayInfo{}
+	}
+	return p()
+}
+
+// RecordPeerRelayMeta stores relay/NAT knowledge about a peer learned
+// from META (memberlist-retirement phase 1). Fields merge: a non-empty
+// incoming field overwrites the stored one, an empty field keeps the
+// stored value — so a partial update (e.g. a flood copy that lost the
+// load numbers) never erases known knowledge.
+func (n *MeshNode) RecordPeerRelayMeta(peerKey string, info MetaRelayInfo) {
+	if peerKey == "" || info.empty() {
+		return
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	cur := n.peerRelayMeta[peerKey]
+	if info.Role != "" {
+		cur.Role = info.Role
+	}
+	if info.NatType != "" {
+		cur.NatType = info.NatType
+	}
+	if info.CapRelay {
+		cur.CapRelay = true
+	}
+	if info.MaxCircuits > 0 {
+		cur.MaxCircuits = info.MaxCircuits
+	}
+	if info.LoadCircuits > 0 {
+		cur.LoadCircuits = info.LoadCircuits
+	}
+	n.peerRelayMeta[peerKey] = cur
+}
+
+// PeerRelayMetaInfo returns the relay/NAT knowledge about a peer learned
+// via META (memberlist-retirement phase 1). ok=false when nothing is
+// known.
+func (n *MeshNode) PeerRelayMetaInfo(peerKey string) (MetaRelayInfo, bool) {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	info, ok := n.peerRelayMeta[peerKey]
+	return info, ok
 }
 
 // SetSessionDeathHandler installs a callback that is invoked when a smux

@@ -49,6 +49,30 @@ type PeerMeta struct {
 	// memberlist is degraded still discover where to push metrics —
 	// gossip-based CapCollector discovery never reaches them.
 	Collector bool `json:"c,omitempty"`
+	// Relay/NAT fields (memberlist-retirement phase 1): these used to
+	// be gossip-NodeMeta-exclusive. Carrying them in META lets relay
+	// selection and NAT-type awareness work when memberlist is
+	// degraded or (eventually) gone.
+	Role         string `json:"r,omitempty"`
+	NatType      string `json:"nt,omitempty"`
+	CapRelay     bool   `json:"cr,omitempty"`
+	MaxCircuits  int    `json:"mc,omitempty"`
+	LoadCircuits int    `json:"lc,omitempty"`
+}
+
+// MetaRelayInfo is the relay/NAT knowledge META carries about a node —
+// the gossip-NodeMeta-exclusive fields migrated to the session meta
+// plane (memberlist-retirement phase 1).
+type MetaRelayInfo struct {
+	Role         string
+	NatType      string
+	CapRelay     bool
+	MaxCircuits  int
+	LoadCircuits int
+}
+
+func (m MetaRelayInfo) empty() bool {
+	return m.Role == "" && m.NatType == "" && !m.CapRelay && m.MaxCircuits == 0 && m.LoadCircuits == 0
 }
 
 // MetaExchanger maintains per-peer meta sequence numbers and floods
@@ -193,10 +217,30 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		if pm.Collector {
 			me.node.notifyCollectorDiscovered(pm.Key)
 		}
+		// Relay/NAT knowledge (memberlist-retirement phase 1).
+		if pm.Key != "" {
+			me.node.RecordPeerRelayMeta(pm.Key, MetaRelayInfo{
+				Role:         pm.Role,
+				NatType:      pm.NatType,
+				CapRelay:     pm.CapRelay,
+				MaxCircuits:  pm.MaxCircuits,
+				LoadCircuits: pm.LoadCircuits,
+			})
+		}
 	}
 	// Also learn the sender's own endpoints.
 	if msg.Self.Key != "" && len(msg.Self.Endpoints) > 0 {
 		me.node.SetLearnedEndpoints(msg.Self.Key, msg.Self.Endpoints)
+	}
+	// ... and the sender's own relay/NAT knowledge.
+	if msg.Self.Key != "" {
+		me.node.RecordPeerRelayMeta(msg.Self.Key, MetaRelayInfo{
+			Role:         msg.Self.Role,
+			NatType:      msg.Self.NatType,
+			CapRelay:     msg.Self.CapRelay,
+			MaxCircuits:  msg.Self.MaxCircuits,
+			LoadCircuits: msg.Self.LoadCircuits,
+		})
 	}
 
 	// Flood the new knowledge to our other peers (bounded TTL). The
@@ -317,6 +361,7 @@ func (me *MetaExchanger) knownPeers() []PeerMeta {
 		if key == me.node.LocalPublicKey() {
 			continue
 		}
+		relay, _ := me.node.PeerRelayMetaInfo(key)
 		out = append(out, PeerMeta{
 			Key:       key,
 			VIP:       me.node.PeerVirtualIP(key),
@@ -327,6 +372,15 @@ func (me *MetaExchanger) knownPeers() []PeerMeta {
 			// own peers, or relay-attached nodes never learn where to
 			// push metrics (they only see msg.Self of direct peers).
 			Collector: me.node.IsPeerCollector(key),
+			// Same flooding for relay/NAT knowledge (memberlist-
+			// retirement phase 1): a relay hop re-advertises what it
+			// learned, so two-hop-away nodes can do RTT-sorted relay
+			// selection without gossip.
+			Role:         relay.Role,
+			NatType:      relay.NatType,
+			CapRelay:     relay.CapRelay,
+			MaxCircuits:  relay.MaxCircuits,
+			LoadCircuits: relay.LoadCircuits,
 		})
 	}
 	return out
