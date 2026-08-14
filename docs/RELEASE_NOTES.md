@@ -1,5 +1,38 @@
 # Release Notes
 
+## v1.6.5 — 2026-08-14
+
+**Auto-reporting completed (META collector discovery fixes) + punch self-start + monitor push fan-out.**
+
+### Monitor auto-routing — completion fixes (5279e48, 14cb028)
+- **knownPeers() floods Collector=true** — a relay hop now re-advertises
+  the dashboard node's capability to its own peers. Before, relay-
+  attached nodes (phone) only saw msg.Self of their DIRECT peers and
+  never learned where to push metrics.
+- **Collector capability changes broadcast** — SetLocalCollector(true)
+  and discovering a new collector peer trigger MetaExchanger.Broadcast
+  (meta was otherwise exchanged once per session establishment).
+- **Push to ALL collectors** — with multiple dashboards (N1 + txcloud
+  both web mode), push-to-first-wins starved every dashboard except
+  the first in the list. Every collector now receives each envelope.
+- Verified live: Oracle auto-discovers and pushes continuously; the
+  full txcloud→relay→phone chain is wired (phone still needs a stable
+  mesh window to complete discovery after today's repeated restarts).
+
+### Punch self-start after full restart (5279e48)
+- Lazy scan now ALSO covers config peers: after both ends restart, the
+  meta map is empty (meta needs a session, a session needs a hole) and
+  the engine never self-started — the mesh stayed disconnected.
+  ConfigPeers() feeds the 30s scan alongside PeerVirtualIPs().
+- Verified: txcloud↔Oracle hole re-established automatically after
+  dual restart (Oracle logged hole established + session).
+
+### Known issue
+- Phone (Redmi, relay-attached via aliyun) not yet reporting: mesh was
+  restarted many times during this session; the collector-discovery
+  flood needs a stable session window to complete. Expected to
+  self-heal once the mesh is left stable.
+
 ## v1.6.4 — 2026-08-14
 
 **Auto-reporting to the dashboard (META-based collector discovery) + deployment hardening.**
