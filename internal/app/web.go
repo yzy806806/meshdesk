@@ -15,7 +15,9 @@ import (
 
 // startWeb starts the Dashboard web server (web mode), wiring
 // auth/ssh/service/liveness deps, alert wiring, reloaders, and the
-// join handler. On shared nodes the Dashboard rides the mux port.
+// join handler. The Dashboard listens only on the dedicated web port
+// (cfg.Node.WebAddr) — the mesh port carries no HTTP (see the
+// reality-discipline refactor).
 func (a *App) startWeb() {
 	if !a.webMode {
 		log.Printf("  Mode:       agent-only")
@@ -158,30 +160,21 @@ func (a *App) startWeb() {
 		webServer.SetJoinHandler(a.joinServer.Handler())
 	}
 
-	// If the node has a MuxTransport (shared node mode), serve the
-	// Dashboard on the multiplexed port (the mesh port, 52888 by
-	// default — cfg.Mesh.Port) instead of a separate port. This
-	// allows single-port deployment: Reality + gossip + mesh +
-	// + Dashboard + join all on one TCP port.
-	if muxTransport := a.node.MuxTransport(); muxTransport != nil {
-		httpLn := muxTransport.HTTPListener()
-		if err := webServer.ServeWithListener(httpLn); err != nil {
-			log.Fatalf("Failed to start web server on mux listener: %v", err)
-		}
-		a.webServer = webServer
-		log.Printf("  Web UI:     muxed on mesh port (HTTP)")
-		if a.joinServer != nil {
-			log.Printf("  Join:       muxed on mesh port (/api/join)")
-		}
-	} else {
-		if err := webServer.Start(a.cfg.Node.WebAddr); err != nil {
-			log.Fatalf("Failed to start web server: %v", err)
-		}
-		a.webServer = webServer
-		log.Printf("  Web UI:     http://%s", a.cfg.Node.WebAddr)
+	// The Dashboard is served ONLY on the dedicated web port
+	// (cfg.Node.WebAddr). It no longer rides the multiplexed mesh
+	// port (reality-discipline refactor): intercepting HTTP on the
+	// mesh port made shared nodes fingerprintable by DPI active
+	// probes (GET / returned the Dashboard instead of the camouflage
+	// site). The mesh port now carries Reality/gossip/mesh traffic
+	// exclusively, and unrecognized traffic — including HTTP — is
+	// proxied to the Reality camouflage destination.
+	if err := webServer.Start(a.cfg.Node.WebAddr); err != nil {
+		log.Fatalf("Failed to start web server: %v", err)
 	}
-	if !a.webMode {
-		log.Printf("  Mode:       agent-only")
+	a.webServer = webServer
+	log.Printf("  Web UI:     http://%s", a.cfg.Node.WebAddr)
+	if a.joinServer != nil {
+		log.Printf("  Join:       on web port (/api/join)")
 	}
 }
 
@@ -256,31 +249,21 @@ func (g *nodeJoinTokenGenerator) JoinServerURL() string {
 	}
 	host := firstAdvertiseEndpointHost(g.cfg)
 
-	// On shared nodes (Reality + P2P enabled), the join endpoint is served
-	// on the mux/mesh port via webServer.SetJoinHandler — not on a standalone
-	// join listener. Derive the URL from the Reality listen port.
-	if g.cfg.P2P.Enabled && g.cfg.Reality.Enabled {
-		port := g.cfg.Reality.ListenPort
-		if port == 0 {
-			port = 443
-		}
-		return fmt.Sprintf("http://%s:%d", host, port)
-	}
-
-	// Standalone join listener mode (agent-only or non-mux web node).
-	addr := g.cfg.Join.ListenAddr
+	// The join endpoint (/api/join) is attached to the Dashboard web
+	// server (webServer.SetJoinHandler), which listens ONLY on the
+	// dedicated web port (cfg.Node.WebAddr) since the
+	// reality-discipline refactor removed HTTP from the mesh port.
+	// Derive the URL from the web port regardless of mux/Reality
+	// mode.
+	addr := g.cfg.Node.WebAddr
 	if addr == "" {
-		addr = ":8443"
+		addr = ":8080"
 	}
-	port := "8443"
-	if idx := strings.LastIndex(addr, ":"); idx >= 0 {
+	port := "8080"
+	if idx := strings.LastIndex(addr, ":"); idx >= 0 && addr[idx+1:] != "" {
 		port = addr[idx+1:]
 	}
-	scheme := "https"
-	if g.cfg.Join.TLSCertFile == "" || g.cfg.Join.TLSKeyFile == "" {
-		scheme = "http"
-	}
-	return fmt.Sprintf("%s://%s:%s", scheme, host, port)
+	return fmt.Sprintf("http://%s:%s", host, port)
 }
 
 func (g *nodeJoinTokenGenerator) JoinEnabled() bool {

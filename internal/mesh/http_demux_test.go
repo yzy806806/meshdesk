@@ -1,98 +1,62 @@
 package mesh
 
 import (
-	"bufio"
-	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"testing"
 	"time"
 )
 
-// TestMuxDemux_HTTPRequestParsedByServer verifies that a real HTTP request
-// entering via the shared demux port is fully parseable by an http.Server
-// served on HTTPListener(). It is the independent HTTP counterpart to the
-// byte-level routing tests (TestMuxDemux_AllByteValues etc.): it exercises
-// the complete chain
+// TestMuxDemux_HTTPBytesRoutedToReality verifies the reality-discipline
+// invariant: HTTP request bytes (GET/POST/HEAD — first byte 'G'/'P'/'H')
+// arriving on the shared mesh port are NOT intercepted for a Dashboard
+// (the Dashboard no longer rides the mesh port). They are routed to the
+// Reality listener like any other non-authenticated traffic, so the
+// REALITY handshake fails auth and forwards the connection to the
+// camouflage destination — an active DPI probe sending GET / sees the
+// real website, not a mesh fingerprint.
 //
-//	TCP dial → handleMuxConn 1-byte peek → bufferedConn(MultiReader(peek, conn))
-//	→ httpCh → muxHTTPListener.Accept → http.Server.Serve
+// The test proves two properties:
 //
-// and requires the server to parse the request line, headers, and body —
-// not merely to deliver N bytes with the correct first byte.
-//
-// The critical condition: the full request is written in a SINGLE Write.
-// If the peek implementation ever regresses to bufio.Peek(1) (which
-// pre-reads up to its buffer size beyond the first byte) while the replay
-// only restores the peeked byte, the pre-read remainder would be lost and
-// the HTTP server could not parse the truncated request. A slow
-// byte-by-byte client would not catch this — only a client that sends the
-// whole request at once makes the pre-read observable.
-func TestMuxDemux_HTTPRequestParsedByServer(t *testing.T) {
+//  1. Routing: a connection whose first byte is an HTTP method byte is
+//     delivered to RealityListener().Accept().
+//  2. Byte integrity: the delivered stream replays the peeked first byte
+//     plus all subsequent bytes, in order. A single bulk write is the
+//     discriminating condition for the pre-read-beyond-peek regression:
+//     if the peek implementation ever pre-reads beyond the first byte
+//     while the replay restores only the peeked byte, the tail is lost.
+func TestMuxDemux_HTTPBytesRoutedToReality(t *testing.T) {
 	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
-	httpLn := mt.HTTPListener()
+	realityLn := mt.RealityListener()
+	defer realityLn.Close()
 
-	// Echo method/path/body so a successful parse is proven end-to-end.
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		fmt.Fprintf(w, "method=%s path=%s body=%s", r.Method, r.URL.Path, string(body))
-	})
-
-	srv := &http.Server{
-		Handler:     handler,
-		ReadTimeout: 10 * time.Second,
+	type accepted struct {
+		conn net.Conn
 	}
-	serveErr := make(chan error, 1)
+	realityCh := make(chan accepted, 8)
 	go func() {
-		serveErr <- srv.Serve(httpLn)
+		for {
+			conn, err := realityLn.Accept()
+			if err != nil {
+				close(realityCh)
+				return
+			}
+			realityCh <- accepted{conn: conn}
+		}
 	}()
 
-	t.Cleanup(func() {
-		// srv.Close() closes the muxHTTPListener (it is a tracked
-		// listener of the server) and flips the shutdown flag, so the
-		// blocked Accept returns and Serve exits with ErrServerClosed.
-		srv.Close()
-		select {
-		case err := <-serveErr:
-			if err != nil && err != http.ErrServerClosed {
-				t.Errorf("http server serve: %v", err)
-			}
-		case <-time.After(2 * time.Second):
-			t.Errorf("http server did not stop")
-		}
-	})
-
-	tests := []struct {
-		name    string
-		request string // complete HTTP request, sent in ONE write
-		want    string // body echoed by the handler ("" for HEAD)
+	requests := []struct {
+		name string
+		body string
 	}{
-		{
-			name:    "GET /",
-			request: "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-			want:    "method=GET path=/ body=",
-		},
-		{
-			name:    "GET with query and extra headers",
-			request: "GET /dashboard?src=1 HTTP/1.1\r\nHost: localhost\r\nUser-Agent: mux-test\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-			want:    "method=GET path=/dashboard body=",
-		},
-		{
-			name:    "POST with body",
-			request: "POST /api/join HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\nhello world",
-			want:    "method=POST path=/api/join body=hello world",
-		},
-		{
-			name:    "HEAD",
-			request: "HEAD / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
-			want:    "",
-		},
+		{"GET", "GET / HTTP/1.1\r\nHost: probe\r\n\r\n"},
+		{"POST", "POST /api/join HTTP/1.1\r\nHost: probe\r\n\r\n"},
+		{"HEAD", "HEAD /healthz HTTP/1.1\r\nHost: probe\r\n\r\n"},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range requests {
 		t.Run(tt.name, func(t *testing.T) {
 			conn, err := net.Dial("tcp", addr)
 			if err != nil {
@@ -100,67 +64,60 @@ func TestMuxDemux_HTTPRequestParsedByServer(t *testing.T) {
 			}
 			defer conn.Close()
 
-			// Single write — the discriminating condition for the
-			// pre-read-beyond-peek regression (see doc comment).
-			if _, err := conn.Write([]byte(tt.request)); err != nil {
+			// Single bulk write — see doc comment.
+			if _, err := conn.Write([]byte(tt.body)); err != nil {
 				t.Fatalf("write request: %v", err)
 			}
 
-			conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-			if err != nil {
-				t.Fatalf("read response: %v", err)
+			var acc accepted
+			var ok bool
+			select {
+			case acc, ok = <-realityCh:
+				if !ok {
+					t.Fatal("reality listener closed before accept")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("HTTP request (first byte %q) was not routed to the Reality listener", tt.body[0])
 			}
-			defer resp.Body.Close()
+			defer acc.conn.Close()
 
-			if resp.StatusCode != http.StatusOK {
-				body, _ := io.ReadAll(resp.Body)
-				t.Fatalf("expected 200, got %d (body=%q)", resp.StatusCode, string(body))
+			// Byte integrity: the Reality side must see the FULL request
+			// including the replayed first byte.
+			acc.conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			got := make([]byte, len(tt.body))
+			if _, err := io.ReadFull(acc.conn, got); err != nil {
+				t.Fatalf("read replayed request: %v", err)
 			}
-			if tt.want == "" {
-				return // HEAD: no response body expected
-			}
-			body, err := io.ReadAll(resp.Body)
-			if err != nil {
-				t.Fatalf("read response body: %v", err)
-			}
-			if string(body) != tt.want {
-				t.Fatalf("handler saw %q, want %q", string(body), tt.want)
+			if string(got) != tt.body {
+				t.Fatalf("reality side saw %q, want %q", string(got), tt.body)
 			}
 		})
 	}
 }
 
-// TestMuxDemux_HTTPRequestSlowArrival verifies the HTTP demux path when the
-// request arrives progressively: the first byte ('G') alone, then the
-// remainder after a delay. The 1-byte peek must not wait for the full
-// request, and the replay must deliver the remaining bytes as they arrive
-// from the socket.
-func TestMuxDemux_HTTPRequestSlowArrival(t *testing.T) {
+// TestMuxDemux_HTTPSlowArrivalRoutedToReality verifies the same routing
+// when the request arrives progressively: the first byte ('G') alone,
+// then the remainder after a delay. The 1-byte peek must route on the
+// first byte alone, and the replay must deliver the remaining bytes as
+// they arrive from the socket.
+func TestMuxDemux_HTTPSlowArrivalRoutedToReality(t *testing.T) {
 	mt, _, addr := newTestMuxTransport(t)
 	defer mt.Shutdown()
 
-	httpLn := mt.HTTPListener()
+	realityLn := mt.RealityListener()
+	defer realityLn.Close()
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "method=%s path=%s", r.Method, r.URL.Path)
-	})
-	srv := &http.Server{Handler: handler}
-	serveErr := make(chan error, 1)
+	realityCh := make(chan net.Conn, 8)
 	go func() {
-		serveErr <- srv.Serve(httpLn)
-	}()
-	t.Cleanup(func() {
-		srv.Close()
-		select {
-		case err := <-serveErr:
-			if err != nil && err != http.ErrServerClosed {
-				t.Errorf("http server serve: %v", err)
+		for {
+			conn, err := realityLn.Accept()
+			if err != nil {
+				close(realityCh)
+				return
 			}
-		case <-time.After(2 * time.Second):
-			t.Errorf("http server did not stop")
+			realityCh <- conn
 		}
-	})
+	}()
 
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
@@ -168,34 +125,37 @@ func TestMuxDemux_HTTPRequestSlowArrival(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// First byte only — must be enough to route the connection to httpCh.
+	// First byte only — must be enough to route the connection.
 	if _, err := conn.Write([]byte{'G'}); err != nil {
 		t.Fatalf("write first byte: %v", err)
 	}
 	time.Sleep(100 * time.Millisecond)
 
+	var rconn net.Conn
+	var ok bool
+	select {
+	case rconn, ok = <-realityCh:
+		if !ok {
+			t.Fatal("reality listener closed before accept")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("first byte 'G' alone did not route to the Reality listener")
+	}
+	defer rconn.Close()
+
 	// Rest of the request.
-	rest := "ET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+	rest := "ET /slow HTTP/1.1\r\nHost: localhost\r\n\r\n"
 	if _, err := conn.Write([]byte(rest)); err != nil {
 		t.Fatalf("write rest of request: %v", err)
 	}
 
-	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
+	want := "G" + rest
+	rconn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(rconn, got); err != nil {
+		t.Fatalf("read replayed request: %v", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("expected 200, got %d (body=%q)", resp.StatusCode, string(body))
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read response body: %v", err)
-	}
-	if string(body) != "method=GET path=/slow" {
-		t.Fatalf("handler saw %q, want %q", string(body), "method=GET path=/slow")
+	if string(got) != want {
+		t.Fatalf("reality side saw %q, want %q", string(got), want)
 	}
 }

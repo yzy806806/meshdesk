@@ -27,7 +27,7 @@
 ### 核心设计
 
 - **Reality TLS** —— 所有 mesh 流量伪装成访问真实网站（如 `www.apple.com:443`）的 HTTPS，DPI 无法区分。不用 WireGuard、不用 KCP、无特征 UDP 模式。
-- **单端口** —— 一切跑在一个 TCP+UDP 端口（默认 52888）。MuxTransport 按首字节分流 Reality TLS / mesh smux / SOCKS5 / memberlist gossip。
+- **单端口** —— 所有 mesh 流量跑在一个 TCP+UDP 端口（默认 52888）。MuxTransport 按首字节分流 Reality TLS / mesh smux / SOCKS5 / memberlist gossip。Dashboard **刻意不在此端口提供服务**（抗指纹）：打到 mesh 端口的 HTTP 探测会被转发到 Reality 伪装站点。Dashboard 监听独立的 web 端口（`node.web`，默认 `:8080`）。
 - **独立打洞引擎**（`internal/holepunch`，v1.6）—— 脱离 memberlist、对标 EasyTier：
   - 协调走专用虚拟端口 `0x504A`（复用现有 smux/relay 会话——无需中心打洞服务器）
   - UDP 双向打洞（nonce 验证洞，v4 + v6）
@@ -99,7 +99,7 @@ mesh:
 
 ```bash
 sudo ./meshdesk --web --config /etc/meshdesk/config.yaml
-# dashboard: http://localhost:52888
+# dashboard: http://localhost:8080  （node.web 端口——不是 mesh 端口）
 ```
 
 同 zone 且互可达的节点**自动打洞直连**（UDP/TCP）；其余走 relay——无需手动配置路径。
