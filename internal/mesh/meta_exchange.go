@@ -247,16 +247,41 @@ func (me *MetaExchanger) NotifyPeerJoined(peerKey string) {
 	me.sendTo(peerKey, msg)
 }
 
+// Broadcast re-sends our full knowledge to every session peer. Called
+// when local state that peers must learn CHANGED (e.g. this node
+// became/learned a collector): meta is otherwise only exchanged once
+// per session establishment, so a peer that connected before the
+// change would never hear about it.
+func (me *MetaExchanger) Broadcast() {
+	msg := MetaMessage{
+		Type:  "meta",
+		Self:  me.localMeta(),
+		Peers: me.knownPeers(),
+		Seq:   uint64(time.Now().UnixNano()),
+		TTL:   0,
+	}
+	for _, key := range me.node.SessionPeerKeys() {
+		if key == me.node.LocalPublicKey() {
+			continue
+		}
+		me.sendTo(key, msg)
+	}
+}
+
 // localMeta returns this node's own identity metadata.
 func (me *MetaExchanger) localMeta() PeerMeta {
 	vip := me.node.LocalVirtualIP()
+	isCol := me.node.localIsCollectorFlag()
+	if isDebugLogEnabled() {
+		log.Printf("[meta] localMeta: collector=%v", isCol)
+	}
 	return PeerMeta{
 		Key:       me.node.LocalPublicKey(),
 		VIP:       vip,
 		Hostname:  me.node.LocalHostname(),
 		Zone:      me.node.LocalZone(),
 		Endpoints: me.node.LocalEndpoints(),
-		Collector: me.node.localIsCollectorFlag(),
+		Collector: isCol,
 	}
 }
 
@@ -272,6 +297,11 @@ func (me *MetaExchanger) knownPeers() []PeerMeta {
 			VIP:       me.node.PeerVirtualIP(key),
 			Zone:      me.node.PeerZone(key),
 			Endpoints: me.node.PeerEndpoints(key),
+			// Flood the collector capability onward: a relay hop must
+			// re-advertise the dashboard node's Collector=true to its
+			// own peers, or relay-attached nodes never learn where to
+			// push metrics (they only see msg.Self of direct peers).
+			Collector: me.node.IsPeerCollector(key),
 		})
 	}
 	return out

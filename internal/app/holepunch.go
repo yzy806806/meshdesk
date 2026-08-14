@@ -188,14 +188,25 @@ func (a *App) startHolePunch() {
 	// Lazy scan: meta-learned peers (degraded memberlist — no direct
 	// session, so SetSessionEstablishedHandler never fires) still get
 	// punched. Scan the routing table every 30s for same-zone peers.
+	// ALSO include config peers: after a full restart (both ends) the
+	// meta map is empty (meta needs a session, a session needs a hole)
+	// — without config peers the punch engine never self-starts and
+	// the mesh stays disconnected until manual intervention.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
+				seen := make(map[string]bool)
 				for peerKey := range a.node.PeerVirtualIPs() {
+					seen[peerKey] = true
 					a.triggerHolePunch(hp, peerKey)
+				}
+				for _, pc := range a.node.ConfigPeers() {
+					if !seen[pc.PublicKey] {
+						a.triggerHolePunch(hp, pc.PublicKey)
+					}
 				}
 			case <-a.node.Context().Done():
 				return

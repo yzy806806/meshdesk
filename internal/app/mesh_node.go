@@ -184,6 +184,11 @@ func (a *App) registerVirtualPortServices() {
 		node.SetSessionEstablishedHandler(func(peerKey string) {
 			me.NotifyPeerJoined(peerKey)
 		})
+		// Wire META re-broadcast: collector capability changes (this
+		// node became a collector, or learned a new one) must reach
+		// peers that already exchanged meta — otherwise relay-attached
+		// nodes never learn where to push metrics.
+		node.SetMetaBroadcaster(me.Broadcast)
 		log.Printf("  Meta:       session meta exchange active (virtual port 0x%x)", mesh.MetaVirtualPort)
 	} else {
 		log.Printf("Warning: meta exchange failed to start: %v", err)
