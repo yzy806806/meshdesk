@@ -1,5 +1,73 @@
 # Release Notes
 
+## v1.6.3 — 2026-08-14
+
+**UDP hole punching reaches production stability — EasyTier-parity confirmed end-to-end.**
+
+### Hole punching: first real, stable UDP hole (txcloud↔Oracle)
+- **Ordinary nodes use random distinct UDP ports** (`UDPPort=-1`): a Go
+  runtime quirk silently breaks public UDP sends when a socket shares
+  its port with the TCP listener or with the other family's socket
+  (WriteToUDP returns nil, nothing leaves the box). Ordinary nodes
+  (no public inbound port) now bind udp4 + udp6 on OS-assigned random
+  ports; shared nodes keep single-port multiplexing (one `[::]`
+  dual-stack socket). The punch coordination exchange carries the real
+  ports, so no fixed UDP port is needed.
+- **Coordination port fix** — the advertised endpoint's port was
+  rewritten from the *coordination smux stream's* LocalAddr (the TCP
+  port — wrong). Now uses the punch socket's real outbound source
+  port (`e.OutboundPort`), and responders resolve the punch socket
+  fresh per peer family (the global OutboundPort was cross-peer
+  polluting).
+- **Probes fire from the mux socket** (shared path) so the NAT/
+  conntrack mapping matches the data plane — a random-source probe
+  punches a mapping the data plane never uses.
+- **Adaptive RTO** (RFC 6298 SRTT/RTTVAR): a fixed 100ms RTO under a
+  257ms WAN RTT retransmitted every frame ~2.5x, flooding the window,
+  wedging Write, starving smux keepalive (session death ~4min).
+  `RTO = srtt + 4×rttvar`, floor 500ms, per-frame retransmit.
+- **Three storm fixes** (frame rate 420fps → 2.5fps):
+  - smux PING echo loop — echoing every FramePing (PING/PONG share a
+    type) ping-ponged forever; liveness needs only any incoming frame
+  - punch probe echo loop — udpListenLoop/punchSocketPoller echoed
+    every 0x50 0x4A datagram (same stateless-echo bug)
+  - hole endpoint separation — meta exchange no longer overwrites the
+    punched endpoint (random UDP port) with gossip endpoints (TCP port)
+- **UDP reconnect** — tryReconnect detects hole endpoints and
+  re-establishes via DialUDPPeer (kx over the hole) instead of
+  TCP-dialing a UDP port.
+- **0x54 independent TUN stream disabled** — its 214B auth first frame
+  is dropped by the txcloud→Oracle path (≤60B datagrams only); worse,
+  each failed dial killed the session on both ends. TUN traffic rides
+  the 0x4D smux session stream (51B ARQ frames — the verified hole
+  path). Re-enable gated by `tunUDPStreamEnabled` once the auth frame
+  can be delivered (future: session-negotiated credentials).
+
+### Verified (four-node mesh)
+```
+txcloud → Oracle:  100/100 ping 0% loss @ 270ms (mdev 0.14ms)
+Oracle → txcloud:   15/15 ping 0% loss @ 269.8ms (mdev 0.10ms)
+Idle stability:     100+ minutes, zero session loss
+Frame rate:         2.5fps steady (was 420fps storm)
+```
+
+## v1.6.2 — 2026-08-13
+
+**Punch-path correctness fixes (coordination framing, arbitration, keepalive, family sockets).**
+
+- Coordination frames use [len u16] prefix + `io.ReadFull` — a single
+  `conn.Read` fragments on smux streams (truncated endpoints like
+  "115.29.235.24:528", polluted "…:52888Ι")
+- Two-way punch arbitrated by peer-key order (smaller key dials
+  CLIENT, larger waits SERVER) — simultaneous kx no longer cross-talks
+- Punch sockets kept alive with 15s probes (stateful firewalls drop
+  the peer's frames once conntrack expires)
+- Dual-family UDP sockets (v4 + v6) with correct per-family send
+- `DefaultMeshPort` constant — single source of truth for the default
+  mesh port (no more magic 52888)
+- `UDPConnFor` returns nil on family mismatch (no silent fallback to
+  the v6 socket); TUN UDP auth failures now logged with reasons
+
 ## v1.6.1 — 2026-08-13
 
 **Hole-punching engine completes to EasyTier parity; relay CPU fix; docs rewrite.**

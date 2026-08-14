@@ -1,6 +1,6 @@
 # MeshDesk Dependency Tree
 
-> Last updated: 2026-08-13 (v1.6.1 line). Covers external Go modules,
+> Last updated: 2026-08-14 (v1.6.3 line). Covers external Go modules,
 > internal package structure, and runtime (OS-level) dependencies.
 
 ---
@@ -78,13 +78,18 @@ internal/
  │    ├── stun_discovery.go STUN probes → mapped endpoint + NAT class + EasySym/Inc
  │    └── (tests)
  │
- ├── mesh               NETWORK LAYER — the core node
- │    ├── node.go          MeshNode: sessions, virtual ports, relay fallback
- │    ├── mux_transport.go single-port multiplexer (Reality/mesh/SOCKS5/gossip)
+ │ ├── mesh               NETWORK LAYER — the core node
+ │    ├── node.go          MeshNode: sessions, virtual ports, relay fallback,
+ │    │                     holeEndpoints map (punched endpoint survives meta overwrites)
+ │    ├── mux_transport.go single-port multiplexer (Reality/mesh/SOCKS5/gossip);
+ │    │                     dual-family UDP binds (ordinary: random distinct ports;
+ │    │                     shared: single [::] dual-stack)
  │    ├── mux_udp.go       UDP ARQ streams (mesh |in/|out, TUN data plane)
- │    ├── udp_conn.go      ARQ sliding-window conn (fragmented frames)
+ │    ├── udp_conn.go      ARQ sliding-window conn — adaptive RTO (RFC 6298
+ │    │                     SRTT/RTTVAR), per-frame retransmit
  │    ├── relay_dialer.go  relay tunnel client + working-path cache
- │    ├── tun_forwarder.go TUN device forwarding (UDP-first, TCP fallback)
+ │    ├── tun_forwarder.go TUN device forwarding (0x54 independent stream
+ │    │                     disabled — TUN rides the 0x4D session stream)
  │    ├── meta_exchange.go session meta (endpoints/VIP propagation)
  │    └── ...
  │
@@ -141,7 +146,7 @@ internal/
 | `/dev/net/tun` | TUN device creation | raw syscalls (`open`, `ioctl TUNSETIFF`) — no external tools |
 | `CAP_NET_ADMIN` | TUN creation, route/addr management | required for mesh0 setup |
 | `SO_REUSEADDR` | TCP hole punching (bind + dial same port) | Linux-only behavior relied on by `punch_tcp.go` |
-| `SO_REUSEPORT`-style sharing | mux UDP sockets (v4+v6 on same port) | `udpConns` family-matched sockets |
+| **Distinct UDP ports** | Ordinary nodes: `udp4:random` + `udp6:random` (`UDPPort=-1`) — never share a port with TCP or the other family | dodges a Go runtime bug: shared-port UDP sockets silently fail public sends; shared nodes keep one `[::]` dual-stack socket on the mesh port |
 | System clock | key-exchange timestamp anti-replay window | skew > window fails auth |
 | `ip` binary | optional: route/addr display helpers | meshdesk prefers raw netlink where possible |
 | systemd (optional) | `TimeoutStopSec=15` + `ExecStopPost` cleanup | see `docs/SYSTEMD_DEPLOY_GUIDE_v1.1.md` |

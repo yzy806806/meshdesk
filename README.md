@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.6.1** — standalone NAT hole-punching engine (EasyTier-level: UDP/TCP/v6/对称 NAT 预测), main.go split into `internal/app`, relay CPU fix.
+> **Current release: v1.6.3** — UDP hole punching production-stable (txcloud↔Oracle 0% loss @ ~270ms, EasyTier-parity), three keepalive-storm fixes, ordinary nodes use random distinct UDP ports, shared nodes keep single-port Reality multiplexing.
 
 ---
 
@@ -36,7 +36,10 @@ MeshDesk does all of it in one binary:
   - TCP punching with conntrack source-port exchange + sustained SYN (stateful security groups pass ESTABLISHED)
   - **Symmetric NAT port prediction** (NAT4E): STUN third-probe detects predictable mapped-port increments; the cone side fires a 50-port window scan (birthday-attack, EasyTier-style)
   - Fragmented UDP ARQ frames (<60B) survive links that drop large datagrams; stream isolation (`|in`/`|out`) keeps two-way key exchanges clean
-  - Holes feed straight into the TUN UDP multipath (`getUDPStream`); relay fallback stays as the safety net
+  - **Adaptive RTO** (RFC 6298 SRTT/RTTVAR) keeps retransmits honest on jittery WAN links — no retransmit storms, stable sessions across idle periods
+  - Holes feed straight into the TUN UDP multipath; relay fallback stays as the safety net
+  - **Verified production-stable** (v1.6.3): txcloud↔Oracle both directions 0% loss @ ~270ms, 100+ minutes idle without session loss
+- **Port strategy split** (v1.6.3): ordinary nodes (NAT-traversed, no public inbound) bind UDP on **random distinct ports** per family (`UDPPort=-1`) — this dodges a Go runtime bug where a socket sharing its port with the TCP listener or the other family silently fails public sends. Shared nodes keep **single-port multiplexing** (one `[::]` dual-stack socket on the mesh port) — one firewall rule, Reality disguise preserved. Punch coordination exchanges the real ports, so no fixed UDP port is needed.
 - **Zero third-party TUN** — The TUN device is created via raw `/dev/net/tun` syscalls (~150 lines). No wireguard-go, no gVisor, no external dependencies.
 - **Deterministic IPAM** — Virtual IP = `cidr_base + (pubkey_hash % host_count)`. No DHCP server, no coordination, zero conflicts.
 - **Reactive Relay Fallback** — When nodes cannot establish a direct connection (or the link drops large UDP), the per-pair state machine automatically falls back through gossip-advertised relay candidates sorted by RTT. The working relay path is cached (60s) so monitor ticks don't re-scan (v1.6 CPU fix). See [design decision](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md).
