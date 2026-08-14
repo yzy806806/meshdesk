@@ -151,6 +151,18 @@ type MeshNode struct {
 	// main.go never re-runs. This callback fills that gap.
 	sessionReconnectHandler func(string)
 
+	// collectorHandler is invoked when META exchange reveals a peer
+	// with Collector=true (runs the dashboard aggregator). It mirrors
+	// the gossip-based CapCollector discovery so relay-attached nodes
+	// (degraded memberlist) still learn where to push monitor metrics.
+	// Set by main.go to reporter.AddCollector.
+	collectorHandler func(string)
+
+	// localIsCollector marks this node as running the dashboard
+	// aggregator (web mode) — advertised in META as Collector=true so
+	// every peer, including relay-attached ones, auto-discovers us.
+	localIsCollector bool
+
 	// relayMetaProvider is a callback that returns metadata for all
 	// known relay-capable peers from the gossip layer. Each entry is
 	// (peerKey, rtt, capRelay, maxCircuits, loadCircuits, natType).
@@ -953,6 +965,48 @@ func (n *MeshNode) Listener() net.Listener {
 // Close() is called, allowing background goroutines to terminate.
 func (n *MeshNode) Context() context.Context {
 	return n.ctx
+}
+
+// SetCollectorHandler installs a callback invoked when META exchange
+// reveals a peer with Collector=true (dashboard aggregator). Mirrors
+// the gossip CapCollector discovery for relay-attached nodes.
+func (n *MeshNode) SetCollectorHandler(h func(string)) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.collectorHandler = h
+}
+
+// SetLocalCollector marks this node as running the dashboard
+// aggregator — advertised in META as Collector=true so every peer
+// (including relay-attached ones) auto-discovers us as a metrics
+// destination.
+func (n *MeshNode) SetLocalCollector(on bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.localIsCollector = on
+}
+
+// notifyCollectorDiscovered forwards a collector-capable peer to the
+// installed handler (reporter.AddCollector), idempotent on the handler
+// side. Safe to call even with no handler installed.
+func (n *MeshNode) notifyCollectorDiscovered(peerKey string) {
+	if peerKey == "" {
+		return
+	}
+	n.mu.RLock()
+	h := n.collectorHandler
+	n.mu.RUnlock()
+	if h != nil {
+		h(peerKey)
+	}
+}
+
+// localIsCollectorFlag reports whether this node advertises itself as
+// a dashboard collector in META.
+func (n *MeshNode) localIsCollectorFlag() bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.localIsCollector
 }
 
 // SetSessionDeathHandler installs a callback that is invoked when a smux
