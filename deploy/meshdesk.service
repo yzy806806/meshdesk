@@ -22,6 +22,22 @@ RestartSec=5
 StartLimitBurst=10
 StartLimitIntervalSec=60
 
+# Graceful stop (v1.5.7+): meshdesk exits within ~11s on SIGTERM
+# (LeaveNotice + bounded forwarder drain). Beyond this systemd force-
+# kills — the old 90s default left zombies + a dirty TUN.
+TimeoutStopSec=15
+
+# Ensure the mesh0 TUN interface is accepted by the firewall on every
+# start (idempotent). Injected packets arriving on mesh0 are trusted
+# mesh traffic — without this, a stateful INPUT REJECT drops all NEW
+# connections from the tunnel (observed: UDP server behind the mesh
+# VIP never received packets until -i mesh0 ACCEPT was added).
+ExecStartPre=/bin/sh -c '/sbin/iptables -C INPUT -i mesh0 -j ACCEPT 2>/dev/null || /sbin/iptables -I INPUT -i mesh0 -j ACCEPT || true'
+
+# Whatever the exit reason, clean up the TUN device (kill -9 leaves a
+# stale mesh0 that conflicts with the next start).
+ExecStopPost=/bin/sh -c 'ip link del mesh0 2>/dev/null || true'
+
 # Watchdog: meshdesk sends WATCHDOG=1 pings every 15s via sd_notify.
 # If no ping arrives within 45s, systemd considers the process hung
 # and restarts it. The 3:1 ratio gives the process time to recover
