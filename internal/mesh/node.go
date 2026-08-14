@@ -158,10 +158,24 @@ type MeshNode struct {
 	// Set by main.go to reporter.AddCollector.
 	collectorHandler func(string)
 
+	// collectorPeers tracks peers known to run the dashboard aggregator
+	// (learned via META Self.Collector or gossip CapCollector). Used by
+	// knownPeers() so the capability floods onward — a relay hop must
+	// re-advertise the dashboard node's Collector=true to its own peers.
+	// Guarded by mu.
+	collectorPeers map[string]bool
+
 	// localIsCollector marks this node as running the dashboard
 	// aggregator (web mode) — advertised in META as Collector=true so
 	// every peer, including relay-attached ones, auto-discovers us.
 	localIsCollector bool
+
+	// metaBroadcaster re-sends our full META to all session peers —
+	// invoked when collector capability CHANGES (this node became a
+	// collector, or learned a new collector peer) so peers that
+	// connected earlier still learn the capability. Set by the app
+	// layer to MetaExchanger.Broadcast.
+	metaBroadcaster func()
 
 	// relayMetaProvider is a callback that returns metadata for all
 	// known relay-capable peers from the gossip layer. Each entry is
@@ -261,6 +275,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		learnedZones:         make(map[string]string),
 		learnedEndpoints:     make(map[string][]string),
 		holeEndpoints:        make(map[string][]string),
+		collectorPeers:       make(map[string]bool),
 		rttCache:             make(map[string]rttCacheEntry),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
@@ -979,26 +994,62 @@ func (n *MeshNode) SetCollectorHandler(h func(string)) {
 // SetLocalCollector marks this node as running the dashboard
 // aggregator — advertised in META as Collector=true so every peer
 // (including relay-attached ones) auto-discovers us as a metrics
-// destination.
+// destination. When the flag flips on, a META broadcast is triggered
+// so peers that connected earlier (before this node ran web mode)
+// still learn the capability.
 func (n *MeshNode) SetLocalCollector(on bool) {
 	n.mu.Lock()
-	defer n.mu.Unlock()
+	changed := on && !n.localIsCollector
 	n.localIsCollector = on
+	b := n.metaBroadcaster
+	n.mu.Unlock()
+	if changed && b != nil {
+		b()
+	}
+}
+
+// SetMetaBroadcaster installs the META re-broadcast callback (the app
+// layer wires it to MetaExchanger.Broadcast).
+func (n *MeshNode) SetMetaBroadcaster(fn func()) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.metaBroadcaster = fn
 }
 
 // notifyCollectorDiscovered forwards a collector-capable peer to the
 // installed handler (reporter.AddCollector), idempotent on the handler
-// side. Safe to call even with no handler installed.
+// side, and records the capability so knownPeers() can flood it onward.
+// Safe to call even with no handler installed.
 func (n *MeshNode) notifyCollectorDiscovered(peerKey string) {
 	if peerKey == "" {
 		return
 	}
-	n.mu.RLock()
+	n.mu.Lock()
+	changed := !n.collectorPeers[peerKey]
+	n.collectorPeers[peerKey] = true
 	h := n.collectorHandler
-	n.mu.RUnlock()
+	b := n.metaBroadcaster
+	n.mu.Unlock()
+	log.Printf("[meta] collector discovered: %s (new=%v)", shortKey(peerKey), changed)
 	if h != nil {
 		h(peerKey)
 	}
+	// A newly learned collector must flood onward immediately: peers
+	// that already exchanged meta with us would otherwise never learn
+	// that this peer runs the dashboard.
+	if changed && b != nil {
+		log.Printf("[meta] collector changed — broadcasting meta to %d peer(s)", len(n.SessionPeerKeys()))
+		b()
+	}
+}
+
+// IsPeerCollector reports whether the peer is known to run the
+// dashboard aggregator (learned via META/gossip collector discovery).
+// Used by the meta exchanger to flood Collector=true onward.
+func (n *MeshNode) IsPeerCollector(peerKey string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.collectorPeers[peerKey]
 }
 
 // localIsCollectorFlag reports whether this node advertises itself as
@@ -2359,6 +2410,15 @@ func (n *MeshNode) LocalEndpoints() []string {
 		return nil
 	}
 	return append([]string(nil), n.cfg.P2P.AdvertiseEndpoints...)
+}
+
+// ConfigPeers returns the peers configured in config.yaml (static
+// seeds). Used by the punch lazy-scan so the engine can self-start
+// after a full restart even when the meta map is still empty.
+func (n *MeshNode) ConfigPeers() []config.PeerConfig {
+	n.peersMu.RLock()
+	defer n.peersMu.RUnlock()
+	return append([]config.PeerConfig(nil), n.cfg.Peers...)
 }
 
 // PeerEndpoints returns the endpoints known for a peer: hole-punched
