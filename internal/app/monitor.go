@@ -80,6 +80,13 @@ func (a *App) startMonitor() {
 		// without waiting for gossip to re-discover collector nodes.
 		a.gossipLayer.SeedCollectorsFromCache()
 	}
+	// META-based collector discovery (relay-attached nodes): the same
+	// AddCollector handler is wired to the session meta exchange, which
+	// propagates Collector=true over smux/relay sessions — reaching
+	// nodes whose memberlist (gossip CapCollector) never does. Local
+	// node advertises itself as a collector when web mode is enabled.
+	a.node.SetCollectorHandler(reporter.AddCollector)
+	a.node.SetLocalCollector(a.cfg.Node.WebAddr != "")
 
 	// Wire traffic stats provider: enriches each metrics push with
 	// mesh-internal traffic data (smux bytes, relay tunnels, TUN packets).

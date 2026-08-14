@@ -43,6 +43,11 @@ type PeerMeta struct {
 	// so same-zone peers can dial UDP/TCP directly even when memberlist
 	// (the usual endpoint source) is degraded.
 	Endpoints []string `json:"e,omitempty"`
+	// Collector marks a peer that runs the dashboard/monitor aggregator
+	// (CapCollector). Propagated via META so relay-attached nodes whose
+	// memberlist is degraded still discover where to push metrics —
+	// gossip-based CapCollector discovery never reaches them.
+	Collector bool `json:"c,omitempty"`
 }
 
 // MetaExchanger maintains per-peer meta sequence numbers and floods
@@ -164,6 +169,13 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 	if msg.Self.Key != "" && msg.Self.Zone != "" {
 		me.node.SetLearnedZone(msg.Self.Key, msg.Self.Zone)
 	}
+	// Collector discovery via META: the sender runs the dashboard
+	// aggregator — auto-add it as a metrics destination. This is the
+	// relay-attached counterpart to gossip CapCollector discovery
+	// (gossip never reaches nodes whose memberlist is degraded).
+	if msg.Self.Collector {
+		me.node.notifyCollectorDiscovered(msg.Self.Key)
+	}
 	// Learn everything the sender knows about other peers.
 	for _, pm := range msg.Peers {
 		if pm.Key != "" && pm.VIP != "" {
@@ -174,6 +186,11 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		}
 		if pm.Key != "" && len(pm.Endpoints) > 0 {
 			me.node.SetLearnedEndpoints(pm.Key, pm.Endpoints)
+		}
+		// Collector capability floods through the peer list too — a
+		// relay hop may learn the dashboard node from a third peer.
+		if pm.Collector {
+			me.node.notifyCollectorDiscovered(pm.Key)
 		}
 	}
 	// Also learn the sender's own endpoints.
@@ -239,6 +256,7 @@ func (me *MetaExchanger) localMeta() PeerMeta {
 		Hostname:  me.node.LocalHostname(),
 		Zone:      me.node.LocalZone(),
 		Endpoints: me.node.LocalEndpoints(),
+		Collector: me.node.localIsCollectorFlag(),
 	}
 }
 
