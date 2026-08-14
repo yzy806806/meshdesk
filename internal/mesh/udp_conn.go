@@ -41,8 +41,13 @@ const (
 	// empirically — 12B marker frames traverse fine).
 	udpMaxPayload = 40
 
-	udpWindowSize = 32 // sliding window (in-flight frames)
-	udpMaxSeq     = uint32(1 << 30)
+	udpWindowSize = 128 // sliding window (in-flight frames)
+	// 32→128 (v1.6.3): the WAN RTT (txcloud↔Oracle ~257ms) × 40B
+	// payload bounded throughput at ~40kbps (BDP = window × frame /
+	// RTT). 128 frames × 40B / 0.257s ≈ 20KB/s ≈ 160kbps. Safe with
+	// the adaptive RTO (RFC 6298 SRTT/RTTVAR): a bigger window only
+	// matters when ACKs flow, and retransmits are per-frame.
+	udpMaxSeq = uint32(1 << 30)
 
 	// udpWriteTimeout bounds how long Write waits for the sliding
 	// window to drain before giving up (dead peer → error → caller
