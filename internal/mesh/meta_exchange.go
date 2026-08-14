@@ -273,19 +273,31 @@ func (me *MetaExchanger) Broadcast() {
 		Seq:   uint64(time.Now().UnixNano()),
 		TTL:   0,
 	}
+	// Parallel sends: a slow peer must not block the collector
+	// broadcast to the rest of the mesh (mirrors apply's flood pattern).
+	var wg sync.WaitGroup
 	for _, key := range me.node.SessionPeerKeys() {
 		if key == me.node.LocalPublicKey() {
 			continue
 		}
-		me.sendTo(key, msg)
+		wg.Add(1)
+		go func(k string, m MetaMessage) {
+			defer wg.Done()
+			me.sendTo(k, m)
+		}(key, msg)
 	}
+	wg.Wait()
 }
+
+// metaDebugEnabled is cached once at init — os.Getenv is a syscall
+// and the send/localMeta path is hot during meta floods.
+var metaDebugEnabled = os.Getenv("MESHDESK_DEBUG") != ""
 
 // localMeta returns this node's own identity metadata.
 func (me *MetaExchanger) localMeta() PeerMeta {
 	vip := me.node.LocalVirtualIP()
 	isCol := me.node.localIsCollectorFlag()
-	if os.Getenv("MESHDESK_DEBUG") != "" {
+	if metaDebugEnabled {
 		log.Printf("[meta] localMeta: collector=%v", isCol)
 	}
 	return PeerMeta{
@@ -322,7 +334,7 @@ func (me *MetaExchanger) knownPeers() []PeerMeta {
 
 // sendTo delivers a meta message to a specific peer over its session.
 func (me *MetaExchanger) sendTo(peerKey string, msg MetaMessage) {
-	if os.Getenv("MESHDESK_DEBUG") != "" {
+	if metaDebugEnabled {
 		log.Printf("[meta] sendTo %s: self.Collector=%v peersWithCollector=%d",
 			shortKey(peerKey), msg.Self.Collector, countCollectorPeers(msg))
 	}

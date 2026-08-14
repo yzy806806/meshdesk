@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.6.3** — UDP hole punching production-stable (txcloud↔Oracle 0% loss @ ~270ms, EasyTier-parity), three keepalive-storm fixes, ordinary nodes use random distinct UDP ports, shared nodes keep single-port Reality multiplexing.
+> **Current release: v1.6.5** — META-based collector discovery (relay-attached nodes auto-report to dashboard), ARQ window 128 (300kbps hole throughput), push to all collectors, punch self-start from config peers, shutdownCh race fix.
 
 ---
 
