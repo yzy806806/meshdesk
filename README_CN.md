@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.6.1** —— 独立 NAT 打洞引擎（对标 EasyTier：UDP/TCP/v6/对称 NAT 端口预测）、main.go 拆分到 internal/app、relay CPU 修复。
+> **当前版本: v1.6.3** —— UDP 打洞生产级稳定（txcloud↔Oracle 双向 0% 丢包 @ ~270ms，对标 EasyTier）、三处保活风暴修复、普通节点随机独立 UDP 端口、共享节点保留单端口 Reality 复用。
 
 ---
 
@@ -34,7 +34,10 @@
   - TCP 打洞（conntrack 源端口交换 + 持续 SYN——状态化安全组放行 ESTABLISHED）
   - **对称 NAT 端口预测**（NAT4E）：STUN 第三次探测检测可预测端口增量；锥型侧扫 50 端口窗口（生日攻击，EasyTier 同款）
   - UDP ARQ 帧分片（<60B）——扛住丢大包的受限链路；流隔离（`|in`/`|out`）保证双向 key exchange 不混淆
-  - 洞直接接入 TUN UDP 多路径（`getUDPStream`）；relay 兜底保留
+  - **自适应 RTO**（RFC 6298 SRTT/RTTVAR）——抖动 WAN 链路上重传不失控，空闲期 session 不掉
+  - 洞直接接入 TUN UDP 多路径；relay 兜底保留
+  - **生产级稳定已验证**（v1.6.3）：txcloud↔Oracle 双向 0% 丢包 @ ~270ms，空闲 100+ 分钟零掉线
+- **端口策略分离**（v1.6.3）：普通节点（NAT 后、无公网入站）UDP 用**随机独立端口**（`UDPPort=-1`，v4/v6 各随机）——绕开 Go 运行时"UDP socket 与 TCP listener 或其他 family 同端口时公网发送静默失败"的坑；共享节点保留**单端口复用**（mesh 端口上一个 `[::]` 双栈 socket）——一条防火墙规则、Reality 伪装不变。打洞协调交换真实端口，无需固定 UDP 端口。
 - **零第三方 TUN** —— 裸 `/dev/net/tun` syscall 创建 TUN 设备（~150 行）。无 wireguard-go、无 gVisor、无外部依赖。
 - **确定性 IPAM** —— 虚拟 IP = `cidr_base + (pubkey_hash % host_count)`。无 DHCP、无协调、零冲突。
 - **响应式中继兜底** —— 直连不通（或链路丢大包）时，按 RTT 排序的 gossip relay 候选自动接管；工作路径缓存 60s（v1.6 CPU 修复——monitor 不再全量重扫）。见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
