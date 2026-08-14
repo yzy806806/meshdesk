@@ -524,6 +524,20 @@ func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 	if !f.cfg.MeshNode.SameZone(peerKey) && f.cfg.MeshNode.PeerZone(peerKey) != "" {
 		return nil, errors.New("tun-forwarder: cross-zone peer — Reality only")
 	}
+
+	// The 0x54 independent TUN stream is DISABLED: its first frame
+	// carries a 214B auth header, which the txcloud→Oracle path
+	// (stateful security group / conntrack) drops — only ≤60B frames
+	// pass (the 0x4D kx/session frames are 51B and work). Worse, each
+	// failed 0x54 dial (1s no-ACK) is immediately followed by the
+	// smux session dying on BOTH ends, forcing a reconnect loop that
+	// keeps the TUN plane down. TUN traffic therefore rides the 0x4D
+	// smux session stream (reliable ARQ, 51B frames) which IS the
+	// verified 257ms hole path. Re-enable only when the data-plane
+	// auth frame can be delivered (e.g. MTU/path change or a separate
+	// TUN socket on a conntrack-open port).
+	return nil, errors.New("tun-forwarder: 0x54 independent TUN stream disabled (session-stream path only)")
+
 	f.udpMu.Lock()
 	entry, ok := f.udpStreams[peerKey]
 	fail, failed := f.udpFail[peerKey]

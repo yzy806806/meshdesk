@@ -567,7 +567,7 @@ func (m *udpMeshManager) DialTUNStream(local *net.UDPConn, remote *net.UDPAddr, 
 	// Track the handshake frame in inflight so the ACK-confirmation
 	// wait below observes it being acknowledged.
 	sc.sendMu.Lock()
-	sc.inflight[0] = frame
+	sc.inflight[0] = udpInflightFrame{data: frame, sentAt: time.Now()}
 	sc.sendMu.Unlock()
 	if _, err := local.WriteToUDP(frame, remote); err != nil {
 		m.mu.Lock()
