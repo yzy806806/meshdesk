@@ -358,10 +358,12 @@ func (r *Reporter) collectAndPush() {
 	}
 }
 
-// pushToCollectors attempts to push the envelope to at least one collector.
-// Returns true if at least one push succeeded. It tries each collector in
-// order; if one fails, it falls through to the next — this provides
-// automatic failover when a collector's mesh session is dead.
+// pushToCollectors attempts to push the envelope to every collector.
+// All collectors receive the data (not just the first reachable one) —
+// with multiple dashboards (e.g. N1 and txcloud both running web mode)
+// the user expects every dashboard to show the full node set, so a
+// collector that would only "win" by being first in the list must not
+// starve the others. Returns true if at least one push succeeded.
 func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 	data, err := json.Marshal(env)
 	if err != nil {
@@ -388,19 +390,19 @@ func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 		}
 	}
 
-	var lastErr error
+	var okCount, failCount int
 	for _, collectorID := range collectors {
 		if r.tryPush(collectorID, data) {
-			return true
+			okCount++
+			continue
 		}
 		// tryPush already logged the error; track for summary.
-		lastErr = fmt.Errorf("collector %s unreachable", collectorID[:min(len(collectorID), 16)])
+		failCount++
 	}
-	if lastErr != nil {
-		log.Printf("[monitor] pushToCollectors: all %d collectors failed (last: %v)",
-			len(collectors), lastErr)
+	if failCount > 0 && okCount == 0 {
+		log.Printf("[monitor] pushToCollectors: all %d collectors failed", failCount)
 	}
-	return false
+	return okCount > 0
 }
 
 // tryPush attempts to dial a collector and send the metrics envelope.
