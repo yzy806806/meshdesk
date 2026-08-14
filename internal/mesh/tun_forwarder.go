@@ -505,24 +505,23 @@ type udpFailState struct {
 // stream for a peer. Returns an error when UDP is unavailable or in
 // cooldown — the caller falls back to the TCP smux path.
 //
+// tunUDPStreamEnabled controls the 0x54 independent TUN UDP stream.
+// Disabled (default) because its 214B auth first frame is dropped by
+// the stateful security groups on the txcloud→Oracle path (only ≤60B
+// datagrams pass); TUN traffic rides the 0x4D smux session stream
+// instead. Flip to true to re-enable once the auth frame can be
+// delivered. Package-level so the disabled check is cheap and the
+// code below stays reachable (go vet).
+var tunUDPStreamEnabled = false
+
+func (f *TunForwarder) udpStreamEnabled() bool { return tunUDPStreamEnabled }
+
 // Zone-aware: UDP P2P is only used for peers in the SAME zone as us.
 // Cross-zone (or unknown-zone) peers are Reality-only — skipping UDP
 // here forces the TCP smux path (which rides Reality TLS).
 func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 	if f.cfg.MeshNode == nil {
 		return nil, errors.New("tun-forwarder: no mesh node for UDP path")
-	}
-	// Debug: log the resolved endpoint + zone state (MESHDESK_DEBUG=1)
-	if os.Getenv("MESHDESK_DEBUG") != "" {
-		if ep := f.cfg.MeshNode.PeerEndpoints(peerKey); len(ep) > 0 {
-			log.Printf("[tun-udp] %s: candidate endpoints=%v zone=%q same=%v", shortKey(peerKey), ep, f.cfg.MeshNode.PeerZone(peerKey), f.cfg.MeshNode.SameZone(peerKey))
-		}
-	}
-	// Zone gate: KNOWN cross-zone → Reality only (no UDP). Zone-
-	// unknown peers are allowed (memberlist-degraded meshes learn
-	// zones slowly; UDP dial failure falls back to TCP/relay).
-	if !f.cfg.MeshNode.SameZone(peerKey) && f.cfg.MeshNode.PeerZone(peerKey) != "" {
-		return nil, errors.New("tun-forwarder: cross-zone peer — Reality only")
 	}
 
 	// The 0x54 independent TUN stream is DISABLED: its first frame
@@ -536,7 +535,27 @@ func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 	// verified 257ms hole path. Re-enable only when the data-plane
 	// auth frame can be delivered (e.g. MTU/path change or a separate
 	// TUN socket on a conntrack-open port).
-	return nil, errors.New("tun-forwarder: 0x54 independent TUN stream disabled (session-stream path only)")
+	//
+	// The code below (stream cache, backoff, DialTUNUDPForPeer) is
+	// kept reachable for when the stream is re-enabled — hence the
+	// early return above, not a commented-out body (go vet flags
+	// unreachable code).
+	if !f.udpStreamEnabled() {
+		return nil, errors.New("tun-forwarder: 0x54 independent TUN stream disabled (session-stream path only)")
+	}
+
+	// Debug: log the resolved endpoint + zone state (MESHDESK_DEBUG=1)
+	if os.Getenv("MESHDESK_DEBUG") != "" {
+		if ep := f.cfg.MeshNode.PeerEndpoints(peerKey); len(ep) > 0 {
+			log.Printf("[tun-udp] %s: candidate endpoints=%v zone=%q same=%v", shortKey(peerKey), ep, f.cfg.MeshNode.PeerZone(peerKey), f.cfg.MeshNode.SameZone(peerKey))
+		}
+	}
+	// Zone gate: KNOWN cross-zone → Reality only (no UDP). Zone-
+	// unknown peers are allowed (memberlist-degraded meshes learn
+	// zones slowly; UDP dial failure falls back to TCP/relay).
+	if !f.cfg.MeshNode.SameZone(peerKey) && f.cfg.MeshNode.PeerZone(peerKey) != "" {
+		return nil, errors.New("tun-forwarder: cross-zone peer — Reality only")
+	}
 
 	f.udpMu.Lock()
 	entry, ok := f.udpStreams[peerKey]
