@@ -165,10 +165,10 @@ func absDur(d time.Duration) time.Duration {
 // ReadFrom/WriteTo are simple.
 func newUDPStreamConn(conn *net.UDPConn, peer *net.UDPAddr) *udpStreamConn {
 	sc := &udpStreamConn{
-		conn:     conn,
-		peer:     peer,
-		inflight: make(map[uint32]udpInflightFrame),
-		ackRecv:  make(chan uint32, 4096),
+		conn:      conn,
+		peer:      peer,
+		inflight:  make(map[uint32]udpInflightFrame),
+		ackRecv:   make(chan uint32, 4096),
 		recvBuf:   make(map[uint32][]byte),
 		recvReady: make(chan struct{}, 1),
 		finRecv:   make(chan struct{}),
