@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.6.3** —— UDP 打洞生产级稳定（txcloud↔Oracle 双向 0% 丢包 @ ~270ms，对标 EasyTier）、三处保活风暴修复、普通节点随机独立 UDP 端口、共享节点保留单端口 Reality 复用。
+> **当前版本: v1.6.5** —— META 收集者发现（中继节点自动向 dashboard 上报）、ARQ 窗口 128（300kbps 打洞吞吐）、推送到所有 collectors、打洞从 config peers 自启动、shutdownCh 竞态修复。
 
 ---
 
