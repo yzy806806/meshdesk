@@ -123,8 +123,7 @@ type MuxTransport struct {
 	connSem chan struct{}
 
 	shutdown   atomic.Int32
-	shutdownMu sync.Mutex
-	shutdownCh chan struct{} // lazily created, closed on shutdown
+	shutdownCh chan struct{} // created in NewMuxTransport, closed on Shutdown (never lazily)
 	wg         sync.WaitGroup
 
 	bindAddr      string
@@ -290,6 +289,7 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		httpCh:        make(chan net.Conn, 64),
 		packetChIn:    make(chan *memberlist.Packet, 4096),
 		connSem:       make(chan struct{}, maxConcurrentMuxConns),
+		shutdownCh:    make(chan struct{}),
 		bindAddr:      bindAddr,
 		advertiseAddr: cfg.AdvertiseAddr,
 		advertisePort: cfg.AdvertisePort,
@@ -620,12 +620,8 @@ func (t *MuxTransport) Shutdown() error {
 	}
 
 	// Signal the shutdown channel so blocked sends can unblock.
-	t.shutdownMu.Lock()
-	if t.shutdownCh == nil {
-		t.shutdownCh = make(chan struct{})
-	}
+	// shutdownCh is eagerly created in NewMuxTransport — never nil.
 	close(t.shutdownCh)
-	t.shutdownMu.Unlock()
 
 	if t.tcpListener != nil {
 		_ = t.tcpListener.Close()
@@ -924,19 +920,11 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 // shutdownDone returns a channel that is closed when the transport shuts down.
 // Used to avoid blocking on channel sends during shutdown.
 func (t *MuxTransport) shutdownDone() <-chan struct{} {
-	// We create a lazily-initialized channel for this.
-	// In practice, the shutdown flag is checked atomically; the channel
-	// is a secondary signal. Since memberlist.NetTransport doesn't use
-	// a shutdown channel either (it relies on closing listeners), we
-	// use a simple nil channel that never fires — the blocking send
-	// will be unblocked by the listener close causing Accept errors,
-	// which eventually drains the loop. However, to be safe, we provide
-	// a proper channel.
-	t.shutdownMu.Lock()
-	defer t.shutdownMu.Unlock()
-	if t.shutdownCh == nil {
-		t.shutdownCh = make(chan struct{})
-	}
+	// Eagerly created in NewMuxTransport — never nil, no lock needed.
+	// (The old lazy init raced: readers like punchSocketPoller and
+	// Shutdown read the field without the lock and could observe a
+	// nil channel, silently losing the shutdown signal and leaking
+	// the goroutine.)
 	return t.shutdownCh
 }
 
@@ -1131,7 +1119,7 @@ func (t *MuxTransport) punchSocketPoller() {
 			}
 			t.punchMu.Unlock()
 		case <-time.After(2 * time.Second):
-		case <-t.shutdownCh:
+		case <-t.shutdownDone():
 			return
 		}
 	}
