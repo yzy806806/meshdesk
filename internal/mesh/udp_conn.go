@@ -523,22 +523,27 @@ func (sc *udpStreamConn) retransmitLocked() {
 	for seq, f := range sc.inflight {
 		if now.Sub(f.sentAt) >= rto {
 			// Path MTU discovery: if a probe frame times out, the
-			// large payload was likely dropped by the link. Drop
-			// the probe frame entirely (do NOT truncate — that
-			// would corrupt the data stream by delivering a partial
-			// payload). The caller's Write loop has already advanced
-			// past this data, so the upper layer (TUN forwarder)
-			// will re-encapsulate and resend the lost IP packet.
+			// large payload was dropped by the link. Downgrade to
+			// conservative framing — resend with the same seq so no
+			// new hole is created. If the receiver already advanced
+			// past this seq (probe was the first frame and the
+			// receiver saw it), this retransmit is dropped by ARQ
+			// dedup; the data loss is bounded to one frame and the
+			// upper layer's stream framing detects the gap (better
+			// than silently corrupting the stream).
 			if sc.probePending && len(f.data) > udpFrameHeaderLen+udpMaxPayload {
 				sc.probePending = false
-				log.Printf("[udpstream] path MTU probe failed: keeping %dB payload (%s)",
+				log.Printf("[udpstream] path MTU probe failed: downgrading to %dB payload (%s)",
 					udpMaxPayload, sc.peer)
-				delete(sc.inflight, seq)
-				// Advance baseSeq if this was the oldest frame.
-				if seq == sc.baseSeq {
-					sc.baseSeq = (seq + 1) % udpMaxSeq
+				payload := f.data[udpFrameHeaderLen:]
+				if len(payload) > udpMaxPayload {
+					payload = payload[:udpMaxPayload]
 				}
-				continue
+				frame := make([]byte, udpFrameHeaderLen+len(payload))
+				copy(frame, f.data[:udpFrameHeaderLen])
+				binary.BigEndian.PutUint16(frame[9:11], uint16(len(payload)))
+				copy(frame[udpFrameHeaderLen:], payload)
+				f.data = frame
 			}
 			sc.conn.WriteToUDP(f.data, sc.peer)
 			f.sentAt = now
