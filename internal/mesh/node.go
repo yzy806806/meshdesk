@@ -344,10 +344,7 @@ func (n *MeshNode) Start() error {
 		//   - mesh-internal connections (0x4D) → meshCh
 		//   - TLS (0x16) → realityCh (ignored — no Reality listener)
 		bindAddr := "0.0.0.0"
-		tcpPort := n.cfg.Mesh.GossipPort
-		if tcpPort == 0 {
-			tcpPort = n.cfg.Mesh.Port
-		}
+		tcpPort := n.cfg.Mesh.Port
 		tcpListenAddr := net.JoinHostPort(bindAddr, strconv.Itoa(tcpPort))
 		tcpListener, err := net.Listen("tcp", tcpListenAddr)
 		if err != nil {
@@ -2550,13 +2547,11 @@ func (n *MeshNode) PeerZone(peerKey string) string {
 }
 
 // LocalEndpoints returns this node's advertised endpoints (from
-// config p2p.advertise_endpoints) — propagated via the meta exchange
-// so peers can dial us directly.
+// LocalEndpoints returns the endpoints this node advertises to peers.
+// With memberlist retired, endpoints are auto-detected from the TCP
+// listener address and the meta exchange — no manual config needed.
 func (n *MeshNode) LocalEndpoints() []string {
-	if n.cfg == nil {
-		return nil
-	}
-	return append([]string(nil), n.cfg.P2P.AdvertiseEndpoints...)
+	return nil
 }
 
 // ConfigPeers returns the peers configured in config.yaml (static
