@@ -1,6 +1,6 @@
 # Release Notes
 
-## Unreleased — reality-discipline refactor
+## v1.6.6 — 2026-08-15
 
 **Zone boundary = Reality boundary.** Discovery-plane hardening:
 everything that crosses a zone boundary now rides Reality TLS.
@@ -35,6 +35,15 @@ everything that crosses a zone boundary now rides Reality TLS.
   (META first, gossip overlay, config peers fallback).
 - Design memo: `docs/DESIGN_MEMBERLIST_RETIREMENT.md` (capability
   mapping + phase plan toward full removal).
+
+### Verified (2026-08-15, live 6-node mesh)
+- Dashboard on :8080; mesh port 52888 returns no HTTP (Reality
+  camouflage intact — active probes see the disguise site)
+- Fail-closed punching: txcloud↔Oracle hole established (zone us=us),
+  bidirectional 20/20 0% loss @ ~322ms
+- Tunnel ping to all nodes OK; N1/aliyun/Oracle ARM/AMD all agent-only
+  (single dashboard on txcloud)
+- go build/vet/test green
 
 ## v1.6.5 — 2026-08-14
 
