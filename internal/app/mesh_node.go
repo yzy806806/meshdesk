@@ -245,6 +245,17 @@ func (a *App) registerVirtualPortServices() {
 		a.metaExchanger = me
 		node.SetSessionEstablishedHandler(func(peerKey string) {
 			me.NotifyPeerJoined(peerKey)
+			// A new session means the peer graph CHANGED — re-broadcast
+			// our full knowledge to every session peer so they learn
+			// about this new peer (and its zone/endpoints/collector
+			// capability). Without this, meta is only exchanged once
+			// per session pair at establishment time: a peer that
+			// joins AFTER our session with an intermediary was set up
+			// never reaches us (relay-attached AMD was invisible to
+			// txcloud — no punch triggered because its zone was
+			// unknown). Broadcast is idempotent (peers dedup by VIP)
+			// and cheap at mesh scale.
+			me.Broadcast()
 		})
 		// Wire META re-broadcast: collector capability changes (this
 		// node became a collector, or learned a new one) must reach
