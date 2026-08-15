@@ -190,6 +190,11 @@ type MeshNode struct {
 	// layer; nil → empty info.
 	metaExtrasProvider func() MetaRelayInfo
 
+	// relayConnectMu guards relayConnecting — the set of peers we are
+	// currently auto-dialing (AutoConnectRelayPeer dedup).
+	relayConnectMu  sync.Mutex
+	relayConnecting map[string]bool
+
 	// relayMetaProvider is a callback that returns metadata for all
 	// known relay-capable peers from the gossip layer. Each entry is
 	// (peerKey, rtt, capRelay, maxCircuits, loadCircuits, natType).
@@ -290,6 +295,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		holeEndpoints:        make(map[string][]string),
 		collectorPeers:       make(map[string]bool),
 		peerRelayMeta:        make(map[string]MetaRelayInfo),
+		relayConnecting:      make(map[string]bool),
 		rttCache:             make(map[string]rttCacheEntry),
 		clientSessions:       make(map[string]*smux.Session),
 		sessionEstablishedAt: make(map[string]time.Time),
@@ -2412,6 +2418,55 @@ func (n *MeshNode) SessionPeerKeys() []string {
 		add(id)
 	}
 	return out
+}
+
+// AutoConnectRelayPeer dials a relay-capable peer (CapRelay=true, learned
+// via meta exchange) that we don't have a session with yet. This makes
+// shared nodes redundant: a node that joins via ONE shared node learns
+// the OTHERS from meta and connects to them directly, so no single
+// shared node is a single point of failure.
+//
+// Dialing is async + deduped: only peers with NO session get dialed,
+// and the relayConnecting set prevents concurrent duplicate dials.
+// The dial itself goes through DialPeerByEndpoint (Reality TLS for
+// cross-zone, mesh-internal for same-zone) — same as a config peer.
+func (n *MeshNode) AutoConnectRelayPeer(peerKey string) {
+	if peerKey == "" || peerKey == n.Identity().PublicKey {
+		return
+	}
+	// Already connected? Nothing to do.
+	if n.HasPeerSession(peerKey) {
+		return
+	}
+	// Dedup concurrent dials.
+	n.relayConnectMu.Lock()
+	if n.relayConnecting[peerKey] {
+		n.relayConnectMu.Unlock()
+		return
+	}
+	n.relayConnecting[peerKey] = true
+	n.relayConnectMu.Unlock()
+
+	go func() {
+		defer func() {
+			n.relayConnectMu.Lock()
+			delete(n.relayConnecting, peerKey)
+			n.relayConnectMu.Unlock()
+		}()
+		ep := n.resolvePeerEndpoint(peerKey)
+		if ep == "" {
+			log.Printf("[mesh] auto-connect relay peer %s: no endpoint known", shortKey(peerKey))
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if conn, err := n.DialPeerByEndpoint(ctx, ep); err == nil {
+			conn.Close()
+			log.Printf("[mesh] auto-connected to relay peer %s via %s", shortKey(peerKey), ep)
+		} else {
+			log.Printf("[mesh] auto-connect relay peer %s via %s failed: %v", shortKey(peerKey), ep, err)
+		}
+	}()
 }
 
 // LocalPublicKey returns this node's identity public key (hex).
