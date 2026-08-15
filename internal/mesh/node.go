@@ -2496,6 +2496,18 @@ func (n *MeshNode) ConfigPeers() []config.PeerConfig {
 	return append([]config.PeerConfig(nil), n.cfg.Peers...)
 }
 
+// HasUDPHole reports whether a UDP hole-punched endpoint exists for the
+// given peer — i.e. the peer's data plane has been upgraded from relay
+// to direct UDP. Used by triggerHolePunch to skip re-punching an already
+// direct peer (NOT the same as HasPeerSession — a relay session does
+// not count).
+func (n *MeshNode) HasUDPHole(peerKey string) bool {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+	eps, ok := n.holeEndpoints[peerKey]
+	return ok && len(eps) > 0
+}
+
 // PeerEndpoints returns the endpoints known for a peer: hole-punched
 // endpoint first (confirmed data-plane target — highest priority),
 // config second, meta-exchange-learned as fallback.
