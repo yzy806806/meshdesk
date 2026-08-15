@@ -25,6 +25,10 @@ func (a *App) startHolePunch() {
 		return
 	}
 	hp := holepunch.New(&appHolepunchDialer{node: a.node})
+	// Our public key (hex) — carried in the punch coordination frame
+	// so the responder can key the hole by identity and establish the
+	// data plane on its side too (v1.6.7 deadlock fix).
+	hp.IdentityKey = a.node.Identity().PublicKey
 	// Punch from the mesh mux UDP socket — the punched NAT mapping is
 	// exactly what DialTUNUDP (data plane) uses.
 	if mt := a.node.MuxTransport(); mt != nil {
