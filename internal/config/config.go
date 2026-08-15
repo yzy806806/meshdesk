@@ -223,9 +223,6 @@ const DefaultTunMTU = 1400
 // web handlers reference one source of truth instead of magic numbers.
 const DefaultMeshPort = 52888
 
-// DefaultIdentityPath is the default path to the node's Ed25519 identity
-// file. When node.identity_file is not set in config, this path is used.
-const DefaultIdentityPath = "/etc/meshdesk/identity.pem"
 
 // ProxyConfig holds settings for the anonymous proxy subsystem
 // (multi-path dispersed transport). See docs/PROXY_DESIGN.md.
@@ -947,11 +944,14 @@ func Default() *Config {
 	return &Config{
 		Node: NodeConfig{
 			WebAddr:      "",
-			IdentityFile: DefaultIdentityPath,
+			IdentityFile: DefaultIdentityFile,
 		},
 		Mesh: MeshConfig{
 			Port:       DefaultMeshPort,
 			TunMTU:     DefaultTunMTU,
+			TunEnabled: true,
+			TunName:    "mesh0",
+			MeshCIDR:   "10.100.0.0/24",
 			DNSPort:    5353,
 			DNSEnabled: true,
 		},
@@ -1067,14 +1067,26 @@ func Load(path string) (*Config, error) {
 	if len(cfg.Tun.SubnetProxies) > 0 && len(cfg.Mesh.SubnetProxy) == 0 {
 		cfg.Mesh.SubnetProxy = cfg.Tun.SubnetProxies
 	}
-	// P2P config defaults.
-	if !cfg.P2P.NatTraversal && cfg.P2P.Enabled {
-		// If P2P is enabled but NatTraversal is explicitly false, respect that.
-	} else if cfg.P2P.Enabled {
-		cfg.P2P.NatTraversal = true
+	// P2P config: memberlist retired — defaults are minimal.
+	// Peer reality defaults: server_name and short_id have standard
+	// values shared across the mesh — users only write public_key.
+	for i := range cfg.Peers {
+		if cfg.Peers[i].Reality.ServerName == "" {
+			cfg.Peers[i].Reality.ServerName = "www.microsoft.com"
+		}
+		if cfg.Peers[i].Reality.ShortID == "" {
+			cfg.Peers[i].Reality.ShortID = "0123456789abcdef"
+		}
+		if cfg.Peers[i].Reality.TLSFingerprint == "" {
+			cfg.Peers[i].Reality.TLSFingerprint = "chrome"
+		}
 	}
-	if len(cfg.P2P.StunServers) == 0 && cfg.P2P.Enabled {
-		cfg.P2P.StunServers = []string{"stun.l.google.com:19302", "stun.cloudflare.com:3478"}
+	// TUN defaults: enabled by default with standard mesh CIDR.
+	if cfg.Mesh.TunName == "" {
+		cfg.Mesh.TunName = "mesh0"
+	}
+	if cfg.Mesh.MeshCIDR == "" {
+		cfg.Mesh.MeshCIDR = "10.100.0.0/24"
 	}
 	if cfg.P2P.RelayMode == "" && cfg.P2P.Enabled {
 		cfg.P2P.RelayMode = "auto"
