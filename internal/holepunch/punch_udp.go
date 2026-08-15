@@ -265,9 +265,9 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 }
 
 // exchangePunchParams dials the peer's coordination virtual port and
-// exchanges mapped endpoints + nonce. Returns the peer's mapped
-// endpoint (preferring our own local knowledge of its endpoint when
-// the exchange fails).
+// exchanges mapped endpoints + nonce + initiator identity. Returns the
+// peer's mapped endpoint (preferring our own local knowledge of its
+// endpoint when the exchange fails).
 func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP string) (string, uint32, error) {
 	nonce := uint32(time.Now().UnixNano() & 0xffffffff)
 
@@ -319,7 +319,7 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	} else {
 		log.Printf("[holepunch] %s: coordination our=%s (outboundPort unknown)", short(peerKey), our)
 	}
-	body := make([]byte, 4+len(our)+8)
+	body := make([]byte, 4+len(our)+8+len(e.IdentityKey))
 	binary.BigEndian.PutUint32(body, nonce)
 	copy(body[4:], our)
 	binary.BigEndian.PutUint16(body[4+len(our):], uint16(e.TcpPort))
@@ -330,6 +330,11 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	}
 	body[4+len(our)+5] = e.Inc
 	binary.BigEndian.PutUint16(body[4+len(our)+6:], uint16(e.OutboundPort))
+	// Trailing field: initiator's public key (hex). The coordinator
+	// (responder) uses it to key the hole and fire OnHoleEstablished —
+	// without identity the responder can punch back but never
+	// establishes the data plane (deadlock: both sides wait).
+	copy(body[4+len(our)+8:], e.IdentityKey)
 	req := make([]byte, 2+len(body))
 	binary.BigEndian.PutUint16(req, uint16(len(body)))
 	copy(req[2:], body)
@@ -418,8 +423,10 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	peerEasySym := false
 	peerInc := 0
 	peerObs := 0
+	peerKey := ""
 	// Trailing bytes carry the peer's TCP punch port + outbound source
-	// port + EasySym/Inc + observed src port — strip them.
+	// port + EasySym/Inc + observed src port + initiator public key
+	// (hex, 64 chars) — strip the fixed fields, the remainder is the key.
 	if bodyLen >= 12 {
 		epLen := bodyLen - 4 - 8
 		peerEP = string(buf[4 : 4+epLen])
@@ -428,6 +435,14 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 		peerEasySym = buf[4+epLen+4] == 1
 		peerInc = int(int8(buf[4+epLen+5]))
 		peerObs = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
+		// Any bytes beyond the fixed 12-field tail are the initiator
+		// key (added in v1.6.7; legacy frames omit it).
+		if bodyLen > 4+epLen+12 {
+			peerKey = string(buf[4+epLen+12:])
+		}
+	}
+	if peerKey != "" {
+		log.Printf("[holepunch] coordinator: initiator key %s", short(peerKey))
 	}
 
 	// Ensure our outbound source port is valid BEFORE answering: the
@@ -597,6 +612,26 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// this, only the initiator punches and the hole never opens both
 	// ways.
 	go e.blindPunch(peerEP, nonce)
+
+	// Responder-side hole establishment: the initiator's identity is
+	// carried in the coordination frame (v1.6.7+). Record the hole on
+	// our side too and fire OnHoleEstablished — without this the
+	// responder punches back (blindPunch) but never keys the hole by
+	// peer, so neither side dials the data plane (deadlock: both wait
+	// for the other's kx).
+	if peerKey != "" && e.OnHoleEstablished != nil {
+		// our (this node's) mapped endpoint as seen by the initiator:
+		// the reply we just built. Reuse e.OutboundPort-resolved
+		// PublicPunchEP — it carries the UDP data port.
+		ourEP := e.PublicPunchEP
+		if ourEP == "" {
+			ourEP = e.LocalEP
+		}
+		if ourEP != "" && ourEP != "0.0.0.0:0" && ourEP != "[::]:0" {
+			log.Printf("[holepunch] coordinator: responder hole to %s (our %s)", short(peerKey), ourEP)
+			e.OnHoleEstablished(peerKey, ourEP, "udp")
+		}
+	}
 }
 
 // blindPunch sends UDP probes to the peer's mapped endpoint so our NAT
