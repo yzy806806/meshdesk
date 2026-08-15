@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.6.5** — META-based collector discovery (relay-attached nodes auto-report to dashboard), ARQ window 128 (300kbps hole throughput), push to all collectors, punch self-start from config peers, shutdownCh race fix.
+> **Current release: v1.6.9** — META auto-discovery (new peers propagate to whole mesh), UDP hole data plane complete (two-way dial, no keepalive starvation, smux address filtering), auto-connect relay peers (shared node redundancy), path MTU discovery + delayed ACK + dynamic retransmit.
 
 ---
 
