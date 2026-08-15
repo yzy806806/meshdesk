@@ -56,12 +56,61 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), punchTimeout)
 	defer cancel()
 
+	// endpoints may be empty when META/gossip hasn't delivered the
+	// peer's advertised endpoints yet (fresh boot, degraded memberlist).
+	// The coordination exchange itself discovers the peer's mapped
+	// address (the peer replies with its public punch endpoint), so a
+	// blind punch still works — we just need SOMETHING to dial for the
+	// initial socket setup. Use a placeholder host: the punch probes
+	// target the mapped endpoint from coordination, not this fallback.
 	fallback := ""
 	if len(endpoints) > 0 {
 		fallback = endpoints[0]
 	}
 	if fallback == "" {
-		return ""
+		// No advertised endpoint: open an unconnected socket and rely
+		// on coordination to learn the peer's mapped address. The
+		// socket binds ephemeral; probes are sent after coordination
+		// returns the real target (see probe loop below).
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{})
+		if err != nil {
+			return ""
+		}
+		defer conn.Close()
+		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
+			e.mu.Lock()
+			e.OutboundPort = la.Port
+			e.mu.Unlock()
+		}
+		// Register the socket with the transport so its reads are
+		// drained (punchSocketPoller) — same as the normal path.
+		if e.OnPunchSocket != nil {
+			e.OnPunchSocket(peerKey, conn)
+		}
+		peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, "")
+		if err != nil || peerEP == "" || peerEP == "0.0.0.0:0" || peerEP == "[::]:0" {
+			return ""
+		}
+		// Probe the mapped endpoint from this socket.
+		peerUDP := mustUDPAddr(peerEP)
+		probe := make([]byte, 6)
+		probe[0] = 0x50
+		probe[1] = 0x4A
+		binary.BigEndian.PutUint32(probe[2:], nonce)
+		for i := 0; i < punchProbeCount; i++ {
+			if _, werr := conn.WriteToUDP(probe, peerUDP); werr != nil {
+				break
+			}
+			if i == punchProbeCount-1 {
+				return peerEP // optimistic — data plane verifies
+			}
+			select {
+			case <-ctx.Done():
+				return ""
+			case <-time.After(punchProbeGap):
+			}
+		}
+		return peerEP
 	}
 
 	// 1. Open the local UDP socket FIRST — reuse the mesh mux socket
