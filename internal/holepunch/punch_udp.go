@@ -68,15 +68,34 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 		fallback = endpoints[0]
 	}
 	if fallback == "" {
-		// No advertised endpoint: open an unconnected socket and rely
-		// on coordination to learn the peer's mapped address. The
-		// socket binds ephemeral; probes are sent after coordination
-		// returns the real target (see probe loop below).
-		conn, err := net.ListenUDP("udp", &net.UDPAddr{})
-		if err != nil {
+		// No advertised endpoint: rely on coordination to learn the
+		// peer's mapped address, then punch from the shared mux
+		// socket (PunchConnProvider) so the NAT mapping matches the
+		// data plane — an independent socket would open a hole the
+		// data plane never sends from (conntrack mismatch, frames
+		// dropped).
+		peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, "")
+		if err != nil || peerEP == "" || peerEP == "0.0.0.0:0" || peerEP == "[::]:0" {
 			return ""
 		}
-		defer conn.Close()
+		peerUDP := mustUDPAddr(peerEP)
+		var conn *net.UDPConn
+		if e.PunchConnProvider != nil {
+			conn = e.PunchConnProvider(peerUDP.IP)
+		}
+		independent := conn == nil
+		if independent {
+			var derr error
+			conn, derr = net.DialUDP("udp", nil, peerUDP)
+			if derr != nil {
+				return ""
+			}
+		}
+		// Only close sockets we created — the shared mux socket is
+		// owned by the transport.
+		if independent {
+			defer conn.Close()
+		}
 		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
 			e.mu.Lock()
 			e.OutboundPort = la.Port
@@ -87,18 +106,19 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 		if e.OnPunchSocket != nil {
 			e.OnPunchSocket(peerKey, conn)
 		}
-		peerEP, nonce, err := e.exchangePunchParams(ctx, peerKey, "")
-		if err != nil || peerEP == "" || peerEP == "0.0.0.0:0" || peerEP == "[::]:0" {
-			return ""
-		}
 		// Probe the mapped endpoint from this socket.
-		peerUDP := mustUDPAddr(peerEP)
 		probe := make([]byte, 6)
 		probe[0] = 0x50
 		probe[1] = 0x4A
 		binary.BigEndian.PutUint32(probe[2:], nonce)
 		for i := 0; i < punchProbeCount; i++ {
-			if _, werr := conn.WriteToUDP(probe, peerUDP); werr != nil {
+			var werr error
+			if independent {
+				_, werr = conn.Write(probe)
+			} else {
+				_, werr = conn.WriteToUDP(probe, peerUDP)
+			}
+			if werr != nil {
 				break
 			}
 			if i == punchProbeCount-1 {
@@ -325,6 +345,11 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	// endpoint even with the trailing key field (v1.6.7+: epLen =
 	// bodyLen-4-8 was wrong once the key was appended — the key leaked
 	// into the endpoint and the responder's key offset shifted).
+	if len(our) > 255 {
+		// Endpoints are host:port strings, always < 255B — defensive
+		// guard against uint8 truncation corrupting the frame.
+		return fallbackEP, nonce, nil
+	}
 	body := make([]byte, 5+len(our)+8+len(e.IdentityKey))
 	binary.BigEndian.PutUint32(body, nonce)
 	body[4] = uint8(len(our))
@@ -640,6 +665,12 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// peer's mapped endpoint (blind side of the handshake). Without
 	// this, only the initiator punches and the hole never opens both
 	// ways.
+	//
+	// The responder-side OnHoleEstablished (below) must fire AFTER
+	// blindPunch's probes leave the socket — otherwise the app layer
+	// DialUDPPeer races ahead and its kx frames arrive before the
+	// peer's conntrack entry exists (dropped). blindPunch is quick
+	// (punchProbeCount × punchProbeGap), so run it inline-then-fire.
 	go e.blindPunch(peerEP, nonce)
 
 	// Responder-side hole establishment: the initiator's identity is
@@ -648,6 +679,10 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// responder punches back (blindPunch) but never keys the hole by
 	// peer, so neither side dials the data plane (deadlock: both wait
 	// for the other's kx).
+	//
+	// Fire asynchronously with a small delay: blindPunch is in-flight
+	// (goroutine above); a 50ms head-start lets its probes create the
+	// peer-side conntrack before DialUDPPeer's kx frames arrive.
 	if peerKey != "" && e.OnHoleEstablished != nil {
 		// our (this node's) mapped endpoint as seen by the initiator:
 		// the reply we built above (our) already carries the UDP data
@@ -663,8 +698,16 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 			ourEP = e.LocalEP
 		}
 		if ourEP != "" && ourEP != "0.0.0.0:0" && ourEP != "[::]:0" {
-			log.Printf("[holepunch] coordinator: responder hole to %s (our %s)", short(peerKey), ourEP)
-			e.OnHoleEstablished(peerKey, ourEP, "udp")
+			ep := ourEP
+			key := peerKey
+			// Give blindPunch (goroutine above) time to land its
+			// probes — the peer's conntrack entry must exist before
+			// DialUDPPeer's kx frames arrive, else they are dropped.
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				log.Printf("[holepunch] coordinator: responder hole to %s (our %s)", short(key), ep)
+				e.OnHoleEstablished(key, ep, "udp")
+			}()
 		}
 	}
 }

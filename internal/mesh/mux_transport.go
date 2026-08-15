@@ -29,6 +29,9 @@ import (
 // See RFC 5246 §6.2.1: ContentType handshake = 22.
 const tlsHandshakeRecordType = 0x16
 
+// debugEnabled caches the MESHDESK_DEBUG env check (read on hot paths).
+var debugEnabled = os.Getenv("MESHDESK_DEBUG") != ""
+
 // muxUDPPacketBufSize is the receive buffer size for UDP packet reads.
 const muxUDPPacketBufSize = 65536
 
@@ -1041,7 +1044,7 @@ func (t *MuxTransport) punchSocketPoller() {
 					if n < 1 {
 						continue
 					}
-					if os.Getenv("MESHDESK_DEBUG") != "" {
+					if debugEnabled {
 						log.Printf("[punchpoller] read %dB from %s on %s", n, addr, c.LocalAddr())
 					}
 					// Copy — the buffer is reused.
