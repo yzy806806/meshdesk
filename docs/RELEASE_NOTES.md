@@ -35,6 +35,20 @@ to txcloud: `PeerZone(AMD)==""` → no punch → stuck on multi-hop relay).
   Fix: `smuxCfgUDP` disables keepalive — the ARQ layer keeps the path
   alive.
 
+### Auto-connect relay peers + smux address filtering (v1.6.9 third pass)
+- **Auto-connect shared nodes**: a node that joins via ONE shared node
+  now learns the OTHERS (CapRelay=true) from meta exchange and dials
+  them directly — no single shared node is a single point of failure.
+  `AutoConnectRelayPeer`: async, deduped (relayConnecting set),
+  endpoint from resolvePeerEndpoint. Verified: phone auto-connected
+  to N1 (v6 direct) after joining via aliyun.
+- **smux virtual address leak**: STUN unreachable (Android/CN) →
+  LocalEP empty → coordination reply fell back to conn.LocalAddr()
+  which on a smux stream is "smux:local:<id>" → peer punched a
+  nonsense address. Fix: `isRealEndpoint()` filters smux pseudo-
+  addresses; fallback degrades to 0.0.0.0:0 (blind punch + observed
+  source ports). STUN is now optional, not a dependency.
+
 ### Verified
 - AMD (zone=us, no config peer) auto-learned → punch fires → hole
   established via 203.0.113.30 (previously stuck at 1.5-3s relay).
