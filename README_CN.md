@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.6.5** —— META 收集者发现（中继节点自动向 dashboard 上报）、ARQ 窗口 128（300kbps 打洞吞吐）、推送到所有 collectors、打洞从 config peers 自启动、shutdownCh 竞态修复。
+> **当前版本: v1.6.9** —— META 自动发现（新节点传播全网）、UDP 洞数据面完整（双向 dial、无 keepalive 饿死、smux 地址过滤）、自动连接共享节点（冗余）、路径 MTU 探测 + 延迟 ACK + 动态重传。
 
 ---
 
