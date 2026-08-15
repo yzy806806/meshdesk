@@ -28,7 +28,7 @@ func TestStart_OrdinaryNodeCreatesTCPListener(t *testing.T) {
 			IdentityFile: t.TempDir() + "/identity.pem",
 		},
 		Mesh: config.MeshConfig{
-			GossipPort: port,
+			Port: port,
 		},
 		P2P: config.P2pConfig{
 			Enabled: true,
@@ -80,7 +80,7 @@ func TestStart_OrdinaryNodeMemberlistStreamCh(t *testing.T) {
 			IdentityFile: t.TempDir() + "/identity.pem",
 		},
 		Mesh: config.MeshConfig{
-			GossipPort: port,
+			Port: port,
 		},
 		P2P: config.P2pConfig{
 			Enabled: true,

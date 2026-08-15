@@ -8,8 +8,8 @@ import (
 
 func TestDefault(t *testing.T) {
 	cfg := Default()
-	if cfg.Mesh.Port != 51820 {
-		t.Errorf("default port = %d, want 51820", cfg.Mesh.Port)
+	if cfg.Mesh.Port != 52888 {
+		t.Errorf("default port = %d, want 52888", cfg.Mesh.Port)
 	}
 	if cfg.Monitoring.Interval != 15 {
 		t.Errorf("default interval = %d, want 15", cfg.Monitoring.Interval)
@@ -29,12 +29,12 @@ func TestLoadAndSave(t *testing.T) {
 			WebAddr:      ":8080",
 		},
 		Mesh: MeshConfig{
-			Port: 51820,
+			Port: 52888,
 		},
 		Peers: []PeerConfig{
 			{
 				PublicKey:  "peerkey123",
-				Endpoint:   "1.2.3.4:51820",
+				Endpoint:   "1.2.3.4:52888",
 				AllowedIPs: []string{"10.10.1.1/32"},
 			},
 		},
@@ -100,8 +100,8 @@ func TestLoadDefaultsApplied(t *testing.T) {
 	}
 
 	// Defaults should be applied.
-	if cfg.Mesh.Port != 51820 {
-		t.Errorf("Port = %d, want default 51820", cfg.Mesh.Port)
+	if cfg.Mesh.Port != 52888 {
+		t.Errorf("Port = %d, want default 52888", cfg.Mesh.Port)
 	}
 	if cfg.Monitoring.Interval != 15 {
 		t.Errorf("Interval = %d, want default 15", cfg.Monitoring.Interval)
@@ -155,7 +155,7 @@ func TestTransferConfigCustomValues(t *testing.T) {
 
 	original := &Config{
 		Node: NodeConfig{Hostname: "test"},
-		Mesh: MeshConfig{Port: 51820},
+		Mesh: MeshConfig{Port: 52888},
 		Transfer: TransferConfig{
 			MaxFileSize: 500 * 1024 * 1024, // 500 MB
 			UploadDir:   "/custom/uploads",
@@ -188,7 +188,7 @@ func TestProxyConfigDefaults(t *testing.T) {
 	// Save a minimal config — no proxy section.
 	original := &Config{
 		Node: NodeConfig{Hostname: "test"},
-		Mesh: MeshConfig{Port: 51820},
+		Mesh: MeshConfig{Port: 52888},
 	}
 
 	if err := Save(path, original); err != nil {
@@ -238,7 +238,7 @@ func TestProxyConfigCustomValues(t *testing.T) {
 
 	original := &Config{
 		Node: NodeConfig{Hostname: "test"},
-		Mesh: MeshConfig{Port: 51820},
+		Mesh: MeshConfig{Port: 52888},
 		Proxy: ProxyConfig{
 			ChunkerStrategy: "fixed-16k",
 			Circuit: CircuitLifecycleConfig{
@@ -348,7 +348,7 @@ func TestRelayEnabledRoundTripSaveLoad(t *testing.T) {
 
 	original := &Config{
 		Node: NodeConfig{Hostname: "relay-test"},
-		Mesh: MeshConfig{Port: 51820},
+		Mesh: MeshConfig{Port: 52888},
 		Proxy: ProxyConfig{
 			Relay: RelayNodeConfig{
 				Enabled:     true,
@@ -428,7 +428,7 @@ func TestAdvertiseEndpointsMultiEndpoint(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "config.yaml")
 
-	yamlContent := []byte("node:\n  hostname: dualstack\nmesh:\n  port: 51820\np2p:\n  enabled: true\n  advertise_endpoints:\n    - 203.0.113.99:51820\n    - \"[2001:db8::1]:51820\"\n")
+	yamlContent := []byte("node:\n  hostname: dualstack\nmesh:\n  port: 52888\np2p:\n  enabled: true\n  advertise_endpoints:\n    - 203.0.113.99:52888\n    - \"[2001:db8::1]:52888\"\n")
 	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
 		t.Fatalf("WriteFile error: %v", err)
 	}
@@ -441,11 +441,11 @@ func TestAdvertiseEndpointsMultiEndpoint(t *testing.T) {
 	if len(cfg.P2P.AdvertiseEndpoints) != 2 {
 		t.Fatalf("AdvertiseEndpoints length = %d, want 2", len(cfg.P2P.AdvertiseEndpoints))
 	}
-	if cfg.P2P.AdvertiseEndpoints[0] != "203.0.113.99:51820" {
-		t.Errorf("AdvertiseEndpoints[0] = %q, want %q", cfg.P2P.AdvertiseEndpoints[0], "203.0.113.99:51820")
+	if cfg.P2P.AdvertiseEndpoints[0] != "203.0.113.99:52888" {
+		t.Errorf("AdvertiseEndpoints[0] = %q, want %q", cfg.P2P.AdvertiseEndpoints[0], "203.0.113.99:52888")
 	}
-	if cfg.P2P.AdvertiseEndpoints[1] != "[2001:db8::1]:51820" {
-		t.Errorf("AdvertiseEndpoints[1] = %q, want %q", cfg.P2P.AdvertiseEndpoints[1], "[2001:db8::1]:51820")
+	if cfg.P2P.AdvertiseEndpoints[1] != "[2001:db8::1]:52888" {
+		t.Errorf("AdvertiseEndpoints[1] = %q, want %q", cfg.P2P.AdvertiseEndpoints[1], "[2001:db8::1]:52888")
 	}
 }
 
@@ -456,7 +456,7 @@ func TestAdvertiseEndpointLegacyBackwardCompat(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "config.yaml")
 
-	yamlContent := []byte("node:\n  hostname: legacy\nmesh:\n  port: 51820\np2p:\n  enabled: true\n  advertise_endpoint: 203.0.113.99:51820\n")
+	yamlContent := []byte("node:\n  hostname: legacy\nmesh:\n  port: 52888\np2p:\n  enabled: true\n  advertise_endpoint: 203.0.113.99:52888\n")
 	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
 		t.Fatalf("WriteFile error: %v", err)
 	}
@@ -469,8 +469,8 @@ func TestAdvertiseEndpointLegacyBackwardCompat(t *testing.T) {
 	if len(cfg.P2P.AdvertiseEndpoints) != 1 {
 		t.Fatalf("AdvertiseEndpoints length = %d, want 1 (from legacy field)", len(cfg.P2P.AdvertiseEndpoints))
 	}
-	if cfg.P2P.AdvertiseEndpoints[0] != "203.0.113.99:51820" {
-		t.Errorf("AdvertiseEndpoints[0] = %q, want %q", cfg.P2P.AdvertiseEndpoints[0], "203.0.113.99:51820")
+	if cfg.P2P.AdvertiseEndpoints[0] != "203.0.113.99:52888" {
+		t.Errorf("AdvertiseEndpoints[0] = %q, want %q", cfg.P2P.AdvertiseEndpoints[0], "203.0.113.99:52888")
 	}
 }
 
@@ -483,7 +483,7 @@ func TestLoadWithUnknownXraySection(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "config.yaml")
 
-	yamlContent := []byte("node:\n  hostname: test-node\nmesh:\n  port: 51820\nxray:\n  api:\n    address: \"127.0.0.1:10085\"\n  loglevel: warning\nmonitoring:\n  interval: 15\n")
+	yamlContent := []byte("node:\n  hostname: test-node\nmesh:\n  port: 52888\nxray:\n  api:\n    address: \"127.0.0.1:10085\"\n  loglevel: warning\nmonitoring:\n  interval: 15\n")
 	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
 		t.Fatalf("WriteFile error: %v", err)
 	}
@@ -496,8 +496,8 @@ func TestLoadWithUnknownXraySection(t *testing.T) {
 	if cfg.Node.Hostname != "test-node" {
 		t.Errorf("Hostname = %q, want %q", cfg.Node.Hostname, "test-node")
 	}
-	if cfg.Mesh.Port != 51820 {
-		t.Errorf("Port = %d, want 51820", cfg.Mesh.Port)
+	if cfg.Mesh.Port != 52888 {
+		t.Errorf("Port = %d, want 52888", cfg.Mesh.Port)
 	}
 	if cfg.Monitoring.Interval != 15 {
 		t.Errorf("Interval = %d, want 15", cfg.Monitoring.Interval)
@@ -510,7 +510,7 @@ func TestLoadWithMultipleUnknownSections(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "config.yaml")
 
-	yamlContent := []byte("node:\n  hostname: test\nmesh:\n  port: 51820\nxray:\n  foo: bar\nold_section:\n  key: value\nanother_unknown:\n  nested:\n    deep: true\n")
+	yamlContent := []byte("node:\n  hostname: test\nmesh:\n  port: 52888\nxray:\n  foo: bar\nold_section:\n  key: value\nanother_unknown:\n  nested:\n    deep: true\n")
 	if err := os.WriteFile(path, yamlContent, 0600); err != nil {
 		t.Fatalf("WriteFile error: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestSavePermissionDenied(t *testing.T) {
 
 	cfg := &Config{
 		Node: NodeConfig{Hostname: "test"},
-		Mesh: MeshConfig{Port: 51820},
+		Mesh: MeshConfig{Port: 52888},
 	}
 
 	// Attempt to save at a path where "blocker" is treated as a directory.
