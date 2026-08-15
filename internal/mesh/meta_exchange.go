@@ -229,6 +229,16 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 				MaxCircuits:  pm.MaxCircuits,
 				LoadCircuits: pm.LoadCircuits,
 			})
+			// Auto-connect relay-capable peers: a node that joins
+			// via ONE shared node learns the OTHERS (CapRelay=true)
+			// from meta and connects to them directly. Without this,
+			// every node depends on its single seed shared node and
+			// that node is a single point of failure (the phone only
+			// ever sessions with aliyun even though N1 is a shared
+			// node too — learned, but never dialed).
+			if pm.CapRelay {
+				me.node.AutoConnectRelayPeer(pm.Key)
+			}
 		}
 	}
 	// Also learn the sender's own endpoints.
@@ -244,6 +254,12 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 			MaxCircuits:  msg.Self.MaxCircuits,
 			LoadCircuits: msg.Self.LoadCircuits,
 		})
+		// The sender itself may be a relay-capable shared node we
+		// have no session with (e.g. a relay-attached peer we only
+		// know through a third node's flood) — connect to it too.
+		if msg.Self.CapRelay {
+			me.node.AutoConnectRelayPeer(msg.Self.Key)
+		}
 	}
 
 	// Flood the new knowledge to our other peers (bounded TTL). The
