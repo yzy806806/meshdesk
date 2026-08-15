@@ -96,6 +96,13 @@ type Engine struct {
 	// or the conn local address is used as fallback.
 	PublicPunchEP string
 
+	// IdentityKey is our public key (hex). Carried in the punch
+	// coordination frame so the RESPONDER can key the hole by peer
+	// identity and fire OnHoleEstablished — without it the responder
+	// punches back but never establishes the data plane (deadlock:
+	// both sides wait for the other to dial).
+	IdentityKey string
+
 	// TcpPort is our local TCP listen port for TCP hole punching
 	// (both sides listen + connect simultaneously — EasyTier-style).
 	// Advertised in the punch coordination exchange so the peer knows
