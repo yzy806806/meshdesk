@@ -233,13 +233,19 @@ func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {
 	if a.node.PeerZone(peerKey) == "" || !a.node.SameZone(peerKey) {
 		return
 	}
-	// Already have a live session (client or server side, e.g. the
-	// peer punched US first)? Skip — a second simultaneous punch
-	// creates two kx streams (|in+|out) for one peer address whose
-	// replies cross (CLIENT msg2 eaten by the server stream →
-	// "Ed25519 signature verification failed"). First punch wins;
-	// the data plane switches to UDP via the learned endpoint.
-	if a.node.HasPeerSession(peerKey) {
+	// Already have a live UDP hole to this peer (punched endpoint
+	// recorded)? Skip — a second simultaneous punch creates two kx
+	// streams (|in+|out) for one peer address whose replies cross
+	// (CLIENT msg2 eaten by the server stream → "Ed25519 signature
+	// verification failed"). First punch wins; the data plane
+	// switches to UDP via the learned endpoint.
+	//
+	// NOTE: we check holeEndpoints, NOT HasPeerSession — a relay
+	// session (smux over TCP via a shared node) does NOT count as a
+	// direct connection. Without this distinction, the lazy scan
+	// would skip punching any peer that has a relay session,
+	// permanently preventing the upgrade from relay to UDP direct.
+	if a.node.HasUDPHole(peerKey) {
 		return
 	}
 	var endpoints []string
