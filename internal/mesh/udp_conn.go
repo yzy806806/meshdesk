@@ -385,33 +385,30 @@ func (sc *udpStreamConn) handlePacket(data []byte) {
 		payload := make([]byte, plen)
 		copy(payload, data[udpFrameHeaderLen:udpFrameHeaderLen+plen])
 
+		// Single recvMu critical section: store payload + update
+		// delayed-ACK state together (was three lock/unlock pairs).
 		sc.recvMu.Lock()
-		// Only accept frames >= recvNext (drop duplicates/old).
 		if !seqBefore(seq, sc.recvNext) {
 			if _, dup := sc.recvBuf[seq]; !dup {
 				sc.recvBuf[seq] = payload
 			}
-			sc.recvMu.Unlock()
-			sc.signalReady()
-		} else {
-			sc.recvMu.Unlock()
 		}
-		// Delayed ACK: accumulate up to 2 frames or 5ms, then send
-		// one cumulative ACK (halves ACK traffic). Immediate ACK is
-		// sent for out-of-order frames to speed up retransmit.
-		sc.recvMu.Lock()
 		if seqBefore(sc.ackPending, seq) {
 			sc.ackPending = seq
 		}
 		sc.ackCount++
 		needAck := sc.ackCount >= 2
+		var ackSeq uint32
 		if needAck {
 			sc.ackCount = 0
-			ackSeq := sc.ackPending
-			sc.recvMu.Unlock()
+			ackSeq = sc.ackPending
+		}
+		sc.recvMu.Unlock()
+		sc.signalReady()
+
+		if needAck {
 			sc.sendAck(ackSeq)
 		} else {
-			sc.recvMu.Unlock()
 			sc.armAckTimer()
 		}
 
@@ -448,6 +445,14 @@ func (sc *udpStreamConn) armAckTimer() {
 		sc.ackTimer.Stop()
 	}
 	sc.ackTimer = time.AfterFunc(5*time.Millisecond, func() {
+		// Guard against firing after Close: sendAck on a closed
+		// conn writes to a dead UDP socket (harmless error log but
+		// noisy). Check done first.
+		select {
+		case <-sc.done:
+			return
+		default:
+		}
 		sc.recvMu.Lock()
 		ackSeq := sc.ackPending
 		sc.ackCount = 0
@@ -501,27 +506,22 @@ func (sc *udpStreamConn) retransmitLocked() {
 	for seq, f := range sc.inflight {
 		if now.Sub(f.sentAt) >= rto {
 			// Path MTU discovery: if a probe frame times out, the
-			// large payload was likely dropped by the link. Reset
-			// the probe and retransmit with the conservative size
-			// (split the large payload into small frames).
+			// large payload was likely dropped by the link. Drop
+			// the probe frame entirely (do NOT truncate — that
+			// would corrupt the data stream by delivering a partial
+			// payload). The caller's Write loop has already advanced
+			// past this data, so the upper layer (TUN forwarder)
+			// will re-encapsulate and resend the lost IP packet.
 			if sc.probePending && len(f.data) > udpFrameHeaderLen+udpMaxPayload {
 				sc.probePending = false
 				log.Printf("[udpstream] path MTU probe failed: keeping %dB payload (%s)",
 					udpMaxPayload, sc.peer)
-				// Replace the large frame with a small-frame
-				// sequence: trim payload to conservative size.
-				// The remaining data is lost — the caller's Write
-				// loop will resend it in small chunks after this
-				// frame is ACKed (or times out again).
-				payload := f.data[udpFrameHeaderLen:]
-				if len(payload) > udpMaxPayload {
-					payload = payload[:udpMaxPayload]
+				delete(sc.inflight, seq)
+				// Advance baseSeq if this was the oldest frame.
+				if seq == sc.baseSeq {
+					sc.baseSeq = (seq + 1) % udpMaxSeq
 				}
-				frame := make([]byte, udpFrameHeaderLen+len(payload))
-				copy(frame, f.data[:udpFrameHeaderLen])
-				binary.BigEndian.PutUint16(frame[9:11], uint16(len(payload)))
-				copy(frame[udpFrameHeaderLen:], payload)
-				f.data = frame
+				continue
 			}
 			sc.conn.WriteToUDP(f.data, sc.peer)
 			f.sentAt = now
