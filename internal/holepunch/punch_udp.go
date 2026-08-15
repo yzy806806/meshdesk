@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -315,9 +316,18 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		our = e.LocalEP
 	}
 	if our == "" {
+		// conn here is the COORDINATION smux stream — its
+		// LocalAddr() is a virtual address ("smux:local:<id>"),
+		// NOT a real IP:port. Advertise nothing rather than a
+		// garbage endpoint: the peer falls back to blind punching +
+		// observed source ports (peerObsPort), which still works.
+		// A bogus "smux:local:10" made the peer punch a nonsense
+		// address and the hole never opened (observed on the
+		// Redmi phone — STUN unreachable in CN, LocalEP empty).
 		if la := conn.LocalAddr(); la != nil {
 			our = la.String()
-		} else {
+		}
+		if our == "" || !isRealEndpoint(our) {
 			our = "0.0.0.0:0"
 		}
 	}
@@ -568,9 +578,16 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 		our = e.LocalEP
 	}
 	if our == "" || our == "0.0.0.0:0" || our == "[::]:0" {
+		// conn is a COORDINATION smux stream — LocalAddr() is a
+		// virtual address ("smux:local:<id>"), never a real IP:port.
+		// Advertise 0.0.0.0:0 instead so the peer blind-punches +
+		// uses observed source ports rather than a garbage target
+		// (Redmi: STUN unreachable → LocalEP empty → "smux:local:10"
+		// leaked into the reply → hole never opened).
 		if la := conn.LocalAddr(); la != nil {
 			our = la.String()
-		} else {
+		}
+		if our == "" || !isRealEndpoint(our) {
 			our = "0.0.0.0:0"
 		}
 	}
@@ -769,6 +786,28 @@ func shortEP(ep string) string {
 		return ep[:24] + "..."
 	}
 	return ep
+}
+
+// isRealEndpoint reports whether s parses as a real IP:port endpoint.
+// Rejects the smux virtual address form ("smux:local:<id>") that a
+// coordination stream's LocalAddr() returns — advertising that as the
+// punch target makes the peer punch a nonsense address and the hole
+// never opens (Redmi: STUN unreachable → LocalEP empty → LocalAddr
+// leaked "smux:local:10" into the coordination reply).
+func isRealEndpoint(s string) bool {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil {
+		return false
+	}
+	if host == "" || port == "" {
+		return false
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Allow DNS names (e.g. n1.fxxkccp.top) but not smux: pseudo-schemes.
+		return !strings.Contains(host, ":") && !strings.Contains(host, "smux")
+	}
+	return true
 }
 
 var _ = fmt.Sprintf // keep fmt for future use
