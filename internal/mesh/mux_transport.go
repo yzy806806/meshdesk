@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1039,6 +1040,9 @@ func (t *MuxTransport) punchSocketPoller() {
 					}
 					if n < 1 {
 						continue
+					}
+					if os.Getenv("MESHDESK_DEBUG") != "" {
+						log.Printf("[punchpoller] read %dB from %s on %s", n, addr, c.LocalAddr())
 					}
 					// Copy — the buffer is reused.
 					pkt := make([]byte, n)

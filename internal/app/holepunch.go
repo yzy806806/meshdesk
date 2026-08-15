@@ -178,6 +178,7 @@ func (a *App) startHolePunch() {
 				log.Printf("  HolePunch: peer %s has larger key — waiting as SERVER (no dial)", peerKey[:8])
 				return
 			}
+			log.Printf("  HolePunch: dialing UDP data plane to %s (our key %s < peer %s)", target, a.node.Identity().PublicKey[:8], peerKey[:8])
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if stream, err := a.node.DialUDPPeer(ctx, target); err == nil {
