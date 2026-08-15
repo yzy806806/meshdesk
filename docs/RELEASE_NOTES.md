@@ -1,6 +1,44 @@
 # Release Notes
 
-## v1.6.6 — 2026-08-15
+## v1.6.8 — 2026-08-15
+
+**UDP hole data plane completion: two-way punch now establishes a live UDP session (kx over the hole) with MTU auto-upgrade — verified 264ms stable, ~2Mbps (5-7x the relay path).**
+
+### The three-bug chain that kept the hole dead (ed96a94)
+1. **Coordination frame epLen** — v1.6.7 appended the initiator key to the
+   punch frame but the responder computed `epLen = bodyLen-4-8`, leaking the
+   key into the endpoint (peerEP became garbage) and shifting the key
+   offset — responder-side OnHoleEstablished never fired. Added an explicit
+   `ourLen` byte (v1.6.8 frame format) with legacy fallback.
+2. **Responder hole endpoint** — the responder fired OnHoleEstablished with
+   `e.PublicPunchEP` (the TCP mesh port 52888), not the punch socket's UDP
+   data port — the hole was keyed by the wrong target. Now uses the
+   coordination reply's `our` (OutboundPort-resolved).
+3. **Small writes framed as one oversized datagram** — the path-MTU probe
+   set chunkSize=1200 for ANY first write, so the 160B kx msg1 went out as a
+   single 171B frame (>60B) and was dropped by restricted paths (Oracle
+   security group) — the UDP kx never completed. Probe only when
+   `len(p) >= udpPayloadLarge`; small writes always split into ≤40B ARQ
+   frames (51B datagrams).
+
+### Also in this release
+- kx msg1 fragmentation fix (c01f052): small writes never framed as one
+  oversized datagram
+- Responder-side hole establishment with initiator identity in the
+  coordination frame (72ed77a)
+- Punch-poller / UDP-mesh debug logging (MESHDESK_DEBUG=1)
+- HasUDPHole punch gate — relay session no longer blocks re-punching (5c47d44)
+- Blind punch without advertised endpoints — punch fires as soon as the
+  zone gate passes (0cfc788)
+
+### Verified (2026-08-15, live txcloud↔Oracle)
+- Two-way punch → kx 51B frames traverse the hole → `udp key exchange
+  complete` → `UDP multipath live`
+- ping 264.65ms mdev 0.131ms (was 600ms+ jitter via relay)
+- MTU auto-upgrade 40→1200 on the hole (throughput ~2Mbps, 5-7x relay)
+- 6-node mesh all reporting to the single dashboard
+
+## v1.6.7 — 2026-08-15
 
 **Zone boundary = Reality boundary.** Discovery-plane hardening:
 everything that crosses a zone boundary now rides Reality TLS.
