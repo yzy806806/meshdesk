@@ -22,10 +22,25 @@ to txcloud: `PeerZone(AMD)==""` → no punch → stuck on multi-hop relay).
 - Manual config peers (Oracle/AMD added during debugging) removed —
   auto-discovery handles it.
 
+### UDP hole data-plane fixes (v1.6.9 second pass)
+- **Double-SERVER deadlock**: OnHoleEstablished gated DialUDPPeer by
+  peer-key ordering ("smaller key dials"). txcloud's key b142a874 >
+  AMD's 7eb1844e → txcloud waited as SERVER; AMD's routeUDPPacket
+  "peer won" path dropped its |out and ALSO waited → no CLIENT, no kx,
+  ping 100% loss. Fix: both sides dial — the udpMeshManager's
+  first-punch-wins already resolves the |in/|out conflict.
+- **smux keepalive starvation**: the UDP session ran 30s smux pings; a
+  busy TUN stream filled the ARQ window, pings queued behind bulk data,
+  the peer's 90s PingTimeout fired mid-transfer (scp died at ~780KB).
+  Fix: `smuxCfgUDP` disables keepalive — the ARQ layer keeps the path
+  alive.
+
 ### Verified
 - AMD (zone=us, no config peer) auto-learned → punch fires → hole
   established via 203.0.113.30 (previously stuck at 1.5-3s relay).
 - Oracle ARM punch + MTU 1200 + UDP multipath live (358ms stable).
+- txcloud↔AMD: ping 3.28ms 0% loss; scp 50MB in 39.6s (10.1 Mbps,
+  md5 match).
 - All tests + race pass.
 
 ## v1.6.8 — 2026-08-15
