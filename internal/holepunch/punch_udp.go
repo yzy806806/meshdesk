@@ -319,22 +319,29 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	} else {
 		log.Printf("[holepunch] %s: coordination our=%s (outboundPort unknown)", short(peerKey), our)
 	}
-	body := make([]byte, 4+len(our)+8+len(e.IdentityKey))
+	// Frame format: [len u16][nonce u32][ourLen u8][our][tcpPort u16]
+	// [srcPort u16][easySym u8][inc u8][obsPort u16][initiatorKey 64B].
+	// The ourLen byte lets the responder parse the variable-length
+	// endpoint even with the trailing key field (v1.6.7+: epLen =
+	// bodyLen-4-8 was wrong once the key was appended — the key leaked
+	// into the endpoint and the responder's key offset shifted).
+	body := make([]byte, 5+len(our)+8+len(e.IdentityKey))
 	binary.BigEndian.PutUint32(body, nonce)
-	copy(body[4:], our)
-	binary.BigEndian.PutUint16(body[4+len(our):], uint16(e.TcpPort))
-	binary.BigEndian.PutUint16(body[4+len(our)+2:], uint16(e.SrcPort))
-	body[4+len(our)+4] = 0
+	body[4] = uint8(len(our))
+	copy(body[5:], our)
+	binary.BigEndian.PutUint16(body[5+len(our):], uint16(e.TcpPort))
+	binary.BigEndian.PutUint16(body[5+len(our)+2:], uint16(e.SrcPort))
+	body[5+len(our)+4] = 0
 	if e.EasySym {
-		body[4+len(our)+4] = 1
+		body[5+len(our)+4] = 1
 	}
-	body[4+len(our)+5] = e.Inc
-	binary.BigEndian.PutUint16(body[4+len(our)+6:], uint16(e.OutboundPort))
+	body[5+len(our)+5] = e.Inc
+	binary.BigEndian.PutUint16(body[5+len(our)+6:], uint16(e.OutboundPort))
 	// Trailing field: initiator's public key (hex). The coordinator
 	// (responder) uses it to key the hole and fire OnHoleEstablished —
 	// without identity the responder can punch back but never
 	// establishes the data plane (deadlock: both sides wait).
-	copy(body[4+len(our)+8:], e.IdentityKey)
+	copy(body[5+len(our)+8:], e.IdentityKey)
 	req := make([]byte, 2+len(body))
 	binary.BigEndian.PutUint16(req, uint16(len(body)))
 	copy(req[2:], body)
@@ -424,21 +431,43 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	peerInc := 0
 	peerObs := 0
 	peerKey := ""
-	// Trailing bytes carry the peer's TCP punch port + outbound source
-	// port + EasySym/Inc + observed src port + initiator public key
-	// (hex, 64 chars) — strip the fixed fields, the remainder is the key.
-	if bodyLen >= 12 {
+	// Frame: [nonce u32][ourLen u8][our][tcpPort u16][srcPort u16]
+	// [easySym u8][inc u8][obsPort u16][initiatorKey 64B] (v1.6.8).
+	// Legacy frames (pre-ourLen): [nonce u32][our][tcpPort...8][key?].
+	// OurLen byte disambiguates the variable endpoint length — the
+	// old epLen = bodyLen-4-8 leaked the trailing key into the
+	// endpoint once the key field was added (v1.6.7 bug).
+	if bodyLen >= 13 && buf[4] > 0 && int(buf[4]) < bodyLen-12 {
+		// v1.6.8+ format: explicit endpoint length.
+		epLen := int(buf[4])
+		peerEP = string(buf[5 : 5+epLen])
+		if bodyLen >= 5+epLen+12 {
+			peerTCP = int(binary.BigEndian.Uint16(buf[5+epLen:]))
+			peerSrc = int(binary.BigEndian.Uint16(buf[5+epLen+2:]))
+			peerEasySym = buf[5+epLen+4] == 1
+			peerInc = int(int8(buf[5+epLen+5]))
+			peerObs = int(binary.BigEndian.Uint16(buf[5+epLen+6:]))
+			if bodyLen > 5+epLen+12 {
+				peerKey = string(buf[5+epLen+12:])
+			}
+		}
+	} else if bodyLen >= 12 {
+		// Legacy format: endpoint is everything between nonce and the
+		// 8-byte tail (TCP port, src port, easySym, inc, obsPort).
+		// The key (if present, v1.6.7) trails after — detect by
+		// checking the tail bytes look like ports/flags, else treat
+		// the whole tail as endpoint (pre-key frames).
 		epLen := bodyLen - 4 - 8
-		peerEP = string(buf[4 : 4+epLen])
-		peerTCP = int(binary.BigEndian.Uint16(buf[4+epLen:]))
-		peerSrc = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
-		peerEasySym = buf[4+epLen+4] == 1
-		peerInc = int(int8(buf[4+epLen+5]))
-		peerObs = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
-		// Any bytes beyond the fixed 12-field tail are the initiator
-		// key (added in v1.6.7; legacy frames omit it).
-		if bodyLen > 4+epLen+12 {
-			peerKey = string(buf[4+epLen+12:])
+		if epLen > 0 {
+			peerEP = string(buf[4 : 4+epLen])
+			peerTCP = int(binary.BigEndian.Uint16(buf[4+epLen:]))
+			peerSrc = int(binary.BigEndian.Uint16(buf[4+epLen+2:]))
+			peerEasySym = buf[4+epLen+4] == 1
+			peerInc = int(int8(buf[4+epLen+5]))
+			peerObs = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
+			if bodyLen > 4+epLen+12 {
+				peerKey = string(buf[4+epLen+12:])
+			}
 		}
 	}
 	if peerKey != "" {
@@ -621,9 +650,15 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// for the other's kx).
 	if peerKey != "" && e.OnHoleEstablished != nil {
 		// our (this node's) mapped endpoint as seen by the initiator:
-		// the reply we just built. Reuse e.OutboundPort-resolved
-		// PublicPunchEP — it carries the UDP data port.
-		ourEP := e.PublicPunchEP
+		// the reply we built above (our) already carries the UDP data
+		// port (OutboundPort-resolved, lines 509-536). PublicPunchEP
+		// alone may be the TCP mesh port (52888) — the peer's kx/data
+		// egresses from our punch socket (the UDP data port), so the
+		// hole must be keyed by that, not the TCP port.
+		ourEP := our
+		if ourEP == "" {
+			ourEP = e.PublicPunchEP
+		}
 		if ourEP == "" {
 			ourEP = e.LocalEP
 		}
