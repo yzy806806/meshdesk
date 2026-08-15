@@ -330,12 +330,13 @@ func New(cfg *config.Config) (*MeshNode, error) {
 // cluster via configured seeds and establishes smux sessions by dialing
 // shared nodes using the mesh-internal path.
 func (n *MeshNode) Start() error {
-	if n.cfg.P2P.Enabled && !n.cfg.Reality.Enabled {
-		// Ordinary node mode: no Reality TLS, but still needs a TCP
-		// listener for memberlist push/pull sync. Without TCP, other
-		// nodes cannot initiate push/pull state sync, causing them to
-		// mark this node as failed within seconds (NotifyJoin →
-		// Suspect → NotifyLeave).
+	if !n.cfg.Reality.Enabled {
+		// Ordinary node mode: no Reality TLS. Creates a plain TCP
+		// listener for mesh-internal smux sessions (0x4D marker byte)
+		// from other nodes. When P2P is enabled, the same listener
+		// also serves memberlist push/pull sync; when P2P is disabled,
+		// memberlist is skipped entirely and peer discovery relies on
+		// the META exchange (session-based, memberlist-independent).
 		//
 		// We create a plain TCP listener (no Reality multiplexing) on
 		// the gossip port. The MuxTransport's demux logic routes:
