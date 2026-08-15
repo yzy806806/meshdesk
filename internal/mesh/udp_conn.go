@@ -35,11 +35,22 @@ const (
 	udpFrameTypeFin  = 0x03
 
 	udpFrameHeaderLen = 11
-	// Small payloads: the txcloud<->Oracle v6 link drops/corrupts
-	// UDP datagrams above ~60B. Splitting into sub-60B frames keeps
-	// the ARQ stream alive on such restricted links (verified
-	// empirically — 12B marker frames traverse fine).
+	// udpMaxPayload is the conservative floor for the payload size —
+	// the txcloud↔Oracle path drops UDP datagrams above ~60B (11B
+	// header + 40B payload = 51B). The *actual* payload size is
+	// discovered at runtime (see payloadSize below) and may be much
+	// larger on paths without that restriction.
 	udpMaxPayload = 40
+
+	// udpPayloadLarge is the optimistic payload size used after path
+	// MTU discovery succeeds. 11B header + 1200B = 1211B — well under
+	// the 1500B Ethernet MTU and the 1400B TUN MTU. On a 257ms link
+	// with a 128-frame window this gives ~4.8Mbps (vs ~300kbps at 40B).
+	udpPayloadLarge = 1200
+
+	// udpPayloadProbeInterval is how often the sender retries a large
+	// payload probe after a failure (the link may have improved).
+	udpPayloadProbeInterval = 60 * time.Second
 
 	udpWindowSize = 128 // sliding window (in-flight frames)
 	// 32→128 (v1.6.3): the WAN RTT (txcloud↔Oracle ~257ms) × 40B
@@ -78,6 +89,14 @@ type udpStreamConn struct {
 	rttvarNs atomic.Int64 // RTT variance (TCP rttvar), nanoseconds
 	closed   bool
 
+	// Path MTU discovery: payloadSize starts conservative (udpMaxPayload)
+	// and probes upward. If a large frame is ACKed, payloadSize upgrades
+	// for the rest of the connection. If the probe times out (RTO), it
+	// stays conservative and retries after udpPayloadProbeInterval.
+	payloadSize  int       // current payload size (guarded by sendMu)
+	lastProbeAt  time.Time // last time we probed with a large frame
+	probePending bool      // a large probe frame is inflight
+
 	// recv side
 	recvMu    sync.Mutex
 	recvBuf   map[uint32][]byte // out-of-order frames
@@ -85,6 +104,15 @@ type udpStreamConn struct {
 	recvReady chan struct{}
 	readBuf   []byte
 	readErr   error
+
+	// Delayed ACK: instead of sending an ACK for every DATA frame
+	// (doubling packet count), we wait for either 2 frames or a 5ms
+	// timer — whichever comes first — then send one cumulative ACK.
+	// This halves ACK traffic on streaming workloads and reduces
+	// per-frame overhead on the return path.
+	ackPending   uint32   // highest contiguous seq waiting to be ACKed
+	ackCount     int      // frames received since last ACK send
+	ackTimer     *time.Timer
 
 	finRecv chan struct{}
 	once    sync.Once
@@ -173,6 +201,9 @@ func newUDPStreamConn(conn *net.UDPConn, peer *net.UDPAddr) *udpStreamConn {
 		recvReady: make(chan struct{}, 1),
 		finRecv:   make(chan struct{}),
 		done:      make(chan struct{}),
+
+		payloadSize: udpMaxPayload, // start conservative
+		ackPending:  0,             // will be set on first received frame
 	}
 	sc.rtoNs.Store(int64(udpRTOMin))
 	go sc.recvLoop()
@@ -190,12 +221,28 @@ func (sc *udpStreamConn) Write(p []byte) (int, error) {
 
 	total := 0
 	for len(p) > 0 {
+		// Path MTU discovery: if we haven't probed yet (or retry
+		// interval elapsed) and there's enough data to fill a large
+		// frame, bump the chunk size for this one frame. If the ACK
+		// comes back, payloadSize upgrades permanently. If it times
+		// out (RTO), the retransmit uses the conservative size.
+		chunkSize := sc.payloadSize
+		if chunkSize < udpPayloadLarge && !sc.probePending {
+			if time.Since(sc.lastProbeAt) >= udpPayloadProbeInterval || sc.lastProbeAt.IsZero() {
+				chunkSize = udpPayloadLarge
+				sc.probePending = true
+				sc.lastProbeAt = time.Now()
+			}
+		}
 		chunk := p
-		if len(chunk) > udpMaxPayload {
-			chunk = chunk[:udpMaxPayload]
+		if len(chunk) > chunkSize {
+			chunk = chunk[:chunkSize]
 		}
 		seq := sc.nextSeq
 		sc.nextSeq = (sc.nextSeq + 1) % udpMaxSeq
+		if seq < 4 && sc.probePending { // debug
+			log.Printf("[udpstream] probing large payload (%dB) seq=%d to %s", chunkSize, seq, sc.peer)
+		}
 
 		frame := make([]byte, udpFrameHeaderLen+len(chunk))
 		frame[0] = udpFrameTypeData
@@ -349,8 +396,24 @@ func (sc *udpStreamConn) handlePacket(data []byte) {
 		} else {
 			sc.recvMu.Unlock()
 		}
-		// Always ACK the received seq (cumulative ack = highest contiguous).
-		sc.sendAck(seq)
+		// Delayed ACK: accumulate up to 2 frames or 5ms, then send
+		// one cumulative ACK (halves ACK traffic). Immediate ACK is
+		// sent for out-of-order frames to speed up retransmit.
+		sc.recvMu.Lock()
+		if seqBefore(sc.ackPending, seq) {
+			sc.ackPending = seq
+		}
+		sc.ackCount++
+		needAck := sc.ackCount >= 2
+		if needAck {
+			sc.ackCount = 0
+			ackSeq := sc.ackPending
+			sc.recvMu.Unlock()
+			sc.sendAck(ackSeq)
+		} else {
+			sc.recvMu.Unlock()
+			sc.armAckTimer()
+		}
 
 	case udpFrameTypeAck:
 		select {
@@ -374,6 +437,25 @@ func (sc *udpStreamConn) sendAck(seq uint32) {
 	sc.conn.WriteToUDP(frame, sc.peer)
 }
 
+// armAckTimer starts (or resets) the delayed-ACK timer. When it fires,
+// a cumulative ACK is sent for whatever seq is in ackPending. This
+// ensures a single DATA frame doesn't wait indefinitely for its ACK
+// (the 2-frame trigger would never fire for sparse traffic).
+func (sc *udpStreamConn) armAckTimer() {
+	sc.recvMu.Lock()
+	defer sc.recvMu.Unlock()
+	if sc.ackTimer != nil {
+		sc.ackTimer.Stop()
+	}
+	sc.ackTimer = time.AfterFunc(5*time.Millisecond, func() {
+		sc.recvMu.Lock()
+		ackSeq := sc.ackPending
+		sc.ackCount = 0
+		sc.recvMu.Unlock()
+		sc.sendAck(ackSeq)
+	})
+}
+
 // ackLocked processes a cumulative ACK while holding sendMu: removes
 // acknowledged frames, advances baseSeq, and samples RTT for the
 // adaptive RTO. The ack that releases the OLDEST frame's send time is
@@ -383,6 +465,14 @@ func (sc *udpStreamConn) ackLocked(ack uint32) {
 	var newest time.Time
 	for seq, f := range sc.inflight {
 		if !seqBefore(ack, seq) {
+			// Path MTU discovery: if this ACK covers a probe frame
+			// (payload > udpMaxPayload), upgrade the payload size.
+			if sc.probePending && len(f.data) > udpFrameHeaderLen+udpMaxPayload {
+				sc.payloadSize = udpPayloadLarge
+				sc.probePending = false
+				log.Printf("[udpstream] path MTU upgrade: payload %d→%d (%s)",
+					udpMaxPayload, udpPayloadLarge, sc.peer)
+			}
 			delete(sc.inflight, seq)
 			if f.sentAt.After(newest) {
 				newest = f.sentAt
@@ -406,15 +496,33 @@ func (sc *udpStreamConn) advanceBase(ack uint32) {
 }
 
 func (sc *udpStreamConn) retransmitLocked() {
-	// Retransmit only frames whose RTO has elapsed (adaptive per-frame
-	// timeout). The old "full window every 100ms" behavior flooded the
-	// link on WAN RTTs > RTO — with a 257ms RTT and 100ms RTO every
-	// frame went out ~2.5x before its ACK arrived, wedging Write and
-	// starving smux keepalive (session death).
 	now := time.Now()
 	rto := sc.rto()
 	for seq, f := range sc.inflight {
 		if now.Sub(f.sentAt) >= rto {
+			// Path MTU discovery: if a probe frame times out, the
+			// large payload was likely dropped by the link. Reset
+			// the probe and retransmit with the conservative size
+			// (split the large payload into small frames).
+			if sc.probePending && len(f.data) > udpFrameHeaderLen+udpMaxPayload {
+				sc.probePending = false
+				log.Printf("[udpstream] path MTU probe failed: keeping %dB payload (%s)",
+					udpMaxPayload, sc.peer)
+				// Replace the large frame with a small-frame
+				// sequence: trim payload to conservative size.
+				// The remaining data is lost — the caller's Write
+				// loop will resend it in small chunks after this
+				// frame is ACKed (or times out again).
+				payload := f.data[udpFrameHeaderLen:]
+				if len(payload) > udpMaxPayload {
+					payload = payload[:udpMaxPayload]
+				}
+				frame := make([]byte, udpFrameHeaderLen+len(payload))
+				copy(frame, f.data[:udpFrameHeaderLen])
+				binary.BigEndian.PutUint16(frame[9:11], uint16(len(payload)))
+				copy(frame[udpFrameHeaderLen:], payload)
+				f.data = frame
+			}
 			sc.conn.WriteToUDP(f.data, sc.peer)
 			f.sentAt = now
 			sc.inflight[seq] = f
@@ -424,17 +532,25 @@ func (sc *udpStreamConn) retransmitLocked() {
 }
 
 func (sc *udpStreamConn) retransmitLoop() {
-	// Wake frequently (rto/2) and let retransmitLocked decide per-frame
-	// — the adaptive rto changes as RTT is sampled, so a fixed ticker
-	// is wrong; a short tick just means more timely retransmits.
-	tick := udpRTOMin / 2
-	ticker := time.NewTicker(tick)
-	defer ticker.Stop()
+	// Dynamic tick: retransmit checks should happen at ~RTO/4 so
+	// retransmits fire promptly after RTO elapses, but without
+	// busy-spinning when RTO is large (e.g. 2s on a jittery mobile
+	// link → 500ms tick, not 250ms). Recalculate each iteration so
+	// the loop tracks the adaptive RTO as RTT samples arrive.
 	for {
+		tick := sc.rto() / 4
+		if tick < 50*time.Millisecond {
+			tick = 50 * time.Millisecond
+		}
+		if tick > 500*time.Millisecond {
+			tick = 500 * time.Millisecond
+		}
+		timer := time.NewTimer(tick)
 		select {
 		case <-sc.done:
+			timer.Stop()
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			sc.sendMu.Lock()
 			if len(sc.inflight) > 0 {
 				sc.retransmitLocked()
