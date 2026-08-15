@@ -222,12 +222,29 @@ func (sc *udpStreamConn) Write(p []byte) (int, error) {
 	total := 0
 	for len(p) > 0 {
 		// Path MTU discovery: if we haven't probed yet (or retry
-		// interval elapsed) and there's enough data to fill a large
-		// frame, bump the chunk size for this one frame. If the ACK
-		// comes back, payloadSize upgrades permanently. If it times
-		// out (RTO), the retransmit uses the conservative size.
+		// interval elapsed) AND there's enough buffered data to fill
+		// a large frame, bump the chunk size for this one frame. If
+		// the ACK comes back, payloadSize upgrades permanently. If
+		// it times out (RTO), the retransmit uses the conservative
+		// size.
+		//
+		// CRITICAL: probe ONLY when len(p) >= udpPayloadLarge. A
+		// small write (e.g. the 160B kx msg1) must be SPLIT into
+		// ≤40B ARQ frames — sending it as one oversized frame would
+		// be dropped by restricted paths (Oracle security group drops
+		// >60B) and the kx never completes. The probe exists to test
+		// the path, not to change framing of small messages.
 		chunkSize := sc.payloadSize
-		if chunkSize < udpPayloadLarge && !sc.probePending {
+		// After a successful MTU upgrade, large buffers still use the
+		// big payload; small writes (kx frames, smux headers) must
+		// ALWAYS split into ≤40B frames — restricted paths (Oracle
+		// >60B security group) drop oversized single frames and the
+		// kx never completes. Only messages that can fill the large
+		// frame benefit from the upgrade.
+		if len(p) < udpPayloadLarge {
+			chunkSize = udpMaxPayload
+		}
+		if chunkSize < udpPayloadLarge && !sc.probePending && len(p) >= udpPayloadLarge {
 			if time.Since(sc.lastProbeAt) >= udpPayloadProbeInterval || sc.lastProbeAt.IsZero() {
 				chunkSize = udpPayloadLarge
 				sc.probePending = true
