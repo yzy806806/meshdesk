@@ -223,6 +223,10 @@ const DefaultTunMTU = 1400
 // web handlers reference one source of truth instead of magic numbers.
 const DefaultMeshPort = 52888
 
+// DefaultIdentityPath is the default path to the node's Ed25519 identity
+// file. When node.identity_file is not set in config, this path is used.
+const DefaultIdentityPath = "/etc/meshdesk/identity.pem"
+
 // ProxyConfig holds settings for the anonymous proxy subsystem
 // (multi-path dispersed transport). See docs/PROXY_DESIGN.md.
 type ProxyConfig struct {
@@ -942,14 +946,14 @@ const DefaultTOTPStoreDir = "/var/lib/meshdesk/totp"
 func Default() *Config {
 	return &Config{
 		Node: NodeConfig{
-			WebAddr: "",
+			WebAddr:      "",
+			IdentityFile: DefaultIdentityPath,
 		},
 		Mesh: MeshConfig{
-			Port:       51820,
-			GossipPort: 7946,
+			Port:       DefaultMeshPort,
 			TunMTU:     DefaultTunMTU,
 			DNSPort:    5353,
-			DNSEnabled: true, // hostname.mesh → VirtualIP resolution
+			DNSEnabled: true,
 		},
 		Monitoring: MonitoringConfig{
 			Interval: 15,
@@ -969,7 +973,6 @@ func Default() *Config {
 			TOTPIssuer:    "MeshDesk",
 			TOTPWindow:    1,
 			StepUpTimeout: 300,
-			// Require2FA defaults to false (2FA is opt-in).
 		},
 		Proxy: ProxyConfig{
 			ChunkerStrategy: "bounded-4k-64k",
@@ -980,19 +983,11 @@ func Default() *Config {
 				OrphanTimeout:       30,
 				MaxReassemblyWindow: 256,
 			},
-			SS: SSListenerConfig{
-				// SS is disabled by default; SOCKS5 over Reality TLS
-				// is the default proxy entry. Set enabled: true in
-				// config to use the legacy SS listener.
-				Enabled: false,
-			},
 			Exit: ExitConfig{
 				AllowedPorts:       []int{80, 443},
-				AllowAllPorts:      false,
 				AuditRetentionDays: 7,
 			},
 			Relay: RelayNodeConfig{
-				Enabled:       false, // Nodes are relays only when explicitly enabled.
 				JitterMinMs:   5,
 				JitterMaxMs:   50,
 				MaxCircuits:   1024,
@@ -1004,19 +999,11 @@ func Default() *Config {
 			},
 		},
 		P2P: P2pConfig{
-			Enabled:               false,
-			NatTraversal:          true,
-			StunServers:           []string{"stun.l.google.com:19302", "stun.cloudflare.com:3478"},
-			RelayMode:             "auto",
-			MaxRelayHops:          2,
-			JoinApproval:          "auto",
-			GossipInterval:        30,
-			GossipProbeInterval:   1,
-			DirectReprobeInterval: 120,
-			MaxPeers:              256,
+			Enabled:     false, // memberlist deprecated — META replaces discovery
+			RelayMode:   "auto",
+			MaxRelayHops: 2,
 		},
 		ACL: ACLConfig{
-			Enabled:       false,
 			DefaultPolicy: ACLActionAllow,
 		},
 	}
@@ -1051,9 +1038,6 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Mesh.Port == 0 {
 		cfg.Mesh.Port = DefaultMeshPort
-	}
-	if cfg.Mesh.GossipPort == 0 {
-		cfg.Mesh.GossipPort = DefaultMeshPort
 	}
 	// TUN config defaults for MeshConfig fields.
 	if cfg.Mesh.TunMTU == 0 {

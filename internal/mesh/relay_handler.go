@@ -391,11 +391,8 @@ func (h *RelayHandler) multiHopRelay(initiatorConn net.Conn, req *MeshRelayReque
 		path = append(path, h.node.LocalPublicKey())
 	}
 
-	// Depth bound (config max_relay_hops; default 2).
+	// Depth bound (default 2).
 	maxHops := 2
-	if h.node != nil && h.node.cfg != nil && h.node.cfg.P2P.MaxRelayHops > 0 {
-		maxHops = h.node.cfg.P2P.MaxRelayHops
-	}
 	if len(path) > maxHops {
 		log.Printf("[mesh-relay] multi-hop: max relay hops (%d) exceeded for target %s (tunnel=%s)",
 			maxHops, req.TargetKey[:min(len(req.TargetKey), 16)]+"...", tunnelID[:min(len(tunnelID), 16)])
