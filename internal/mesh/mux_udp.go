@@ -256,6 +256,10 @@ func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	meshKey := key + "|in"
 	outKey := key + "|out"
 
+	if os.Getenv("MESHDESK_DEBUG") != "" {
+		log.Printf("[udpmesh] routeUDPPacket %dB from %s (type=%d)", len(data), addr, data[0])
+	}
+
 	m.mu.Lock()
 	sc, exists := m.streams[meshKey]
 	if !exists {
