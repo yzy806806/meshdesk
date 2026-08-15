@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"net"
-	"os"
 	"strconv"
 	"time"
 
@@ -170,18 +169,18 @@ func (a *App) startHolePunch() {
 			// other simultaneously. If BOTH dialed (|in + |out kx
 			// streams for one address), replies match |in first and
 			// each CLIENT reads the OTHER's CLIENT msg1 → Ed25519
-			// signature failures on both sides. First-punch-wins by
-			// peer-key ordering: the peer with the SMALLER key dials
-			// (CLIENT kx), the LARGER key waits and serves the
-			// incoming stream (SERVER kx via handleConnection). Only
-			// one kx runs per peer pair.
-			if a.node.Identity().PublicKey > peerKey {
-				log.Printf("  HolePunch: peer %s has larger key — waiting as SERVER (no dial)", peerKey[:8])
-				return
-			}
-			if os.Getenv("MESHDESK_DEBUG") != "" {
-				log.Printf("  HolePunch: dialing UDP data plane to %s (our key %s < peer %s)", target, a.node.Identity().PublicKey[:8], peerKey[:8])
-			}
+			// signature failures on both sides.
+			//
+			// The udpMeshManager's first-punch-wins (routeUDPPacket:
+			// "peer won, dropping our |out") already resolves the
+			// conflict at the stream layer — the losing side serves
+			// the winner as SERVER via a fresh |in stream. So BOTH
+			// sides can safely dial here: exactly one kx survives.
+			// A key-based gate here would be WRONG: it can make BOTH
+			// sides wait (each thinking it is the SERVER), deadlocking
+			// the data plane (observed: txcloud↔AMD — txcloud's key
+			// b142 > AMD's 7eb1 → txcloud waited; AMD peer-won →
+			// also waited → no kx ever, ping 100% loss).
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if stream, err := a.node.DialUDPPeer(ctx, target); err == nil {
