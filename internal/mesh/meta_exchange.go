@@ -85,6 +85,9 @@ type MetaExchanger struct {
 	seen     map[string]uint64 // "source|seq" dedup for flood
 	listener net.Listener
 	done     chan struct{}
+
+	bcastMu       sync.Mutex
+	lastBroadcast time.Time // throttle for Broadcast() (5s min spacing)
 }
 
 // RegisterMetaExchanger starts the session-based meta exchange.
@@ -306,10 +309,24 @@ func (me *MetaExchanger) NotifyPeerJoined(peerKey string) {
 
 // Broadcast re-sends our full knowledge to every session peer. Called
 // when local state that peers must learn CHANGED (e.g. this node
-// became/learned a collector): meta is otherwise only exchanged once
-// per session establishment, so a peer that connected before the
-// change would never hear about it.
+// became/learned a collector, or a new session was established — the
+// peer graph changed and peers that connected earlier must learn the
+// newcomer's zone/endpoints/collector capability). Meta is otherwise
+// only exchanged once per session establishment.
+//
+// Throttled: a flapping session (mobile reconnect every few minutes)
+// would otherwise trigger a full broadcast per reconnect. 5s minimum
+// spacing keeps the mesh quiet while still converging quickly.
 func (me *MetaExchanger) Broadcast() {
+	now := time.Now()
+	me.bcastMu.Lock()
+	if !me.lastBroadcast.IsZero() && now.Sub(me.lastBroadcast) < 5*time.Second {
+		me.bcastMu.Unlock()
+		return
+	}
+	me.lastBroadcast = now
+	me.bcastMu.Unlock()
+
 	msg := MetaMessage{
 		Type:  "meta",
 		Self:  me.localMeta(),

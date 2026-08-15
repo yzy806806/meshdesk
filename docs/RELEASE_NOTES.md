@@ -1,5 +1,33 @@
 # Release Notes
 
+## v1.6.9 — 2026-08-15
+
+**META auto-discovery fix: new peers propagate to the whole mesh — zone learned automatically, punching fires without manual config peers.**
+
+### The one-shot flood bug
+Meta exchange only sent knowledge to a NEW session peer at establishment
+time (`NotifyPeerJoined`). When a relay-attached peer joined an
+intermediary AFTER that intermediary's session with us was set up, we
+never learned the newcomer — no VIP, no zone, no endpoints. The
+fail-closed zone gate then blocked punching forever (AMD was invisible
+to txcloud: `PeerZone(AMD)==""` → no punch → stuck on multi-hop relay).
+
+### Fix (session-established → Broadcast)
+- `SetSessionEstablishedHandler` now also calls `me.Broadcast()` after
+  `NotifyPeerJoined`: the peer graph changed, so every session peer
+  re-learns the newcomer's zone/endpoints/collector capability.
+- `Broadcast()` throttled to 5s minimum spacing — a flapping mobile
+  session (reconnect every few minutes) would otherwise trigger a full
+  broadcast per reconnect.
+- Manual config peers (Oracle/AMD added during debugging) removed —
+  auto-discovery handles it.
+
+### Verified
+- AMD (zone=us, no config peer) auto-learned → punch fires → hole
+  established via 161.118.141.101 (previously stuck at 1.5-3s relay).
+- Oracle ARM punch + MTU 1200 + UDP multipath live (358ms stable).
+- All tests + race pass.
+
 ## v1.6.8 — 2026-08-15
 
 **UDP hole data plane completion: two-way punch now establishes a live UDP session (kx over the hole) with MTU auto-upgrade — verified 264ms stable, ~2Mbps (5-7x the relay path).**
