@@ -1498,7 +1498,7 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 		return nil, fmt.Errorf("mesh: udp create SecureConn with %s: %w", address, err)
 	}
 
-	smuxSession, err := smux.Client(secureConn, smuxCfg())
+	smuxSession, err := smux.Client(secureConn, smuxCfgUDP())
 	if err != nil {
 		secureConn.Close()
 		return nil, fmt.Errorf("mesh: udp smux handshake with %s: %w", address, err)
@@ -1535,6 +1535,22 @@ func (n *MeshNode) DialUDPPeer(ctx context.Context, address string) (net.Conn, e
 		return nil, fmt.Errorf("mesh: udp write port frame to %s: %w", address, err)
 	}
 	return stream, nil
+}
+
+// smuxCfgUDP returns the smux config for sessions carried over a UDP
+// hole. Keepalive pings are DISABLED here: on a UDP-hole session the
+// ARQ layer (udpStreamConn) already keeps the path alive with its own
+// retransmit/probe machinery, and the smux ping frames would queue
+// BEHIND bulk data in the ARQ window — a busy TUN stream starves the
+// pings, the peer's PingTimeout (90s) fires while data is still
+// flowing, and the session dies mid-transfer (observed: scp over the
+// txcloud↔AMD hole aborted at ~780KB with "keepalive timeout —
+// session dead (no frames for 1m30s)").
+func smuxCfgUDP() smux.Config {
+	cfg := smux.DefaultConfig()
+	cfg.PingInterval = 0 // disabled — ARQ keeps the path alive
+	cfg.MaxFrameSize = 16384
+	return cfg
 }
 
 // smuxCfg returns the smux config with keepalive enabled. The
