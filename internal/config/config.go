@@ -958,6 +958,9 @@ func Load(path string) (*Config, error) {
 		if len(cfg.Reality.ShortIDs) == 0 {
 			cfg.Reality.ShortIDs = []string{"0123456789abcdef"}
 		}
+		if cfg.Reality.ListenPort == 0 {
+			cfg.Reality.ListenPort = cfg.Mesh.Port
+		}
 	}
 	// TUN defaults: enabled by default with standard mesh CIDR.
 	if cfg.Mesh.TunName == "" {
