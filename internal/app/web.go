@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/proxy"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/web"
@@ -52,7 +53,9 @@ func (a *App) startWeb() {
 	// Gossip liveness is no longer available (gossip layer removed);
 	// topology falls back to monitor-only liveness (existing behavior).
 
-	// 3D topology edges: no link map available (gossip removed).
+	// 3D topology: META-driven liveness + path info (replaces gossip).
+	a.webLiveness = &meshLiveness{node: a.node}
+	a.topoPaths = &meshTopologyPaths{node: a.node}
 
 	webServer, err := web.New(web.Deps{
 		Config:               a.cfg,
@@ -218,4 +221,39 @@ func (g *nodeJoinTokenGenerator) JoinServerURL() string {
 
 func (g *nodeJoinTokenGenerator) JoinEnabled() bool {
 	return g.cfg.Join.Enabled && g.cfg.Reality.Enabled
+}
+
+// meshLiveness implements web.PeerLiveness using smux session state
+// (replaces the deleted gossipLiveness).
+type meshLiveness struct {
+	node *mesh.MeshNode
+}
+
+func (l *meshLiveness) IsAlive(peerID string) bool {
+	return l.node.HasPeerSession(peerID)
+}
+
+func (l *meshLiveness) AlivePeerIDs() []string {
+	return l.node.SessionPeerKeys()
+}
+
+func (l *meshLiveness) PeerHostname(peerID string) string {
+	// Look up from META-learned hostnames (replaces gossip NodeMeta).
+	hostnames := l.node.PeerHostnames()
+	return hostnames[peerID]
+}
+
+// meshTopologyPaths implements topology.TopologyPathInfo using the
+// mesh node's RTT cache (replaces the deleted linkMapTopologyPaths).
+type meshTopologyPaths struct {
+	node *mesh.MeshNode
+}
+
+func (p *meshTopologyPaths) PeerLatency(sourceID, targetID string) float64 {
+	// For the local node → peer, use PeerRTT.
+	// For peer → peer, we don't have inter-peer RTT; return -1.
+	if sourceID == p.node.Identity().PublicKey {
+		return float64(p.node.PeerRTT(targetID).Milliseconds())
+	}
+	return -1
 }
