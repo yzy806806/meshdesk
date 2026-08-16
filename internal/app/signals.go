@@ -1,12 +1,10 @@
 package app
 
 import (
-	"context"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/yzy806806/meshdesk/internal/config"
 )
@@ -69,13 +67,6 @@ func (a *App) notifyStopping() {
 	}
 }
 
-// sendLeaveNotice sends a graceful gossip leave notice before teardown.
-func (a *App) sendLeaveNotice() {
-	if a.gossipLayer != nil && a.gossipLayer.IsStarted() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		if err := a.gossipLayer.SendLeaveNotice(ctx); err != nil {
-			log.Printf("Warning: leave notice: %v", err)
-		}
-	}
-}
+// sendLeaveNotice sends a graceful leave notice before teardown.
+// The gossip layer has been removed; this is now a no-op.
+func (a *App) sendLeaveNotice() {}

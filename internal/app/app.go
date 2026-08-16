@@ -23,7 +23,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/logging"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
-	"github.com/yzy806806/meshdesk/internal/p2p"
 	"github.com/yzy806806/meshdesk/internal/proxy"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/topology"
@@ -44,21 +43,10 @@ type App struct {
 	BuildTime string
 
 	// Core mesh.
-	node             *mesh.MeshNode
-	gossipLayer      *p2p.GossipLayer
-	natTraversal     *p2p.NatTraversal
-	tunForwarder     *mesh.TunForwarder
-	relayHandler     *mesh.RelayHandler
-	metaExchanger    *mesh.MetaExchanger
-	wgDelegate       *p2p.WireGuardDelegate
-	gossipP2pCfg     p2p.P2pConfig
-	peerCache        *p2p.PeerCache
-	relayPathBuilder p2p.RelayPathBuilder
-
-	// NAT traversal join/leave handlers (shared with TUN integration;
-	// SetJoinHandler overwrites, so they merge into one closure).
-	natJoinHandler  func(meta *p2p.NodeMeta)
-	natLeaveHandler func(peerKey string)
+	node          *mesh.MeshNode
+	tunForwarder  *mesh.TunForwarder
+	relayHandler  *mesh.RelayHandler
+	metaExchanger *mesh.MetaExchanger
 
 	// Auto-dial dedup (join handler may re-fire during memberlist flaps).
 	autoDialMu       sync.Mutex

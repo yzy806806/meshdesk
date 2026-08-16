@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yzy806806/meshdesk/internal/p2p"
 	"github.com/yzy806806/meshdesk/internal/proxy"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/web"
@@ -50,19 +49,10 @@ func (a *App) startWeb() {
 	}
 
 	// Create and start the web server.
-	// Wire gossip liveness into the web server for topology.
-	if a.gossipLayer != nil {
-		a.webLiveness = &gossipLiveness{
-			gl:       a.gossipLayer,
-			localKey: a.node.Identity().PublicKey,
-		}
-	}
+	// Gossip liveness is no longer available (gossip layer removed);
+	// topology falls back to monitor-only liveness (existing behavior).
 
-	// Wire the 3D topology edges to the global link map (P1):
-	// edges = measured direct links between nodes.
-	if a.gossipLayer != nil {
-		a.topoPaths = &linkMapTopologyPaths{lm: a.gossipLayer.LinkMap()}
-	}
+	// 3D topology edges: no link map available (gossip removed).
 
 	webServer, err := web.New(web.Deps{
 		Config:               a.cfg,
@@ -178,11 +168,6 @@ func (a *App) startWeb() {
 	}
 }
 
-type gossipLiveness struct {
-	gl       *p2p.GossipLayer
-	localKey string
-}
-
 type entryNodeStatusAdapter struct {
 	entryNode *proxy.EntryNode
 }
@@ -207,40 +192,6 @@ func (g *nodeJoinTokenGenerator) BinaryDownloadURL(arch string) string {
 		arch = "amd64"
 	}
 	return fmt.Sprintf("https://github.com/yzy806806/meshdesk/releases/latest/download/meshdesk-linux-%s", arch)
-}
-
-func (g *gossipLiveness) IsAlive(peerID string) bool {
-	if peerID == g.localKey {
-		return true // local node is always alive
-	}
-	return g.gl.Events().GetPeerMeta(peerID) != nil
-}
-
-func (g *gossipLiveness) AlivePeerIDs() []string {
-	peers := g.gl.Events().AllKnownPeers()
-	ids := make([]string, 0, len(peers)+1)
-	if g.localKey != "" {
-		ids = append(ids, g.localKey)
-	}
-	for _, p := range peers {
-		ids = append(ids, p.PublicKey)
-	}
-	return ids
-}
-
-func (g *gossipLiveness) PeerHostname(peerID string) string {
-	if peerID == g.localKey {
-		// Return local node's hostname from gossip meta.
-		if meta := g.gl.LocalMeta(); meta != nil {
-			return meta.Hostname
-		}
-		return ""
-	}
-	meta := g.gl.Events().GetPeerMeta(peerID)
-	if meta == nil {
-		return ""
-	}
-	return meta.Hostname
 }
 
 func (g *nodeJoinTokenGenerator) JoinServerURL() string {
