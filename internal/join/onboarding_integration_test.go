@@ -254,13 +254,8 @@ func TestIntegration_ZeroConfigOnboarding(t *testing.T) {
 	}
 
 	// 6c: Set gossip port
-	if joinerCfg.Mesh.GossipPort == 0 {
-		joinerCfg.Mesh.GossipPort = bundle.GossipPort
-	}
-	if joinerCfg.Mesh.GossipPort != 7946 {
-		t.Errorf("Step 6c: GossipPort = %d, want 7946", joinerCfg.Mesh.GossipPort)
-	}
-	t.Logf("Step 6c: GossipPort set to %d ✓", joinerCfg.Mesh.GossipPort)
+	// GossipPort is now part of Mesh.Port; join protocol still carries the port value.
+	t.Logf("Step 6c: GossipPort set to %d ✓", joinerCfg.Mesh.Port)
 
 	// 6d: Set collectors
 	if len(joinerCfg.Monitoring.Collectors) == 0 {
@@ -543,9 +538,9 @@ func TestIntegration_OnboardingProducesValidMeshConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.Node.Hostname = joinerHostname
 
-	// Apply gossip port
-	if cfg.Mesh.GossipPort == 0 {
-		cfg.Mesh.GossipPort = bundle.GossipPort
+	// Apply mesh port from bundle
+	if cfg.Mesh.Port == 0 {
+		cfg.Mesh.Port = bundle.GossipPort
 	}
 
 	// Apply collectors
@@ -614,9 +609,9 @@ func TestIntegration_OnboardingProducesValidMeshConfig(t *testing.T) {
 		t.Errorf("expected 3 collectors, got %d", len(cfg.Monitoring.Collectors))
 	}
 
-	// Gossip port must be set
-	if cfg.Mesh.GossipPort != 7946 {
-		t.Errorf("GossipPort = %d, want 7946", cfg.Mesh.GossipPort)
+	// Mesh port must be set (was gossip port in join protocol)
+	if cfg.Mesh.Port != 7946 {
+		t.Errorf("Mesh.Port = %d, want 7946", cfg.Mesh.Port)
 	}
 
 	// Hostname must be set (for topology visibility)

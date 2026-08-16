@@ -3,25 +3,21 @@
 // This file implements the EntryNode — the top-level orchestrator that
 // wires together all proxy subsystems on an entry node:
 //
-//   - Shadowsocks listener (accepts user traffic, decrypts SS protocol)
 //   - ECDH circuit setup (establishes end-to-end encryption with exit)
 //   - Path selection (picks two disjoint relay paths, manual or auto)
 //   - Dispatcher (chunks data, encrypts, dispatches across paths)
 //   - Mesh transport (dials relay/exit connections via MeshNode.Dial)
-//   - CF Tunnel lifecycle (starts/stops cloudflared for TLS camouflage)
-//   - Security event sink (shared by SS, relay, and exit for alerting)
+//   - Security event sink (shared by relay and exit for alerting)
 //
-// The EntryNode is the "brain" of the entry point: it accepts SS
-// connections, sets up circuits, selects paths, and runs dispatchers.
+// The EntryNode is the "brain" of the entry point: it sets up circuits,
+// selects paths, and runs dispatchers.
 //
 // Design (PROXY_DESIGN.md §1.1, §2, §1.8):
 //
-//   - PER-CONNECTION CIRCUIT: Each SS connection gets its own circuit
+//   - PER-CONNECTION CIRCUIT: Each connection gets its own circuit
 //     with a unique E2E key derived from ECDH with the exit node.
 //   - TWO DISJOINT PATHS: Data is split across two relay paths to
 //     disperse traffic and resist traffic analysis.
-//   - CF TUNNEL CAMOUFLAGE: The SS listener is exposed via cloudflared
-//     so it appears as normal HTTPS traffic to the GFW.
 //   - CIRCUIT LIFECYCLE: Circuits are created on connection accept,
 //     kept alive with periodic pings, and torn down on disconnect.
 package proxy
@@ -41,9 +37,6 @@ const entryHandshakeTimeout = 10 * time.Second
 
 // EntryNodeConfig holds configuration for the EntryNode orchestrator.
 type EntryNodeConfig struct {
-	// SSConfig configures the Shadowsocks listener.
-	SSConfig SSConfig
-
 	// CircuitCfg holds circuit lifecycle parameters.
 	CircuitCfg CircuitConfig
 
@@ -83,11 +76,7 @@ type EntryNodeConfig struct {
 	// In production, this should be wired to MeshNode.Dial.
 	DialFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
-	// CFTunnel is the Cloudflare Tunnel manager, if the entry node
-	// uses a CF Tunnel for TLS camouflage. May be nil if no tunnel.
-	CFTunnel *CFTunnelManager
-
-	// SecSink is the shared security event sink for SS listener,
+	// SecSink is the shared security event sink for
 	// relay, and exit. May be nil if alerting is not configured.
 	SecSink *SecurityEventSink
 
@@ -108,10 +97,6 @@ type EntryNodeConfig struct {
 // DefaultEntryNodeConfig returns sensible defaults for an entry node.
 func DefaultEntryNodeConfig() EntryNodeConfig {
 	return EntryNodeConfig{
-		SSConfig: SSConfig{
-			Cipher:     CipherChaCha20IETFPoly1305,
-			ListenAddr: "127.0.0.1:8388",
-		},
 		CircuitCfg:        DefaultCircuitConfig(),
 		ChunkerStrategy:   "bounded-4k-64k",
 		ChunkerCfg:        DefaultChunkerConfig(),
@@ -139,15 +124,11 @@ type session struct {
 }
 
 // EntryNode is the top-level orchestrator for a proxy entry node.
-// It manages the SS listener, circuit setup, path selection, and
-// per-connection dispatchers.
+// It manages circuit setup, path selection, and per-connection dispatchers.
 type EntryNode struct {
 	cfg    EntryNodeConfig
 	mu     sync.RWMutex
 	closed bool
-
-	// ssListener is the Shadowsocks listener.
-	ssListener net.Listener
 
 	// sessions tracks active proxy sessions.
 	sessions map[string]*session
@@ -231,8 +212,7 @@ func (e *EntryNode) SetSecurityEventSink(sink *SecurityEventSink) {
 	e.secSink = sink
 }
 
-// Start brings up the entry node: starts the CF Tunnel (if configured),
-// selects paths (if auto mode), creates the SS listener, and begins
+// Start brings up the entry node: selects paths (if auto mode), and begins
 // accepting connections.
 func (e *EntryNode) Start() error {
 	e.mu.Lock()
@@ -241,21 +221,7 @@ func (e *EntryNode) Start() error {
 		return fmt.Errorf("entry node is closed")
 	}
 
-	// Phase 1: Start CF Tunnel if configured.
-	if e.cfg.CFTunnel != nil {
-		e.mu.Unlock()
-		if err := e.cfg.CFTunnel.Start(e.ctx); err != nil {
-			return fmt.Errorf("start CF tunnel: %w", err)
-		}
-		// Wait for tunnel to become ready (with a reasonable timeout).
-		if err := e.cfg.CFTunnel.WaitForReady(15 * time.Second); err != nil {
-			// Tunnel didn't become ready — log but continue.
-			// The SS listener can still accept direct connections.
-		}
-		e.mu.Lock()
-	}
-
-	// Phase 2: Select paths.
+	// Phase 1: Select paths.
 	if e.cfg.PathSelectionMode == "auto" {
 		if e.cfg.PathSelector == nil {
 			e.mu.Unlock()
@@ -288,91 +254,15 @@ func (e *EntryNode) Start() error {
 	}
 	e.mu.Unlock()
 
-	// Phase 3: Create SS listener.
-	listener, err := NewSSListener(e.cfg.SSConfig)
-	if err != nil {
-		return fmt.Errorf("create SS listener: %w", err)
-	}
-
-	// Wire security event sink to SS listener.
-	if e.secSink != nil {
-		if ssl, ok := listener.(*ssListener); ok {
-			ssl.SetSecurityEventSink(e.secSink)
-		}
-	}
-
-	e.mu.Lock()
-	e.ssListener = listener
-	e.mu.Unlock()
-
-	// Phase 4: Start accepting connections in a goroutine.
-	go e.acceptLoop()
-
+	// Phase 2: Ready to accept connections (via HandleConnection).
 	return nil
 }
 
-// acceptLoop accepts incoming SS connections and spawns a goroutine
-// per connection to handle circuit setup and dispatching.
-func (e *EntryNode) acceptLoop() {
-	for {
-		e.mu.RLock()
-		listener := e.ssListener
-		closed := e.closed
-		e.mu.RUnlock()
-
-		if closed || listener == nil {
-			return
-		}
-
-		conn, err := listener.Accept()
-		if err != nil {
-			// Check if we're shutting down.
-			e.mu.RLock()
-			closed := e.closed
-			e.mu.RUnlock()
-			if closed {
-				return
-			}
-			// Transient error — continue accepting.
-			continue
-		}
-
-		go e.handleConnection(conn)
-	}
-}
-
-// handleConnection processes a single SS connection end-to-end:
-//  1. Read the SS target address
-//  2. Set up a circuit with the exit node (ECDH)
-//  3. Create a dispatcher and dispatch data across two paths
-//  4. Read response from exit and write back to SS client
-func (e *EntryNode) handleConnection(conn net.Conn) {
-	// The ssListener already wrapped the connection in an ssSession.
-	// We need to read the target address from it.
-	type targetReader interface {
-		ReadTarget() (string, error)
-	}
-
-	var targetAddr string
-	if tr, ok := conn.(targetReader); ok {
-		addr, err := tr.ReadTarget()
-		if err != nil {
-			if e.secSink != nil {
-				e.secSink.Report(SecurityEvent{
-					Type:        SecEventSSConnError,
-					Description: fmt.Sprintf("failed to read SS target: %v", err),
-					SourceIP:    conn.RemoteAddr().String(),
-				})
-			}
-			conn.Close()
-			return
-		}
-		targetAddr = addr
-	} else {
-		conn.Close()
-		return
-	}
-
+// HandleConnection processes a single proxy connection end-to-end:
+//  1. Set up a circuit with the exit node (ECDH)
+//  2. Create a dispatcher and dispatch data across two paths
+//  3. Read response from exit and write back to client
+func (e *EntryNode) HandleConnection(conn net.Conn, targetAddr string) {
 	// Set up the circuit with the exit node.
 	// When CircuitManager is configured, delegate circuit creation to it.
 	// Otherwise, fall back to the legacy inline setupCircuit.
@@ -821,9 +711,8 @@ func (e *EntryNode) teardownCircuit(sess *session) {
 	}
 }
 
-// Close shuts down the entry node: stops accepting connections,
-// tears down all active circuits, stops the CF Tunnel, and closes
-// the SS listener.
+// Close shuts down the entry node: tears down all active circuits
+// and shuts down the CircuitManager.
 func (e *EntryNode) Close() error {
 	e.mu.Lock()
 	if e.closed {
@@ -836,8 +725,6 @@ func (e *EntryNode) Close() error {
 		sessions[k] = v
 	}
 	e.sessions = make(map[string]*session)
-	ssListener := e.ssListener
-	e.ssListener = nil
 	e.mu.Unlock()
 
 	// Cancel the entry node context (cancels all session goroutines).
@@ -853,16 +740,6 @@ func (e *EntryNode) Close() error {
 		}(sess)
 	}
 	wg.Wait()
-
-	// Close the SS listener.
-	if ssListener != nil {
-		ssListener.Close()
-	}
-
-	// Stop the CF Tunnel.
-	if e.cfg.CFTunnel != nil {
-		e.cfg.CFTunnel.Stop()
-	}
 
 	// Shutdown the CircuitManager (tears down all tracked circuits,
 	// zeros keys, emits CIRCUIT_CLOSED events).
@@ -887,9 +764,6 @@ type EntryNodeStatus struct {
 
 	// SessionCount is the number of active proxy sessions.
 	SessionCount int
-
-	// CFTunnelReady is true if the CF Tunnel is healthy.
-	CFTunnelReady bool
 
 	// Path1Relays and Path2Relays list the relay node addresses
 	// on each selected path.
@@ -916,10 +790,6 @@ func (e *EntryNode) Status() EntryNodeStatus {
 	}
 	if e.path2 != nil {
 		status.Path2Relays = e.path2.Relays
-	}
-
-	if e.cfg.CFTunnel != nil {
-		status.CFTunnelReady = e.cfg.CFTunnel.IsTunnelReady()
 	}
 
 	return status

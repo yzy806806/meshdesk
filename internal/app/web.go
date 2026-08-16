@@ -178,12 +178,11 @@ func (a *entryNodeStatusAdapter) ProxyStatus() any {
 	}
 	s := a.entryNode.Status()
 	return web.ProxyStatusData{
-		Running:       s.Running,
-		SessionCount:  s.SessionCount,
-		CFTunnelReady: s.CFTunnelReady,
-		Path1Relays:   s.Path1Relays,
-		Path2Relays:   s.Path2Relays,
-		ExitAddr:      s.ExitAddr,
+		Running:      s.Running,
+		SessionCount: s.SessionCount,
+		Path1Relays:  s.Path1Relays,
+		Path2Relays:  s.Path2Relays,
+		ExitAddr:     s.ExitAddr,
 	}
 }
 

@@ -205,60 +205,6 @@ func TestRelay_AtCapacityEvent(t *testing.T) {
 	}
 }
 
-// TestSSListener_SecurityEvents verifies that the SS listener reports
-// security events for failed connections.
-func TestSSListener_SecurityEvents(t *testing.T) {
-	sink := NewSecurityEventSink()
-	var events []SecurityEvent
-	sink.SetCallback(func(e SecurityEvent) {
-		events = append(events, e)
-	})
-
-	// Create an SS listener on a random port.
-	ln, err := NewSSListener(SSConfig{
-		Password:   "testpassword",
-		Cipher:     CipherChaCha20IETFPoly1305,
-		ListenAddr: "127.0.0.1:0",
-	})
-	if err != nil {
-		t.Fatalf("NewSSListener: %v", err)
-	}
-	defer ln.Close()
-
-	// Access the underlying ssListener to set the security sink.
-	ssLn, ok := ln.(*ssListener)
-	if !ok {
-		t.Fatalf("expected *ssListener, got %T", ln)
-	}
-	ssLn.SetSecurityEventSink(sink)
-
-	// Connect a client that sends a partial salt (less than 16 bytes)
-	// and then closes the connection. This causes io.ReadFull to return
-	// io.ErrUnexpectedEOF in newSSSession, which triggers a security event.
-	clientConn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-
-	// Send only 7 bytes then close — not enough for the 16-byte salt.
-	clientConn.Write([]byte("GARBAGE"))
-	clientConn.Close()
-
-	// Accept on the listener side — this will try to create an SS session
-	// and fail when reading the salt (partial read → io.ErrUnexpectedEOF).
-	// The failure should trigger a SecEventSSConnError.
-	_, _ = ln.Accept() // error expected; session creation failed
-
-	// We should get at least one SS connection error event.
-	if len(events) == 0 {
-		t.Error("expected at least 1 SS security event")
-	}
-	for _, e := range events {
-		if e.Type != SecEventSSConnError {
-			t.Errorf("unexpected event type: %s", e.Type)
-		}
-	}
-}
 
 // TestExitNode_NilSinkSafe verifies that the exit node works fine
 // without a security event sink.

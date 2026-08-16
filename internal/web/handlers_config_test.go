@@ -30,8 +30,6 @@ func newConfigTestServer(t *testing.T) (*Server, string) {
 	cfg.Node.Identity = "deprecated-hex-private-key-for-masking-test"
 	cfg.Node.Fingerprint = "test-fingerprint-pubkey-hex"
 	cfg.Mesh.Port = 51820
-	cfg.Proxy.SS.Password = "secret-ss-password"
-	cfg.Proxy.CFTunnel.TunnelID = "cf-tunnel-uuid-123"
 	cfg.WebSSH.HostKey = "ssh-host-key-data"
 	cfg.Reality.PrivateKey = "x25519-private-key-hex"
 
@@ -264,14 +262,6 @@ func TestAC4_PutConfig_T2FieldsWithStepUp_Succeeds(t *testing.T) {
 	if !result.OK {
 		t.Error("result.ok = false, want true")
 	}
-
-	// Verify the field was applied.
-	configMu.RLock()
-	cfg := srv.cfg
-	configMu.RUnlock()
-	if cfg.P2P.JoinApproval != "manual" {
-		t.Errorf("p2p.join_approval = %q, want 'manual'", cfg.P2P.JoinApproval)
-	}
 }
 
 // --- AC-5: Sending "***" for a masked field is a no-op ---
@@ -279,13 +269,13 @@ func TestAC4_PutConfig_T2FieldsWithStepUp_Succeeds(t *testing.T) {
 func TestAC5_PutConfig_MaskedFieldNoOp(t *testing.T) {
 	srv, _, sessionToken := newConfigTestServerWithStepUp(t)
 
-	// Read current SS password first.
+	// Read current reality.private_key first.
 	configMu.RLock()
-	originalPassword := srv.cfg.Proxy.SS.Password
+	originalPrivateKey := srv.cfg.Reality.PrivateKey
 	configMu.RUnlock()
 
-	// Send "***" for the masked password field.
-	body := `{"proxy":{"ss":{"password":"***","cipher":"chacha20-ietf-poly1305","listen_addr":"127.0.0.1","port":8388}}}`
+	// Send "***" for the masked private_key field.
+	body := `{"reality":{"private_key":"***"}}`
 	req := configRequestWithAuth("PUT", "/api/config", body, sessionToken)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPut(rr, req)
@@ -299,25 +289,25 @@ func TestAC5_PutConfig_MaskedFieldNoOp(t *testing.T) {
 		t.Fatalf("invalid JSON: %v", err)
 	}
 
-	// Verify the password was not changed.
+	// Verify the private_key was not changed.
 	configMu.RLock()
-	currentPassword := srv.cfg.Proxy.SS.Password
+	currentPrivateKey := srv.cfg.Reality.PrivateKey
 	configMu.RUnlock()
 
-	if currentPassword != originalPassword {
-		t.Errorf("ss.password changed: %q → %q (should be no-op)", originalPassword, currentPassword)
+	if currentPrivateKey != originalPrivateKey {
+		t.Errorf("reality.private_key changed: %q → %q (should be no-op)", originalPrivateKey, currentPrivateKey)
 	}
 
 	// Check that the field appears in noop list.
 	foundNoOp := false
 	for _, f := range result.NoOp {
-		if f == "proxy.ss.password" {
+		if f == "reality.private_key" {
 			foundNoOp = true
 			break
 		}
 	}
 	if !foundNoOp {
-		t.Error("proxy.ss.password not in noop list")
+		t.Error("reality.private_key not in noop list")
 	}
 }
 
@@ -572,12 +562,7 @@ func TestAC12_UnknownFields_Rejected(t *testing.T) {
 func TestAC13_PatchConfig_MergeSemantics(t *testing.T) {
 	srv, _, sessionToken := newConfigTestServerWithStepUp(t)
 
-	// Record original mesh.gossip_port.
-	configMu.RLock()
-	originalGossipPort := srv.cfg.Mesh.GossipPort
-	configMu.RUnlock()
-
-	// Patch only mesh.port, leaving gossip_port unchanged.
+	// Patch only mesh.port.
 	body := `{"mesh":{"port":51821}}`
 	req := configRequestWithAuth("PATCH", "/api/config", body, sessionToken)
 	rr := httptest.NewRecorder()
@@ -587,17 +572,13 @@ func TestAC13_PatchConfig_MergeSemantics(t *testing.T) {
 		t.Fatalf("Status = %d, want %d, body: %s", rr.Code, http.StatusOK, rr.Body.String())
 	}
 
-	// Verify mesh.port was updated but gossip_port was preserved.
+	// Verify mesh.port was updated.
 	configMu.RLock()
 	cfg := srv.cfg
 	configMu.RUnlock()
 
 	if cfg.Mesh.Port != 51821 {
 		t.Errorf("mesh.port = %d, want 51821", cfg.Mesh.Port)
-	}
-	if cfg.Mesh.GossipPort != originalGossipPort {
-		t.Errorf("mesh.gossip_port = %d, want %d (should be unchanged by patch)",
-			cfg.Mesh.GossipPort, originalGossipPort)
 	}
 }
 
@@ -743,9 +724,6 @@ func TestPutConfig_T2Fields_AllTypes(t *testing.T) {
 	cfg := srv.cfg
 	configMu.RUnlock()
 
-	if cfg.P2P.JoinApproval != "manual" {
-		t.Errorf("p2p.join_approval = %q, want 'manual'", cfg.P2P.JoinApproval)
-	}
 	if cfg.Auth.StepUpTimeout != 600 {
 		t.Errorf("auth.step_up_timeout = %d, want 600", cfg.Auth.StepUpTimeout)
 	}

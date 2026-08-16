@@ -206,13 +206,12 @@ func (m *meshTopologyPeers) PeerRTT(peerID string) float64 {
 
 // deriveRoleFromConfig computes the local node's role from its config.
 func deriveRoleFromConfig(cfg *config.Config) string {
-	ssPasswordSet := cfg.Proxy.SS.Password != ""
 	relayEnabled := cfg.Proxy.Relay.Enabled
 	exitHasPorts := len(cfg.Proxy.Exit.AllowedPorts) > 0
 	exitAllowAll := cfg.Proxy.Exit.AllowAllPorts
 	webAddrSet := cfg.Node.WebAddr != ""
 
-	return topology.DeriveRole(ssPasswordSet, relayEnabled, exitHasPorts, exitAllowAll, webAddrSet)
+	return topology.DeriveRole(false, relayEnabled, exitHasPorts, exitAllowAll, webAddrSet)
 }
 
 // isPeerRelay checks whether a peer appears in the proxy paths or

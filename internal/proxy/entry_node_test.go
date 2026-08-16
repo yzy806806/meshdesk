@@ -268,18 +268,11 @@ func TestEntryNodeConfigDefaults(t *testing.T) {
 	if cfg.CircuitCfg.KeepaliveInterval != 30*time.Second {
 		t.Errorf("expected keepalive interval 30s, got %v", cfg.CircuitCfg.KeepaliveInterval)
 	}
-	if cfg.SSConfig.Cipher != CipherChaCha20IETFPoly1305 {
-		t.Errorf("expected cipher %s, got %s", CipherChaCha20IETFPoly1305, cfg.SSConfig.Cipher)
-	}
 }
 
 // TestEntryNodeNew verifies that NewEntryNode applies defaults.
 func TestEntryNodeNew(t *testing.T) {
 	cfg := EntryNodeConfig{
-		SSConfig: SSConfig{
-			Password:   "test",
-			ListenAddr: "127.0.0.1:0",
-		},
 		ExitAddr: "127.0.0.1:9999",
 		Path1: &Path{
 			Relays:    []string{"relay1"},
@@ -309,8 +302,6 @@ func TestEntryNodeNew(t *testing.T) {
 func TestEntryNodeManualPathValidation(t *testing.T) {
 	// Test: missing paths.
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "127.0.0.1:9999"
 	// No Path1/Path2 set.
 
@@ -328,8 +319,6 @@ func TestEntryNodeManualPathValidation(t *testing.T) {
 // PathSelector fails.
 func TestEntryNodeAutoModeNoSelector(t *testing.T) {
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "127.0.0.1:9999"
 	cfg.PathSelectionMode = "auto"
 	// No PathSelector set.
@@ -404,8 +393,6 @@ func TestEntryNodeStartStop(t *testing.T) {
 
 	// Create entry node config.
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test-password"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = exitSrv.Addr()
 	cfg.Path1 = path1
 	cfg.Path2 = path2
@@ -446,8 +433,6 @@ func TestEntryNodeStartStop(t *testing.T) {
 // multiple times safely.
 func TestEntryNodeCloseIdempotent(t *testing.T) {
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "127.0.0.1:0"
 
 	// Set minimal valid paths.
@@ -472,8 +457,6 @@ func TestEntryNodeCloseIdempotent(t *testing.T) {
 // TestEntryNodeStatus verifies the Status method returns correct info.
 func TestEntryNodeStatus(t *testing.T) {
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "10.10.0.5:8388"
 	cfg.DebugFixedChunks = true
 
@@ -506,8 +489,6 @@ func TestEntryNodeStatus(t *testing.T) {
 // TestEntryNodeSetSecurityEventSink verifies the sink can be set.
 func TestEntryNodeSetSecurityEventSink(t *testing.T) {
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "127.0.0.1:0"
 	cfg.Path1 = &Path{Relays: []string{"r1"}, RelayKeys: [][]byte{make([]byte, KeySize)}}
 	cfg.Path2 = &Path{Relays: []string{"r2"}, RelayKeys: [][]byte{make([]byte, KeySize)}}
@@ -586,8 +567,6 @@ func TestEntryNodeSessionCount(t *testing.T) {
 	rand.Read(relayKey2)
 
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test-password"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = exitSrv.Addr()
 	cfg.Path1 = &Path{Relays: []string{relay1.Addr()}, RelayKeys: [][]byte{relayKey1}}
 	cfg.Path2 = &Path{Relays: []string{relay2.Addr()}, RelayKeys: [][]byte{relayKey2}}
@@ -635,8 +614,6 @@ func TestEntryNodeDialPath(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "127.0.0.1:0"
 
 	key := make([]byte, KeySize)
@@ -708,8 +685,6 @@ func TestEntryNodeCircuitSetup(t *testing.T) {
 	rand.Read(relayKey2)
 
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test-password"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = exitSrv.Addr()
 	cfg.Path1 = &Path{Relays: []string{relay1.Addr()}, RelayKeys: [][]byte{relayKey1}}
 	cfg.Path2 = &Path{Relays: []string{relay2.Addr()}, RelayKeys: [][]byte{relayKey2}}
@@ -726,7 +701,7 @@ func TestEntryNodeCircuitSetup(t *testing.T) {
 	defer ssConn1.Close()
 	defer ssConn2.Close()
 
-	// The entry node expects an ssSession, which implements ReadTarget.
+	// The entry node's HandleConnection takes a targetAddr parameter.
 	// Since we're testing with a pipe, we'll call setupCircuit directly.
 	// Generate entry ECDH keys.
 	entryKeys, err := GenerateECDHKeyPair()
@@ -845,8 +820,6 @@ func TestEntryNodeFullPipeline(t *testing.T) {
 	rand.Read(relayKey2)
 
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "integration-test-password"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = exitSrv.Addr()
 	cfg.Path1 = &Path{Relays: []string{relay1.Addr()}, RelayKeys: [][]byte{relayKey1}}
 	cfg.Path2 = &Path{Relays: []string{relay2.Addr()}, RelayKeys: [][]byte{relayKey2}}
@@ -1013,8 +986,6 @@ func TestEntryNodeFullPipeline(t *testing.T) {
 // exit node fails gracefully.
 func TestEntryNodeInvalidExitAddr(t *testing.T) {
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "127.0.0.1:1" // port 1 should fail
 	cfg.Path1 = &Path{Relays: []string{"127.0.0.1:1"}, RelayKeys: [][]byte{make([]byte, KeySize)}}
 	cfg.Path2 = &Path{Relays: []string{"127.0.0.1:2"}, RelayKeys: [][]byte{make([]byte, KeySize)}}
@@ -1038,8 +1009,6 @@ func TestEntryNodeInvalidExitAddr(t *testing.T) {
 // path overlap and rejects overlapping paths.
 func TestEntryNodeOverlapRejection(t *testing.T) {
 	cfg := DefaultEntryNodeConfig()
-	cfg.SSConfig.Password = "test"
-	cfg.SSConfig.ListenAddr = "127.0.0.1:0"
 	cfg.ExitAddr = "127.0.0.1:0"
 
 	key := make([]byte, KeySize)

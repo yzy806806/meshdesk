@@ -97,18 +97,9 @@ var tierMap = map[string]fieldMeta{
 	// --- P2P (§3.4) ---
 	"p2p.enabled":                 {Tier: TierNormal, Reload: ReloadRestart},
 	"p2p.seeds":                   {Tier: TierNormal, Reload: ReloadRestart},
-	"p2p.nat_traversal":           {Tier: TierNormal, Reload: ReloadRestart},
-	"p2p.stun_servers":            {Tier: TierNormal, Reload: ReloadRestart},
 	"p2p.relay_mode":              {Tier: TierNormal, Reload: ReloadHot},
 	"p2p.max_relay_hops":          {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.join_approval":           {Tier: TierStepUp, Reload: ReloadHot},
-	"p2p.authorized_keys":         {Tier: TierStepUp, Reload: ReloadHot},
-	"p2p.gossip_interval":         {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.gossip_probe_interval":   {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.direct_reprobe_interval": {Tier: TierNormal, Reload: ReloadHot},
-	"p2p.max_peers":               {Tier: TierNormal, Reload: ReloadHot},
 	"p2p.advertise_endpoints":     {Tier: TierNormal, Reload: ReloadRestart},
-	"p2p.peer_cache_path":         {Tier: TierReadOnly, Reload: ReloadRestart},
 
 	// --- Monitoring (§3.5) ---
 	"monitoring.collectors": {Tier: TierNormal, Reload: ReloadHot},
@@ -139,13 +130,6 @@ var tierMap = map[string]fieldMeta{
 	"transfer.max_file_size": {Tier: TierNormal, Reload: ReloadHot},
 	"transfer.upload_dir":    {Tier: TierNormal, Reload: ReloadHot},
 
-	// --- Proxy: SS (§3.9) — DEPRECATED, SOCKS5 is default ---
-	"proxy.ss.enabled":     {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.ss.password":    {Tier: TierMasked, Reload: ReloadHot},
-	"proxy.ss.cipher":      {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.ss.listen_addr": {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.ss.port":        {Tier: TierNormal, Reload: ReloadHot},
-
 	// --- Proxy: Circuit ---
 	"proxy.circuit.idle_timeout":          {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.circuit.keepalive_interval":    {Tier: TierNormal, Reload: ReloadHot},
@@ -168,19 +152,6 @@ var tierMap = map[string]fieldMeta{
 	"proxy.path_selection.max_candidates":      {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.path_selection.probe_cache_ttl_sec": {Tier: TierNormal, Reload: ReloadHot},
 	"proxy.path_selection.exit_latency_matrix": {Tier: TierReadOnly, Reload: ReloadRestart},
-
-	// --- Proxy: CF Tunnel ---
-	"proxy.cf_tunnel.enabled":           {Tier: TierNormal, Reload: ReloadRestart},
-	"proxy.cf_tunnel.tunnel_id":         {Tier: TierMasked, Reload: ReloadHot},
-	"proxy.cf_tunnel.credentials_file":  {Tier: TierMasked, Reload: ReloadHot},
-	"proxy.cf_tunnel.hostname":          {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.origin_server":     {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.region":            {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.log_level":         {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.metrics_addr":      {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.binary_path":       {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.reconnect_retries": {Tier: TierNormal, Reload: ReloadHot},
-	"proxy.cf_tunnel.grace_period_sec":  {Tier: TierNormal, Reload: ReloadHot},
 
 	// --- Proxy: Relay ---
 	"proxy.relay.enabled":         {Tier: TierNormal, Reload: ReloadRestart},
@@ -263,7 +234,6 @@ var readOnlyFields = []string{
 	"peers[N].public_key",
 	"auth.totp_store_dir",
 	"proxy.path_selection.exit_latency_matrix",
-	"p2p.peer_cache_path",
 }
 
 // maskedFields is the set of fields serialized as "***" in GET responses.
@@ -273,9 +243,6 @@ var maskedFields = []string{
 	"peers[N].reality.short_id",
 	"webssh.host_key",
 	"auth.web_users[N].password_hash",
-	"proxy.ss.password",
-	"proxy.cf_tunnel.tunnel_id",
-	"proxy.cf_tunnel.credentials_file",
 	"reality.private_key",
 	"join.secret",
 	"join.tls_key_file",
@@ -287,8 +254,6 @@ var stepUpFields = []string{
 	"peers[N].capabilities",
 	"peers[N].service_manage",
 	"peers[N].file_transfer_paths",
-	"p2p.join_approval",
-	"p2p.authorized_keys",
 	"auth.web_users",
 	"auth.require_2fa",
 	"auth.step_up_timeout",
