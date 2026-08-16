@@ -10,7 +10,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/auth"
 	"github.com/yzy806806/meshdesk/internal/mesh"
 	"github.com/yzy806806/meshdesk/internal/monitor"
-	"github.com/yzy806806/meshdesk/internal/p2p"
 )
 
 // startMonitor starts the monitoring reporter: metric collection +
@@ -24,7 +23,7 @@ func (a *App) startMonitor() {
 	reporter := monitor.NewReporter(monitor.ReporterConfig{
 		NodeID:     nodeID,
 		Hostname:   hostname,
-		Dialer:     &meshDialerAdapter{node: a.node, gossip: a.gossipLayer},
+		Dialer:     &meshDialerAdapter{node: a.node},
 		Collectors: a.cfg.Monitoring.Collectors,
 		Interval:   a.cfg.Monitoring.Interval,
 		Port:       a.cfg.Monitoring.Port,
@@ -67,19 +66,6 @@ func (a *App) startMonitor() {
 		}()
 	}
 
-	// Wire collector auto-discovery: when a peer with CapCollector=true is
-	// discovered via gossip, automatically add it to the reporter's collector
-	// list. This enables monitor auto-routing without static configuration —
-	// the Dashboard's public key propagates through gossip and every agent's
-	// reporter learns where to push metrics.
-	if a.gossipLayer != nil {
-		a.gossipLayer.SetCollectorHandler(reporter.AddCollector)
-		a.gossipLayer.SetCollectorRemovedHandler(reporter.RemoveCollector)
-		// Re-seed the collector list from the persisted peer cache so
-		// monitor routing is immediately available after a restart,
-		// without waiting for gossip to re-discover collector nodes.
-		a.gossipLayer.SeedCollectorsFromCache()
-	}
 	// META-based collector discovery (relay-attached nodes): the same
 	// AddCollector handler is wired to the session meta exchange, which
 	// propagates Collector=true over smux/relay sessions — reaching
@@ -103,75 +89,22 @@ func (a *App) startMonitor() {
 		}
 	})
 
-	// Start periodic gossip broadcast of traffic stats so every node
-	// has a real-time view of every other node's traffic volume.
-	if a.gossipLayer != nil {
-		go func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					ts := a.node.TrafficStats()
-					a.gossipLayer.SetLocalTrafficStats(
-						ts.InBytes, ts.OutBytes,
-						ts.SmuxStreams, ts.RelayForwards,
-						ts.TunRxPackets, ts.TunTxPackets,
-					)
-				case <-a.node.Context().Done():
-					return
-				}
-			}
-		}()
-	}
-
 	a.reporter = reporter
 }
 
 type meshDialerAdapter struct {
-	node   *mesh.MeshNode
-	gossip *p2p.GossipLayer
+	node *mesh.MeshNode
 }
 
 func (d *meshDialerAdapter) DialMesh(ctx context.Context, peerID string, port int) (net.Conn, error) {
-	// In v2, DialMesh opens a virtual-port stream over an existing smux
+	// DialMesh opens a virtual-port stream over an existing smux
 	// session. The peer must already be connected (via AddPeer or an
 	// inbound session). peerID is the peer's identity hex.
-	// If no session exists, DialVirtualPort will try to establish one
-	// using the peer's endpoint from the routing table or config.
-	// If that fails (routing table doesn't have gossip peers), fall back
-	// to looking up the peer's endpoint from the gossip layer.
 	conn, err := d.node.DialVirtualPort(ctx, peerID, port)
-	if err == nil {
-		return conn, nil
+	if err != nil {
+		return nil, fmt.Errorf("mesh: DialMesh to %s failed: %w", peerID[:min(len(peerID), 16)]+"...", err)
 	}
-
-	// Fall back: try to get peer endpoint from the gossip layer.
-	if d.gossip != nil {
-		for _, meta := range d.gossip.KnownPeers() {
-			if meta.PublicKey == peerID && len(meta.Endpoints) > 0 {
-				log.Printf("[monitor] tryPush: fallback dialing peer %s via endpoints %v", peerID[:min(len(peerID), 16)]+"...", meta.Endpoints)
-				for _, ep := range meta.Endpoints {
-					// Use a fresh context with generous timeout —
-					// the reporter's 10s context may have been
-					// consumed by the initial DialVirtualPort attempt.
-					dialCtx, dialCancel := context.WithTimeout(context.Background(), 30*time.Second)
-					stream, dialErr := d.node.DialPeerByEndpoint(dialCtx, ep)
-					dialCancel()
-					if dialErr == nil {
-						// Session established, now open a stream with
-						// the correct virtual port.
-						stream.Close() // close port-0 stream
-						return d.node.DialVirtualPort(ctx, peerID, port)
-					}
-					log.Printf("[monitor] tryPush: DialPeerByEndpoint to %s failed: %v", ep, dialErr)
-				}
-				break
-			}
-		}
-	}
-
-	return nil, fmt.Errorf("mesh: DialMesh to %s failed: %w", peerID[:min(len(peerID), 16)]+"...", err)
+	return conn, nil
 }
 
 // startMonitorAggregator starts the metric aggregator (web nodes):
@@ -217,8 +150,7 @@ func (a *App) startMonitorAggregator() {
 		aggregator := monitor.NewAggregator(monitor.AggregatorConfig{
 			Store:           a.monitorStore,
 			Dialer:          &meshListenerAdapter{node: a.node},
-			MeshDialer:      &meshDialerAdapter{node: a.node, gossip: a.gossipLayer},
-			CollectorLister: &collectorListerAdapter{gossip: a.gossipLayer},
+			MeshDialer:      &meshDialerAdapter{node: a.node},
 			SelfPeerID:      a.node.Identity().PublicKey,
 			Port:            a.cfg.Monitoring.Port,
 			AuthChecker:     monitorAuthChecker,
@@ -235,21 +167,4 @@ func (a *App) startMonitorAggregator() {
 			a.monitorStore = aggregator.Store()
 		}
 	}
-}
-
-type collectorListerAdapter struct {
-	gossip *p2p.GossipLayer
-}
-
-func (c *collectorListerAdapter) CollectorPeerIDs() []string {
-	if c.gossip == nil {
-		return nil
-	}
-	var ids []string
-	for _, meta := range c.gossip.KnownPeers() {
-		if meta.CapCollector {
-			ids = append(ids, meta.PublicKey)
-		}
-	}
-	return ids
 }

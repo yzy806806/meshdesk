@@ -23,58 +23,39 @@ func (a *App) constructMeshNode() error {
 }
 
 // wireMeshNodeCallbacks wires the mesh node's cross-layer callbacks.
-// The closures capture a.gossipLayer — which is nil until Start() runs
-// the p2p section — hence the nil guards (identical to the old main()).
+// The gossip layer has been removed; all callbacks that previously
+// propagated state through gossip are now no-ops or rely on the
+// mesh session meta exchange (META protocol) which is
+// memberlist-independent.
 func (a *App) wireMeshNodeCallbacks() {
 	cfg, node := a.cfg, a.node
 
 	// TUN IPAM peer meta provider — so setupTUN can query known peer
-	// VirtualIPs for conflict resolution.
+	// VirtualIPs for conflict resolution. Sourced from the mesh
+	// session meta exchange (PeerVirtualIPs), not gossip.
 	if cfg.Mesh.TunEnabled {
 		node.SetPeerMetaProvider(func() map[string]string {
-			if a.gossipLayer == nil {
-				return nil
-			}
-			result := make(map[string]string)
-			for _, meta := range a.gossipLayer.KnownPeers() {
-				if meta.VirtualIP != "" {
-					result[meta.PublicKey] = meta.VirtualIP
-				}
-			}
-			return result
+			return node.PeerVirtualIPs()
 		})
 	}
 
-	// TUN VirtualIP + subnet proxy + ACL broadcasters — propagate to
-	// the gossip layer immediately (nil-safe until gossip starts).
+	// TUN VirtualIP + subnet proxy + ACL broadcasters — no-ops now
+	// (gossip layer removed). The mesh session meta exchange handles
+	// VirtualIP propagation.
 	if cfg.Mesh.TunEnabled {
-		node.SetVirtualIPBroadcaster(func(vip string) {
-			if a.gossipLayer != nil {
-				a.gossipLayer.SetLocalVirtualIP(vip)
-			}
-		})
-		node.SetSubnetProxyBroadcaster(func(subnets []string) {
-			if a.gossipLayer != nil {
-				a.gossipLayer.SetLocalSubnetProxies(subnets)
-			}
-		})
-		node.SetACLRulesBroadcaster(func(rules []string) {
-			if a.gossipLayer != nil {
-				a.gossipLayer.SetLocalACLRules(rules)
-			}
-		})
+		node.SetVirtualIPBroadcaster(func(vip string) {})
+		node.SetSubnetProxyBroadcaster(func(subnets []string) {})
+		node.SetACLRulesBroadcaster(func(rules []string) {})
 	}
 
 	// Relay metadata provider — RTT-sorted, health-filtered relay
-	// candidates. Sources (memberlist-retirement phase 1):
-	//   1. META-learned relay knowledge (works when memberlist is
-	//      degraded — relay-attached nodes only have this source),
-	//   2. gossip NodeMeta (overlays fresher load/RTT where known),
-	//   3. static config peers.
+	// candidates. Sources (memberlist-independent):
+	//   1. META-learned relay knowledge (works without gossip),
+	//   2. static config peers.
 	node.SetRelayMetaProvider(func() []mesh.RelayPeerInfo {
 		var result []mesh.RelayPeerInfo
 		seen := make(map[string]bool)
-		// 1. META-learned candidates first (memberlist-independent).
+		// 1. META-learned candidates (memberlist-independent).
 		for _, key := range node.SessionPeerKeys() {
 			info, ok := node.PeerRelayMetaInfo(key)
 			if !ok || !info.CapRelay {
@@ -90,45 +71,7 @@ func (a *App) wireMeshNodeCallbacks() {
 				NatType:      info.NatType,
 			})
 		}
-		// 2. Gossip overlay: fresher load numbers replace META-learned
-		// entries; gossip-only peers are added.
-		if a.gossipLayer != nil {
-			for _, meta := range a.gossipLayer.KnownPeers() {
-				var rtt time.Duration
-				if meta.RTTUs > 0 {
-					rtt = time.Duration(meta.RTTUs) * time.Microsecond
-				}
-				if seen[meta.PublicKey] {
-					for i := range result {
-						if result[i].PeerKey == meta.PublicKey {
-							if rtt > 0 {
-								result[i].RTT = rtt
-							}
-							result[i].CapRelay = result[i].CapRelay || meta.CapRelay
-							if meta.MaxCircuits > 0 {
-								result[i].MaxCircuits = meta.MaxCircuits
-							}
-							result[i].LoadCircuits = meta.LoadCircuits
-							if meta.NatType != "" {
-								result[i].NatType = meta.NatType
-							}
-							break
-						}
-					}
-					continue
-				}
-				seen[meta.PublicKey] = true
-				result = append(result, mesh.RelayPeerInfo{
-					PeerKey:      meta.PublicKey,
-					RTT:          rtt,
-					CapRelay:     meta.CapRelay,
-					MaxCircuits:  meta.MaxCircuits,
-					LoadCircuits: meta.LoadCircuits,
-					NatType:      meta.NatType,
-				})
-			}
-		}
-		// 3. Static config peers.
+		// 2. Static config peers.
 		for _, pc := range cfg.Peers {
 			if pc.PublicKey == "" || seen[pc.PublicKey] {
 				continue
@@ -143,35 +86,17 @@ func (a *App) wireMeshNodeCallbacks() {
 	})
 
 	// Local relay/NAT knowledge advertised in META (memberlist-
-	// retirement phase 1) — sourced from the gossip layer's local meta
-	// while gossip exists; the closure guards the not-yet-started case.
+	// independent). Sourced from the mesh node itself, not gossip.
 	node.SetLocalMetaExtras(func() mesh.MetaRelayInfo {
-		if a.gossipLayer == nil {
-			return mesh.MetaRelayInfo{}
-		}
-		meta := a.gossipLayer.LocalMeta()
-		if meta == nil {
-			return mesh.MetaRelayInfo{}
-		}
-		return mesh.MetaRelayInfo{
-			Role:         meta.Role,
-			NatType:      meta.NatType,
-			CapRelay:     meta.CapRelay,
-			MaxCircuits:  meta.MaxCircuits,
-			LoadCircuits: meta.LoadCircuits,
-		}
+		return mesh.MetaRelayInfo{}
 	})
 
-	// Peer endpoint resolver — dial the peer's STABLE advertised
-	// endpoint (gossip NodeMeta) instead of an ephemeral source port.
+	// Peer endpoint resolver — use the mesh session meta exchange
+	// (PeerEndpoints), not gossip.
 	node.SetPeerEndpointResolver(func(peerKey string) string {
-		if a.gossipLayer == nil {
-			return ""
-		}
-		for _, meta := range a.gossipLayer.KnownPeers() {
-			if meta.PublicKey == peerKey && len(meta.Endpoints) > 0 {
-				return meta.Endpoints[0]
-			}
+		eps := node.PeerEndpoints(peerKey)
+		if len(eps) > 0 {
+			return eps[0]
 		}
 		return ""
 	})
@@ -282,7 +207,7 @@ func (a *App) registerVirtualPortServices() {
 	// SOCKS5 exit handler on virtual port 0x5350 (every node by default).
 	socks5Cfg := mesh.SOCKS5Config{
 		DialTimeout:       time.Duration(a.cfg.Proxy.SOCKS5.DialTimeoutSec) * time.Second,
-		IdleTimeout:       time.Duration(a.cfg.Proxy.SOCKS5.IdleTimeoutSec) * time.Second,
+		IdleTimeout:      time.Duration(a.cfg.Proxy.SOCKS5.IdleTimeoutSec) * time.Second,
 		AllowAllPorts:     a.cfg.Proxy.SOCKS5.AllowAllPorts,
 		DestinationFilter: a.cfg.Proxy.SOCKS5.DestinationFilter,
 		MaxConnections:    a.cfg.Proxy.SOCKS5.MaxConnections,

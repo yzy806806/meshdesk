@@ -59,23 +59,7 @@ func (a *App) startJoinServer() {
 			joinServerCfg.Secret = []byte(a.cfg.Join.Secret)
 
 			a.joinServer = join.NewJoinServer(joinServerCfg)
-
-			// Wire the known-peers provider if gossip is active.
-			if a.gossipLayer != nil {
-				a.joinServer.SetKnownPeersFunc(func() []join.PeerInfo {
-					peers := a.gossipLayer.KnownPeers()
-					result := make([]join.PeerInfo, 0, len(peers))
-					for _, p := range peers {
-						result = append(result, join.PeerInfo{
-							PublicKey: p.PublicKey,
-							Hostname:  p.Hostname,
-							Role:      p.Role,
-						})
-					}
-					return result
-				})
 			}
-		}
 	}
 }
 
