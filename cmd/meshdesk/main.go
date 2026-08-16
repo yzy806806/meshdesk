@@ -6,7 +6,6 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
@@ -27,7 +26,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/join"
 	"github.com/yzy806806/meshdesk/internal/logging"
 	"github.com/yzy806806/meshdesk/internal/mesh"
-	"github.com/yzy806806/meshdesk/internal/p2p"
 )
 
 // Build-time variables set via -ldflags "-X main.Version=... -X main.Commit=... -X main.BuildTime=...".
@@ -336,34 +334,15 @@ func runJoinSubcommand(args []string) {
 }
 
 // runJoinWithConfig runs the join flow with an already-loaded config.
+// The gossip layer has been removed; the join flow now relies on
+// static peer configuration + mesh session meta exchange (META
+// protocol) for peer discovery.
 func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPath string) {
-
-	// Enable P2P for join mode.
-	cfg.P2P.Enabled = true
-	if cfg.Mesh.GossipPort == 0 {
-		cfg.Mesh.GossipPort = 7946
-	}
-
-	// If no seeds configured, add the bootstrap address as a seed.
-	if len(cfg.P2P.Seeds) == 0 {
-		// Parse the bootstrap address to extract host:port.
-		host, port, err := p2p.ParseBootstrapAddr(bootstrapAddr, cfg.Mesh.GossipPort)
-		if err != nil {
-			log.Fatalf("Invalid bootstrap address %q: %v", bootstrapAddr, err)
-		}
-		seedAddr := net.JoinHostPort(host, port)
-		cfg.P2P.Seeds = []string{seedAddr}
-		log.Printf("Using bootstrap seed: %s", seedAddr)
-	}
-
 	// If a bootstrap public key was provided, add it as a static peer
-	// so WireGuard can establish the initial connection.
+	// so the mesh can establish the initial connection.
 	if bootstrapKey != "" {
 		// Parse the bootstrap address for the endpoint.
-		host, port, err := p2p.ParseBootstrapAddr(bootstrapAddr, cfg.Mesh.Port)
-		if err != nil {
-			log.Fatalf("Invalid bootstrap address: %v", err)
-		}
+		host, port := parseBootstrapAddr(bootstrapAddr, cfg.Mesh.Port)
 		endpoint := net.JoinHostPort(host, port)
 
 		// v2: no mesh IP derivation — peer ID is the routing key.
@@ -390,122 +369,35 @@ func runJoinWithConfig(cfg *config.Config, bootstrapAddr, bootstrapKey, configPa
 	log.Printf("  Public key: %s", node.Identity().PublicKey)
 	log.Printf("  Mesh port:  %d", cfg.Mesh.Port)
 
-	// Create the WireGuard delegate for dynamic peer management.
-	wgDelegate := p2p.NewWireGuardDelegate(node)
-
-	// Mark statically-configured peers (the bootstrap) as static.
-	for _, peerCfg := range cfg.Peers {
-		wgDelegate.MarkStaticPeer(peerCfg.PublicKey)
-	}
-
-	// Create the gossip layer.
-	p2pCfg := p2p.FromConfig(cfg.P2P)
-	p2pCfg.GossipPort = cfg.Mesh.GossipPort
-	p2pCfg.WgPort = cfg.Mesh.Port
-
-	// Decode the Ed25519 private key for gossip identity.
-	identityBytes, err := hex.DecodeString(node.Identity().PrivateKey)
-	if err != nil {
-		log.Fatalf("Failed to decode identity private key: %v", err)
-	}
-	gl, err := p2p.NewGossipLayer(p2pCfg, identityBytes, wgDelegate)
-	if err != nil {
-		log.Fatalf("Failed to create gossip layer: %v", err)
-	}
-	gl.SetWireGuardDelegate(wgDelegate)
-
-	// Inject the MuxTransport from the mesh node so gossip and Reality
-	// TLS share the same TCP port.
-	if mt := node.MuxTransport(); mt != nil {
-		gl.SetTransport(mt)
-	}
-
-	// Set local identity.
-	hostname := cfg.Node.Hostname
-	if hostname == "" {
-		hostname, _ = os.Hostname()
-	}
-	gl.SetLocalIdentity(hostname, "agent")
-	gl.SetLocalCapabilities(
-		true, // stream relay handler is always registered — any node can relay
-		len(cfg.Proxy.Exit.AllowedPorts) > 0 || cfg.Proxy.Exit.AllowAllPorts,
-		cfg.Proxy.SS.Port != 0,
-		false,
-	)
-
-	if err := gl.Start(); err != nil {
-		log.Fatalf("Failed to start gossip layer: %v", err)
-	}
-	defer gl.Stop()
-
-	// Wait a moment for the transport to come up, then join seeds.
-	time.Sleep(500 * time.Millisecond)
-
-	log.Printf("Joining mesh via bootstrap %s...", bootstrapAddr)
-
-	// Join the gossip cluster via the bootstrap seed.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	contacted, err := gl.JoinSeeds(ctx, cfg.P2P.Seeds)
-	if err != nil {
-		log.Printf("Warning: initial seed join: %v (contacted %d)", err, contacted)
+	// Persist the updated config so the node can restart without
+	// re-joining.
+	if err := config.Save(configPath, cfg); err != nil {
+		log.Printf("[join] warning: failed to save config to %s: %v (continuing with in-memory config)", configPath, err)
 	} else {
-		log.Printf("Joined gossip cluster (%d seed contacted)", contacted)
+		log.Printf("[join] config saved to %s", configPath)
 	}
 
-	// If we know the bootstrap's public key, send a JoinRequest
-	// to authenticate and get the full peer list.
-	if bootstrapKey != "" {
-		joinCtx, joinCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer joinCancel()
-
-		result, err := gl.RequestJoin(joinCtx, bootstrapKey)
-		if err != nil {
-			log.Printf("Warning: join request to bootstrap failed: %v (continuing — gossip push/pull will sync peers)", err)
-		} else if !result.Accepted {
-			log.Printf("Warning: join rejected by bootstrap: %s (continuing — gossip push/pull will sync peers)", result.RejectReason)
-		} else {
-			log.Printf("Join accepted by bootstrap")
-			if result.Bootstrap != nil {
-				log.Printf("  Bootstrap public key: %s", result.Bootstrap.PublicKey[:8])
-			}
-			log.Printf("  Known peers from bootstrap: %d", len(result.KnownPeers))
-			for _, peer := range result.KnownPeers {
-				log.Printf("    - %s (role %s)",
-					peer.PublicKey[:8], peer.Role)
-			}
-		}
-	} else {
-		log.Printf("No bootstrap key provided — relying on memberlist push/pull for peer discovery")
-	}
-
-	log.Printf("MeshDesk joined the mesh. Waiting for peers to converge...")
-
-	// Give the gossip layer time to converge.
-	convergeTimer := time.NewTimer(10 * time.Second)
-	defer convergeTimer.Stop()
+	log.Printf("MeshDesk joined the mesh (bootstrap=%s). Waiting for peers...", bootstrapAddr)
 
 	// Wait for shutdown signal (like normal mode, but join-only).
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	log.Printf("Shutting down...")
+	node.Close()
+}
 
-	select {
-	case <-sigCh:
-		log.Printf("Shutting down...")
-	case <-convergeTimer.C:
-		log.Printf("Initial convergence complete (%d members in cluster)", gl.MemberCount())
-		// Continue running as a normal mesh node.
-		<-sigCh
-		log.Printf("Shutting down...")
+// parseBootstrapAddr splits a bootstrap address into host and port,
+// using defaultPort if no port is specified.
+func parseBootstrapAddr(addr string, defaultPort int) (host, port string) {
+	if h, p, err := net.SplitHostPort(addr); err == nil {
+		return h, p
 	}
-
-	// Send graceful leave notice.
-	leaveCtx, leaveCancel := context.WithTimeout(context.Background(), 3*time.Second)
-	if err := gl.SendLeaveNotice(leaveCtx); err != nil {
-		log.Printf("Warning: leave notice: %v", err)
+	// No port — use default.
+	if defaultPort <= 0 {
+		defaultPort = 7946
 	}
-	leaveCancel()
+	return addr, fmt.Sprintf("%d", defaultPort)
 }
 
 // runJoinTokenSubcommand implements `meshdesk join-token <secret> [server-fp]`.

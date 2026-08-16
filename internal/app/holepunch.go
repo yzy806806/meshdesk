@@ -256,17 +256,10 @@ func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {
 		return
 	}
 	var endpoints []string
-	// Meta-exchange learned endpoints first (memberlist-independent —
+	// Meta-exchange learned endpoints (memberlist-independent —
 	// propagated via smux session meta, works when gossip is degraded).
 	if eps := a.node.PeerEndpoints(peerKey); len(eps) > 0 {
 		endpoints = eps
-	} else if a.gossipLayer != nil {
-		for _, meta := range a.gossipLayer.KnownPeers() {
-			if meta.PublicKey == peerKey && len(meta.Endpoints) > 0 {
-				endpoints = meta.Endpoints
-				break
-			}
-		}
 	}
 	// Always trigger — with no endpoints the engine still coordinates
 	// over the mesh (0x504A) to discover the peer's mapped address.

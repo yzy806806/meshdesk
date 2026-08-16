@@ -10,7 +10,6 @@ import (
 	"github.com/yzy806806/meshdesk/internal/config"
 	"github.com/yzy806806/meshdesk/internal/dns"
 	"github.com/yzy806806/meshdesk/internal/mesh"
-	"github.com/yzy806806/meshdesk/internal/p2p"
 	"github.com/yzy806806/meshdesk/internal/service"
 	"github.com/yzy806806/meshdesk/internal/transfer"
 	"github.com/yzy806806/meshdesk/internal/web"
@@ -22,8 +21,8 @@ import (
 // startServices starts mesh virtual-port services: DNS, remote service
 // management, file transfer, WebSSH.
 func (a *App) startServices() {
-	if a.cfg.Mesh.DNSEnabled && a.gossipLayer != nil {
-		dnsProvider := &gossipDNSAdapter{gl: a.gossipLayer}
+	if a.cfg.Mesh.DNSEnabled {
+		dnsProvider := &meshDNSAdapter{node: a.node}
 		dnsServer := dns.NewServer(dnsProvider, a.cfg.Mesh.DNSPort)
 		// Forward non-.mesh queries to the system resolver so the mesh
 		// DNS can act as a general-purpose resolver (T3.1).
@@ -120,8 +119,8 @@ func (a *App) startServices() {
 	}
 }
 
-type gossipDNSAdapter struct {
-	gl *p2p.GossipLayer
+type meshDNSAdapter struct {
+	node *mesh.MeshNode
 }
 
 type meshListenerAdapter struct {
@@ -154,33 +153,20 @@ func (a *meshListenerAdapter) ListenMesh(port int) (net.Listener, error) {
 	return a.node.ListenVirtualPort(port)
 }
 
-func (a *gossipDNSAdapter) LocalMeta() *dns.NodeMeta {
-	if a.gl == nil {
-		return nil
-	}
-	meta := a.gl.LocalMeta()
-	if meta == nil {
-		return nil
-	}
-	return &dns.NodeMeta{
-		Hostname:  meta.Hostname,
-		VirtualIP: meta.VirtualIP,
-	}
+func (a *meshDNSAdapter) LocalMeta() *dns.NodeMeta {
+	// No local meta available without gossip; return nil so the DNS
+	// server falls back to config-based resolution.
+	return nil
 }
 
-func (a *gossipDNSAdapter) KnownPeers() []*dns.NodeMeta {
-	if a.gl == nil {
-		return nil
-	}
-	peers := a.gl.KnownPeers()
-	result := make([]*dns.NodeMeta, 0, len(peers))
-	for _, p := range peers {
-		if p == nil {
-			continue
-		}
+func (a *meshDNSAdapter) KnownPeers() []*dns.NodeMeta {
+	// Source peer VirtualIPs from the mesh session meta exchange.
+	vips := a.node.PeerVirtualIPs()
+	result := make([]*dns.NodeMeta, 0, len(vips))
+	for _, vip := range vips {
 		result = append(result, &dns.NodeMeta{
-			Hostname:  p.Hostname,
-			VirtualIP: p.VirtualIP,
+			Hostname:  "",
+			VirtualIP: vip,
 		})
 	}
 	return result
