@@ -130,8 +130,15 @@ func (n *MeshNode) setupTUN() error {
 		virtualIP = staticIP
 		log.Printf("[mesh/tun] using static VirtualIP %s (bypassing IPAM)", virtualIP)
 	} else {
+		// Use a FIXED host count (the subnet's usable hosts, e.g. 254
+		// for /24) instead of len(peerIPs)+1. With hostCount=1 every
+		// node hashes to slot 0 → all get .1 → conflict. A fixed
+		// large count distributes hashes across the full range so
+		// different public keys almost never collide. When a rare
+		// collision does happen, AllocateWithPeers' salt loop finds
+		// the next free slot.
 		peerIPs := n.collectPeerVirtualIPs()
-		hostCount := len(peerIPs) + 1
+		hostCount := usableHostsInSubnet(cfg.Mesh.MeshCIDR)
 
 		virtualIP, err = alloc.AllocateWithPeers(pubKey, hostCount, peerIPs)
 		if err != nil {
@@ -349,7 +356,7 @@ func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, boo
 	}
 
 	pubKey := n.identity.PublicKey
-	hostCount := len(peerIPs) + 1
+	hostCount := usableHostsInSubnet(n.cfg.Mesh.MeshCIDR)
 	newIP, err := ti.Allocator.AllocateWithPeers(pubKey, hostCount, peerIPs)
 	if err != nil {
 		log.Printf("[mesh/tun] ReallocateAfterGossip: AllocateWithPeers failed: %v", err)
@@ -753,4 +760,24 @@ func removeKernelRoute(ifName string, ip net.IP) {
 				ip, ifName, fbErr, strings.TrimSpace(string(fbOutput)))
 		}
 	}
+}
+
+// usableHostsInSubnet returns the number of usable host IPs in the
+// given CIDR (e.g. 254 for "10.100.0.0/24"). Used as the fixed
+// hostCount for IPAM so hash distribution covers the full subnet
+// instead of collapsing to slot 0 when no peers are known yet.
+func usableHostsInSubnet(cidr string) int {
+	_, ipNet, err := net.ParseCIDR(cidr)
+	if err != nil || ipNet == nil {
+		return 254 // safe default for /24
+	}
+	ones, bits := ipNet.Mask.Size()
+	if bits == 0 || ones >= bits {
+		return 254
+	}
+	hosts := (1 << (bits - ones)) - 2 // subtract network + broadcast
+	if hosts < 1 {
+		hosts = 254
+	}
+	return hosts
 }
