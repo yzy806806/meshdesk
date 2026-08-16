@@ -273,8 +273,8 @@ func runJoinSubcommand(args []string) {
 		if bootstrapAddr == "" {
 			bootstrapAddr = bundle.BootstrapEndpoint
 		}
-		if cfg.Mesh.GossipPort == 0 {
-			cfg.Mesh.GossipPort = bundle.GossipPort
+		if cfg.Mesh.Port == 0 {
+			cfg.Mesh.Port = bundle.GossipPort
 		}
 		if len(cfg.Monitoring.Collectors) == 0 {
 			cfg.Monitoring.Collectors = bundle.Collectors

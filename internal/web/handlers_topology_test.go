@@ -515,12 +515,12 @@ func TestDeriveRoleFromConfig(t *testing.T) {
 			expected: "exit",
 		},
 		{
-			name: "entry node (SS password set, web addr set)",
+			name: "entry node (no SS, web addr set)",
 			cfg: &config.Config{
 				Node:  config.NodeConfig{WebAddr: ":8080"},
-				Proxy: config.ProxyConfig{SS: config.SSListenerConfig{Password: "secret"}},
+				Proxy: config.ProxyConfig{},
 			},
-			expected: "entry+dashboard",
+			expected: "dashboard",
 		},
 		{
 			name: "relay node (enabled, web addr set)",
@@ -543,19 +543,18 @@ func TestDeriveRoleFromConfig(t *testing.T) {
 			cfg: &config.Config{
 				Node: config.NodeConfig{WebAddr: ":8080"},
 				Proxy: config.ProxyConfig{
-					SS:    config.SSListenerConfig{Password: "secret"},
 					Relay: config.RelayNodeConfig{Enabled: true},
 					Exit:  config.ExitConfig{AllowedPorts: []int{80, 443}},
 				},
 			},
-			expected: "entry+relay+exit+dashboard",
+			expected: "relay+exit+dashboard",
 		},
 		{
-			name: "no web addr (entry only)",
+			name: "no web addr (no proxy config)",
 			cfg: &config.Config{
-				Proxy: config.ProxyConfig{SS: config.SSListenerConfig{Password: "secret"}},
+				Proxy: config.ProxyConfig{},
 			},
-			expected: "entry",
+			expected: "dashboard",
 		},
 	}
 

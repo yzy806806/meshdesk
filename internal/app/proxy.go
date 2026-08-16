@@ -28,94 +28,17 @@ type EntryManager interface {
 	ApplyEntry(listen, username, password string, exitNodes []string) error
 }
 
-// startProxyCircuit starts the legacy SS-based proxy entry node and
-// the circuit exit node (deprecated in favor of SOCKS5 0x5350, but kept
-// for proxy.ss.enabled configs).
+// startProxyCircuit starts the circuit exit node.
+// (The legacy SS-based entry node has been removed; SOCKS5 over Reality
+// TLS via virtual port 0x5350 is the sole proxy entry mechanism.)
 func (a *App) startProxyCircuit() {
-	meshDialFunc := func(ctx context.Context, network, address string) (net.Conn, error) {
-		return a.node.Dial(ctx, network, address)
-	}
-	var proxyEntryNode *proxy.EntryNode
-	var proxyExitNode *proxy.ExitNode
-
 	// Create a shared security event sink for all proxy subsystems.
 	// When a web server is running, its AlertStore callback is wired
 	// after the web server is created (see alert wiring below).
 	proxySecSink := proxy.NewSecurityEventSink()
 	a.proxySecSink = proxySecSink
 
-	// ── Entry Node (Legacy SS) ──
-	// The SS-based entry node accepts Shadowsocks connections and dispatches
-	// them through multi-path circuits to the exit a.node.
-	//
-	// DEPRECATED: SOCKS5 over Reality TLS (virtual port 0x5350) is the
-	// default proxy entry. The SS entry node is only started when
-	// proxy.ss.enabled is explicitly set to true. The SOCKS5 handler
-	// is registered separately via RegisterSOCKS5ForwardHandler/ExitHandler.
-	if a.cfg.Proxy.SS.Enabled && a.cfg.Proxy.SS.Port != 0 && a.cfg.Proxy.ExitAddr != "" {
-		ssListenAddr := a.cfg.Proxy.SS.ListenAddr
-		if ssListenAddr == "" {
-			ssListenAddr = fmt.Sprintf(":%d", a.cfg.Proxy.SS.Port)
-		}
-
-		// Build circuit config from the YAML config.
-		circuitCfg := proxy.CircuitConfig{
-			IdleTimeout:         time.Duration(a.cfg.Proxy.Circuit.IdleTimeout) * time.Second,
-			KeepaliveInterval:   time.Duration(a.cfg.Proxy.Circuit.KeepaliveInterval) * time.Second,
-			NACKTimeout:         time.Duration(a.cfg.Proxy.Circuit.NACKTimeout) * time.Second,
-			OrphanTimeout:       time.Duration(a.cfg.Proxy.Circuit.OrphanTimeout) * time.Second,
-			MaxReassemblyWindow: a.cfg.Proxy.Circuit.MaxReassemblyWindow,
-		}
-		if circuitCfg.IdleTimeout == 0 {
-			circuitCfg = proxy.DefaultCircuitConfig()
-		}
-
-		entryCfg := proxy.EntryNodeConfig{
-			SSConfig: proxy.SSConfig{
-				Password:   a.cfg.Proxy.SS.Password,
-				Cipher:     a.cfg.Proxy.SS.Cipher,
-				ListenAddr: ssListenAddr,
-			},
-			CircuitCfg:       circuitCfg,
-			ChunkerStrategy:  a.cfg.Proxy.ChunkerStrategy,
-			ChunkerCfg:       proxy.DefaultChunkerConfig(),
-			DebugFixedChunks: a.cfg.Proxy.DebugFixedChunks,
-			ExitAddr:         a.cfg.Proxy.ExitAddr,
-			DialFunc:         meshDialFunc,
-			SecSink:          proxySecSink,
-		}
-
-		// Configure path selection.
-		if a.cfg.Proxy.PathSelection.Mode == "auto" {
-			entryCfg.PathSelectionMode = "auto"
-			entryCfg.PathSelector = proxy.NewPathSelector(proxy.PathSelectorConfig{
-				MaxRelaysPerPath: a.cfg.Proxy.PathSelection.MaxRelaysPerPath,
-				ProbeTimeout:     time.Duration(a.cfg.Proxy.PathSelection.ProbeTimeoutSec) * time.Second,
-				ProbeConcurrency: a.cfg.Proxy.PathSelection.ProbeConcurrency,
-				MaxCandidates:    a.cfg.Proxy.PathSelection.MaxCandidates,
-				PathCount:        2,
-			})
-			// CandidateRelays would be populated from gossip-discovered
-			// relay-capable peers. For now, leave empty — auto selection
-			// will fail with a clear error if no candidates are provided.
-		} else {
-			// Manual mode: build Path structs from config.Paths.
-			entryCfg.PathSelectionMode = "manual"
-			if len(a.cfg.Proxy.Paths) >= 2 {
-				entryCfg.Path1 = &proxy.Path{Relays: a.cfg.Proxy.Paths[0]}
-				entryCfg.Path2 = &proxy.Path{Relays: a.cfg.Proxy.Paths[1]}
-			}
-		}
-
-		proxyEntryNode = proxy.NewEntryNode(entryCfg)
-		if err := proxyEntryNode.Start(); err != nil {
-			log.Printf("Warning: failed to start proxy entry node: %v", err)
-			proxyEntryNode = nil
-		} else {
-			log.Printf("  Proxy:      entry node active (SS listener on %s, exit=%s)",
-				ssListenAddr, a.cfg.Proxy.ExitAddr)
-		}
-	}
+	var proxyExitNode *proxy.ExitNode
 
 	// ── Exit Node ──
 	// The exit node receives encrypted chunks from relay paths,
@@ -154,10 +77,6 @@ func (a *App) startProxyCircuit() {
 
 		a.proxyExitNode = proxyExitNode
 		a.proxyExitCancel = exitCancel
-	}
-
-	if proxyEntryNode != nil {
-		a.proxyEntryNode = proxyEntryNode
 	}
 }
 

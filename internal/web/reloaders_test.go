@@ -152,7 +152,6 @@ func TestSOCKS5SectionInTierMap(t *testing.T) {
 func TestP2PAdvertiseEndpointsInTierMap(t *testing.T) {
 	fields := []string{
 		"p2p.advertise_endpoints",
-		"p2p.peer_cache_path",
 	}
 	for _, f := range fields {
 		if _, ok := tierMap[f]; !ok {
@@ -223,8 +222,3 @@ func TestSOCKS5StepUpFields(t *testing.T) {
 	}
 }
 
-func TestPeerCachePathReadOnly(t *testing.T) {
-	if !isReadOnly("p2p.peer_cache_path") {
-		t.Error("p2p.peer_cache_path should be read-only")
-	}
-}

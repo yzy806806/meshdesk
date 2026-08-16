@@ -31,7 +31,7 @@ func TestIntegration_ConfigHotReload_Lifecycle(t *testing.T) {
 
 	// Register a mock reloader to track reload invocations.
 	mock := &mockReloader{
-		appliedFields: []string{"monitoring.interval", "p2p.gossip_interval"},
+		appliedFields: []string{"monitoring.interval"},
 	}
 	srv.configAPI.reloaderRegistry.Register(mock)
 
@@ -364,17 +364,17 @@ func TestIntegration_ConfigPatch_HotReloadField(t *testing.T) {
 
 	// Register a mock reloader.
 	mock := &mockReloader{
-		appliedFields: []string{"p2p.gossip_interval"},
+		appliedFields: []string{"monitoring.interval"},
 	}
 	srv.configAPI.reloaderRegistry.Register(mock)
 
 	// Record original value.
 	configMu.RLock()
-	originalGossipInterval := srv.cfg.P2P.GossipInterval
+	originalInterval := srv.cfg.Monitoring.Interval
 	configMu.RUnlock()
 
 	// PATCH only the hot-reload field. Use a value DIFFERENT from the default (30).
-	body := `{"p2p":{"gossip_interval":60}}`
+	body := `{"monitoring":{"interval":60}}`
 	req := configRequestWithAuth("PATCH", "/api/config", body, sessionToken)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPatch(rr, req)
@@ -395,24 +395,24 @@ func TestIntegration_ConfigPatch_HotReloadField(t *testing.T) {
 	}
 	foundApplied := false
 	for _, f := range result.Applied {
-		if f == "p2p.gossip_interval" {
+		if f == "monitoring.interval" {
 			foundApplied = true
 			break
 		}
 	}
 	if !foundApplied {
-		t.Error("p2p.gossip_interval should be in 'applied' list")
+		t.Error("monitoring.interval should be in 'applied' list")
 	}
 
 	// Verify live config is updated.
 	configMu.RLock()
-	currentGossipInterval := srv.cfg.P2P.GossipInterval
+	currentInterval := srv.cfg.Monitoring.Interval
 	configMu.RUnlock()
 
-	if currentGossipInterval != 60 {
-		t.Errorf("live p2p.gossip_interval = %d, want 60", currentGossipInterval)
+	if currentInterval != 60 {
+		t.Errorf("live monitoring.interval = %d, want 60", currentInterval)
 	}
-	if currentGossipInterval == originalGossipInterval {
+	if currentInterval == originalInterval {
 		t.Error("live config was not updated by PATCH")
 	}
 

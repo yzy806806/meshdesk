@@ -35,7 +35,7 @@ func (a *App) startJoinServer() {
 				Secret:            []byte(a.cfg.Join.Secret),
 				ServerIdentity:    a.node.Identity(),
 				BootstrapEndpoint: firstAdvertiseEndpointHost(a.cfg),
-				GossipPort:        a.cfg.Mesh.GossipPort,
+				GossipPort:        a.cfg.Mesh.Port,
 				RealityPublicKey:  realityPubHex, // Derived X25519 public key
 				RealityShortID:    firstShortID(a.cfg.Reality.ShortIDs),
 				RealityServerName: firstServerName(a.cfg.Reality.ServerNames),

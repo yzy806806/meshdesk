@@ -217,7 +217,7 @@ type ACLConfig struct {
 const DefaultTunMTU = 1400
 
 // DefaultMeshPort is the default mesh listen port (both TCP mux and
-// UDP gossip) used when config leaves Mesh.Port / GossipPort unset.
+// UDP gossip) used when config leaves Mesh.Port unset.
 // It is NOT hardcoded in the transport/holepunch layers — those read
 // cfg.Mesh.Port. This constant exists only so defaults, CLI tools and
 // web handlers reference one source of truth instead of magic numbers.
@@ -226,10 +226,6 @@ const DefaultMeshPort = 52888
 // ProxyConfig holds settings for the anonymous proxy subsystem
 // (multi-path dispersed transport). See docs/PROXY_DESIGN.md.
 type ProxyConfig struct {
-	// SS holds the Shadowsocks entry-point listener configuration.
-	// Only needed on nodes that serve as proxy entry points.
-	SS SSListenerConfig `yaml:"ss,omitempty"`
-
 	// Circuit holds circuit lifecycle parameters.
 	Circuit CircuitLifecycleConfig `yaml:"circuit,omitempty"`
 
@@ -256,11 +252,6 @@ type ProxyConfig struct {
 	// address to set up circuits and dispatch chunks.
 	// Example: "10.10.0.5:8388".
 	ExitAddr string `yaml:"exit_addr,omitempty"`
-
-	// CFTunnel holds Cloudflare Tunnel configuration for exposing
-	// the SS listener via CF's edge network (PROXY_DESIGN.md §2).
-	// Only needed on entry nodes.
-	CFTunnel CFTunnelYAMLConfig `yaml:"cf_tunnel,omitempty"`
 
 	// Relay holds relay-node-specific configuration.
 	// Only needed on nodes that serve as relay nodes.
@@ -319,52 +310,6 @@ type PathSelectionConfig struct {
 	ExitLatencyMatrix map[string]map[string]int `yaml:"exit_latency_matrix,omitempty"`
 }
 
-// CFTunnelYAMLConfig holds CF Tunnel settings for the config file.
-// This maps to the CFTunnelConfig struct used by the tunnel manager.
-type CFTunnelYAMLConfig struct {
-	// Enabled controls whether the CF Tunnel is started on this node.
-	// When true, the entry node runs cloudflared to expose its SS
-	// listener via CF's edge network.
-	Enabled bool `yaml:"enabled,omitempty"`
-
-	// TunnelID is the Cloudflare Tunnel UUID.
-	TunnelID string `yaml:"tunnel_id,omitempty"`
-
-	// CredentialsFile is the path to the tunnel credentials JSON.
-	CredentialsFile string `yaml:"credentials_file,omitempty"`
-
-	// Hostname is the CF hostname that routes to this tunnel.
-	// E.g., "proxy.example.com".
-	Hostname string `yaml:"hostname,omitempty"`
-
-	// OriginServer is the local address the tunnel forwards to.
-	// Default: "127.0.0.1:8388" (the SS listener address).
-	OriginServer string `yaml:"origin_server,omitempty"`
-
-	// Region is the CF edge region preference. Empty = auto.
-	Region string `yaml:"region,omitempty"`
-
-	// LogLevel controls cloudflared's logging verbosity.
-	// Default: "warn".
-	LogLevel string `yaml:"log_level,omitempty"`
-
-	// MetricsAddr is the cloudflared metrics server address.
-	// Default: "127.0.0.1:36500".
-	MetricsAddr string `yaml:"metrics_addr,omitempty"`
-
-	// BinaryPath is the path to the cloudflared binary.
-	// Empty = use "cloudflared" from PATH.
-	BinaryPath string `yaml:"binary_path,omitempty"`
-
-	// ReconnectRetries is the number of reconnection attempts.
-	// Default: 5.
-	ReconnectRetries int `yaml:"reconnect_retries,omitempty"`
-
-	// GracePeriodSec is the drain time on shutdown.
-	// Default: 30.
-	GracePeriodSec int `yaml:"grace_period_sec,omitempty"`
-}
-
 // RelayNodeConfig holds settings for a relay node in the anonymous
 // proxy system. Relay nodes blindly forward AEAD-encrypted ciphertext
 // chunks — they have no decryption key for the payload and only process
@@ -404,35 +349,6 @@ type RelayNodeConfig struct {
 	// MaxQueueDepth is the maximum number of pending chunks per
 	// circuit before backpressure is applied. Default: 256.
 	MaxQueueDepth int `yaml:"max_queue_depth,omitempty"`
-}
-
-// SSListenerConfig configures the Shadowsocks entry listener.
-//
-// DEPRECATED: SOCKS5 over Reality TLS (virtual port 0x5350) is now the
-// default proxy entry. The SS listener is retained for backward
-// compatibility but is only started when Enabled is explicitly set to true.
-// New deployments should use the SOCKS5 handler instead.
-type SSListenerConfig struct {
-	// Enabled controls whether the SS listener is started. Default:
-	// false (SOCKS5 is the default entry). Set to true only for
-	// backward compatibility with existing SS clients.
-	Enabled bool `yaml:"enabled,omitempty"`
-
-	// Password is the pre-shared password for SS AEAD key derivation.
-	Password string `yaml:"password"`
-
-	// Cipher is the AEAD cipher name. Currently only
-	// "chacha20-ietf-poly1305" is supported.
-	Cipher string `yaml:"cipher,omitempty"`
-
-	// ListenAddr is the address to listen on. In production this
-	// is behind a CF Tunnel — the tunnel provides TLS.
-	ListenAddr string `yaml:"listen_addr"`
-
-	// Port is the Shadowsocks listener port. Default: 8388.
-	// Mutually exclusive with ListenAddr when ListenAddr includes
-	// an explicit port. When both are set, Port takes precedence.
-	Port int `yaml:"port,omitempty"`
 }
 
 // CircuitLifecycleConfig holds circuit lifecycle parameters.
@@ -572,21 +488,6 @@ type TransferConfig struct {
 // stored in config.yaml for reference.
 const DefaultIdentityFile = "/etc/meshdesk/identity.pem"
 
-// DefaultPeerCachePath returns the default file path for the peer cache,
-// adjusted for the current user's privileges. Root uses
-// /var/lib/meshdesk/peers.cache; non-root users fall back to
-// ~/.meshdesk/peers.cache to avoid permission errors.
-func DefaultPeerCachePath() string {
-	if os.Getuid() == 0 {
-		return "/var/lib/meshdesk/peers.cache"
-	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "/var/lib/meshdesk/peers.cache"
-	}
-	return home + "/.meshdesk/peers.cache"
-}
-
 // NodeConfig holds local node identity settings.
 type NodeConfig struct {
 	// Identity is the deprecated hex-encoded Ed25519 private key.
@@ -629,9 +530,6 @@ type PositionConfig struct {
 // MeshConfig holds mesh-level settings.
 type MeshConfig struct {
 	Port int `yaml:"port"` // mesh/Reality listen port
-	// GossipPort is the TCP port for memberlist gossip on the mesh IP.
-	// Default: 7946. Only used when p2p.enabled is true.
-	GossipPort int `yaml:"gossip_port,omitempty"`
 
 	// Zone is this node's zone tag (free-form string, e.g. "cn", "us",
 	// "uk"). Peers with the SAME zone value use UDP P2P (multipath +
@@ -704,12 +602,6 @@ type P2pConfig struct {
 	// bootstrap the gossip cluster.
 	Seeds []string `yaml:"seeds,omitempty"`
 
-	// NatTraversal enables STUN discovery and UDP hole-punching.
-	NatTraversal bool `yaml:"nat_traversal,omitempty"`
-
-	// StunServers is the list of STUN server addresses for NAT discovery.
-	StunServers []string `yaml:"stun_servers,omitempty"`
-
 	// RelayMode controls how relay fallback is handled:
 	//   "auto"     — automatically select relay peers (default)
 	//   "manual"   — use only manually configured relay peers
@@ -718,27 +610,6 @@ type P2pConfig struct {
 
 	// MaxRelayHops is the maximum number of relay hops for relayed connections.
 	MaxRelayHops int `yaml:"max_relay_hops,omitempty"`
-
-	// JoinApproval controls the authentication mode for new nodes:
-	//   "auto"   — pre-authorized key list (authorized_keys)
-	//   "manual" — admin approval via dashboard
-	JoinApproval string `yaml:"join_approval,omitempty"`
-
-	// AuthorizedKeys is the list of mesh public keys (hex) pre-authorized
-	// to join the mesh. Used when JoinApproval is "auto".
-	AuthorizedKeys []string `yaml:"authorized_keys,omitempty"`
-
-	// GossipInterval is the PushPull interval in seconds (state sync). Default: 30.
-	GossipInterval int `yaml:"gossip_interval,omitempty"`
-
-	// GossipProbeInterval is the probe interval in seconds (health check). Default: 1.
-	GossipProbeInterval int `yaml:"gossip_probe_interval,omitempty"`
-
-	// DirectReprobeInterval is seconds between direct re-probes in relay mode. Default: 120.
-	DirectReprobeInterval int `yaml:"direct_reprobe_interval,omitempty"`
-
-	// MaxPeers is the hard limit on total peers. Default: 256.
-	MaxPeers int `yaml:"max_peers,omitempty"`
 
 	// AdvertiseEndpoints is a list of explicit mesh endpoints (host:port)
 	// that this node advertises to peers via gossip. When set, they override
@@ -751,13 +622,6 @@ type P2pConfig struct {
 	// If set, it is treated as a single-element AdvertiseEndpoints list
 	// during config loading. Deprecated: use advertise_endpoints instead.
 	AdvertiseEndpoint string `yaml:"advertise_endpoint,omitempty"`
-
-	// PeerCachePath is the file path for persisting discovered peer
-	// endpoints to disk so they survive process restarts. When empty,
-	// the default is /var/lib/meshdesk/peers.cache for root, or
-	// ~/.meshdesk/peers.cache for non-root users. The file is
-	// JSON-encoded and written atomically.
-	PeerCachePath string `yaml:"peer_cache_path,omitempty"`
 }
 
 // PeerConfig describes a single mesh peer.
@@ -1093,31 +957,10 @@ func Load(path string) (*Config, error) {
 	if cfg.P2P.MaxRelayHops == 0 && cfg.P2P.Enabled {
 		cfg.P2P.MaxRelayHops = 2
 	}
-	if cfg.P2P.JoinApproval == "" && cfg.P2P.Enabled {
-		cfg.P2P.JoinApproval = "auto"
-	}
-	if cfg.P2P.GossipInterval == 0 && cfg.P2P.Enabled {
-		cfg.P2P.GossipInterval = 30
-	}
-	if cfg.P2P.GossipProbeInterval == 0 && cfg.P2P.Enabled {
-		cfg.P2P.GossipProbeInterval = 1
-	}
-	if cfg.P2P.DirectReprobeInterval == 0 && cfg.P2P.Enabled {
-		cfg.P2P.DirectReprobeInterval = 120
-	}
-	if cfg.P2P.MaxPeers == 0 && cfg.P2P.Enabled {
-		cfg.P2P.MaxPeers = 256
-	}
 	// Backward compatibility: if the legacy advertise_endpoint field is set
 	// and advertise_endpoints is not, migrate the single endpoint to the list.
 	if cfg.P2P.AdvertiseEndpoint != "" && len(cfg.P2P.AdvertiseEndpoints) == 0 {
 		cfg.P2P.AdvertiseEndpoints = []string{cfg.P2P.AdvertiseEndpoint}
-	}
-	// Peer cache path: if not set by the user, resolve a default.
-	// Root uses /var/lib/meshdesk/peers.cache; non-root falls back to
-	// ~/.meshdesk/peers.cache to avoid permission errors.
-	if cfg.P2P.PeerCachePath == "" {
-		cfg.P2P.PeerCachePath = DefaultPeerCachePath()
 	}
 	if cfg.Monitoring.Interval == 0 {
 		cfg.Monitoring.Interval = 15
@@ -1181,10 +1024,6 @@ func Load(path string) (*Config, error) {
 	if cfg.Proxy.Circuit.MaxReassemblyWindow == 0 {
 		cfg.Proxy.Circuit.MaxReassemblyWindow = 256
 	}
-	// SS listener defaults.
-	if cfg.Proxy.SS.Port == 0 {
-		cfg.Proxy.SS.Port = 8388
-	}
 	if len(cfg.Proxy.Exit.AllowedPorts) == 0 && !cfg.Proxy.Exit.AllowAllPorts {
 		cfg.Proxy.Exit.AllowedPorts = []int{80, 443}
 	}
@@ -1240,22 +1079,6 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Proxy.PathSelection.ProbeCacheTTLSec == 0 {
 		cfg.Proxy.PathSelection.ProbeCacheTTLSec = 30
-	}
-	// CF Tunnel defaults.
-	if cfg.Proxy.CFTunnel.OriginServer == "" {
-		cfg.Proxy.CFTunnel.OriginServer = "127.0.0.1:8388"
-	}
-	if cfg.Proxy.CFTunnel.LogLevel == "" {
-		cfg.Proxy.CFTunnel.LogLevel = "warn"
-	}
-	if cfg.Proxy.CFTunnel.MetricsAddr == "" {
-		cfg.Proxy.CFTunnel.MetricsAddr = "127.0.0.1:36500"
-	}
-	if cfg.Proxy.CFTunnel.ReconnectRetries == 0 {
-		cfg.Proxy.CFTunnel.ReconnectRetries = 5
-	}
-	if cfg.Proxy.CFTunnel.GracePeriodSec == 0 {
-		cfg.Proxy.CFTunnel.GracePeriodSec = 30
 	}
 	// Join config defaults.
 	if cfg.Join.Enabled && cfg.Join.ListenAddr == "" {
