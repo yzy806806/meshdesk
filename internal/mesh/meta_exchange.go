@@ -208,6 +208,11 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 	for _, pm := range msg.Peers {
 		if pm.Key != "" && pm.VIP != "" {
 			me.node.AddPeerVirtualIPRoute(pm.Key, pm.VIP)
+			// VIP conflict check: if the peer's VIP matches our
+			// local VIP, trigger IPAM reallocation (gossip's
+			// ReallocateAfterGossip did this; with gossip retired,
+			// META must do it too).
+			me.node.CheckVIPConflict(pm.VIP)
 		}
 		if pm.Key != "" && pm.Zone != "" {
 			me.node.SetLearnedZone(pm.Key, pm.Zone)
