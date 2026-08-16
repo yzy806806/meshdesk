@@ -22,7 +22,6 @@ func TestAppBuildStartStop(t *testing.T) {
 	cfg.Node.IdentityFile = filepath.Join(dir, "identity.key")
 	cfg.Mesh.TunEnabled = false
 	cfg.Mesh.Port = 0       // avoid privileged/default port collisions
-	cfg.Mesh.GossipPort = 0 // ordinary-node mode picks an ephemeral port
 	cfg.P2P.Enabled = true
 	cfg.Monitoring.Interval = 60
 	cfg.Proxy.SOCKS5.Enabled = false

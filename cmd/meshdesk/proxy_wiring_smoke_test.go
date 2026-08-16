@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -28,12 +27,6 @@ import (
 // ports and test-safe values.
 func makeTestProxyConfig(ssPort int) config.ProxyConfig {
 	return config.ProxyConfig{
-		SS: config.SSListenerConfig{
-			Password:   "smoke-test-password",
-			Cipher:     proxy.CipherChaCha20IETFPoly1305,
-			ListenAddr: fmt.Sprintf("127.0.0.1:%d", ssPort),
-			Port:       ssPort,
-		},
 		Circuit: config.CircuitLifecycleConfig{
 			IdleTimeout:         300,
 			KeepaliveInterval:   30,
@@ -58,11 +51,6 @@ func makeTestProxyConfig(ssPort int) config.ProxyConfig {
 // It takes a config.ProxyConfig and produces a proxy.EntryNodeConfig with
 // all fields resolved — the same field resolution that main.go performs.
 func resolveEntryNodeConfig(cfg config.ProxyConfig, dialFunc func(ctx context.Context, network, address string) (net.Conn, error)) proxy.EntryNodeConfig {
-	ssListenAddr := cfg.SS.ListenAddr
-	if ssListenAddr == "" {
-		ssListenAddr = fmt.Sprintf(":%d", cfg.SS.Port)
-	}
-
 	circuitCfg := proxy.CircuitConfig{
 		IdleTimeout:         time.Duration(cfg.Circuit.IdleTimeout) * time.Second,
 		KeepaliveInterval:   time.Duration(cfg.Circuit.KeepaliveInterval) * time.Second,
@@ -75,11 +63,7 @@ func resolveEntryNodeConfig(cfg config.ProxyConfig, dialFunc func(ctx context.Co
 	}
 
 	return proxy.EntryNodeConfig{
-		SSConfig: proxy.SSConfig{
-			Password:   cfg.SS.Password,
-			Cipher:     cfg.SS.Cipher,
-			ListenAddr: ssListenAddr,
-		},
+
 		CircuitCfg:       circuitCfg,
 		ChunkerStrategy:  cfg.ChunkerStrategy,
 		ChunkerCfg:       proxy.DefaultChunkerConfig(),
@@ -126,16 +110,7 @@ func TestProxyConfigFieldResolution(t *testing.T) {
 	// ── Entry node config resolution ──
 	entryCfg := resolveEntryNodeConfig(cfg, nil)
 
-	if entryCfg.SSConfig.Password != cfg.SS.Password {
-		t.Errorf("entry SSConfig.Password: expected %q, got %q", cfg.SS.Password, entryCfg.SSConfig.Password)
-	}
-	if entryCfg.SSConfig.Cipher != proxy.CipherChaCha20IETFPoly1305 {
-		t.Errorf("entry SSConfig.Cipher: expected %q, got %q", proxy.CipherChaCha20IETFPoly1305, entryCfg.SSConfig.Cipher)
-	}
-	if entryCfg.SSConfig.ListenAddr != "127.0.0.1:8388" {
-		t.Errorf("entry SSConfig.ListenAddr: expected %q, got %q", "127.0.0.1:8388", entryCfg.SSConfig.ListenAddr)
-	}
-	if entryCfg.ExitAddr != cfg.ExitAddr {
+if entryCfg.ExitAddr != cfg.ExitAddr {
 		t.Errorf("entry ExitAddr: expected %q, got %q", cfg.ExitAddr, entryCfg.ExitAddr)
 	}
 	if entryCfg.ChunkerStrategy != cfg.ChunkerStrategy {
@@ -205,88 +180,12 @@ func TestProxyConfigDefaultCircuitFallback(t *testing.T) {
 	}
 }
 
-// TestProxyConfigListenAddrFallback verifies that when ListenAddr is empty
-// but Port is set, the listen address is constructed from the port —
-// mirroring main.go:290-293.
-func TestProxyConfigListenAddrFallback(t *testing.T) {
-	cfg := makeTestProxyConfig(9388)
-	cfg.SS.ListenAddr = "" // force port-based fallback
-
-	entryCfg := resolveEntryNodeConfig(cfg, nil)
-
-	expected := ":9388"
-	if entryCfg.SSConfig.ListenAddr != expected {
-		t.Errorf("ListenAddr fallback: expected %q, got %q", expected, entryCfg.SSConfig.ListenAddr)
-	}
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Test 2: SS listener port binding succeeds
 // ──────────────────────────────────────────────────────────────────────────
 
-// TestSSListenerPortBinding verifies that the SS listener successfully binds
-// to an ephemeral port and that the bound address matches the config.
-// This exercises the same NewSSListener call in main.go:289.
-func TestSSListenerPortBinding(t *testing.T) {
-	// Bind to port 0 (ephemeral) to get an OS-assigned port.
-	ln, err := proxy.NewSSListener(proxy.SSConfig{
-		Password:   "port-binding-test",
-		Cipher:     proxy.CipherChaCha20IETFPoly1305,
-		ListenAddr: "127.0.0.1:0",
-	})
-	if err != nil {
-		t.Fatalf("NewSSListener failed: %v", err)
-	}
-	defer ln.Close()
 
-	addr := ln.Addr().String()
-	if addr == "" {
-		t.Fatal("listener Addr() returned empty string")
-	}
-
-	// Verify the address is a valid TCP address on 127.0.0.1.
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		t.Fatalf("listener Addr() invalid %q: %v", addr, err)
-	}
-	if host != "127.0.0.1" {
-		t.Errorf("expected host 127.0.0.1, got %q", host)
-	}
-	if port == "0" || port == "" {
-		t.Errorf("expected non-zero ephemeral port, got %q", port)
-	}
-
-	// Verify the port is actually listening by dialing it.
-	conn, err := net.Dial("tcp", addr)
-	if err != nil {
-		t.Fatalf("could not dial SS listener at %s: %v", addr, err)
-	}
-	conn.Close()
-}
-
-// TestSSListenerPortConflict verifies that binding two SS listeners to the
-// same port fails — confirming that port binding is real, not a no-op.
-func TestSSListenerPortConflict(t *testing.T) {
-	ln1, err := proxy.NewSSListener(proxy.SSConfig{
-		Password:   "conflict-test-1",
-		Cipher:     proxy.CipherChaCha20IETFPoly1305,
-		ListenAddr: "127.0.0.1:0",
-	})
-	if err != nil {
-		t.Fatalf("first NewSSListener failed: %v", err)
-	}
-	defer ln1.Close()
-
-	// Try to bind a second listener to the same port.
-	_, err2 := proxy.NewSSListener(proxy.SSConfig{
-		Password:   "conflict-test-2",
-		Cipher:     proxy.CipherChaCha20IETFPoly1305,
-		ListenAddr: ln1.Addr().String(),
-	})
-	if err2 == nil {
-		t.Fatal("expected error binding second listener to same port, got nil")
-	}
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Test 3: Entry node port binding (full Start → Close lifecycle)
@@ -297,7 +196,6 @@ func TestSSListenerPortConflict(t *testing.T) {
 // starts, binds a port, and shuts down cleanly.
 func TestEntryNodePortBindingAndLifecycle(t *testing.T) {
 	cfg := makeTestProxyConfig(0)
-	cfg.SS.ListenAddr = "127.0.0.1:0" // ephemeral
 
 	// Build minimal valid manual paths with proper relay keys.
 	key1 := make([]byte, 32) // KeySize = 32
@@ -349,7 +247,6 @@ func TestEntryNodePortBindingAndLifecycle(t *testing.T) {
 // don't panic or leak goroutines — mirroring the defer pattern in main.go.
 func TestEntryNodeCloseIdempotent(t *testing.T) {
 	cfg := makeTestProxyConfig(0)
-	cfg.SS.ListenAddr = "127.0.0.1:0"
 
 	key := make([]byte, 32)
 	entryCfg := resolveEntryNodeConfig(cfg, nil)
@@ -534,7 +431,6 @@ func TestSecurityEventSinkCallbackSwap(t *testing.T) {
 // equivalent to main.go's proxy section (lines 255-397).
 func TestProxyDataPlaneFullWiring(t *testing.T) {
 	cfg := makeTestProxyConfig(0)
-	cfg.SS.ListenAddr = "127.0.0.1:0"
 
 	// 1. Create the shared security event sink (main.go:284).
 	sink := proxy.NewSecurityEventSink()
@@ -612,22 +508,6 @@ func TestProxyDataPlaneFullWiring(t *testing.T) {
 // Test 7: Config field resolution edge cases
 // ──────────────────────────────────────────────────────────────────────────
 
-// TestProxyConfigEmptyPassword verifies that an empty SS password
-// is caught at the SS listener creation level — confirming that
-// the wiring correctly propagates the password requirement.
-func TestProxyConfigEmptyPassword(t *testing.T) {
-	cfg := makeTestProxyConfig(0)
-	cfg.SS.Password = "" // empty password
-
-	entryCfg := resolveEntryNodeConfig(cfg, nil)
-
-	en := proxy.NewEntryNode(entryCfg)
-	err := en.Start()
-	if err == nil {
-		en.Close()
-		t.Fatal("expected Start() to fail with empty password, got nil")
-	}
-}
 
 // TestProxyConfigExitNodeAllowAllPorts verifies that the exit node
 // correctly resolves AllowAllPorts from config — mirroring main.go:357.
@@ -646,22 +526,6 @@ func TestProxyConfigExitNodeAllowAllPorts(t *testing.T) {
 	}
 }
 
-// TestProxyConfigEntryNodeNotCreatedWithoutExitAddr verifies that when
-// ExitAddr is empty, the entry node is not created — mirroring the
-// conditional in main.go:289 (cfg.Proxy.SS.Port != 0 && cfg.Proxy.ExitAddr != "").
-func TestProxyConfigEntryNodeNotCreatedWithoutExitAddr(t *testing.T) {
-	cfg := makeTestProxyConfig(8388)
-	cfg.ExitAddr = "" // no exit address
-
-	// In main.go, this condition means proxyEntryNode stays nil.
-	// We verify the same logic: if ExitAddr is empty, the entry node
-	// config would have an empty ExitAddr, which is a valid but
-	// non-functional configuration.
-	entryCfg := resolveEntryNodeConfig(cfg, nil)
-	if entryCfg.ExitAddr != "" {
-		t.Errorf("expected empty ExitAddr, got %q", entryCfg.ExitAddr)
-	}
-}
 
 // TestProxyConfigExitNodeNotCreatedWithoutPorts verifies that when
 // neither AllowedPorts nor AllowAllPorts is set, the exit node is

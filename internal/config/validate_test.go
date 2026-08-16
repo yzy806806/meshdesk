@@ -588,7 +588,6 @@ func TestValidateStruct(t *testing.T) {
 	t.Run("no conflict when ports differ", func(t *testing.T) {
 		cfg := Default()
 		cfg.Mesh.Port = 51820
-		cfg.Mesh.GossipPort = 7946
 		cfg.Monitoring.Port = 4191
 		cfg.WebSSH.Port = 2222
 		errs := Validate(cfg)

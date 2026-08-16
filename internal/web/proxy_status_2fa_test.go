@@ -46,7 +46,6 @@ func new2FAEnforcementTestServer(t *testing.T, require2FA bool) *Server {
 			status: ProxyStatusData{
 				Running:       true,
 				SessionCount:  3,
-				CFTunnelReady: true,
 				Path1Relays:   []string{"relay1:9000"},
 				Path2Relays:   []string{"relay2:9000"},
 				ExitAddr:      "exit.mesh:443",
@@ -129,9 +128,6 @@ func TestProxyStatus_WithProvider(t *testing.T) {
 	}
 	if resp.SessionCount != 3 {
 		t.Errorf("expected session_count=3, got %d", resp.SessionCount)
-	}
-	if !resp.CFTunnelReady {
-		t.Error("expected cf_tunnel_ready=true")
 	}
 	if resp.ExitAddr != "exit.mesh:443" {
 		t.Errorf("expected exit_addr=exit.mesh:443, got %s", resp.ExitAddr)

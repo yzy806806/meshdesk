@@ -251,20 +251,6 @@ func Validate(cfg *Config) []ValidationError {
 	}
 
 	// --- proxy section ---
-	if cfg.Proxy.SS.Enabled {
-		if cfg.Proxy.SS.Password == "" {
-			errs = append(errs, ValidationError{
-				Section: "proxy.ss", Field: "password",
-				Message: "password is required when SS listener is enabled",
-			})
-		}
-		if cfg.Proxy.SS.Port < 0 || cfg.Proxy.SS.Port > 65535 {
-			errs = append(errs, ValidationError{
-				Section: "proxy.ss", Field: "port",
-				Message: fmt.Sprintf("port must be 0-65535, got %d", cfg.Proxy.SS.Port),
-			})
-		}
-	}
 
 	// ChunkerStrategy enum.
 	switch cfg.Proxy.ChunkerStrategy {
@@ -378,15 +364,6 @@ func Validate(cfg *Config) []ValidationError {
 			Message: fmt.Sprintf("must be 'auto', 'manual', or 'disabled', got %q", cfg.P2P.RelayMode),
 		})
 	}
-	switch cfg.P2P.JoinApproval {
-	case "", "auto", "manual":
-		// valid
-	default:
-		errs = append(errs, ValidationError{
-			Section: "p2p", Field: "join_approval",
-			Message: fmt.Sprintf("must be 'auto' or 'manual', got %q", cfg.P2P.JoinApproval),
-		})
-	}
 
 	// --- Port conflict detection ---
 	errs = append(errs, checkPortConflicts(cfg)...)
@@ -433,11 +410,7 @@ func checkPortConflicts(cfg *Config) []ValidationError {
 	if cfg.Mesh.Port > 0 {
 		entries = append(entries, portEntry{cfg.Mesh.Port, "mesh", "port"})
 	}
-	// Gossip port.
-	if cfg.Mesh.GossipPort > 0 {
-		entries = append(entries, portEntry{cfg.Mesh.GossipPort, "mesh", "gossip_port"})
-	}
-	// DNS port.
+	// DNS port validation.
 	if cfg.Mesh.DNSEnabled && cfg.Mesh.DNSPort > 0 {
 		entries = append(entries, portEntry{cfg.Mesh.DNSPort, "mesh", "dns_port"})
 	}
@@ -471,20 +444,6 @@ func checkPortConflicts(cfg *Config) []ValidationError {
 	}
 	if jPort > 0 {
 		entries = append(entries, portEntry{jPort, "join", "listen_addr"})
-	}
-	// SS listener port.
-	if cfg.Proxy.SS.Enabled && cfg.Proxy.SS.Port > 0 {
-		entries = append(entries, portEntry{cfg.Proxy.SS.Port, "proxy.ss", "port"})
-	}
-	// CF Tunnel metrics port.
-	if cfg.Proxy.CFTunnel.Enabled && cfg.Proxy.CFTunnel.MetricsAddr != "" {
-		if _, portStr, err := net.SplitHostPort(cfg.Proxy.CFTunnel.MetricsAddr); err == nil {
-			var mPort int
-			fmt.Sscanf(portStr, "%d", &mPort)
-			if mPort > 0 {
-				entries = append(entries, portEntry{mPort, "proxy.cf_tunnel", "metrics_addr"})
-			}
-		}
 	}
 	// Node web address port.
 	if cfg.Node.WebAddr != "" {

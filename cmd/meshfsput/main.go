@@ -37,9 +37,8 @@ func main() {
 	// shift this test client to the next port. Note this compares
 	// against the DEFAULTS, not a hardcoded 52888 — a custom port in
 	// the config is respected as-is.
-	if cfg.Mesh.Port == config.DefaultMeshPort || cfg.Mesh.GossipPort == config.DefaultMeshPort {
+	if cfg.Mesh.Port == config.DefaultMeshPort {
 		cfg.Mesh.Port++
-		cfg.Mesh.GossipPort = cfg.Mesh.Port
 	}
 
 	node, err := mesh.New(cfg)
