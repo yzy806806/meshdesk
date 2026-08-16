@@ -2547,7 +2547,32 @@ func (n *MeshNode) PeerZone(peerKey string) string {
 }
 
 // LocalEndpoints returns this node's advertised endpoints (from
-// LocalEndpoints returns the endpoints this node advertises to peers.
+// CheckVIPConflict checks if the given peer VIP matches our local VIP.
+// If it does, trigger IPAM reallocation to resolve the conflict (the
+// peer with the larger public key yields — same rule as gossip's
+// ReallocateAfterGossip, now driven by META since gossip is retired).
+func (n *MeshNode) CheckVIPConflict(peerVIP string) {
+	if peerVIP == "" {
+		return
+	}
+	localVIP := n.GetTUNVirtualIP()
+	if localVIP == nil {
+		return
+	}
+	if localVIP.String() != peerVIP {
+		return // No conflict.
+	}
+	// Conflict detected — collect all known peer VIPs and reallocate.
+	peerIPs := n.collectPeerVirtualIPs()
+	newIP, changed := n.ReallocateAfterGossip(peerIPs)
+	if changed && newIP != nil {
+		log.Printf("[mesh/tun] VIP conflict with peer (%s), reallocated to %s", peerVIP, newIP)
+		// Update local meta so peers learn the new VIP.
+		n.SetTUNLocalVirtualIP(newIP.String())
+	}
+}
+
+
 // With memberlist retired, endpoints are auto-detected from the TCP
 // listener address and the meta exchange — no manual config needed.
 func (n *MeshNode) LocalEndpoints() []string {
