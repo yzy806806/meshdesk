@@ -233,17 +233,6 @@ transfer:
 
 		// --- Reality server section ---
 		{
-			name: "reality enabled without dest",
-			yaml: `
-reality:
-  enabled: true
-  private_key: aabbcc
-  server_names:
-    - www.example.com
-`,
-			wantErrs: []string{"reality.dest", "required"},
-		},
-		{
 			name: "reality enabled without private_key",
 			yaml: `
 reality:
@@ -253,16 +242,6 @@ reality:
     - www.example.com
 `,
 			wantErrs: []string{"reality.private_key", "required"},
-		},
-		{
-			name: "reality enabled without server_names",
-			yaml: `
-reality:
-  enabled: true
-  dest: www.example.com:443
-  private_key: aabbcc
-`,
-			wantErrs: []string{"reality.server_names", "required"},
 		},
 
 		// --- Join section ---

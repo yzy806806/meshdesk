@@ -947,6 +947,18 @@ func Load(path string) (*Config, error) {
 			cfg.Peers[i].Reality.TLSFingerprint = "chrome"
 		}
 	}
+	// Reality server defaults.
+	if cfg.Reality.Enabled {
+		if cfg.Reality.Dest == "" {
+			cfg.Reality.Dest = "www.microsoft.com:443"
+		}
+		if len(cfg.Reality.ServerNames) == 0 {
+			cfg.Reality.ServerNames = []string{"www.microsoft.com"}
+		}
+		if len(cfg.Reality.ShortIDs) == 0 {
+			cfg.Reality.ShortIDs = []string{"0123456789abcdef"}
+		}
+	}
 	// TUN defaults: enabled by default with standard mesh CIDR.
 	if cfg.Mesh.TunName == "" {
 		cfg.Mesh.TunName = "mesh0"
