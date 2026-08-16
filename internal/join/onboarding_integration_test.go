@@ -71,7 +71,7 @@ func TestIntegration_ZeroConfigOnboarding(t *testing.T) {
 		Secret:            sharedSecret,
 		ServerIdentity:    bootstrapIdentity,
 		BootstrapEndpoint: "bootstrap.example.com:52888",
-		GossipPort:        7946,
+		MeshPort:        7946,
 		RealityPublicKey:  realityPubKey,
 		RealityShortID:    realityShortID,
 		RealityServerName: realityServerName,
@@ -175,10 +175,10 @@ func TestIntegration_ZeroConfigOnboarding(t *testing.T) {
 	t.Logf("Step 5b: BootstrapEndpoint = %s ✓", bundle.BootstrapEndpoint)
 
 	// 5c: Gossip port
-	if bundle.GossipPort != 7946 {
-		t.Errorf("Step 5c: GossipPort = %d, want 7946", bundle.GossipPort)
+	if bundle.MeshPort != 7946 {
+		t.Errorf("Step 5c: MeshPort = %d, want 7946", bundle.MeshPort)
 	}
-	t.Logf("Step 5c: GossipPort = %d ✓", bundle.GossipPort)
+	t.Logf("Step 5c: MeshPort = %d ✓", bundle.MeshPort)
 
 	// 5d: REALITY public key (must be the PUBLIC key, not private)
 	if bundle.RealityPublicKey != realityPubKey {
@@ -254,8 +254,8 @@ func TestIntegration_ZeroConfigOnboarding(t *testing.T) {
 	}
 
 	// 6c: Set gossip port
-	// GossipPort is now part of Mesh.Port; join protocol still carries the port value.
-	t.Logf("Step 6c: GossipPort set to %d ✓", joinerCfg.Mesh.Port)
+	// MeshPort is now part of Mesh.Port; join protocol still carries the port value.
+	t.Logf("Step 6c: MeshPort set to %d ✓", joinerCfg.Mesh.Port)
 
 	// 6d: Set collectors
 	if len(joinerCfg.Monitoring.Collectors) == 0 {
@@ -401,7 +401,7 @@ func TestIntegration_ZeroConfigOnboarding(t *testing.T) {
 	t.Log("Received from join server:")
 	t.Logf("  - Bootstrap identity: %s...", bootstrapIdentity.PublicKey[:16])
 	t.Logf("  - Bootstrap endpoint: %s", bundle.BootstrapEndpoint)
-	t.Logf("  - Gossip port: %d", bundle.GossipPort)
+	t.Logf("  - Gossip port: %d", bundle.MeshPort)
 	t.Logf("  - REALITY public key: %s...", bundle.RealityPublicKey[:16])
 	t.Logf("  - Collectors: %d", len(bundle.Collectors))
 	t.Logf("  - Known peers: %d (immediate mesh view)", len(bundle.KnownPeers))
@@ -430,7 +430,7 @@ func TestIntegration_ZeroConfigOnboarding_PlainHTTP(t *testing.T) {
 		Secret:            sharedSecret,
 		ServerIdentity:    bootstrapIdentity,
 		BootstrapEndpoint: "127.0.0.1:52888",
-		GossipPort:        7946,
+		MeshPort:        7946,
 		RealityPublicKey:  "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
 		RealityShortID:    "deadbeefcafef00d",
 		RealityServerName: "www.example.com",
@@ -501,7 +501,7 @@ func TestIntegration_OnboardingProducesValidMeshConfig(t *testing.T) {
 		Secret:            sharedSecret,
 		ServerIdentity:    bootstrapIdentity,
 		BootstrapEndpoint: "bootstrap.mesh.test:52888",
-		GossipPort:        7946,
+		MeshPort:        7946,
 		RealityPublicKey:  "pubkey-for-reality-tls-connection",
 		RealityShortID:    "shortid12345678",
 		RealityServerName: "sni.mesh.test",
@@ -538,10 +538,8 @@ func TestIntegration_OnboardingProducesValidMeshConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.Node.Hostname = joinerHostname
 
-	// Apply mesh port from bundle
-	if cfg.Mesh.Port == 0 {
-		cfg.Mesh.Port = bundle.GossipPort
-	}
+	// Apply mesh port from bundle (overrides Default() port)
+	cfg.Mesh.Port = bundle.MeshPort
 
 	// Apply collectors
 	if len(cfg.Monitoring.Collectors) == 0 {
@@ -649,7 +647,7 @@ func TestIntegration_MultipleJoinersConsistentConfig(t *testing.T) {
 		Secret:            sharedSecret,
 		ServerIdentity:    bootstrapIdentity,
 		BootstrapEndpoint: "bootstrap.multi.test:52888",
-		GossipPort:        7946,
+		MeshPort:        7946,
 		RealityPublicKey:  "shared-reality-pubkey-for-all-joiners",
 		RealityShortID:    "shared-short-id",
 		RealityServerName: "shared.sni.test",

@@ -377,7 +377,7 @@ func (n *MeshNode) Start() error {
 		n.listener = nil
 		n.mu.Unlock()
 
-		log.Printf("[mesh] ordinary node mode (TCP+UDP gossip on %s:%d)", bindAddr, tcpPort)
+		log.Printf("[mesh] ordinary node mode (TCP+UDP on %s:%d)", bindAddr, tcpPort)
 
 		// Start a mesh-internal accept loop for connections that use
 		// the mesh-internal marker byte (0x4D). Other ordinary nodes or
@@ -2550,7 +2550,7 @@ func (n *MeshNode) PeerZone(peerKey string) string {
 // CheckVIPConflict checks if the given peer VIP matches our local VIP.
 // If it does, trigger IPAM reallocation to resolve the conflict (the
 // peer with the larger public key yields — same rule as gossip's
-// ReallocateAfterGossip, now driven by META since gossip is retired).
+// ReallocateAfterMeta, now driven by META since gossip is retired).
 func (n *MeshNode) CheckVIPConflict(peerVIP string) {
 	if peerVIP == "" {
 		return
@@ -2564,7 +2564,7 @@ func (n *MeshNode) CheckVIPConflict(peerVIP string) {
 	}
 	// Conflict detected — collect all known peer VIPs and reallocate.
 	peerIPs := n.collectPeerVirtualIPs()
-	newIP, changed := n.ReallocateAfterGossip(peerIPs)
+	newIP, changed := n.ReallocateAfterMeta(peerIPs)
 	if changed && newIP != nil {
 		log.Printf("[mesh/tun] VIP conflict with peer (%s), reallocated to %s", peerVIP, newIP)
 		// Update local meta so peers learn the new VIP.

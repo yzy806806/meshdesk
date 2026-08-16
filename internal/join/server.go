@@ -29,8 +29,8 @@ type ConfigBundle struct {
 	// BootstrapEndpoint is the shared node's mesh endpoint (host:port).
 	BootstrapEndpoint string `json:"bootstrap_endpoint"`
 
-	// GossipPort is the gossip port on the shared node.
-	GossipPort int `json:"gossip_port"`
+	// MeshPort is the gossip port on the shared node.
+	MeshPort int `json:"mesh_port"`
 
 	// RealityPublicKey is the shared node's X25519 REALITY public key (hex).
 	// The joiner uses this to connect via Reality TLS.
@@ -127,8 +127,8 @@ type ServerConfig struct {
 	// BootstrapEndpoint is this node's mesh endpoint (host:port).
 	BootstrapEndpoint string
 
-	// GossipPort is the gossip port on this node.
-	GossipPort int
+	// MeshPort is the gossip port on this node.
+	MeshPort int
 
 	// RealityPublicKey is this node's X25519 REALITY public key (hex).
 	RealityPublicKey string
@@ -484,7 +484,7 @@ func (s *JoinServer) buildBundle(req JoinRequest) *ConfigBundle {
 	bundle := &ConfigBundle{
 		BootstrapPublicKey: s.cfg.ServerIdentity.PublicKey,
 		BootstrapEndpoint:  s.cfg.BootstrapEndpoint,
-		GossipPort:         s.cfg.GossipPort,
+		MeshPort:         s.cfg.MeshPort,
 		RealityPublicKey:   s.cfg.RealityPublicKey,
 		RealityShortID:     s.cfg.RealityShortID,
 		RealityServerName:  s.cfg.RealityServerName,

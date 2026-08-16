@@ -224,7 +224,7 @@ func (n *MeshNode) setupTUN() error {
 
 	// Broadcast ACL rules to the gossip layer (if configured).
 	if aclEngine != nil && len(cfg.ACL.Rules) > 0 {
-		n.BroadcastACLRules(EncodeACLRulesForGossip(cfg.ACL.Rules))
+		n.BroadcastACLRules(EncodeACLRulesForMeta(cfg.ACL.Rules))
 	}
 
 	log.Printf("[mesh/tun] TUN integration complete (ifname=%s, virtualIP=%s)",
@@ -329,7 +329,7 @@ func (n *MeshNode) GetTUNVirtualIP() net.IP {
 	return n.tunIntegration.VirtualIP
 }
 
-// ReallocateAfterGossip re-runs IPAM allocation now that peer
+// ReallocateAfterMeta re-runs IPAM allocation now that peer
 // VirtualIPs are known via gossip. If this node's IP conflicts with
 // a peer's and this node should yield (smaller pubkey wins), it
 // finds a new VirtualIP, updates the kernel interface, and returns
@@ -339,7 +339,7 @@ func (n *MeshNode) GetTUNVirtualIP() net.IP {
 // This is called by main.go after gossip has started and peer
 // VirtualIPs have been synced, fixing the chicken-and-egg problem
 // where setupTUN runs before gossip is active.
-func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, bool) {
+func (n *MeshNode) ReallocateAfterMeta(peerIPs map[string]net.IP) (net.IP, bool) {
 	n.mu.Lock()
 	ti := n.tunIntegration
 	if ti == nil || ti.Allocator == nil {
@@ -349,7 +349,7 @@ func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, boo
 
 	// If static_virtual_ip is set, never reallocate.
 	if n.cfg.Mesh.StaticVirtualIP != "" {
-		log.Printf("[mesh/tun] ReallocateAfterGossip: skipping (static_virtual_ip=%s)", n.cfg.Mesh.StaticVirtualIP)
+		log.Printf("[mesh/tun] ReallocateAfterMeta: skipping (static_virtual_ip=%s)", n.cfg.Mesh.StaticVirtualIP)
 		vip := ti.VirtualIP
 		n.mu.Unlock()
 		return vip, false
@@ -359,7 +359,7 @@ func (n *MeshNode) ReallocateAfterGossip(peerIPs map[string]net.IP) (net.IP, boo
 	hostCount := usableHostsInSubnet(n.cfg.Mesh.MeshCIDR)
 	newIP, err := ti.Allocator.AllocateWithPeers(pubKey, hostCount, peerIPs)
 	if err != nil {
-		log.Printf("[mesh/tun] ReallocateAfterGossip: AllocateWithPeers failed: %v", err)
+		log.Printf("[mesh/tun] ReallocateAfterMeta: AllocateWithPeers failed: %v", err)
 		vip := ti.VirtualIP
 		n.mu.Unlock()
 		return vip, false

@@ -128,7 +128,7 @@ func (r *Reporter) AddCollector(peerKey string) {
 	}
 
 	r.collectors = append(r.collectors, peerKey)
-	log.Printf("[monitor] collector added via gossip discovery: %s",
+	log.Printf("[monitor] collector added via META discovery: %s",
 		peerKey[:min(len(peerKey), 16)])
 
 	// Trigger an immediate flush in case metrics were buffered during

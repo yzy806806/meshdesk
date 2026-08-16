@@ -777,7 +777,7 @@ func (t *MuxTransport) handleMuxConn(conn net.Conn) {
 		case <-t.shutdownDone():
 			wrapped.Close()
 		default:
-			t.logger.Printf("[WARN] mux: gossip accept queue full, dropping connection from %s", conn.RemoteAddr())
+			t.logger.Printf("[WARN] mux: mesh accept queue full, dropping connection from %s", conn.RemoteAddr())
 			wrapped.Close()
 		}
 	}
