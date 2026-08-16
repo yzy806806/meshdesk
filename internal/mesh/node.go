@@ -2572,7 +2572,6 @@ func (n *MeshNode) CheckVIPConflict(peerVIP string) {
 	}
 }
 
-
 // With memberlist retired, endpoints are auto-detected from the TCP
 // listener address and the meta exchange — no manual config needed.
 func (n *MeshNode) LocalEndpoints() []string {

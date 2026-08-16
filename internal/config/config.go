@@ -223,7 +223,6 @@ const DefaultTunMTU = 1400
 // web handlers reference one source of truth instead of magic numbers.
 const DefaultMeshPort = 52888
 
-
 // ProxyConfig holds settings for the anonymous proxy subsystem
 // (multi-path dispersed transport). See docs/PROXY_DESIGN.md.
 type ProxyConfig struct {
@@ -999,8 +998,8 @@ func Default() *Config {
 			},
 		},
 		P2P: P2pConfig{
-			Enabled:     false, // memberlist deprecated — META replaces discovery
-			RelayMode:   "auto",
+			Enabled:      false, // memberlist deprecated — META replaces discovery
+			RelayMode:    "auto",
 			MaxRelayHops: 2,
 		},
 		ACL: ACLConfig{

@@ -110,9 +110,9 @@ type udpStreamConn struct {
 	// timer — whichever comes first — then send one cumulative ACK.
 	// This halves ACK traffic on streaming workloads and reduces
 	// per-frame overhead on the return path.
-	ackPending   uint32   // highest contiguous seq waiting to be ACKed
-	ackCount     int      // frames received since last ACK send
-	ackTimer     *time.Timer
+	ackPending uint32 // highest contiguous seq waiting to be ACKed
+	ackCount   int    // frames received since last ACK send
+	ackTimer   *time.Timer
 
 	finRecv chan struct{}
 	once    sync.Once
