@@ -598,8 +598,8 @@ type P2pConfig struct {
 	// Enabled controls whether dynamic P2P networking is active.
 	Enabled bool `yaml:"enabled,omitempty"`
 
-	// Seeds is the list of known mesh IP:gossip_port addresses used to
-	// bootstrap the gossip cluster.
+	// Seeds is the list of known mesh endpoints used to
+	// bootstrap the mesh cluster.
 	Seeds []string `yaml:"seeds,omitempty"`
 
 	// RelayMode controls how relay fallback is handled:
@@ -612,7 +612,7 @@ type P2pConfig struct {
 	MaxRelayHops int `yaml:"max_relay_hops,omitempty"`
 
 	// AdvertiseEndpoints is a list of explicit mesh endpoints (host:port)
-	// that this node advertises to peers via gossip. When set, they override
+	// that this node advertises to peers via META. When set, they override
 	// the auto-detected local IP. Use this when the node is behind NAT and you
 	// know the public IP:port mapping, or when auto-detection would pick the
 	// wrong interface (e.g., Docker, multi-homed hosts, dual-stack IPv4/IPv6).

@@ -210,7 +210,7 @@ func (a *ACLReloader) ReloadConfig(cfg *config.Config) (applied, rejected []stri
 
 	// Broadcast updated rules via gossip.
 	if a.broadcast != nil {
-		a.broadcast(mesh.EncodeACLRulesForGossip(cfg.ACL.Rules))
+		a.broadcast(mesh.EncodeACLRulesForMeta(cfg.ACL.Rules))
 	}
 
 	return applied, rejected, errs

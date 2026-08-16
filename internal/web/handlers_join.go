@@ -484,7 +484,7 @@ echo "Binary installed to $INSTALL_DIR/meshdesk"
 	b.WriteString("  hostname: \"\"\n")
 	b.WriteString("  web: \":8080\"\n")
 	b.WriteString("mesh:\n")
-	b.WriteString("  gossip_port: 7946\n")
+	b.WriteString("  mesh_port: 52888\n")
 	b.WriteString("monitoring:\n")
 	b.WriteString("  collectors: []\n")
 	b.WriteString("  interval: 30\n")

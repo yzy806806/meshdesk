@@ -583,7 +583,7 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port 
 			// knowledge). Every node registers the relay handler, so
 			// ANY peer with an active session can relay. Fall back to
 			// session-based candidates.
-			log.Printf("[mesh] tryRelayFallback: gossip relay metadata empty — falling back to session-based candidates for target %s...", targetKey[:min(len(targetKey), 8)])
+			log.Printf("[mesh] tryRelayFallback: relay metadata empty — falling back to session-based candidates for target %s...", targetKey[:min(len(targetKey), 8)])
 			n.sessionsMu.Lock()
 			for key := range n.sessions {
 				if key != targetKey && key != localKey {

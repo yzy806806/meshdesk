@@ -79,7 +79,6 @@ var tierMap = map[string]fieldMeta{
 
 	// --- Mesh (§3.2) ---
 	"mesh.port":        {Tier: TierNormal, Reload: ReloadRestart},
-	"mesh.gossip_port": {Tier: TierNormal, Reload: ReloadRestart},
 
 	// --- Peers (§3.3) — array fields use [N] placeholder ---
 	"peers[N].public_key":              {Tier: TierReadOnly, Reload: ReloadHot},

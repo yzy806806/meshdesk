@@ -28,7 +28,7 @@ func newE2EServer(t *testing.T, opts *e2eServerOpts) (*JoinServer, []byte, *iden
 		Secret:            secret,
 		ServerIdentity:    id,
 		BootstrapEndpoint: opts.BootstrapEndpoint,
-		GossipPort:        opts.GossipPort,
+		MeshPort:        opts.MeshPort,
 		RealityPublicKey:  opts.RealityPublicKey,
 		RealityShortID:    opts.RealityShortID,
 		RealityServerName: opts.RealityServerName,
@@ -44,7 +44,7 @@ func newE2EServer(t *testing.T, opts *e2eServerOpts) (*JoinServer, []byte, *iden
 type e2eServerOpts struct {
 	Secret            string
 	BootstrapEndpoint string
-	GossipPort        int
+	MeshPort        int
 	RealityPublicKey  string
 	RealityShortID    string
 	RealityServerName string
@@ -57,7 +57,7 @@ func defaultE2EOpts() *e2eServerOpts {
 	return &e2eServerOpts{
 		Secret:            "e2e-shared-secret",
 		BootstrapEndpoint: "bootstrap.example.com:52888",
-		GossipPort:        7946,
+		MeshPort:        7946,
 		RealityPublicKey:  "deadbeef12345678",
 		RealityShortID:    "a1b2c3d4e5f6a7b8",
 		RealityServerName: "reality-sni.example.com",
@@ -336,7 +336,7 @@ func TestE2E_ServerFingerprintBinding(t *testing.T) {
 		Secret:            []byte(opts2.Secret),
 		ServerIdentity:    id2,
 		BootstrapEndpoint: opts2.BootstrapEndpoint,
-		GossipPort:        opts2.GossipPort,
+		MeshPort:        opts2.MeshPort,
 		RealityPublicKey:  opts2.RealityPublicKey,
 		RealityShortID:    opts2.RealityShortID,
 		RealityServerName: opts2.RealityServerName,
@@ -680,7 +680,7 @@ func TestE2E_BundleApplicationSimulation(t *testing.T) {
 		t.Error("bootstrap endpoint is empty — joiner can't connect")
 	}
 	// 3. Use gossip port
-	if bundle.GossipPort == 0 {
+	if bundle.MeshPort == 0 {
 		t.Error("gossip port is zero — joiner can't configure gossip")
 	}
 	// 4. Apply collectors
@@ -814,9 +814,9 @@ func TestE2E_ConfigBundleCompleteness(t *testing.T) {
 	}
 
 	// KnownPeers may be empty/nil if no KnownPeersFunc is set.
-	// GossipPort must be > 0.
-	if bundle.GossipPort == 0 {
-		t.Error("GossipPort is 0 — joiner needs a gossip port")
+	// MeshPort must be > 0.
+	if bundle.MeshPort == 0 {
+		t.Error("MeshPort is 0 — joiner needs a gossip port")
 	}
 
 	// IssuedAt must be set.
@@ -941,8 +941,8 @@ func assertBundle(t *testing.T, bundle *ConfigBundle, expectedPubKey string, opt
 	if bundle.BootstrapEndpoint != opts.BootstrapEndpoint {
 		t.Errorf("BootstrapEndpoint = %s, want %s", bundle.BootstrapEndpoint, opts.BootstrapEndpoint)
 	}
-	if bundle.GossipPort != opts.GossipPort {
-		t.Errorf("GossipPort = %d, want %d", bundle.GossipPort, opts.GossipPort)
+	if bundle.MeshPort != opts.MeshPort {
+		t.Errorf("MeshPort = %d, want %d", bundle.MeshPort, opts.MeshPort)
 	}
 	if bundle.RealityPublicKey != opts.RealityPublicKey {
 		t.Errorf("RealityPublicKey = %s, want %s", bundle.RealityPublicKey, opts.RealityPublicKey)

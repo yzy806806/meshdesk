@@ -262,7 +262,7 @@ func runJoinSubcommand(args []string) {
 		log.Printf("[join] received config bundle:")
 		log.Printf("  Bootstrap pubkey: %s", bundle.BootstrapPublicKey[:16]+"...")
 		log.Printf("  Bootstrap endpoint: %s", bundle.BootstrapEndpoint)
-		log.Printf("  Gossip port: %d", bundle.GossipPort)
+		log.Printf("  Gossip port: %d", bundle.MeshPort)
 		log.Printf("  Collectors: %d", len(bundle.Collectors))
 		log.Printf("  Known peers: %d", len(bundle.KnownPeers))
 
@@ -272,9 +272,6 @@ func runJoinSubcommand(args []string) {
 		}
 		if bootstrapAddr == "" {
 			bootstrapAddr = bundle.BootstrapEndpoint
-		}
-		if cfg.Mesh.Port == 0 {
-			cfg.Mesh.Port = bundle.GossipPort
 		}
 		if len(cfg.Monitoring.Collectors) == 0 {
 			cfg.Monitoring.Collectors = bundle.Collectors

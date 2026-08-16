@@ -140,7 +140,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Broadcast updated rules via gossip.
-		provider.BroadcastACLRules(mesh.EncodeACLRulesForGossip(currentRules))
+		provider.BroadcastACLRules(mesh.EncodeACLRulesForMeta(currentRules))
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
@@ -175,7 +175,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		provider.BroadcastACLRules(mesh.EncodeACLRulesForGossip(cfgRules))
+		provider.BroadcastACLRules(mesh.EncodeACLRulesForMeta(cfgRules))
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,
@@ -210,7 +210,7 @@ func (s *Server) handleACLRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		provider.BroadcastACLRules(mesh.EncodeACLRulesForGossip(newRules))
+		provider.BroadcastACLRules(mesh.EncodeACLRulesForMeta(newRules))
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":      true,

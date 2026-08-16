@@ -45,7 +45,7 @@ func (a *App) Reload(newCfg *config.Config) error {
 		} else {
 			log.Printf("SIGHUP: ACL rules reloaded (%d rules, enabled=%v, default_policy=%s)",
 				len(newCfg.ACL.Rules), newCfg.ACL.Enabled, newCfg.ACL.DefaultPolicy)
-			a.node.BroadcastACLRules(mesh.EncodeACLRulesForGossip(newCfg.ACL.Rules))
+			a.node.BroadcastACLRules(mesh.EncodeACLRulesForMeta(newCfg.ACL.Rules))
 		}
 	}
 	return nil
