@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.6.9** — META auto-discovery (new peers propagate to whole mesh), UDP hole data plane complete (two-way dial, no keepalive starvation, smux address filtering), auto-connect relay peers (shared node redundancy), path MTU discovery + delayed ACK + dynamic retransmit.
+> **Current release: v1.7.0** — memberlist/gossip fully retired (22K lines deleted), config simplified to 12 lines, relay goroutine leak fixed (CPU 100%→0%), DNS hostname propagation restored, dashboard topology META-driven.
 
 ---
 
