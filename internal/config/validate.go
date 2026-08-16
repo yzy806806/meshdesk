@@ -48,12 +48,9 @@ func Validate(cfg *Config) []ValidationError {
 		})
 	}
 	if cfg.Mesh.TunEnabled {
-		if cfg.Mesh.MeshCIDR == "" {
-			errs = append(errs, ValidationError{
-				Section: "mesh", Field: "mesh_cidr",
-				Message: "mesh_cidr is required when tun_enabled is true",
-			})
-		} else if _, err := parseCIDR(cfg.Mesh.MeshCIDR); err != nil {
+		// mesh_cidr gets a default in Load() (10.100.0.0/24), so it is
+		// never empty here — only validate explicit values.
+		if _, err := parseCIDR(cfg.Mesh.MeshCIDR); err != nil {
 			errs = append(errs, ValidationError{
 				Section: "mesh", Field: "mesh_cidr",
 				Message: fmt.Sprintf("invalid CIDR %q: %v", cfg.Mesh.MeshCIDR, err),
@@ -119,12 +116,8 @@ func Validate(cfg *Config) []ValidationError {
 			}
 		}
 		if p.Reality != nil {
-			if p.Reality.ServerName == "" {
-				errs = append(errs, ValidationError{
-					Section: prefix + ".reality", Field: "server_name",
-					Message: "server_name is required when reality is configured",
-				})
-			}
+			// server_name/short_id/tls_fingerprint get defaults in
+			// Load() — only public_key (un-derivable) is required.
 			if p.Reality.PublicKey == "" {
 				errs = append(errs, ValidationError{
 					Section: prefix + ".reality", Field: "public_key",

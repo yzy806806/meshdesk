@@ -934,6 +934,9 @@ func Load(path string) (*Config, error) {
 	// Peer reality defaults: server_name and short_id have standard
 	// values shared across the mesh — users only write public_key.
 	for i := range cfg.Peers {
+		if cfg.Peers[i].Reality == nil {
+			cfg.Peers[i].Reality = &RealityPeerConfig{}
+		}
 		if cfg.Peers[i].Reality.ServerName == "" {
 			cfg.Peers[i].Reality.ServerName = "www.microsoft.com"
 		}

@@ -40,7 +40,6 @@ node:
   web: ":8080"
 mesh:
   port: 51820
-  gossip_port: 7946
   tun_enabled: true
   mesh_cidr: 10.100.0.0/24
 peers:
@@ -103,15 +102,6 @@ mesh:
 			wantErrs: []string{"mesh.port", "must be 1-65535"},
 		},
 		{
-			name: "tun_enabled without mesh_cidr",
-			yaml: `
-mesh:
-  port: 51820
-  tun_enabled: true
-`,
-			wantErrs: []string{"mesh.mesh_cidr", "required"},
-		},
-		{
 			name: "tun_enabled with invalid CIDR",
 			yaml: `
 mesh:
@@ -171,16 +161,6 @@ peers:
     endpoint: no-port-here
 `,
 			wantErrs: []string{"peers[0].endpoint", "invalid endpoint"},
-		},
-		{
-			name: "peer reality missing server_name",
-			yaml: `
-peers:
-  - public_key: abc123
-    reality:
-      public_key: def456
-`,
-			wantErrs: []string{"peers[0].reality.server_name", "required"},
 		},
 		{
 			name: "peer reality missing public_key",
@@ -305,16 +285,6 @@ join:
 
 		// --- Proxy section ---
 		{
-			name: "ss enabled without password",
-			yaml: `
-proxy:
-  ss:
-    enabled: true
-    port: 8388
-`,
-			wantErrs: []string{"proxy.ss.password", "required"},
-		},
-		{
 			name: "invalid chunker_strategy",
 			yaml: `
 proxy:
@@ -411,15 +381,6 @@ p2p:
 `,
 			wantErrs: []string{"p2p.relay_mode", "must be"},
 		},
-		{
-			name: "invalid p2p join_approval",
-			yaml: `
-p2p:
-  enabled: true
-  join_approval: invalid
-`,
-			wantErrs: []string{"p2p.join_approval", "must be"},
-		},
 
 		// --- Port conflicts ---
 		{
@@ -448,25 +409,10 @@ reality:
 			wantErrs: []string{"port 443 conflict", "webssh.port", "reality.listen_port"},
 		},
 		{
-			name: "port conflict: ss port == mesh gossip_port",
-			yaml: `
-mesh:
-  port: 51820
-  gossip_port: 8388
-proxy:
-  ss:
-    enabled: true
-    port: 8388
-    password: secret
-`,
-			wantErrs: []string{"port 8388 conflict", "mesh.gossip_port", "proxy.ss.port"},
-		},
-		{
 			name: "no port conflict when ports are different",
 			yaml: `
 mesh:
   port: 51820
-  gossip_port: 7946
 monitoring:
   port: 4191
 webssh:

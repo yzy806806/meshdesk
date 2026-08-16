@@ -175,7 +175,7 @@ func TestIntegration_ConfigRestartRequired_Fields(t *testing.T) {
 
 	t.Run("Step1_EditRestartRequiredField_FlaggedCorrectly", func(t *testing.T) {
 		// mesh.port is a restart-required field.
-		body := `{"mesh":{"port":51821,"gossip_port":7946}}`
+		body := `{"mesh":{"port":51821}}`
 		req := configRequestWithAuth("PUT", "/api/config", body, sessionToken)
 		rr := httptest.NewRecorder()
 		srv.handleConfigPut(rr, req)
