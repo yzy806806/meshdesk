@@ -241,6 +241,11 @@ type MeshNode struct {
 	// Guarded by sessionsMu.
 	learnedEndpoints map[string][]string
 
+	// learnedHostnames caches peer hostnames learned via the meta
+	// exchange — enables <hostname>.mesh DNS resolution.
+	// Guarded by sessionsMu.
+	learnedHostnames map[string]string
+
 	// holeEndpoints caches the CONFIRMED data-plane endpoint punched
 	// for a peer (OnHoleEstablished). Kept SEPARATE from
 	// learnedEndpoints because the meta exchange overwrites that map
@@ -292,6 +297,7 @@ func New(cfg *config.Config) (*MeshNode, error) {
 		peerTransport:        make(map[string]string),
 		learnedZones:         make(map[string]string),
 		learnedEndpoints:     make(map[string][]string),
+		learnedHostnames:     make(map[string]string),
 		holeEndpoints:        make(map[string][]string),
 		collectorPeers:       make(map[string]bool),
 		peerRelayMeta:        make(map[string]MetaRelayInfo),
@@ -2658,6 +2664,29 @@ func (n *MeshNode) SetLearnedZone(peerKey, zone string) {
 	n.sessionsMu.Lock()
 	n.learnedZones[peerKey] = zone
 	n.sessionsMu.Unlock()
+}
+
+// SetLearnedHostname caches a peer's hostname learned via the meta
+// exchange, enabling <hostname>.mesh DNS resolution.
+func (n *MeshNode) SetLearnedHostname(peerKey, hostname string) {
+	if peerKey == "" || hostname == "" {
+		return
+	}
+	n.sessionsMu.Lock()
+	n.learnedHostnames[peerKey] = hostname
+	n.sessionsMu.Unlock()
+}
+
+// PeerHostnames returns a map of peer public key → hostname for all
+// peers whose hostname was learned via the meta exchange.
+func (n *MeshNode) PeerHostnames() map[string]string {
+	n.sessionsMu.Lock()
+	defer n.sessionsMu.Unlock()
+	out := make(map[string]string, len(n.learnedHostnames))
+	for k, v := range n.learnedHostnames {
+		out[k] = v
+	}
+	return out
 }
 
 // SameZone reports whether the peer is in the same zone as us.

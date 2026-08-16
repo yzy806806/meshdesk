@@ -192,6 +192,9 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		log.Printf("[meta] learned %s → %s (%s) from %s",
 			shortKey(msg.Self.Key), msg.Self.VIP, msg.Self.Hostname, shortKey(fromKey))
 	}
+	if msg.Self.Key != "" && msg.Self.Hostname != "" {
+		me.node.SetLearnedHostname(msg.Self.Key, msg.Self.Hostname)
+	}
 	// Learn the sender's zone (transport-selection signal) — cached
 	// independently of memberlist health.
 	if msg.Self.Key != "" && msg.Self.Zone != "" {
@@ -216,6 +219,9 @@ func (me *MetaExchanger) apply(fromKey string, msg MetaMessage) {
 		}
 		if pm.Key != "" && pm.Zone != "" {
 			me.node.SetLearnedZone(pm.Key, pm.Zone)
+		}
+		if pm.Key != "" && pm.Hostname != "" {
+			me.node.SetLearnedHostname(pm.Key, pm.Hostname)
 		}
 		if pm.Key != "" && len(pm.Endpoints) > 0 {
 			me.node.SetLearnedEndpoints(pm.Key, pm.Endpoints)
