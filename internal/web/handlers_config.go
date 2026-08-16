@@ -759,8 +759,8 @@ func isKnownField(path string) bool {
 		return true
 	}
 	// Check if the path itself (with indices) is in the tier map
-	// (e.g. "p2p.authorized_keys" is a T2 field, but
-	// "p2p.authorized_keys[0]" is an array element of that field).
+	// (e.g. "auth.web_users" is a T2 field, but
+	// "auth.web_users[0]" is an array element of that field).
 	if isStepUp(path) || isMasked(path) || isReadOnly(path) {
 		return true
 	}
@@ -769,7 +769,7 @@ func isKnownField(path string) bool {
 	if isContainerField(path) {
 		return true
 	}
-	// For array element paths (e.g. "p2p.authorized_keys[0]"),
+	// For array element paths (e.g. "auth.web_users[0]"),
 	// check if the parent path (without the index) is known.
 	if idx := indexOf(path, "["); idx >= 0 {
 		parent := path[:idx]
