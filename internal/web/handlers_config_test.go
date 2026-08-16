@@ -215,7 +215,7 @@ func TestAC3_PutConfig_T2FieldsNoStepUp_Returns403(t *testing.T) {
 	session := srv.sessions.Create("admin")
 	// No step-up granted.
 
-	body := `{"p2p":{"join_approval":"manual"}}`
+	body := `{"auth":{"require_2fa":true}}`
 	req := configRequestWithAuth("PUT", "/api/config", body, session.Token)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPut(rr, req)
@@ -245,7 +245,7 @@ func TestAC4_PutConfig_T2FieldsWithStepUp_Succeeds(t *testing.T) {
 	srv, _, sessionToken := newConfigTestServerWithStepUp(t)
 	// sessionToken has step-up for settings.
 
-	body := `{"p2p":{"join_approval":"manual"}}`
+	body := `{"auth":{"require_2fa":true}}`
 	req := configRequestWithAuth("PUT", "/api/config", body, sessionToken)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPut(rr, req)
@@ -357,7 +357,7 @@ func TestAC7_PutConfig_RestartRequired_PendingRestartTrue(t *testing.T) {
 	srv, _, sessionToken := newConfigTestServerWithStepUp(t)
 
 	// Modify a restart-required field (mesh.port is T3 normal + restart).
-	body := `{"mesh":{"port":51821,"gossip_port":7946}}`
+	body := `{"mesh":{"port":51821}}`
 	req := configRequestWithAuth("PUT", "/api/config", body, sessionToken)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPut(rr, req)
@@ -589,7 +589,7 @@ func TestAC14_StepUpResponse_IncludesHeader(t *testing.T) {
 	session := srv.sessions.Create("admin")
 	// No step-up.
 
-	body := `{"p2p":{"authorized_keys":["new-key"]}}`
+	body := `{"auth":{"require_2fa":true}}`
 	req := configRequestWithAuth("PUT", "/api/config", body, session.Token)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPut(rr, req)
@@ -710,7 +710,7 @@ func TestPutConfig_T2Fields_AllTypes(t *testing.T) {
 	srv, _, sessionToken := newConfigTestServerWithStepUp(t)
 
 	// Test multiple T2 fields.
-	body := `{"p2p":{"join_approval":"manual","authorized_keys":["key1","key2"]},"auth":{"require_2fa":false,"step_up_timeout":600}}`
+	body := `{"auth":{"require_2fa":true,"step_up_timeout":600}}`
 	req := configRequestWithAuth("PUT", "/api/config", body, sessionToken)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPut(rr, req)
@@ -748,7 +748,7 @@ func TestPatchConfig_T2Fields_NoStepUp_403(t *testing.T) {
 func TestPutConfig_WritesToDisk(t *testing.T) {
 	srv, configPath, sessionToken := newConfigTestServerWithStepUp(t)
 
-	body := `{"mesh":{"port":51822,"gossip_port":7946}}`
+	body := `{"mesh":{"port":51822}}`
 	req := configRequestWithAuth("PUT", "/api/config", body, sessionToken)
 	rr := httptest.NewRecorder()
 	srv.handleConfigPut(rr, req)
@@ -807,7 +807,6 @@ func TestMatchFieldPath(t *testing.T) {
 		want     bool
 	}{
 		{"mesh.port", "mesh.port", true},
-		{"mesh.port", "mesh.gossip_port", false},
 		{"auth.web_users[N].password_hash", "auth.web_users[0].password_hash", true},
 		{"auth.web_users", "auth.web_users", true},
 		{"node.identity", "node.identity", true},
@@ -879,7 +878,6 @@ func TestIsMasked(t *testing.T) {
 		{"peers[0].reality.public_key", true},
 		{"peers[0].reality.short_id", true},
 		{"webssh.host_key", true},
-		{"proxy.ss.password", true},
 		{"reality.private_key", true},
 		{"mesh.port", false},
 		{"node.hostname", false},
@@ -902,8 +900,6 @@ func TestIsStepUp(t *testing.T) {
 		want bool
 	}{
 		{"peers[0].capabilities", true},
-		{"p2p.join_approval", true},
-		{"p2p.authorized_keys", true},
 		{"auth.web_users", true},
 		{"proxy.exit.allowed_ports", true},
 		{"mesh.port", false},
@@ -1063,7 +1059,6 @@ func TestCollectFieldPaths(t *testing.T) {
 	data := map[string]any{
 		"mesh": map[string]any{
 			"port":        51820,
-			"gossip_port": 7946,
 		},
 		"node": map[string]any{
 			"hostname": "test",
@@ -1080,7 +1075,7 @@ func TestCollectFieldPaths(t *testing.T) {
 		found[p] = true
 	}
 
-	expected := []string{"mesh.port", "mesh.gossip_port", "node.hostname", "node.position.x", "node.position.y"}
+	expected := []string{"mesh.port", "node.hostname", "node.position.x", "node.position.y"}
 	for _, e := range expected {
 		if !found[e] {
 			t.Errorf("field path %q not found in collected paths", e)
