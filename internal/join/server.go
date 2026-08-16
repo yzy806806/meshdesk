@@ -29,7 +29,7 @@ type ConfigBundle struct {
 	// BootstrapEndpoint is the shared node's mesh endpoint (host:port).
 	BootstrapEndpoint string `json:"bootstrap_endpoint"`
 
-	// MeshPort is the gossip port on the shared node.
+	// MeshPort is the mesh port on the shared node.
 	MeshPort int `json:"mesh_port"`
 
 	// RealityPublicKey is the shared node's X25519 REALITY public key (hex).
@@ -127,7 +127,7 @@ type ServerConfig struct {
 	// BootstrapEndpoint is this node's mesh endpoint (host:port).
 	BootstrapEndpoint string
 
-	// MeshPort is the gossip port on this node.
+	// MeshPort is the mesh port on this node.
 	MeshPort int
 
 	// RealityPublicKey is this node's X25519 REALITY public key (hex).
