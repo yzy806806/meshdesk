@@ -371,7 +371,7 @@ func TestRateLimit_WindowReset(t *testing.T) {
 		Secret:            []byte("test-secret"),
 		ServerIdentity:    id,
 		BootstrapEndpoint: "127.0.0.1:52888",
-		GossipPort:        7946,
+		MeshPort:        7946,
 		RealityPublicKey:  "deadbeef",
 		RealityShortID:    "0123456789abcdef",
 		RealityServerName: "www.example.com",

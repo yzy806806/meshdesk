@@ -327,9 +327,9 @@ func TestACLEngine_Stats(t *testing.T) {
 	}
 }
 
-// ─── EncodeACLRulesForGossip tests ───
+// ─── EncodeACLRulesForMeta tests ───
 
-func TestEncodeACLRulesForGossip(t *testing.T) {
+func TestEncodeACLRulesForMeta(t *testing.T) {
 	rules := []config.ACLRule{
 		{
 			Action:      config.ACLActionDeny,
@@ -342,7 +342,7 @@ func TestEncodeACLRulesForGossip(t *testing.T) {
 			Description: "block SSH",
 		},
 	}
-	encoded := EncodeACLRulesForGossip(rules)
+	encoded := EncodeACLRulesForMeta(rules)
 	if len(encoded) != 1 {
 		t.Fatalf("expected 1 encoded rule, got %d", len(encoded))
 	}
@@ -353,13 +353,13 @@ func TestEncodeACLRulesForGossip(t *testing.T) {
 	}
 }
 
-func TestEncodeACLRulesForGossip_EmptyFields(t *testing.T) {
+func TestEncodeACLRulesForMeta_EmptyFields(t *testing.T) {
 	rules := []config.ACLRule{
 		{
 			Action: config.ACLActionAllow,
 		},
 	}
-	encoded := EncodeACLRulesForGossip(rules)
+	encoded := EncodeACLRulesForMeta(rules)
 	expected := "allow|*|*|*|0|0|*|"
 	if encoded[0] != expected {
 		t.Fatalf("encoded rule mismatch:\nexpected: %s\ngot:      %s", expected, encoded[0])

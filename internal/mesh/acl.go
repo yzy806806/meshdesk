@@ -410,10 +410,10 @@ func (e *ACLEngine) CurrentRules() []config.ACLRule {
 	return rules
 }
 
-// EncodeACLRulesForGossip converts config ACL rules to the compact
+// EncodeACLRulesForMeta converts config ACL rules to the compact
 // string encoding used in NodeMeta.ACLRules. Each rule is encoded as:
 // "action|src_cidr|dst_cidr|protocol|src_port|dst_port|peer_id|description"
-func EncodeACLRulesForGossip(rules []config.ACLRule) []string {
+func EncodeACLRulesForMeta(rules []config.ACLRule) []string {
 	result := make([]string, 0, len(rules))
 	for _, r := range rules {
 		encoded := fmt.Sprintf("%s|%s|%s|%s|%d|%d|%s|%s",
