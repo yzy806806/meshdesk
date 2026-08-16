@@ -16,8 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	sockaddr "github.com/hashicorp/go-sockaddr"
-	"github.com/hashicorp/memberlist"
 )
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -114,14 +112,13 @@ type MuxTransport struct {
 	punchMu      sync.Mutex
 	punchSockets map[string]*net.UDPConn // peer key -> socket
 	tcpListener  net.Listener            // shared TCP listener
-	udpConns     []*net.UDPConn          // UDP sockets for memberlist packets (IPv4 + IPv6)
+	udpConns     []*net.UDPConn          // UDP sockets (IPv4 + IPv6)
 	logger       *log.Logger
 
-	streamCh   chan net.Conn           // gossip streams → memberlist
+	streamCh   chan net.Conn           // mesh-internal connections (pre-0x4D)
 	realityCh  chan net.Conn           // Reality TLS connections → reality listener
 	meshCh     chan net.Conn           // mesh-internal connections → mesh listener
 	udpMesh    *udpMeshManager         // per-remote UDP ARQ streams (0x4D routing)
-	packetChIn chan *memberlist.Packet // UDP packets → memberlist
 	// connSem bounds concurrent TCP connection handling (slowloris guard).
 	connSem chan struct{}
 
@@ -133,9 +130,6 @@ type MuxTransport struct {
 	advertiseAddr string
 	advertisePort int
 }
-
-// Compile-time assertion: MuxTransport satisfies memberlist.Transport.
-var _ memberlist.Transport = (*MuxTransport)(nil)
 
 // NewMuxTransport creates a new MuxTransport from the given config.
 // The shared TCP listener must already be listening. A UDP PacketConn
@@ -289,7 +283,6 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 		streamCh:      make(chan net.Conn, 64),
 		realityCh:     make(chan net.Conn, 64),
 		meshCh:        make(chan net.Conn, 64),
-		packetChIn:    make(chan *memberlist.Packet, 4096),
 		connSem:       make(chan struct{}, maxConcurrentMuxConns),
 		shutdownCh:    make(chan struct{}),
 		bindAddr:      bindAddr,
@@ -324,108 +317,6 @@ func NewMuxTransport(cfg MuxTransportConfig) (*MuxTransport, error) {
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// memberlist.Transport interface (6 methods)
-// ──────────────────────────────────────────────────────────────────────────────
-
-// FinalAdvertiseAddr returns the IP and port to advertise to the cluster.
-// If the user supplied an explicit address, it is used. Otherwise, if
-// bound to 0.0.0.0, a private IP is auto-detected via go-sockaddr.
-//
-// The advertised port is always the MuxTransport's own port (the shared
-// TCP/UDP port), regardless of the port memberlist passes. This is correct
-// because the MuxTransport knows its own listener port, which may differ
-// from the GossipPort in the memberlist config when multiplexing.
-func (t *MuxTransport) FinalAdvertiseAddr(ip string, port int) (net.IP, int, error) {
-	var advertiseAddr net.IP
-
-	if ip != "" {
-		advertiseAddr = net.ParseIP(ip)
-		if advertiseAddr == nil {
-			return nil, 0, fmt.Errorf("mux: failed to parse advertise address %q", ip)
-		}
-		if ip4 := advertiseAddr.To4(); ip4 != nil {
-			advertiseAddr = ip4
-		}
-	} else if t.advertiseAddr != "" {
-		// Use the transport's configured advertise address.
-		advertiseAddr = net.ParseIP(t.advertiseAddr)
-		if advertiseAddr == nil {
-			return nil, 0, fmt.Errorf("mux: failed to parse configured advertise address %q", t.advertiseAddr)
-		}
-		if ip4 := advertiseAddr.To4(); ip4 != nil {
-			advertiseAddr = ip4
-		}
-	} else {
-		// No explicit advertise address — auto-detect.
-		if t.bindAddr == "0.0.0.0" || t.bindAddr == "::" {
-			privIP, err := sockaddr.GetPrivateIP()
-			if err != nil {
-				return nil, 0, fmt.Errorf("mux: failed to get private IP: %w", err)
-			}
-			if privIP == "" {
-				return nil, 0, fmt.Errorf("mux: no private IP address found, and explicit IP not provided")
-			}
-			advertiseAddr = net.ParseIP(privIP)
-			if advertiseAddr == nil {
-				return nil, 0, fmt.Errorf("mux: failed to parse auto-detected address %q", privIP)
-			}
-		} else {
-			advertiseAddr = net.ParseIP(t.bindAddr)
-		}
-	}
-
-	// Always use our own advertise port (the shared TCP/UDP port).
-	// The port from memberlist config is the GossipPort, which may differ
-	// from the actual TCP listener port when multiplexing with Reality TLS.
-	return advertiseAddr, t.advertisePort, nil
-}
-
-// WriteTo sends a UDP packet to the given address. The address is a
-// "host:port" string. Returns the transmission timestamp as close to
-// the actual send time as possible.
-func (t *MuxTransport) WriteTo(b []byte, addr string) (time.Time, error) {
-	udpAddr, err := net.ResolveUDPAddr("udp", addr)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("mux: resolve UDP addr %q: %w", addr, err)
-	}
-	// Pick the socket matching the destination's IP family. IPv6 dest →
-	// IPv6 socket; otherwise IPv4 socket. This is essential: a single
-	// dual-stack [::] socket can receive both families, but sending IPv4
-	// packets from it yields ::ffff: mapped source addresses that some
-	// NATs mishandle, and sending IPv6 packets from an IPv4-only socket
-	// fails outright ("non-IPv4 address").
-	var target *net.UDPConn
-	if udpAddr.IP != nil && udpAddr.IP.To4() == nil {
-		for _, conn := range t.udpConns {
-			if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() == nil {
-				target = conn
-				break
-			}
-		}
-	}
-	if target == nil {
-		for _, conn := range t.udpConns {
-			if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.IP != nil && la.IP.To4() != nil {
-				target = conn
-				break
-			}
-		}
-	}
-	if target == nil && len(t.udpConns) > 0 {
-		target = t.udpConns[0]
-	}
-	if target == nil {
-		return time.Time{}, fmt.Errorf("mux: no UDP socket available")
-	}
-	_, err = target.WriteTo(b, udpAddr)
-	return time.Now(), err
-}
-
-// PacketCh returns the channel for receiving incoming UDP packets.
-func (t *MuxTransport) PacketCh() <-chan *memberlist.Packet {
-	return t.packetChIn
-}
-
 // DialUDP initiates a UDP mesh stream to the given remote address
 // (host:port). Returns a reliable ARQ conn ready for key exchange.
 // nil if no UDP socket or manager available.
@@ -929,7 +820,6 @@ func (t *MuxTransport) udpListenLoop() {
 			buf := make([]byte, muxUDPPacketBufSize)
 			for {
 				n, addr, err := conn.ReadFrom(buf)
-				ts := time.Now()
 				if err != nil {
 					if t.shutdown.Load() == 1 {
 						return
@@ -985,15 +875,7 @@ func (t *MuxTransport) udpListenLoop() {
 						continue
 					}
 				}
-				select {
-				case t.packetChIn <- &memberlist.Packet{
-					Buf:       pkt,
-					From:      addr,
-					Timestamp: ts,
-				}:
-				case <-t.shutdownDone():
-					return
-				}
+				// Not a mesh-internal packet — drop (memberlist retired).
 			}
 		}()
 	}
