@@ -1,6 +1,42 @@
 # Release Notes
 
-## v1.6.9 — 2026-08-15
+## v1.7.0 — 2026-08-16
+
+**Major refactor: memberlist/gossip fully retired, config simplified to 12 lines, dashboard topology restored.**
+
+### Memberlist removal (22K+ lines deleted)
+- **Deleted entire `internal/p2p/` package** (45 files: gossip, delegate, events, peer cache, relay path/protocol/selector/session, NAT traversal, WireGuard delegate)
+- **Removed `hashicorp/memberlist` from go.mod** — zero external gossip dependencies
+- `MuxTransport` no longer implements `memberlist.Transport` interface
+- App layer (10 files) cleaned: all gossipLayer/natTraversal/wgDelegate references removed
+- `p2p.enabled` defaults false; gossip code path removed entirely
+
+### Config simplification (~130 lines → 12 lines)
+Minimal config now works — only `node.hostname`, `mesh.zone`, `peers` (public_key + endpoint + reality.public_key) needed. Everything else has defaults:
+- TUN auto-created, VIP auto-allocated (IPAM with fixed hostCount=254)
+- Fingerprint auto-derived from identity.pem
+- Reality server_name/short_id/tls_fingerprint use standard mesh defaults
+- GossipPort removed (uses Mesh.Port)
+- STUN defaults removed (coordination is self-sufficient)
+- SS listener, CFTunnel, reality_transport v1, systemd package deleted
+
+### Bug fixes
+- **[High] relay goroutine leak** (N1 100% CPU, ARM 172% CPU, 60K goroutines): old version's relay bridge didn't exit after tunnel close — new `closeOnce`/`removeTunnel` fixes goroutine lifecycle
+- **[High] DNS `<hostname>.mesh` resolution broken**: gossip removal dropped hostname propagation — META now persists peer hostnames (`learnedHostnames` map), DNS adapter uses hostname→VIP mapping
+- **[High] VIP auto-allocation conflict**: hostCount=peers+1 collapsed to 1 on fresh boot → all nodes got .1 → fixed hostCount to subnet size (254 for /24)
+- **[Medium] `PeerConfig.Reality` nil pointer**: pointer field not initialized before applying defaults in Load() — now allocates first
+- **[Medium] dashboard topology missing**: gossip deletion removed liveness + path info adapters — new META-driven `meshLiveness` (HasPeerSession) + `meshTopologyPaths` (PeerRTT) restore full topology view
+
+### Dashboard topology (META-driven)
+- Node liveness: smux session state (`HasPeerSession`)
+- Node hostnames: META-learned (`PeerHostnames`)
+- Edge latency: mesh RTT cache (`PeerRTT`)
+- Zero gossip dependency — all from session meta exchange
+
+### Validation
+- go build/vet/test: **25 packages, all green**
+- 5-node deployment: CPU 0% on all nodes, 5-node monitor active, UDP hole punching verified
+- 22,881 lines deleted, 436 lines inserted across 117 files
 
 **META auto-discovery fix: new peers propagate to the whole mesh — zone learned automatically, punching fires without manual config peers.**
 

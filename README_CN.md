@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.6.9** —— META 自动发现（新节点传播全网）、UDP 洞数据面完整（双向 dial、无 keepalive 饿死、smux 地址过滤）、自动连接共享节点（冗余）、路径 MTU 探测 + 延迟 ACK + 动态重传。
+> **当前版本: v1.7.0** —— memberlist/gossip 完全退役（删除 22K 行），config 简化至 12 行，relay goroutine 泄漏修复（CPU 100%→0%），DNS hostname 传播恢复，dashboard 拓扑图 META 驱动。
 
 ---
 
