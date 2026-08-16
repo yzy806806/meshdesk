@@ -300,8 +300,8 @@ func isStepUp(path string) bool {
 			return true
 		}
 	}
-	// Also check parent path for array elements: if "p2p.authorized_keys"
-	// is a T2 field, then "p2p.authorized_keys[0]" should also require step-up.
+	// Also check parent path for array elements: if "auth.web_users"
+	// is a T2 field, then "auth.web_users[0]" should also require step-up.
 	if idx := indexOf(path, "["); idx >= 0 {
 		parent := path[:idx]
 		for _, f := range stepUpFields {
