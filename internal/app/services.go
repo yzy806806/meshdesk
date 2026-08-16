@@ -154,18 +154,21 @@ func (a *meshListenerAdapter) ListenMesh(port int) (net.Listener, error) {
 }
 
 func (a *meshDNSAdapter) LocalMeta() *dns.NodeMeta {
-	// No local meta available without gossip; return nil so the DNS
-	// server falls back to config-based resolution.
-	return nil
+	// Local hostname + VIP from the mesh node (not gossip).
+	return &dns.NodeMeta{
+		Hostname:  a.node.LocalHostname(),
+		VirtualIP: a.node.LocalVirtualIP(),
+	}
 }
 
 func (a *meshDNSAdapter) KnownPeers() []*dns.NodeMeta {
-	// Source peer VirtualIPs from the mesh session meta exchange.
+	// Source peer hostname + VIP from the mesh session meta exchange.
 	vips := a.node.PeerVirtualIPs()
+	hostnames := a.node.PeerHostnames()
 	result := make([]*dns.NodeMeta, 0, len(vips))
-	for _, vip := range vips {
+	for pubKey, vip := range vips {
 		result = append(result, &dns.NodeMeta{
-			Hostname:  "",
+			Hostname:  hostnames[pubKey],
 			VirtualIP: vip,
 		})
 	}
