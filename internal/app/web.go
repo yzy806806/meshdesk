@@ -251,9 +251,33 @@ type meshTopologyPaths struct {
 
 func (p *meshTopologyPaths) PeerLatency(sourceID, targetID string) float64 {
 	// For the local node → peer, use PeerRTT.
-	// For peer → peer, we don't have inter-peer RTT; return -1.
 	if sourceID == p.node.Identity().PublicKey {
 		return float64(p.node.PeerRTT(targetID).Milliseconds())
+	}
+	// For inter-peer latency, consult the global latency graph
+	// (only available on shared nodes with InitPathServer).
+	if lg := p.node.LatencyGraph(); lg != nil {
+		path := lg.QueryPath(sourceID, targetID)
+		if len(path) > 1 {
+			// Sum edge RTTs along the path for total latency.
+			edges := lg.AllEdges()
+			edgeMap := make(map[string]map[string]int)
+			for _, e := range edges {
+				if edgeMap[e.Source] == nil {
+					edgeMap[e.Source] = make(map[string]int)
+				}
+				edgeMap[e.Source][e.Target] = e.RTT
+			}
+			total := 0
+			for i := 0; i < len(path)-1; i++ {
+				if targets, ok := edgeMap[path[i]]; ok {
+					if rtt, ok := targets[path[i+1]]; ok {
+						total += rtt
+					}
+				}
+			}
+			return float64(total)
+		}
 	}
 	return -1
 }

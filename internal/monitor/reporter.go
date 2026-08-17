@@ -48,6 +48,11 @@ type Reporter struct {
 	// to enrich metrics with mesh-internal traffic statistics (smux bytes,
 	// relay tunnels, TUN packets). Returns zero values if no traffic to report.
 	trafficProvider func() TrafficSnapshot
+
+	// rttProvider, when set, returns a map of peerKey → RTT (ms) for
+	// all peers this node has an active session with. Used to fill
+	// Metrics.PeerLatency for the path planning system.
+	rttProvider func() map[string]int
 }
 
 // TrafficSnapshot is a provider-supplied snapshot of mesh traffic stats.
@@ -239,6 +244,14 @@ func (r *Reporter) SetTrafficProvider(fn func() TrafficSnapshot) {
 	r.trafficProvider = fn
 }
 
+// SetRTTProvider sets the function that returns peer → RTT(ms) mapping.
+// Called during each collection cycle to fill Metrics.PeerLatency.
+func (r *Reporter) SetRTTProvider(fn func() map[string]int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rttProvider = fn
+}
+
 // monitorTrafficFromProvider converts a TrafficSnapshot to TrafficMetrics.
 func monitorTrafficFromProvider(ts TrafficSnapshot) TrafficMetrics {
 	return TrafficMetrics{
@@ -325,6 +338,14 @@ func (r *Reporter) collectAndPush() {
 		m.Traffic = monitorTrafficFromProvider(ts)
 	}
 
+	// Enrich with peer latency (RTT to all session peers).
+	r.mu.Lock()
+	rttProv := r.rttProvider
+	r.mu.Unlock()
+	if rttProv != nil {
+		m.PeerLatency = rttProv()
+	}
+
 	// Always store locally (self-replica). sequence is read under
 	// r.mu elsewhere (FlushBuffer) — increment it under the lock to
 	// avoid a data race.
@@ -376,6 +397,7 @@ func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 	r.mu.Lock()
 	collectors := make([]string, len(r.collectors))
 	copy(collectors, r.collectors)
+	rttProv := r.rttProvider
 	r.mu.Unlock()
 
 	// Default: when no collectors are configured or discovered (e.g.
@@ -390,13 +412,48 @@ func (r *Reporter) pushToCollectors(env *MetricEnvelope) bool {
 		}
 	}
 
+	if len(collectors) == 0 {
+		return false
+	}
+
+	// Select the lowest-latency collector for path-planning data.
+	// All collectors still receive system metrics, but PeerLatency
+	// (used for relay path planning) goes only to the nearest shared
+	// node to avoid redundant computation. If RTT provider is not
+	// set (older binary or no sessions yet), fall back to first-collector.
+	bestCollector := collectors[0]
+	bestRTT := -1
+	if rttProv != nil {
+		rtts := rttProv()
+		for _, c := range collectors {
+			if rtt, ok := rtts[c]; ok {
+				if bestRTT < 0 || rtt < bestRTT {
+					bestRTT = rtt
+					bestCollector = c
+				}
+			}
+		}
+	}
+
 	var okCount, failCount int
 	for _, collectorID := range collectors {
+		// Strip PeerLatency for non-best collectors — only the
+		// nearest shared node needs it for path planning.
+		if collectorID != bestCollector && env.Metrics.PeerLatency != nil {
+			stripEnv := *env
+			stripEnv.Metrics.PeerLatency = nil
+			stripData, _ := json.Marshal(&stripEnv)
+			if r.tryPush(collectorID, stripData) {
+				okCount++
+				continue
+			}
+			failCount++
+			continue
+		}
 		if r.tryPush(collectorID, data) {
 			okCount++
 			continue
 		}
-		// tryPush already logged the error; track for summary.
 		failCount++
 	}
 	if failCount > 0 && okCount == 0 {
