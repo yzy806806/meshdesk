@@ -366,8 +366,12 @@ func RelayStream(conn1, conn2 net.Conn) {
 	conn1.Close()
 	conn2.Close()
 
-	// Drain the second goroutine.
-	<-done
+	// Drain the second goroutine with a timeout — smux.Stream.Read
+	// may block indefinitely after Close if the peer never sends EOF.
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
 }
 
 // DialViaRelay is a convenience method on MeshNode that creates a

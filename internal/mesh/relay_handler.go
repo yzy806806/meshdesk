@@ -557,8 +557,16 @@ func (h *RelayHandler) startBridge(tunnel *relayTunnel) {
 			target.Close()
 		})
 
-		// Drain the second goroutine.
-		<-done
+		// Drain the second goroutine with a timeout — the second
+		// io.Copy may block on smux.Stream.Read if the stream is
+		// half-closed and never receives EOF. 3s is generous for a
+		// stream that should see an immediate read error after Close.
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			// The second goroutine is stuck; it will exit when
+			// the smux session is eventually torn down.
+		}
 	}()
 }
 
