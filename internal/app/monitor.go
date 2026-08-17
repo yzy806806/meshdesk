@@ -89,6 +89,20 @@ func (a *App) startMonitor() {
 		}
 	})
 
+	// Provide peer RTT for path planning: each monitor report carries
+	// this node's latency to all session peers, so the nearest shared
+	// node can build a global latency graph.
+	reporter.SetRTTProvider(func() map[string]int {
+		result := make(map[string]int)
+		for _, peerKey := range a.node.SessionPeerKeys() {
+			rtt := a.node.PeerRTT(peerKey)
+			if rtt > 0 {
+				result[peerKey] = int(rtt.Milliseconds())
+			}
+		}
+		return result
+	})
+
 	a.reporter = reporter
 }
 
@@ -159,6 +173,13 @@ func (a *App) startMonitorAggregator() {
 			log.Printf("Warning: failed to start metric aggregator: %v", err)
 		} else {
 			log.Printf("  Aggregator: listening on mesh port %d", a.cfg.Monitoring.Port)
+		}
+		// On shared nodes, wire PeerLatency → LatencyGraph update.
+		if a.cfg.Reality.Enabled {
+			aggregator.SetPeerLatencyHandler(func(sourceKey string, latency map[string]int, hostname string) {
+				zone := a.node.PeerZone(sourceKey)
+				a.node.UpdateLatencyGraph(sourceKey, latency, zone)
+			})
 		}
 		a.monitorAggregator = aggregator
 

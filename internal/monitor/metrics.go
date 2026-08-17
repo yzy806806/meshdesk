@@ -24,6 +24,12 @@ type Metrics struct {
 	// tunnels, TUN packets). These are populated by the reporter from
 	// the mesh node's TrafficStats() method before pushing to collectors.
 	Traffic TrafficMetrics `json:"traffic"`
+
+	// PeerLatency maps peer public key → RTT in milliseconds for all
+	// peers this node has an active session with. Collected from the
+	// mesh node's PeerRTT cache. Used by shared nodes to build a global
+	// latency graph for multi-path relay routing.
+	PeerLatency map[string]int `json:"peer_latency,omitempty"`
 }
 
 // TrafficMetrics holds mesh-internal traffic statistics collected from
