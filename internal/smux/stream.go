@@ -95,6 +95,10 @@ func (st *Stream) Read(b []byte) (int, error) {
 			st.readMu.Unlock()
 			return 0, io.EOF
 		}
+		if st.localClosed.Load() {
+			st.readMu.Unlock()
+			return 0, io.ErrClosedPipe
+		}
 
 		// Check if session is closed.
 		if st.session.IsClosed() {
@@ -176,6 +180,10 @@ func (st *Stream) Close() error {
 		case st.session.writeCh <- fin:
 		case <-st.session.doneCh:
 		}
+
+		// Wake up any blocked Read so it returns immediately
+		// instead of hanging on readCh forever.
+		st.signalRead()
 
 		// Notify session to decrement stream count.
 		st.session.streamClosed(st.id)
