@@ -51,6 +51,11 @@ type Aggregator struct {
 	// If nil, forwarding is disabled even if meshDialer is set.
 	collectorLister CollectorLister
 
+	// onPeerLatency is called when a received report contains
+	// PeerLatency data. Shared nodes use this to update their global
+	// latency graph for path planning. nil on non-shared nodes.
+	onPeerLatency func(sourceKey string, latency map[string]int, hostname string)
+
 	// selfPeerID is the local node's peer ID, used to skip self when
 	// forwarding envelopes to other collectors.
 	selfPeerID string
@@ -135,6 +140,13 @@ func NewAggregator(cfg AggregatorConfig) *Aggregator {
 // Store returns the aggregator's metrics store (for the web dashboard).
 func (a *Aggregator) Store() *Store {
 	return a.store
+}
+
+// SetPeerLatencyHandler sets a callback invoked when a received monitor
+// report contains PeerLatency data. Shared nodes use this to update
+// their global latency graph for relay path planning.
+func (a *Aggregator) SetPeerLatencyHandler(fn func(sourceKey string, latency map[string]int, hostname string)) {
+	a.onPeerLatency = fn
 }
 
 // Start begins listening for metric pushes on the mesh.
@@ -279,6 +291,11 @@ func (a *Aggregator) handlePush(conn net.Conn) {
 	// Store the metrics. The Store handles deduplication naturally
 	// (ring buffer overwrites old data; newer timestamp wins).
 	a.store.Append(env.SourceID, env.Metrics)
+
+	// Update latency graph on shared nodes (path planning).
+	if a.onPeerLatency != nil && env.Metrics.PeerLatency != nil {
+		a.onPeerLatency(env.SourceID, env.Metrics.PeerLatency, env.Metrics.Hostname)
+	}
 
 	// Forward the envelope to other known collectors if:
 	//   - this envelope was not already forwarded (prevents loops),

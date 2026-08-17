@@ -23,6 +23,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/config"
@@ -89,6 +90,15 @@ type MeshNode struct {
 	// stream relay handler registered on virtual port 0x524C. It is
 	// created by RegisterRelayHandler and closed by Close().
 	relayHandler *RelayHandler
+
+	// latencyGraph holds the global mesh latency graph, built from
+	// monitor reports (PeerLatency). Only populated on shared nodes
+	// that act as path servers. nil on ordinary nodes.
+	latencyGraph *LatencyGraph
+
+	// queryingPath prevents recursive path queries (queryBestRelayPath
+	// → DialVirtualPort → tryRelayFallback → queryBestRelayPath).
+	queryingPath atomic.Bool
 
 	// socks5Handler, when non-nil, is the active SOCKS5 proxy handler
 	// registered on virtual port 0x5350. It is created by
@@ -2806,4 +2816,115 @@ func (n *MeshNode) PeerVirtualIP(peerKey string) string {
 		return ""
 	}
 	return ip.String()
+}
+
+// PathServerVirtualPort is the virtual port for path queries.
+// Ordinary nodes query the nearest shared node for optimal relay paths.
+const PathServerVirtualPort = 0x5050
+
+// InitPathServer initialises the latency graph and registers a path
+// query listener. Called by the app layer on shared nodes (reality.enabled).
+func (n *MeshNode) InitPathServer() error {
+	n.latencyGraph = NewLatencyGraph()
+	ln, err := n.ListenVirtualPort(PathServerVirtualPort)
+	if err != nil {
+		return fmt.Errorf("mesh: path server port %x: %w", PathServerVirtualPort, err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go n.handlePathQuery(conn)
+		}
+	}()
+	return nil
+}
+
+// handlePathQuery reads a path request and responds with the optimal path.
+// Request: [targetKey 64 bytes, sourceKey 64 bytes]
+// Response: [pathLen u8][key0 64 bytes][key1 64 bytes]... or [0] if no path.
+func (n *MeshNode) handlePathQuery(conn net.Conn) {
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	buf := make([]byte, 128)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return
+	}
+	source := string(buf[:64])
+	target := string(buf[64:128])
+
+	if n.latencyGraph == nil {
+		// No graph — return empty path.
+		conn.Write([]byte{0})
+		return
+	}
+
+	path := n.latencyGraph.QueryPath(source, target)
+	if path == nil {
+		conn.Write([]byte{0})
+		return
+	}
+
+	// Response: [hopCount u8][hop0 64 bytes]...
+	resp := make([]byte, 1+len(path)*64)
+	resp[0] = byte(len(path))
+	for i, key := range path {
+		copy(resp[1+i*64:], []byte(key))
+	}
+	conn.Write(resp)
+}
+
+// QueryPathFromServer sends a path query to a shared node (via virtual
+// port 0x5050) and returns the optimal path. Called by ordinary nodes
+// before initiating relay to get the best multi-hop route.
+func (n *MeshNode) QueryPathFromServer(ctx context.Context, serverKey, targetKey string) []string {
+	conn, err := n.DialVirtualPort(ctx, serverKey, PathServerVirtualPort)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(10 * time.Second))
+
+	req := make([]byte, 128)
+	copy(req[:64], []byte(n.Identity().PublicKey))
+	copy(req[64:], []byte(targetKey))
+	if _, err := conn.Write(req); err != nil {
+		return nil
+	}
+
+	hdr := make([]byte, 1)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return nil
+	}
+	hopCount := int(hdr[0])
+	if hopCount == 0 {
+		return nil
+	}
+
+	path := make([]string, hopCount)
+	for i := 0; i < hopCount; i++ {
+		keyBuf := make([]byte, 64)
+		if _, err := io.ReadFull(conn, keyBuf); err != nil {
+			return nil
+		}
+		path[i] = string(keyBuf)
+	}
+	return path
+}
+
+// LatencyGraph returns the global latency graph (nil on ordinary nodes).
+func (n *MeshNode) LatencyGraph() *LatencyGraph {
+	return n.latencyGraph
+}
+
+// UpdateLatencyGraph merges a monitor report's PeerLatency into the
+// graph. Called on shared nodes when a monitor report with
+// PeerLatency is received.
+func (n *MeshNode) UpdateLatencyGraph(sourceKey string, latency map[string]int, zone string) {
+	if n.latencyGraph != nil {
+		n.latencyGraph.UpdateFromReport(sourceKey, latency, zone)
+	}
 }

@@ -484,6 +484,35 @@ const relaySuccessTTL = 60 * time.Second
 func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port uint16, path []string) (net.Conn, error) {
 	localKey := ""
 
+	// Path-guided relay: query the nearest shared node for the optimal
+	// multi-hop path. If a path is returned, relay through each hop
+	// in order (the first hop is always a shared node we have a
+	// session with). This uses the global latency graph (Dijkstra)
+	// to find the lowest-total-latency route.
+	// Skip if we're already in a multi-hop path (recursive call) to
+	// avoid infinite recursion (queryBestRelayPath → DialVirtualPort
+	// → tryRelayFallback → queryBestRelayPath).
+	if path == nil {
+		if !n.queryingPath.CompareAndSwap(false, true) {
+			// Already querying — skip to avoid recursion.
+		} else {
+			relayPath := n.queryBestRelayPath(ctx, targetKey)
+			n.queryingPath.Store(false)
+			if len(relayPath) > 1 {
+				var relays []string
+				for i := 1; i < len(relayPath)-1; i++ {
+					relays = append(relays, relayPath[i])
+				}
+				if len(relays) > 0 {
+					conn, err := n.DialViaRelay(ctx, targetKey, relays, port, path)
+					if err == nil {
+						return conn, nil
+					}
+				}
+			}
+		}
+	}
+
 	// Fast path: reuse the last working relay (no candidate scan).
 	n.mu.RLock()
 	last, ok := n.relayLastSuccess[targetKey]
@@ -639,4 +668,30 @@ func (n *MeshNode) tryRelayFallback(ctx context.Context, targetKey string, port 
 		len(candidates), targetKey[:min(len(targetKey), 16)]+"...")
 
 	return n.DialViaRelay(ctx, targetKey, candidates, port, path)
+}
+
+// queryBestRelayPath finds the nearest shared node (by RTT) among
+// session peers and queries it for the optimal relay path to target.
+// Returns nil if no shared node is reachable or no path exists.
+func (n *MeshNode) queryBestRelayPath(ctx context.Context, targetKey string) []string {
+	// Find the nearest shared node (CapRelay) among our sessions.
+	var bestServer string
+	var bestRTT time.Duration
+	for _, key := range n.SessionPeerKeys() {
+		info, ok := n.PeerRelayMetaInfo(key)
+		if !ok || !info.CapRelay {
+			continue
+		}
+		rtt := n.PeerRTT(key)
+		if bestServer == "" || (rtt > 0 && rtt < bestRTT) {
+			bestServer = key
+			bestRTT = rtt
+		}
+	}
+
+	if bestServer == "" {
+		return nil
+	}
+
+	return n.QueryPathFromServer(ctx, bestServer, targetKey)
 }
