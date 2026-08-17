@@ -74,7 +74,7 @@ func probeServer(server string, srcPort int, timeout time.Duration) (DiscoveryRe
 	port, _ := strconv.Atoi(portStr)
 
 	// First request: primary server, bound to srcPort if requested.
-	ep1, mapped1, localPort, err := stunRequest(server, srcPort, timeout)
+	_, mapped1, localPort, err := stunRequest(server, srcPort, timeout)
 	if err != nil {
 		return DiscoveryResult{}, err
 	}
@@ -82,7 +82,7 @@ func probeServer(server string, srcPort int, timeout time.Duration) (DiscoveryRe
 	ep2, mapped2, err := stunRequestSameConn(server, host, port, localPort, timeout)
 	if err != nil {
 		// Second probe failed — cannot classify; assume port-restricted.
-		return DiscoveryResult{MappedEP: ep1, NatType: NatPortRestricted}, nil
+		return DiscoveryResult{MappedEP: mapped1, NatType: NatPortRestricted}, nil
 	}
 	_ = ep2
 
@@ -108,7 +108,7 @@ func probeServer(server string, srcPort int, timeout time.Duration) (DiscoveryRe
 			}
 		}
 	}
-	return DiscoveryResult{MappedEP: ep1, NatType: nat, EasySym: easySym, Inc: inc}, nil
+	return DiscoveryResult{MappedEP: mapped1, NatType: nat, EasySym: easySym, Inc: inc}, nil
 }
 
 // stunRequest sends one binding request and returns our mapped endpoint
