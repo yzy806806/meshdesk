@@ -28,7 +28,7 @@ import (
 const tlsHandshakeRecordType = 0x16
 
 // debugEnabled caches the MESHDESK_DEBUG env check (read on hot paths).
-var debugEnabled = os.Getenv("MESHDESK_DEBUG") != ""
+var debugEnabled = os.Getenv("MESHDESK_DEBUG") == "1"
 
 // muxUDPPacketBufSize is the receive buffer size for UDP packet reads.
 const muxUDPPacketBufSize = 65536

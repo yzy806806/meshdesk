@@ -379,7 +379,7 @@ func (me *MetaExchanger) Broadcast() {
 
 // metaDebugEnabled is cached once at init — os.Getenv is a syscall
 // and the send/localMeta path is hot during meta floods.
-var metaDebugEnabled = os.Getenv("MESHDESK_DEBUG") != ""
+var metaDebugEnabled = os.Getenv("MESHDESK_DEBUG") == "1"
 
 // localMeta returns this node's own identity metadata.
 func (me *MetaExchanger) localMeta() PeerMeta {
