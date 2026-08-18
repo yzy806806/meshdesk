@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.7.0** —— memberlist/gossip 完全退役（删除 22K 行），config 简化至 12 行，relay goroutine 泄漏修复（CPU 100%→0%），DNS hostname 传播恢复，dashboard 拓扑图 META 驱动。
+> **当前版本: v1.8.0** —— 多路径 relay 路由（Dijkstra 路径规划），MESHDESK_DEBUG 日志修复，STUN 公网地址修复，smux goroutine 泄漏修复，config 12 行，memberlist 退役。
 
 ---
 

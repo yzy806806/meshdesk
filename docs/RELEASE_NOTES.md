@@ -1,6 +1,39 @@
 # Release Notes
 
-## v1.7.0 — 2026-08-16
+## v1.8.0 — 2026-08-18
+
+**Multi-path relay routing with Dijkstra path planning + debug log fix.**
+
+### Multi-path relay routing
+- **monitor/metrics.go**: Metrics.PeerLatency (peerKey→RTT ms) — each node reports its latency to all session peers
+- **monitor/reporter.go**: SetRTTProvider fills PeerLatency; pushToCollectors sends PeerLatency only to lowest-latency collector (nearest shared node)
+- **monitor/aggregator.go**: SetPeerLatencyHandler callback — shared nodes update their global latency graph on receipt
+- **mesh/path_server.go** (new): LatencyGraph adjacency list + Dijkstra shortest path + QueryPath + AllEdges (dashboard) + PruneStaleEdges (75s TTL cleanup) + MergeFromSync/ExportForSync
+- **mesh/node.go**: InitPathServer (shared nodes, virtual port 0x5050); QueryPathFromServer (ordinary nodes); queryingPath atomic flag prevents recursion
+- **mesh/relay_dialer.go**: tryRelayFallback queries nearest shared node for optimal path before falling back to RTT-sorted candidate scan
+- **app/monitor.go**: wire SetRTTProvider + SetPeerLatencyHandler; shared nodes run aggregator to collect PeerLatency
+- **app/web.go**: meshTopologyPaths.PeerLatency uses global latency graph for inter-peer edge weights; Dijkstra result cache (15s TTL)
+- **app/app.go**: InitPathServer wired in Start() for shared nodes (reality.enabled)
+
+### Architecture
+- Ordinary nodes report peer RTT via monitor → nearest shared node collects into latency graph
+- Dijkstra computes optimal multi-hop relay path → ordinary nodes query before relaying
+- Shared nodes sync via forwardToCollectors (existing monitor forwarding)
+- Dashboard reads graph for topology edge weights
+
+### Bug fixes
+- **MESHDESK_DEBUG=0 treated as enabled**: `!= ""` instead of `== "1"` in mux_transport.go, tun_forwarder.go, meta_exchange.go → 9256 lines/min journald flooding → TUN forwarder queue saturation → ICMP ping timeouts. Fixed.
+- **STUN MappedEP used LocalAddr**: stunRoundTrip returned conn.LocalAddr() (internal IP) instead of XORMappedAddress (public IP) → holes targeted unreachable internal addresses → data plane fell back to relay. Fixed (v1.7.2).
+- **smux Close() didn't wake blocked Read**: relay bridge goroutines leaked (~10K per node) → CPU 100%. Fixed (v1.7.1).
+- **Relay tunnel count assertion**: test expected TunnelCount==1 but goroutine leak fix cleans up tunnels promptly. Adjusted to <=1.
+
+### Validation
+- go build/vet/test: 25 packages, all green
+- 5-node deployment: CPU 0%, goroutine 50-97, 0 session_lost
+- PeerLatency reporting: N1/oracle 4 edges each, aliyun collects complete graph
+- Dashboard topology: 5 nodes, 10 edges
+- PathServer confirmed running on shared nodes (pprof)
+- Dijkstra path query: txcloud→ARM 259ms (direct optimal), txcloud→AMD 4ms (direct optimal)
 
 **Major refactor: memberlist/gossip fully retired, config simplified to 12 lines, dashboard topology restored.**
 
