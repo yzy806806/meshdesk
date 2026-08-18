@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.7.3** — multi-path relay routing (Dijkstra path planning via shared nodes), MESHDESK_DEBUG log fix, STUN MappedEP fix, smux goroutine leak fix, config 12 lines, memberlist retired.
+> **Current release: v1.7.4** — multi-path relay routing (Dijkstra path planning via shared nodes), MESHDESK_DEBUG log fix, STUN MappedEP fix, smux goroutine leak fix, config 12 lines, memberlist retired.
 
 ---
 
