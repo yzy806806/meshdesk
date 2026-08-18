@@ -149,6 +149,15 @@ func (a *App) Start(ctx context.Context) error {
 	a.integrateTUN()
 	a.startServices()
 	a.startProxyCircuit()
+	// Shared nodes (reality.enabled) host the path server for
+	// multi-path relay routing. Ordinary nodes query it.
+	if a.cfg.Reality.Enabled {
+		if err := a.node.InitPathServer(); err != nil {
+			log.Printf("Warning: path server init failed: %v", err)
+		} else {
+			log.Printf("  PathServer: listening on virtual port 0x5050")
+		}
+	}
 	a.startMonitor()
 	a.startMonitorAggregator()
 	a.startJoinServer()
