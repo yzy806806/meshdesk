@@ -1,6 +1,6 @@
 # Release Notes
 
-## v1.8.0 — 2026-08-18
+## v1.7.3 — 2026-08-18
 
 **Multi-path relay routing with Dijkstra path planning + debug log fix.**
 
