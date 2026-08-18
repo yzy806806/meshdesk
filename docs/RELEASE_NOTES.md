@@ -1,5 +1,21 @@
 # Release Notes
 
+## v1.7.4 — 2026-08-19
+
+**UDP stream leak fix + auto-reconnect for restarted peers.**
+
+### Bug fixes
+- **DialUDPStream missing ACK confirmation**: mesh UDP dial lacked the 1s ACK timeout that DialTUNStream had — unreachable peers left zombie streams (12 leaked goroutines per node on oracle-arm, 110 total goroutines). Fixed: dial now waits for ACK, closes on timeout.
+- **UDP stream idle timeout**: `recvLoop` gets 120s idle timer — no ACKs for 120s → `Close()` → `retransmitLoop` exits → cleanup goroutine runs. Prevents zombie streams when peer disappears silently (NAT mapping expiry, peer restart without FIN).
+- **P2P auto-reconnect**: `startP2P` tried 3 times then gave up — shared node restart permanently partitioned ordinary nodes that booted before it. Fixed: infinite retry with exponential backoff (5s→60s cap) + 30s session health monitor that reconnects on session loss. Verified: aliyun restart → txcloud auto-reconnects in ~30s (was: never, required manual restart).
+- **TestRelayDialer_MultipleRelayCandidates timeout**: test used wrong target key (peerA1=A's own key instead of peerB1=B's key) and 15s timeout too short for multi-candidate fallback. Fixed: correct target + candidate order + 30s timeout.
+
+### Validation
+- go build/vet/test: all green (5-node, all packages pass)
+- 5-node deployment: goroutine 50-71 (was 53-110), CPU 0-2%
+- UDP stream count: oracle-arm 2 (was 8)
+- Auto-reconnect: aliyun restart → txcloud reconnects in 30s with 2 sessions restored
+
 ## v1.7.3 — 2026-08-18
 
 **Multi-path relay routing with Dijkstra path planning + debug log fix.**
