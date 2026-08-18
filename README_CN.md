@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.7.3** —— 多路径 relay 路由（Dijkstra 路径规划），MESHDESK_DEBUG 日志修复，STUN 公网地址修复，smux goroutine 泄漏修复，config 12 行，memberlist 退役。
+> **当前版本: v1.7.4** —— 多路径 relay 路由（Dijkstra 路径规划），MESHDESK_DEBUG 日志修复，STUN 公网地址修复，smux goroutine 泄漏修复，config 12 行，memberlist 退役。
 
 ---
 

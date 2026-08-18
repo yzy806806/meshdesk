@@ -215,6 +215,30 @@ func (m *udpMeshManager) DialUDPStream(local *net.UDPConn, remote *net.UDPAddr) 
 		return nil, err
 	}
 
+	// Confirm the path: wait for the peer's ACK of the 0x4D
+	// handshake frame (inflight drains when ACKed). A firewall
+	// that drops UDP yields no ACK — fail the dial so the caller
+	// falls back to TCP relay. Mirrors DialTUNStream confirmation.
+	confirmDeadline := time.Now().Add(udpDialConfirmTimeout)
+	for {
+		sc.sendMu.Lock()
+		pending := len(sc.inflight)
+		sc.sendMu.Unlock()
+		if pending == 0 {
+			break
+		}
+		if time.Now().After(confirmDeadline) {
+			m.mu.Lock()
+			if cur, ok := m.streams[key]; ok && cur == sc {
+				delete(m.streams, key)
+			}
+			m.mu.Unlock()
+			sc.Close()
+			return nil, fmt.Errorf("udp mesh stream: no ACK from %s within %s (path unusable)", remote, udpDialConfirmTimeout)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
 	// Clean up when the stream closes.
 	go func(s *udpStreamConn, k string) {
 		<-s.done

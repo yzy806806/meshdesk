@@ -553,6 +553,17 @@ func (sc *udpStreamConn) retransmitLocked() {
 	}
 }
 
+const (
+	// udpIdleTimeout is how long a UDP stream can go without any
+	// data activity (send or receive) before it self-terminates.
+	// This prevents zombie streams from leaking goroutines when the
+	// peer disappears silently (NAT mapping expires, peer restarts
+	// without sending FIN, etc.). 120s is long enough that an active
+	// session with sparse traffic (keepalive every 30s) stays alive,
+	// but short enough to reclaim leaked streams in minutes not hours.
+	udpIdleTimeout = 120 * time.Second
+)
+
 func (sc *udpStreamConn) retransmitLoop() {
 	// Dynamic tick: retransmit checks should happen at ~RTO/4 so
 	// retransmits fire promptly after RTO elapses, but without
@@ -586,11 +597,20 @@ func (sc *udpStreamConn) recvLoop() {
 	// The shared UDP socket delivers packets to handlePacket directly
 	// (called from udpListenLoop's routing). This goroutine exists to
 	// drain ackRecv into advanceBase so Write's window check proceeds.
+	// It also tracks last-activity for the idle-timeout watchdog in
+	// retransmitLoop: a non-empty ackRecv means the peer is alive.
+	idleTimer := time.NewTimer(udpIdleTimeout)
+	defer idleTimer.Stop()
 	for {
 		select {
 		case ack := <-sc.ackRecv:
 			sc.advanceBase(ack)
+			idleTimer.Reset(udpIdleTimeout)
 		case <-sc.done:
+			return
+		case <-idleTimer.C:
+			// No ACKs for a long period → peer is gone.
+			sc.Close()
 			return
 		}
 	}
