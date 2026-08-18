@@ -2839,6 +2839,19 @@ func (n *MeshNode) InitPathServer() error {
 			go n.handlePathQuery(conn)
 		}
 	}()
+	// Periodic stale edge cleanup (5x the monitor interval = 75s TTL).
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n.latencyGraph.PruneStaleEdges(75 * time.Second)
+			case <-n.Context().Done():
+				return
+			}
+		}
+	}()
 	return nil
 }
 
