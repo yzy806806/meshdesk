@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/mesh"
@@ -247,19 +248,57 @@ func (l *meshLiveness) PeerHostname(peerID string) string {
 // mesh node's RTT cache (replaces the deleted linkMapTopologyPaths).
 type meshTopologyPaths struct {
 	node *mesh.MeshNode
+
+	// Dijkstra result cache: "source|target" → {latency, expiry}.
+	// Avoids re-running Dijkstra on every topology API call for the
+	// same pair. TTL matches monitor interval (15s).
+	pathCache   map[string]pathCacheEntry
+	pathCacheMu sync.RWMutex
+}
+
+type pathCacheEntry struct {
+	latency float64
+	expires time.Time
+}
+
+func (p *meshTopologyPaths) cachedLatency(source, target string) (float64, bool) {
+	key := source + "|" + target
+	p.pathCacheMu.RLock()
+	entry, ok := p.pathCache[key]
+	p.pathCacheMu.RUnlock()
+	if !ok || time.Now().After(entry.expires) {
+		return 0, false
+	}
+	return entry.latency, true
+}
+
+func (p *meshTopologyPaths) cacheLatency(source, target string, latency float64) {
+	key := source + "|" + target
+	p.pathCacheMu.Lock()
+	if p.pathCache == nil {
+		p.pathCache = make(map[string]pathCacheEntry)
+	}
+	p.pathCache[key] = pathCacheEntry{
+		latency: latency,
+		expires: time.Now().Add(15 * time.Second),
+	}
+	p.pathCacheMu.Unlock()
 }
 
 func (p *meshTopologyPaths) PeerLatency(sourceID, targetID string) float64 {
-	// For the local node → peer, use PeerRTT.
+	// For the local node → peer, use PeerRTT (always fresh, no cache).
 	if sourceID == p.node.Identity().PublicKey {
 		return float64(p.node.PeerRTT(targetID).Milliseconds())
 	}
-	// For inter-peer latency, consult the global latency graph
-	// (only available on shared nodes with InitPathServer).
+	// Check cache first.
+	if lat, ok := p.cachedLatency(sourceID, targetID); ok {
+		return lat
+	}
+	// For inter-peer latency, consult the global latency graph.
+	result := float64(-1)
 	if lg := p.node.LatencyGraph(); lg != nil {
 		path := lg.QueryPath(sourceID, targetID)
 		if len(path) > 1 {
-			// Sum edge RTTs along the path for total latency.
 			edges := lg.AllEdges()
 			edgeMap := make(map[string]map[string]int)
 			for _, e := range edges {
@@ -276,8 +315,9 @@ func (p *meshTopologyPaths) PeerLatency(sourceID, targetID string) float64 {
 					}
 				}
 			}
-			return float64(total)
+			result = float64(total)
 		}
 	}
-	return -1
+	p.cacheLatency(sourceID, targetID, result)
+	return result
 }

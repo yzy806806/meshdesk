@@ -40,9 +40,6 @@ func (g *LatencyGraph) UpdateFromReport(sourceKey string, latency map[string]int
 	now := time.Now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.entries[sourceKey] == nil {
-		g.entries[sourceKey] = make(map[string]rttEntry)
-	}
 	// Replace all edges from source (stale edges removed).
 	g.entries[sourceKey] = make(map[string]rttEntry, len(latency))
 	for target, rtt := range latency {
@@ -73,6 +70,29 @@ func (g *LatencyGraph) MergeFromSync(remote map[string]map[string]rttEntry) {
 		}
 	}
 }
+
+// PruneStaleEdges removes all edges whose timestamp is older than
+// maxAge. Called periodically to clean up entries from nodes that
+// have gone offline (their monitor reports stopped arriving).
+func (g *LatencyGraph) PruneStaleEdges(maxAge time.Duration) {
+	cutoff := time.Now().Add(-maxAge)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for src, targets := range g.entries {
+		staleCount := 0
+		for dst, entry := range targets {
+			if entry.timestamp.Before(cutoff) {
+				delete(targets, dst)
+				staleCount++
+			}
+		}
+		// If all edges from a source are stale, remove the source entirely.
+		if len(targets) == 0 {
+			delete(g.entries, src)
+		}
+	}
+}
+
 
 // ExportForSync returns the full graph for synchronisation to a
 // peer shared node. The caller should send this via META or a
