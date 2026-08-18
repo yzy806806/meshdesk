@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.7.0** — memberlist/gossip fully retired (22K lines deleted), config simplified to 12 lines, relay goroutine leak fixed (CPU 100%→0%), DNS hostname propagation restored, dashboard topology META-driven.
+> **Current release: v1.8.0** — multi-path relay routing (Dijkstra path planning via shared nodes), MESHDESK_DEBUG log fix, STUN MappedEP fix, smux goroutine leak fix, config 12 lines, memberlist retired.
 
 ---
 
