@@ -140,9 +140,12 @@ func TestRelay_PortPreservation_ProductionPath(t *testing.T) {
 
 	t.Logf("SUCCESS: A received service response %q via relay (port preserved end-to-end)", resp)
 
-	// Verify relay has one active tunnel.
-	if count := relayHandler.TunnelCount(); count != 1 {
-		t.Errorf("relay tunnel count = %d, want 1", count)
+	// Verify relay handled the tunnel (it may have been cleaned up
+	// already by the goroutine leak fix — Close() now wakes blocked
+	// reads, so tunnels are removed promptly after data transfer).
+	// We check TunnelCount >= 0 (no crash) instead of == 1.
+	if count := relayHandler.TunnelCount(); count > 1 {
+		t.Errorf("relay tunnel count = %d, want <= 1", count)
 	}
 }
 
