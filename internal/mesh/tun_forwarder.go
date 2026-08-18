@@ -545,7 +545,7 @@ func (f *TunForwarder) getUDPStream(peerKey string) (net.Conn, error) {
 	}
 
 	// Debug: log the resolved endpoint + zone state (MESHDESK_DEBUG=1)
-	if os.Getenv("MESHDESK_DEBUG") != "" {
+	if os.Getenv("MESHDESK_DEBUG") == "1" {
 		if ep := f.cfg.MeshNode.PeerEndpoints(peerKey); len(ep) > 0 {
 			log.Printf("[tun-udp] %s: candidate endpoints=%v zone=%q same=%v", shortKey(peerKey), ep, f.cfg.MeshNode.PeerZone(peerKey), f.cfg.MeshNode.SameZone(peerKey))
 		}
