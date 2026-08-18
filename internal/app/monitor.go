@@ -125,7 +125,12 @@ func (d *meshDialerAdapter) DialMesh(ctx context.Context, peerID string, port in
 // receives pushes, enforces mesh-identity auth, feeds the store.
 // The audit logger backs auth + capability denials.
 func (a *App) startMonitorAggregator() {
-	if a.webMode {
+	// Run on web nodes (Dashboard) AND shared nodes (reality.enabled).
+	// Shared nodes need the aggregator to collect PeerLatency reports
+	// for the path planning latency graph.
+	if !a.webMode && !a.cfg.Reality.Enabled {
+		return
+	}
 		// Create the auth capability engine first, so it can be wired
 		// into the aggregator for monitor_write enforcement (Decision E).
 		// Use rotation-enabled audit logger: 100 MB max, 5 backups.
@@ -188,4 +193,3 @@ func (a *App) startMonitorAggregator() {
 			a.monitorStore = aggregator.Store()
 		}
 	}
-}
