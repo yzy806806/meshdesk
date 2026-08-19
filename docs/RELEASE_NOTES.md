@@ -1,6 +1,25 @@
 # Release Notes
 
-## v1.7.4 — 2026-08-19
+## v1.8.2 — 2026-08-19
+
+**Hole-punch engine hardening: 7 bug fixes + 5 review fixes.**
+
+### Bug fixes (7 bugs found in v1.6→v1.7.4 code review)
+- **punchSockets/punchConn fd leak**: `AddPunchSocket`/`AddPunchSocketAddr` and `e.punchConn` overwrote old conn without Close — fd/goroutine leak on every re-punch. Fixed: old socket closed before replacement.
+- **punchSocketPoller reader infinite loop**: reader goroutine spun forever on `ReadFrom` errors (100ms sleep loop). Fixed: exits after >3 consecutive errors.
+- **OutboundPort concurrent overwrite**: single `int` field raced between concurrent punches — peer A's coordination exchange could read peer B's port. Fixed: per-peer `map[string]int` with `setOutboundPort`/`getOutboundPort` helpers.
+- **Dead code**: removed `observeProbe` function (never called, 32 lines).
+- **Keepalive comment contradiction**: said "peer echoes back" but code explicitly does not echo. Fixed comment.
+
+### Review fixes (OCR code review, commit 2218683)
+- **seen map purge**: `punchSocketPoller` `seen` map now purges dead conns each tick (conns removed from `punchSockets` by re-punch are deleted from `seen`).
+- **Double-close eliminated**: engine no longer closes old `punchConn` before `AddPunchSocket`; transport owns the Close exclusively.
+- **Protocol compatibility**: Bug 6 reply format reverted to original `[nonce u32][our][8 bytes]` (no ourLen byte) — eliminates protocol incompatibility with old-version initiators entirely.
+- **Peer cleanup on session death**: new `CleanupPeer` + `RemovePunchSocket` + `OnPunchSocketRemove` chain; `sessionDeathHandler` registered in `initHolePunch` cleans up hole-punch state (sockets, per-peer maps) on session death.
+
+### Validation
+- go build/vet/test: 26 packages, all green
+- 6-node deployment: all active, ping matrix all green
 
 **UDP stream leak fix + auto-reconnect for restarted peers.**
 
