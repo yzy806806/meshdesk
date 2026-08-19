@@ -1,6 +1,6 @@
 # MeshDesk Dependency Tree
 
-> Last updated: 2026-08-18 (v1.7.4). Covers external Go modules,
+> Last updated: 2026-08-19 (v1.8.2). Covers external Go modules,
 > internal package structure, and runtime (OS-level) dependencies.
 
 ---
@@ -17,7 +17,6 @@ there is no web framework, no ORM, no generic utility kitchen sink.
 |--------|---------|---------|---------|
 | `github.com/xtls/reality` | 0.0.0-20260322 | Reality TLS server/client — anti-DPI HTTPS disguise | `internal/handshake` |
 | `github.com/refraction-networking/utls` | v1.8.2 | ClientHello fingerprint mimicry (Chrome etc.) | `internal/handshake` |
-| `github.com/hashicorp/memberlist` | v0.6.0 | Gossip membership + failure detection | `internal/p2p` |
 | `github.com/pion/stun/v3` | v3.1.6 | STUN binding requests — NAT discovery | `internal/holepunch` |
 | `github.com/miekg/dns` | v1.1.72 | Mesh DNS server (custom TLD resolution) | `internal/dns` |
 | `github.com/gorilla/websocket` | v1.5.3 | Dashboard WebSocket channel | `internal/web` |
@@ -35,8 +34,7 @@ there is no web framework, no ORM, no generic utility kitchen sink.
 | `pion/logging` | Pion STUN logging |
 | `andybalholm/brotli`, `klauspost/compress` | HTTP compression in `x/net`/websocket paths |
 | `cloudflare/circl` | x/crypto's post-quantum/elliptic helpers |
-| `hashicorp/go-metrics`, `go-msgpack/v2`, `go-multierror`, `golang-lru`, `go-immutable-radix`, `armon/go-metrics`, `juju/ratelimit`, `sean-/seed`, `google/btree` | memberlist's gossip engine internals |
-| `pires/go-proxyproto` | PROXY protocol support in smux/memberlist listeners |
+| `pires/go-proxyproto` | PROXY protocol support in smux listeners |
 | `golang.org/x/net`, `golang.org/x/mod` | x/crypto & utls shared deps |
 
 > The dependency graph is intentionally stable: **no new module has been
@@ -58,9 +56,9 @@ cmd/ (entrypoints)
 internal/
  ├── app               APPLICATION LAYER — assembly, wiring, lifecycle
  │    ├── app.go           three-phase Build → wire → Start/Stop (explicit reverse order)
- │    ├── mesh_node.go     MeshNode adapter (gossip/p2p bridge)
- │    ├── p2p.go           gossip integration, NAT join handler
- │    ├── tun.go           TUN-gossip integration, routes
+ │    ├── mesh_node.go     MeshNode adapter (meta exchange, routes)
+ │    ├── p2p.go           static peer connection (auto-reconnect with backoff)
+ │    ├── tun.go           TUN integration, routes
  │    ├── proxy.go         SOCKS5 entry/exit wiring
  │    ├── services.go      DNS / transfer / WebSSH services
  │    ├── monitor.go       reporter + aggregator + alerts
@@ -81,7 +79,7 @@ internal/
  │ ├── mesh               NETWORK LAYER — the core node
  │    ├── node.go          MeshNode: sessions, virtual ports, relay fallback,
  │    │                     holeEndpoints map (punched endpoint survives meta overwrites)
- │    ├── mux_transport.go single-port multiplexer (Reality/mesh/SOCKS5/gossip);
+ │    ├── mux_transport.go single-port multiplexer (Reality/mesh/SOCKS5);
  │    │                     dual-family UDP binds (ordinary: random distinct ports;
  │    │                     shared: single [::] dual-stack)
  │    ├── mux_udp.go       UDP ARQ streams (mesh |in/|out, TUN data plane)
@@ -102,7 +100,7 @@ internal/
  │
  ├── config             YAML config model + validation
  ├── ipam               deterministic VirtualIP allocation
- ├── p2p                memberlist/gossip wrapper (meta, relay capability)
+ ├── p2p                (deleted in v1.7.0 — memberlist retired, meta exchange replaces gossip)
  ├── smux               multiplexer (fork)
  ├── tun                raw /dev/net/tun (syscall-only, ~150 lines)
  ├── dns / proxy / web / webssh / monitor / join / service / transfer
@@ -122,7 +120,7 @@ internal/
 | `mesh → smux` | session multiplexing |
 | `mesh → identity` | peer identification |
 | `mesh → tun` | TUN device read/write |
-| `mesh → p2p` | gossip meta for relay candidates (via callback — no import cycle) |
+| `mesh → app` | meta exchange for relay candidates (via callback — no import cycle) |
 | `session → crypto, identity` | signing + symmetric wrapping |
 | `handshake → utls, reality` | Reality TLS |
 | `config → yaml.v3` | config parsing |
@@ -134,7 +132,7 @@ internal/
   adapts `*mesh.MeshNode`.
 - **`mesh` never imports `p2p`** — relay metadata is injected as a
   callback (`relayMetaProvider func() []RelayPeerInfo`) to avoid the
-  gossip ↔ network cycle.
+  meta ↔ network cycle.
 - **`mesh` never imports `app`** — app is the composition root.
 
 ---
