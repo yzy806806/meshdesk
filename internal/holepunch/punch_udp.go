@@ -98,9 +98,7 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 			defer conn.Close()
 		}
 		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
-			e.mu.Lock()
-			e.OutboundPort = la.Port
-			e.mu.Unlock()
+			e.setOutboundPort(peerKey, la.Port)
 		}
 		// Register the socket with the transport so its reads are
 		// drained (punchSocketPoller) — same as the normal path.
@@ -159,9 +157,7 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 	}
 	// Record our outbound source port for the coordination exchange.
 	if la, ok := conn.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
-		e.mu.Lock()
-		e.OutboundPort = la.Port
-		e.mu.Unlock()
+		e.setOutboundPort(peerKey, la.Port)
 	}
 
 	// 2. Exchange punch params over the coordination stream (carries
@@ -225,14 +221,18 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 			// socket): the peer's data plane targets our source
 			// port, so the conntrack mapping must stay live.
 			e.mu.Lock()
-			e.punchConn[peerKey] = pconnUDP
-			e.OutboundPort = 0
-			if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok {
-				e.OutboundPort = la.Port
+			if old := e.punchConn[peerKey]; old != nil && old != pconnUDP {
+				old.Close()
 			}
+			e.punchConn[peerKey] = pconnUDP
+			obPort := 0
+			if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok {
+				obPort = la.Port
+			}
+			e.outboundPort[peerKey] = obPort
 			e.mu.Unlock()
-			if e.OutboundPort > 0 {
-				log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), e.OutboundPort)
+			if obPort > 0 {
+				log.Printf("[holepunch] %s: independent outbound src port %d (conntrack target)", short(peerKey), obPort)
 			}
 			// Register the socket with the transport NOW — the
 			// punchSocketPoller's reader loop must be running before
@@ -336,16 +336,17 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 	// DATA port — ordinary nodes use an OS-assigned random UDP port
 	// (UDPPort=-1, distinct from the TCP listener; Go breaks sends on
 	// shared ports, verified on txcloud). Rewrite the port to the
-	// punch socket's real outbound source port (e.OutboundPort, set
+	// punch socket's real outbound source port (per-peer, set
 	// by punchUDP from the socket it opens), keeping the advertised
 	// host. NOTE: conn here is the COORDINATION smux stream — its
 	// LocalAddr is the TCP port, NOT the UDP data port, so we must
-	// use e.OutboundPort, never conn.LocalAddr().
-	if e.OutboundPort > 0 {
+	// use the per-peer outbound port, never conn.LocalAddr().
+	obPort := e.getOutboundPort(peerKey)
+	if obPort > 0 {
 		if host, _, herr := net.SplitHostPort(our); herr == nil {
-			our = net.JoinHostPort(host, strconv.Itoa(e.OutboundPort))
+			our = net.JoinHostPort(host, strconv.Itoa(obPort))
 		}
-		log.Printf("[holepunch] %s: coordination our=%s (outboundPort=%d)", short(peerKey), our, e.OutboundPort)
+		log.Printf("[holepunch] %s: coordination our=%s (outboundPort=%d)", short(peerKey), our, obPort)
 	} else {
 		log.Printf("[holepunch] %s: coordination our=%s (outboundPort unknown)", short(peerKey), our)
 	}
@@ -371,7 +372,7 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		body[5+len(our)+4] = 1
 	}
 	body[5+len(our)+5] = e.Inc
-	binary.BigEndian.PutUint16(body[5+len(our)+6:], uint16(e.OutboundPort))
+	binary.BigEndian.PutUint16(body[5+len(our)+6:], uint16(obPort))
 	// Trailing field: initiator's public key (hex). The coordinator
 	// (responder) uses it to key the hole and fire OnHoleEstablished —
 	// without identity the responder can punch back but never
@@ -399,10 +400,30 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		return fallbackEP, nonce, nil
 	}
 	peerNonce := binary.BigEndian.Uint32(body)
+	// Response format mirrors request: [nonce u32][ourLen u8][our]
+	// [8 bytes trailing]. The ourLen byte lets us parse the
+	// variable-length endpoint safely (Bug 6 fix — previously
+	// epLen = bodyLen-4-8 had no explicit length field).
 	peerEP := string(body[4:])
-	// Trailing bytes carry the peer's TCP punch port + outbound source
-	// port + EasySym/Inc + observed source port (conntrack punch).
-	if bodyLen >= 12 {
+	if bodyLen >= 13 {
+		ourLen := int(body[4])
+		if 5+ourLen+8 <= bodyLen {
+			peerEP = string(body[5 : 5+ourLen])
+			base := 5 + ourLen
+			e.mu.Lock()
+			e.peerTCPPort[peerKey] = int(binary.BigEndian.Uint16(body[base:]))
+			e.peerSrcPort[peerKey] = int(binary.BigEndian.Uint16(body[base+2:]))
+			e.peerEasySym[peerKey] = body[base+4] == 1
+			e.peerInc[peerKey] = int(int8(body[base+5]))
+			e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(body[base+6:]))
+			e.mu.Unlock()
+			log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d", short(peerKey), bodyLen, e.peerObsPort[peerKey])
+		} else {
+			log.Printf("[holepunch] %s: peer response n=%d ourLen=%d — truncated, skipping trailing fields", short(peerKey), bodyLen, ourLen)
+		}
+	} else if bodyLen >= 12 {
+		// Legacy encoding (pre-Bug6): [nonce u32][our][8 bytes],
+		// no ourLen byte — epLen = bodyLen - 4 - 8.
 		epLen := bodyLen - 4 - 8
 		peerEP = string(body[4 : 4+epLen])
 		e.mu.Lock()
@@ -412,7 +433,7 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		e.peerInc[peerKey] = int(int8(body[4+epLen+5]))
 		e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(body[4+epLen+6:]))
 		e.mu.Unlock()
-		log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d", short(peerKey), bodyLen, e.peerObsPort[peerKey])
+		log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d (legacy encoding)", short(peerKey), bodyLen, e.peerObsPort[peerKey])
 	} else {
 		log.Printf("[holepunch] %s: peer response n=%d (<12 — legacy encoding?)", short(peerKey), bodyLen)
 	}
@@ -523,7 +544,7 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// mismatch, frames dropped (observed in v1.6.2: kx succeeded via
 	// the shared socket but the TUN plane's independent socket got no
 	// ACK).
-	if e.OutboundPort == 0 && peerEP != "" && peerEP != "0.0.0.0:0" && peerEP != "[::]:0" {
+	if e.getOutboundPort(peerEP) == 0 && peerEP != "" && peerEP != "0.0.0.0:0" && peerEP != "[::]:0" {
 		if pu := mustUDPAddr(peerEP); pu != nil {
 			var pc *net.UDPConn
 			if e.PunchConnProvider != nil {
@@ -546,13 +567,18 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 				if e.punchConn == nil {
 					e.punchConn = make(map[string]*net.UDPConn)
 				}
+				obPort := 0
 				if la, ok := pc.LocalAddr().(*net.UDPAddr); ok {
-					e.OutboundPort = la.Port
+					obPort = la.Port
 				}
+				e.outboundPort[peerEP] = obPort
 				// KEEP the pre-answer socket alive and keyed by the
 				// peer's endpoint (no peer key here): without the
 				// reference it is GC'd and the NAT mapping dies —
 				// the peer then punches a dead port.
+				if old := e.punchConn[peerEP]; old != nil && old != pc {
+					old.Close()
+				}
 				e.punchConn[peerEP] = pc
 				// Fire a probe to create the NAT mapping.
 				pr := make([]byte, 6)
@@ -565,7 +591,7 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 				if e.OnPunchSocket != nil {
 					e.OnPunchSocket(peerEP, pc)
 				}
-				log.Printf("[holepunch] coordinator: pre-answer outbound src port %d (conntrack target)", e.OutboundPort)
+				log.Printf("[holepunch] coordinator: pre-answer outbound src port %d (conntrack target)", obPort)
 			}
 		}
 	}
@@ -599,39 +625,46 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// target.
 	//
 	// Resolve the punch socket port FRESH for this peer's family:
-	// e.OutboundPort is a single global value that punchUDP for a
-	// DIFFERENT peer (e.g. a v6 peer) may have overwritten — using it
-	// blindly would advertise the wrong family's port. PunchConnProvider
-	// returns the socket matched to the peer's IP family; take its
-	// actual LocalAddr port.
+	// outboundPort is per-peer keyed by endpoint, so a DIFFERENT
+	// peer's punch (e.g. a v6 peer) does not overwrite this one —
+	// but we still re-resolve via PunchConnProvider when available
+	// (it returns the socket matched to the peer's IP family).
 	if e.PunchConnProvider != nil {
 		if pu := mustUDPAddr(peerEP); pu != nil {
 			if rc := e.PunchConnProvider(pu.IP); rc != nil {
 				if la, ok := rc.LocalAddr().(*net.UDPAddr); ok && la.Port > 0 {
-					e.mu.Lock()
-					e.OutboundPort = la.Port
-					e.mu.Unlock()
+					e.setOutboundPort(peerEP, la.Port)
 				}
 			}
 		}
 	}
-	if e.OutboundPort > 0 {
+	obPort := e.getOutboundPort(peerEP)
+	if obPort > 0 {
 		if host, _, herr := net.SplitHostPort(our); herr == nil {
-			our = net.JoinHostPort(host, strconv.Itoa(e.OutboundPort))
+			our = net.JoinHostPort(host, strconv.Itoa(obPort))
 		}
-		log.Printf("[holepunch] coordinator: reply our=%s (outboundPort=%d)", our, e.OutboundPort)
+		log.Printf("[holepunch] coordinator: reply our=%s (outboundPort=%d)", our, obPort)
 	}
-	resp := make([]byte, 4+len(our)+8)
+	// Response format: [nonce u32][ourLen u8][our][tcpPort u16]
+	// [srcPort u16][easySym u8][inc u8][obsPort u16].
+	// The ourLen byte mirrors the request frame format so the
+	// initiator parses the variable-length endpoint safely even if
+	// trailing fields are added later (defensive — Bug 6 fix).
+	if len(our) > 255 {
+		our = "0.0.0.0:0"
+	}
+	resp := make([]byte, 5+len(our)+8)
 	binary.BigEndian.PutUint32(resp, nonce)
-	copy(resp[4:], our)
-	binary.BigEndian.PutUint16(resp[4+len(our):], uint16(e.TcpPort))
-	binary.BigEndian.PutUint16(resp[4+len(our)+2:], uint16(e.SrcPort))
-	resp[4+len(our)+4] = 0
+	resp[4] = uint8(len(our))
+	copy(resp[5:], our)
+	binary.BigEndian.PutUint16(resp[5+len(our):], uint16(e.TcpPort))
+	binary.BigEndian.PutUint16(resp[5+len(our)+2:], uint16(e.SrcPort))
+	resp[5+len(our)+4] = 0
 	if e.EasySym {
-		resp[4+len(our)+4] = 1
+		resp[5+len(our)+4] = 1
 	}
-	resp[4+len(our)+5] = e.Inc
-	binary.BigEndian.PutUint16(resp[4+len(our)+6:], uint16(e.OutboundPort))
+	resp[5+len(our)+5] = e.Inc
+	binary.BigEndian.PutUint16(resp[5+len(our)+6:], uint16(obPort))
 	// [len u16] prefix so the initiator can ReadFull the exact frame
 	// (a single Read on a smux stream may fragment).
 	framed := make([]byte, 2+len(resp))
@@ -844,32 +877,3 @@ const symPunchWindow = 50
 // symPunchGap paces the window probes (EasyTier-style sustained fire,
 // gentle enough not to burn CPU).
 const symPunchGap = 20 * time.Millisecond
-
-// observeProbe fires a probe from an EPHEMERAL socket so the peer can
-// observe our outbound source port — that port becomes the peer's
-// conntrack-matched data-plane target (EasyTier's trick: stateful
-// security groups pass ESTABLISHED, and the restricted link carries
-// large datagrams to conntrack-matched ports without loss). The peer
-// echoes it back; we record its source as peerObsPort.
-func (e *Engine) observeProbe(peerKey string, target *net.UDPAddr, nonce uint32) {
-	// Use the shared mux socket (fixed source port = the mesh listen
-	// port, e.g. 52888 by default from cfg.Mesh.Port): it has an
-	// existing conntrack entry toward the peer, so the probe passes
-	// the peer's stateful security group. A random-source probe would
-	// be dropped (no conntrack) — observed empirically.
-	if e.PunchConnProvider == nil {
-		return
-	}
-	conn := e.PunchConnProvider(target.IP)
-	if conn == nil {
-		return
-	}
-	probe := make([]byte, 6)
-	probe[0], probe[1] = 0x50, 0x4C // 0x504C = observation probe (peer replies from an ephemeral socket)
-	binary.BigEndian.PutUint32(probe[2:], nonce)
-	conn.WriteToUDP(probe, target)
-	// The peer's echo comes from its EPHEMERAL socket — its true
-	// outbound source port. The shared mux read loop observes it and
-	// records it via RecordObservedSource (the loop owns reads).
-	log.Printf("[holepunch] %s: observation probe sent (echo observed by mux loop)", short(peerKey))
-}

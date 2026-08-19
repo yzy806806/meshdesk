@@ -121,11 +121,12 @@ type Engine struct {
 	// Inc is our mapped-port increment direction (+1 / -1).
 	Inc byte
 
-	// OutboundPort is OUR outbound socket source port (the punch
-	// socket's LocalAddr). Exchanged in the coordination message so
-	// the peer targets it for data — its stateful security group
-	// passes it as ESTABLISHED (EasyTier's conntrack trick).
-	OutboundPort int
+	// outboundPort stores per-peer outbound socket source ports (the
+	// punch socket's LocalAddr). Exchanged in the coordination message
+	// so the peer targets it for data — its stateful security group
+	// passes it as ESTABLISHED (EasyTier's conntrack trick). Per-peer
+	// to avoid concurrent punches overwriting each other's port.
+	outboundPort map[string]int
 
 	// Cooldown between punch attempts per peer (exponential).
 	backoff map[string]time.Time
@@ -169,6 +170,7 @@ func New(d Dialer) *Engine {
 		peerObsPort:     make(map[string]int),
 		punchConn:       make(map[string]*net.UDPConn),
 		observedSrcPort: make(map[string]int),
+		outboundPort:    make(map[string]int),
 		Dialer:          d,
 		backoff:         make(map[string]time.Time),
 	}
@@ -365,4 +367,20 @@ func (e *Engine) PeerObservedPort(peerKey string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.peerObsPort[peerKey]
+}
+
+// setOutboundPort records the source port of the punch socket we opened
+// for this peer/endpoint. Per-peer keyed to avoid concurrent punches
+// overwriting each other's port (Bug 4 fix).
+func (e *Engine) setOutboundPort(key string, port int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.outboundPort[key] = port
+}
+
+// getOutboundPort returns the per-peer outbound source port (0 if unknown).
+func (e *Engine) getOutboundPort(key string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.outboundPort[key]
 }
