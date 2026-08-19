@@ -52,6 +52,15 @@ func (a *App) startHolePunch() {
 				}
 			}
 		}
+		hp.OnPunchSocketRemove = func(key string) {
+			if mt := a.node.MuxTransport(); mt != nil {
+				mt.RemovePunchSocket(key)
+				// Also remove the IP-only form.
+				if ua, err := net.ResolveUDPAddr("udp", key); err == nil {
+					mt.RemovePunchSocket(ua.IP.String())
+				}
+			}
+		}
 	}
 
 	// TCP hole-punch port (mesh port + 1): punchTCP opens its own
@@ -63,6 +72,12 @@ func (a *App) startHolePunch() {
 		log.Printf("  HolePunch: TCP punch port :%d (conntrack punch)", hp.TcpPort)
 	}
 	a.holepunch = hp
+
+	// Clean up hole-punch state (sockets, per-peer maps) when a
+	// session dies so resources don't accumulate across reconnects.
+	a.node.SetSessionDeathHandler(func(peerKey string) {
+		hp.CleanupPeer(peerKey)
+	})
 
 	// 1. STUN discovery (best-effort — punching still works with the
 	//    config-advertised endpoints when STUN is unreachable).

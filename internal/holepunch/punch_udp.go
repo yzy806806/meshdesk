@@ -221,9 +221,11 @@ func (e *Engine) punchUDP(peerKey string, endpoints []string) string {
 			// socket): the peer's data plane targets our source
 			// port, so the conntrack mapping must stay live.
 			e.mu.Lock()
-			if old := e.punchConn[peerKey]; old != nil && old != pconnUDP {
-				old.Close()
-			}
+			// Replace the old punch conn reference without closing
+			// it here — AddPunchSocket (called next via
+			// OnPunchSocket) owns the Close to avoid a double-close
+			// on the same conn (engine and transport both key by
+			// the same peerKey and point to the same old conn).
 			e.punchConn[peerKey] = pconnUDP
 			obPort := 0
 			if la, ok := pconnUDP.LocalAddr().(*net.UDPAddr); ok {
@@ -400,30 +402,11 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		return fallbackEP, nonce, nil
 	}
 	peerNonce := binary.BigEndian.Uint32(body)
-	// Response format mirrors request: [nonce u32][ourLen u8][our]
-	// [8 bytes trailing]. The ourLen byte lets us parse the
-	// variable-length endpoint safely (Bug 6 fix — previously
-	// epLen = bodyLen-4-8 had no explicit length field).
+	// Response format: [nonce u32][our][8 bytes trailing].
+	// The 8 trailing bytes carry the peer's TCP punch port, outbound
+	// source port, EasySym/Inc, and observed source port.
 	peerEP := string(body[4:])
-	if bodyLen >= 13 {
-		ourLen := int(body[4])
-		if 5+ourLen+8 <= bodyLen {
-			peerEP = string(body[5 : 5+ourLen])
-			base := 5 + ourLen
-			e.mu.Lock()
-			e.peerTCPPort[peerKey] = int(binary.BigEndian.Uint16(body[base:]))
-			e.peerSrcPort[peerKey] = int(binary.BigEndian.Uint16(body[base+2:]))
-			e.peerEasySym[peerKey] = body[base+4] == 1
-			e.peerInc[peerKey] = int(int8(body[base+5]))
-			e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(body[base+6:]))
-			e.mu.Unlock()
-			log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d", short(peerKey), bodyLen, e.peerObsPort[peerKey])
-		} else {
-			log.Printf("[holepunch] %s: peer response n=%d ourLen=%d — truncated, skipping trailing fields", short(peerKey), bodyLen, ourLen)
-		}
-	} else if bodyLen >= 12 {
-		// Legacy encoding (pre-Bug6): [nonce u32][our][8 bytes],
-		// no ourLen byte — epLen = bodyLen - 4 - 8.
+	if bodyLen >= 12 {
 		epLen := bodyLen - 4 - 8
 		peerEP = string(body[4 : 4+epLen])
 		e.mu.Lock()
@@ -433,9 +416,9 @@ func (e *Engine) exchangePunchParams(ctx context.Context, peerKey, fallbackEP st
 		e.peerInc[peerKey] = int(int8(body[4+epLen+5]))
 		e.peerObsPort[peerKey] = int(binary.BigEndian.Uint16(body[4+epLen+6:]))
 		e.mu.Unlock()
-		log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d (legacy encoding)", short(peerKey), bodyLen, e.peerObsPort[peerKey])
+		log.Printf("[holepunch] %s: peer response n=%d peerObsPort=%d", short(peerKey), bodyLen, e.peerObsPort[peerKey])
 	} else {
-		log.Printf("[holepunch] %s: peer response n=%d (<12 — legacy encoding?)", short(peerKey), bodyLen)
+		log.Printf("[holepunch] %s: peer response n=%d (<12 — too short, no trailing fields)", short(peerKey), bodyLen)
 	}
 	if peerNonce != nonce {
 		return fallbackEP, nonce, nil
@@ -572,14 +555,11 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 					obPort = la.Port
 				}
 				e.outboundPort[peerEP] = obPort
-				// KEEP the pre-answer socket alive and keyed by the
-				// peer's endpoint (no peer key here): without the
-				// reference it is GC'd and the NAT mapping dies —
-				// the peer then punches a dead port.
-				if old := e.punchConn[peerEP]; old != nil && old != pc {
-					old.Close()
-				}
-				e.punchConn[peerEP] = pc
+				// Replace the old punch conn reference without
+					// closing it here — AddPunchSocketAddr (called
+					// next via OnPunchSocket) owns the Close to
+					// avoid a double-close on the same conn.
+					e.punchConn[peerEP] = pc
 				// Fire a probe to create the NAT mapping.
 				pr := make([]byte, 6)
 				pr[0], pr[1] = 0x50, 0x4A
@@ -645,26 +625,27 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 		}
 		log.Printf("[holepunch] coordinator: reply our=%s (outboundPort=%d)", our, obPort)
 	}
-	// Response format: [nonce u32][ourLen u8][our][tcpPort u16]
-	// [srcPort u16][easySym u8][inc u8][obsPort u16].
-	// The ourLen byte mirrors the request frame format so the
-	// initiator parses the variable-length endpoint safely even if
-	// trailing fields are added later (defensive — Bug 6 fix).
+	// Response format: [nonce u32][our][tcpPort u16]
+	// [srcPort u16][easySym u8][inc u8][obsPort u16] (8 trailing bytes).
+	// Kept the same as the request MINUS the ourLen byte for backward
+	// compatibility: a new-version coordinator may reply to an
+	// old-version initiator, and the old parser uses epLen = bodyLen-4-8
+	// — adding a ourLen byte would shift the endpoint by one. The
+	// initiator parser below detects the ourLen byte heuristically.
 	if len(our) > 255 {
 		our = "0.0.0.0:0"
 	}
-	resp := make([]byte, 5+len(our)+8)
+	resp := make([]byte, 4+len(our)+8)
 	binary.BigEndian.PutUint32(resp, nonce)
-	resp[4] = uint8(len(our))
-	copy(resp[5:], our)
-	binary.BigEndian.PutUint16(resp[5+len(our):], uint16(e.TcpPort))
-	binary.BigEndian.PutUint16(resp[5+len(our)+2:], uint16(e.SrcPort))
-	resp[5+len(our)+4] = 0
+	copy(resp[4:], our)
+	binary.BigEndian.PutUint16(resp[4+len(our):], uint16(e.TcpPort))
+	binary.BigEndian.PutUint16(resp[4+len(our)+2:], uint16(e.SrcPort))
+	resp[4+len(our)+4] = 0
 	if e.EasySym {
-		resp[5+len(our)+4] = 1
+		resp[4+len(our)+4] = 1
 	}
-	resp[5+len(our)+5] = e.Inc
-	binary.BigEndian.PutUint16(resp[5+len(our)+6:], uint16(obPort))
+	resp[4+len(our)+5] = e.Inc
+	binary.BigEndian.PutUint16(resp[4+len(our)+6:], uint16(obPort))
 	// [len u16] prefix so the initiator can ReadFull the exact frame
 	// (a single Read on a smux stream may fragment).
 	framed := make([]byte, 2+len(resp))

@@ -89,6 +89,12 @@ type Engine struct {
 	// (HandleCoordinatorStream pre-answer — no peer key there).
 	OnPunchSocket func(key string, conn *net.UDPConn)
 
+	// OnPunchSocketRemove is called when the engine cleans up a peer's
+	// punch state (CleanupPeer, on session death). The app layer uses
+	// it to remove the socket from the transport (RemovePunchSocket)
+	// so the fd and reader goroutine are released.
+	OnPunchSocketRemove func(key string)
+
 	// PublicPunchEP is the endpoint we advertise in the punch
 	// coordination exchange: the public IP (from STUN) + the mux
 	// socket port. This is the address the peer must punch at for the
@@ -383,4 +389,32 @@ func (e *Engine) getOutboundPort(key string) int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.outboundPort[key]
+}
+
+// CleanupPeer removes all hole-punch state for a peer (called on
+// RemovePeer / disconnect): closes the kept-alive punch socket and
+// deletes all per-peer map entries to prevent slow accumulation.
+func (e *Engine) CleanupPeer(peerKey string) {
+	// Notify the app layer to remove the socket from the transport
+	// (closes fd, stops reader goroutine, removes from punchSockets).
+	if e.OnPunchSocketRemove != nil {
+		e.OnPunchSocketRemove(peerKey)
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	// Close the engine-side reference (may be the same conn the
+	// transport already closed — Close is idempotent).
+	if c := e.punchConn[peerKey]; c != nil {
+		c.Close()
+		delete(e.punchConn, peerKey)
+	}
+	delete(e.outboundPort, peerKey)
+	delete(e.peerTCPPort, peerKey)
+	delete(e.peerSrcPort, peerKey)
+	delete(e.peerEasySym, peerKey)
+	delete(e.peerInc, peerKey)
+	delete(e.peerObsPort, peerKey)
+	delete(e.observedSrcPort, peerKey)
+	delete(e.sessions, peerKey)
+	delete(e.backoff, peerKey)
 }

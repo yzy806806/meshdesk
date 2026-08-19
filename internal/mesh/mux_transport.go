@@ -430,6 +430,18 @@ func (t *MuxTransport) AddPunchSocketAddr(remoteAddr string, conn *net.UDPConn) 
 	t.punchSockets[remoteAddr] = conn
 }
 
+// RemovePunchSocket closes and removes the punch socket for a peer
+// key or endpoint. Called on session death (CleanupPeer) to release
+// the fd and stop the reader goroutine.
+func (t *MuxTransport) RemovePunchSocket(key string) {
+	t.punchMu.Lock()
+	defer t.punchMu.Unlock()
+	if c := t.punchSockets[key]; c != nil {
+		c.Close()
+		delete(t.punchSockets, key)
+	}
+}
+
 // PunchSocket returns the registered punch socket for a peer (nil if none).
 func (t *MuxTransport) PunchSocket(key string) *net.UDPConn {
 	t.punchMu.Lock()
@@ -907,10 +919,20 @@ func (t *MuxTransport) punchSocketPoller() {
 	for {
 		t.punchMu.Lock()
 		var fresh []*net.UDPConn
+		live := make(map[*net.UDPConn]bool, len(t.punchSockets))
 		for _, c := range t.punchSockets {
+			live[c] = true
 			if !seen[c] {
 				seen[c] = true
 				fresh = append(fresh, c)
+			}
+		}
+		// Purge dead conns from seen: ones that are no longer in
+		// punchSockets were replaced/closed — their reader goroutines
+		// have exited (Bug 2 fix), so stop tracking them.
+		for c := range seen {
+			if !live[c] {
+				delete(seen, c)
 			}
 		}
 		t.punchMu.Unlock()
