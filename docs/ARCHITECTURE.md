@@ -1,6 +1,6 @@
 # MeshDesk Architecture
 
-**Version:** 2.0 (2026-07-31)
+**Version:** 2.1 (2026-08-19)
 
 ## Overview
 
@@ -76,19 +76,19 @@ Virtual ports: 0 (generic), 2222 (WebSSH), 4191 (monitor), 4192 (RPC), 4193 (fil
 | `0x16` | TLS ClientHello | Reality TLS → acceptLoop |
 | `0x47`/`0x50`/`0x48` | HTTP | GET/POST/HEAD → HTTP listener (v1.2.1+) |
 | `0x4D` | Mesh-internal marker | Key exchange → acceptMeshLoop |
-| Other | Memberlist gossip | Gossip StreamCh |
+| Other | Meta exchange | Meta StreamCh |
 
-UDP on the same port goes directly to memberlist for health checks.
+UDP on the same port goes directly to the UDP mesh manager for hole-punch keepalives and data-plane frames.
 
 **MeshNode** manages peer sessions:
 - `Dial()` — full Reality TLS path (requires peer config with public key + short ID)
-- `DialPeerByEndpoint()` — mesh-internal path via 0x4D marker (for gossip-discovered peers)
+- `DialPeerByEndpoint()` — mesh-internal path via 0x4D marker (for meta-discovered peers)
 - `DialVirtualPort()` — opens a stream on an existing session, with fallback to dialing
 - `ListenVirtualPort()` — registers a handler for inbound streams on a port
 
-## Gossip Discovery
+## Peer Discovery (META Exchange)
 
-Uses `hashicorp/memberlist` with custom `NetTransport` (adapted via MuxTransport).
+Uses META exchange over smux sessions for peer discovery, endpoint propagation, and liveness (memberlist retired in v1.7.0).
 
 - **Seeds**: nodes connect to configured seed addresses to join the cluster
 - **Endpoint broadcast**: each node advertises multiple endpoints (IPv6, mesh IP, public IPv4)
@@ -155,9 +155,9 @@ Port 52888/TCP → MuxTransport
   ├── 0x16 → Reality TLS (mesh data, GFW evasion)
   ├── 0x47/0x50/0x48 → HTTP (Dashboard Web UI, join server) (v1.2.1+)
   ├── 0x4D → Mesh-internal (key exchange + smux, no Reality needed)
-  └── other → Memberlist gossip (push/pull sync, TCP probes)
+  └── other → Meta exchange (peer discovery, endpoint propagation)
 
-Port 52888/UDP → Memberlist UDP (fast health probes)
+Port 52888/UDP → UDP mesh manager (hole-punch keepalives, data-plane frames)
 ```
 
 No additional ports needed. Router/firewall only opens one port.
@@ -167,7 +167,7 @@ No additional ports needed. Router/firewall only opens one port.
 ```
 cmd/meshdesk/main.go          — Entry point, wiring
 internal/mesh/                 — MeshNode, MuxTransport, routing, peer manager
-internal/p2p/                  — Gossip layer, NAT traversal, events
+internal/p2p/                  — (deleted in v1.7.0, memberlist retired)
 internal/handshake/            — Reality TLS handshake
 internal/session/              — X25519 ECDH key exchange
 internal/crypto/               — AES-256-GCM SecureConn
@@ -189,7 +189,7 @@ internal/topology/             — 3D graph layout
 
 1. **Single binary, no agent/dashboard split** — every node can be dashboard
 2. **Reality TLS for GFW evasion** — not for mesh identity (Ed25519 handles that)
-3. **Mesh-internal path (0x4D)** — gossip-discovered peers connect without Reality config
+3. **Mesh-internal path (0x4D)** — meta-discovered peers connect without Reality config
 4. **Virtual ports over smux** — multiplex monitor/WebSSH/file/RPC on one session
 5. **Multi-endpoint broadcast** — solve IPv4/IPv6 network fragmentation
 6. **No WireGuard dependency** — custom protocol stack, pure Go

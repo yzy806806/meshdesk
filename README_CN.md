@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.7.4** —— 多路径 relay 路由（Dijkstra 路径规划），MESHDESK_DEBUG 日志修复，STUN 公网地址修复，smux goroutine 泄漏修复，config 12 行，memberlist 退役。
+> **当前版本: v1.8.2** —— 打洞引擎加固（fd 泄漏修复、OutboundPort 并发覆盖修复、session 断连自动清理），UDP stream 泄漏修复，节点重启自动重连，多路径 relay 路由（Dijkstra），MESHDESK_DEBUG 日志修复，config 12 行，memberlist 退役。
 
 ---
 
@@ -27,7 +27,7 @@
 ### 核心设计
 
 - **Reality TLS** —— 所有 mesh 流量伪装成访问真实网站（如 `www.apple.com:443`）的 HTTPS，DPI 无法区分。不用 WireGuard、不用 KCP、无特征 UDP 模式。
-- **单端口** —— 所有 mesh 流量跑在一个 TCP+UDP 端口（默认 52888）。MuxTransport 按首字节分流 Reality TLS / mesh smux / SOCKS5 / memberlist gossip。Dashboard **刻意不在此端口提供服务**（抗指纹）：打到 mesh 端口的 HTTP 探测会被转发到 Reality 伪装站点。Dashboard 监听独立的 web 端口（`node.web`，默认 `:8080`）。
+- **单端口** —— 所有 mesh 流量跑在一个 TCP+UDP 端口（默认 52888）。MuxTransport 按首字节分流 Reality TLS / mesh smux / SOCKS5。Dashboard **刻意不在此端口提供服务**（抗指纹）：打到 mesh 端口的 HTTP 探测会被转发到 Reality 伪装站点。Dashboard 监听独立的 web 端口（`node.web`，默认 `:8080`）。
 - **独立打洞引擎**（`internal/holepunch`，v1.6）—— 脱离 memberlist、对标 EasyTier：
   - 协调走专用虚拟端口 `0x504A`（复用现有 smux/relay 会话——无需中心打洞服务器）
   - UDP 双向打洞（nonce 验证洞，v4 + v6）
@@ -40,7 +40,7 @@
 - **端口策略分离**（v1.6.3）：普通节点（NAT 后、无公网入站）UDP 用**随机独立端口**（`UDPPort=-1`，v4/v6 各随机）——绕开 Go 运行时"UDP socket 与 TCP listener 或其他 family 同端口时公网发送静默失败"的坑；共享节点保留**单端口复用**（mesh 端口上一个 `[::]` 双栈 socket）——一条防火墙规则、Reality 伪装不变。打洞协调交换真实端口，无需固定 UDP 端口。
 - **零第三方 TUN** —— 裸 `/dev/net/tun` syscall 创建 TUN 设备（~150 行）。无 wireguard-go、无 gVisor、无外部依赖。
 - **确定性 IPAM** —— 虚拟 IP = `cidr_base + (pubkey_hash % host_count)`。无 DHCP、无协调、零冲突。
-- **响应式中继兜底** —— 直连不通（或链路丢大包）时，按 RTT 排序的 gossip relay 候选自动接管；工作路径缓存 60s（v1.6 CPU 修复——monitor 不再全量重扫）。见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
+- **响应式中继兜底** —— 直连不通（或链路丢大包）时，按 RTT 排序的 meta 发现 relay 候选自动接管；工作路径缓存 60s（v1.6 CPU 修复——monitor 不再全量重扫）。多跳 relay 路径通过全局延迟图 Dijkstra 计算（v1.7.3）。见[设计决策](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md)。
 - **自进化** —— 基于 Agora 多智能体框架构建，AI 团队自主实现、测试、审查、部署。
 
 ---

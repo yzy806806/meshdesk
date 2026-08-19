@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.7.4** — multi-path relay routing (Dijkstra path planning via shared nodes), MESHDESK_DEBUG log fix, STUN MappedEP fix, smux goroutine leak fix, config 12 lines, memberlist retired.
+> **Current release: v1.8.2** — hole-punch engine hardening (fd leak fix, OutboundPort race fix, peer cleanup on session death), UDP stream leak fix, auto-reconnect for restarted peers, multi-path relay routing (Dijkstra), MESHDESK_DEBUG log fix, config 12 lines, memberlist retired.
 
 ---
 
@@ -29,7 +29,7 @@ MeshDesk does all of it in one binary:
 ### Key Design Choices
 
 - **Reality TLS** — All mesh traffic is disguised as HTTPS to a real website (e.g. `www.apple.com:443`). DPI cannot distinguish it from legitimate traffic. No WireGuard, no KCP, no recognizable UDP patterns.
-- **Single port** — All mesh traffic runs on one TCP+UDP port (default 52888). MuxTransport sniffs the first byte to route Reality TLS, mesh-internal smux, SOCKS5, and memberlist gossip. The Dashboard is deliberately NOT served on this port (anti-fingerprinting): HTTP probes hitting the mesh port are proxied to the Reality camouflage site. The Dashboard listens on the dedicated web port (`node.web`, default `:8080`).
+- **Single port** — All mesh traffic runs on one TCP+UDP port (default 52888). MuxTransport sniffs the first byte to route Reality TLS, mesh-internal smux, and SOCKS5. The Dashboard is deliberately NOT served on this port (anti-fingerprinting): HTTP probes hitting the mesh port are proxied to the Reality camouflage site. The Dashboard listens on the dedicated web port (`node.web`, default `:8080`).
 - **Standalone hole-punching engine** (`internal/holepunch`, v1.6) — memberlist-independent, EasyTier-parity:
   - Coordination over a dedicated virtual port (`0x504A`) through existing smux/relay sessions — no central punch server needed
   - UDP two-way punching with nonce-verified holes (v4 + v6)
@@ -42,7 +42,7 @@ MeshDesk does all of it in one binary:
 - **Port strategy split** (v1.6.3): ordinary nodes (NAT-traversed, no public inbound) bind UDP on **random distinct ports** per family (`UDPPort=-1`) — this dodges a Go runtime bug where a socket sharing its port with the TCP listener or the other family silently fails public sends. Shared nodes keep **single-port multiplexing** (one `[::]` dual-stack socket on the mesh port) — one firewall rule, Reality disguise preserved. Punch coordination exchanges the real ports, so no fixed UDP port is needed.
 - **Zero third-party TUN** — The TUN device is created via raw `/dev/net/tun` syscalls (~150 lines). No wireguard-go, no gVisor, no external dependencies.
 - **Deterministic IPAM** — Virtual IP = `cidr_base + (pubkey_hash % host_count)`. No DHCP server, no coordination, zero conflicts.
-- **Reactive Relay Fallback** — When nodes cannot establish a direct connection (or the link drops large UDP), the per-pair state machine automatically falls back through gossip-advertised relay candidates sorted by RTT. The working relay path is cached (60s) so monitor ticks don't re-scan (v1.6 CPU fix). See [design decision](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md).
+- **Reactive Relay Fallback** — When nodes cannot establish a direct connection (or the link drops large UDP), the per-pair state machine automatically falls back through meta-discovered relay candidates sorted by RTT. The working relay path is cached (60s) so monitor ticks don't re-scan (v1.6 CPU fix). Multi-hop relay paths computed via Dijkstra on the global latency graph (v1.7.3). See [design decision](docs/DESIGN_DECISION_NO_GLOBAL_ROUTING.md).
 - **Self-evolving** — Built with the Agora multi-agent framework. AI teams implement features, write tests, review code, and deploy autonomously.
 
 ---
