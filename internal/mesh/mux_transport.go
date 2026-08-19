@@ -400,23 +400,32 @@ func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
 
 // AddPunchSocket registers a kept-alive hole-punch socket for a peer
 // (source port = the conntrack mapping the peer's data plane targets).
+// If a socket was already registered for this peer, it is closed first
+// to prevent fd/goroutine leaks on re-punch.
 func (t *MuxTransport) AddPunchSocket(peerKey string, conn *net.UDPConn) {
 	t.punchMu.Lock()
 	defer t.punchMu.Unlock()
 	if t.punchSockets == nil {
 		t.punchSockets = make(map[string]*net.UDPConn)
 	}
+	if old := t.punchSockets[peerKey]; old != nil && old != conn {
+		old.Close() // closes the old socket → its reader goroutine exits on error
+	}
 	t.punchSockets[peerKey] = conn
 }
 
 // AddPunchSocketAddr registers a punch socket keyed by the remote
 // address (used by the coordinator's pre-answer socket, which has no
-// peer key).
+// peer key). If a socket was already registered for this address, it
+// is closed first to prevent fd/goroutine leaks.
 func (t *MuxTransport) AddPunchSocketAddr(remoteAddr string, conn *net.UDPConn) {
 	t.punchMu.Lock()
 	defer t.punchMu.Unlock()
 	if t.punchSockets == nil {
 		t.punchSockets = make(map[string]*net.UDPConn)
+	}
+	if old := t.punchSockets[remoteAddr]; old != nil && old != conn {
+		old.Close()
 	}
 	t.punchSockets[remoteAddr] = conn
 }
@@ -909,20 +918,24 @@ func (t *MuxTransport) punchSocketPoller() {
 			c := c
 			go func() {
 				buf := make([]byte, muxUDPPacketBufSize)
+				errCount := 0
 				for {
 					n, addr, err := c.ReadFrom(buf)
 					if err != nil {
 						if t.shutdown.Load() == 1 {
 							return
 						}
-						// Transient error (e.g. a leftover read
-						// deadline from punchUDP's echo probe):
-						// back off briefly — a tight loop here
-						// would burn CPU and starve the packet
-						// path.
+						errCount++
+						// After repeated errors the socket is
+						// likely closed (replaced or GC'd):
+						// stop the goroutine instead of spinning.
+						if errCount > 3 {
+							return
+						}
 						time.Sleep(100 * time.Millisecond)
 						continue
 					}
+					errCount = 0 // reset on successful read
 					if n < 1 {
 						continue
 					}
@@ -954,9 +967,11 @@ func (t *MuxTransport) punchSocketPoller() {
 			// socket: a 6B probe (0x50 0x4A) to the peer keeps the
 			// stateful firewall's ESTABLISHED entry alive so the
 			// data plane's frames keep flowing (EasyTier's tunnel
-			// socket stays busy for the same reason). The peer's
-			// punchSocketPoller echoes the probe back, confirming
-			// the hole is still open.
+			// socket stays busy for the same reason). Keepalive
+			// probes are one-way conntrack refreshers — the peer's
+			// punchSocketPoller receives and discards them (does
+			// NOT echo back; echoing caused an infinite ping-pong
+			// storm in v1.6.x).
 			//
 			// Punch sockets are UNCONNECTED (ListenUDP) — use
 			// WriteToUDP with the peer address, which we recover
