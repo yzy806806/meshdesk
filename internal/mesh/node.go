@@ -1655,13 +1655,12 @@ func (n *MeshNode) DialPeerByEndpoint(ctx context.Context, address string) (net.
 		return nil, fmt.Errorf("mesh: smux handshake with %s: %w", address, err)
 	}
 
-	// Store the session.
+	// Store the session, closing any previous session to the same peer.
 	n.sessionsMu.Lock()
 	oldSession, exists := n.sessions[peerIdentityHex]
 	n.sessions[peerIdentityHex] = smuxSession
 	n.clientSessions[peerIdentityHex] = smuxSession
 	n.peerTransport[peerIdentityHex] = "0x4d"
-	n.peerTransport[peerIdentityHex] = "udp"
 	n.sessionEstablishedAt[peerIdentityHex] = time.Now()
 	n.sessionsMu.Unlock()
 
@@ -2030,6 +2029,17 @@ func (n *MeshNode) AddPeer(cfg config.PeerConfig) error {
 			log.Printf("[mesh] AddPeer: 0x4D session established with %s (%s)", cfg.Endpoint, cfg.PublicKey[:min(len(cfg.PublicKey), 16)]+"...")
 		} else {
 			log.Printf("[mesh] AddPeer: 0x4D dial to %s failed: %v", cfg.Endpoint, err)
+			// Routing table entry still benefits routing even without
+			// a live session (relay fallback can use it), but surface
+			// the error so callers (e.g. startP2P) know the session was
+			// not established and can apply backoff.
+			entry := &PeerEntry{
+				ID:         cfg.PublicKey,
+				Endpoint:   cfg.Endpoint,
+				AllowedIPs: cfg.AllowedIPs,
+			}
+			n.routes.AddPeer(entry)
+			return fmt.Errorf("mesh: add peer %s: 0x4D dial failed: %w", cfg.Endpoint, err)
 		}
 	}
 
@@ -2651,6 +2661,16 @@ func (n *MeshNode) SetHoleEndpoint(peerKey string, ep string) {
 	}
 	n.sessionsMu.Lock()
 	n.holeEndpoints[peerKey] = []string{ep}
+	n.sessionsMu.Unlock()
+}
+
+// ClearHoleEndpoint removes the hole endpoint for a peer, allowing
+// lazy scan to retry the punch on the next tick. Called when the
+// UDP dial over the hole fails — the hole was established (coordination
+// succeeded) but the data-plane session was not (kx failed).
+func (n *MeshNode) ClearHoleEndpoint(peerKey string) {
+	n.sessionsMu.Lock()
+	delete(n.holeEndpoints, peerKey)
 	n.sessionsMu.Unlock()
 }
 
