@@ -380,13 +380,13 @@ func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPA
 // TUN UDP data plane dials from. Hole-punching reuses this socket so
 // the punched NAT mapping is exactly the one the data plane uses.
 //
-// Returns nil when no socket matches: the caller (pickUDPSocket) turns
-// that into an explicit error. Do NOT fall back to udpConns[0] — the
-// IPv6 socket is bound first, so a family mismatch would silently use
-// a [::] socket to send IPv4 frames (::ffff: mapped source), which
-// some NATs/firewalls drop — the exact bug dual-family binding fixed.
-// Note To4() returns non-nil for both plain IPv4 and v4-mapped IPv6
-// (::ffff:1.2.3.4), so both match the IPv4 socket correctly.
+// On ordinary nodes (Mode A: two family sockets), strict family matching
+// is correct — a v6 socket sending v4 frames (::ffff: mapped source)
+// gets dropped by some NATs/firewalls.
+//
+// On shared nodes (Mode B/C: single [::] dual-stack socket), there is
+// only one socket — it carries both v4 and v6. The family check fails
+// because [::]'s To4() is nil, so we fall back to the single socket.
 func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
 	for _, conn := range t.udpConns {
 		if la, ok := conn.LocalAddr().(*net.UDPAddr); ok {
@@ -394,6 +394,11 @@ func (t *MuxTransport) UDPConnFor(remoteIP net.IP) *net.UDPConn {
 				return conn
 			}
 		}
+	}
+	// Shared nodes (Mode B/C) have a single [::] dual-stack socket
+	// that handles both families — fall back to it.
+	if len(t.udpConns) == 1 {
+		return t.udpConns[0]
 	}
 	return nil
 }
