@@ -181,21 +181,22 @@ func (a *App) startHolePunch() {
 		}
 		go func() {
 			// Two-way punch arbitration: both sides may punch each
-			// other simultaneously. If BOTH dialed (|in + |out kx
-			// streams for one address), replies match |in first and
-			// each CLIENT reads the OTHER's CLIENT msg1 → Ed25519
-			// signature failures on both sides.
+			// other simultaneously. A deterministic gate prevents
+			// double-dial: the side with the SMALLER peer key dials
+			// (CLIENT), the other serves (SERVER). This avoids the
+			// race where both sides' |out streams arrive at each
+			// other simultaneously, both get dropped ("peer won"),
+			// and no kx survives (double-SERVER deadlock).
 			//
-			// The udpMeshManager's first-punch-wins (routeUDPPacket:
-			// "peer won, dropping our |out") already resolves the
-			// conflict at the stream layer — the losing side serves
-			// the winner as SERVER via a fresh |in stream. So BOTH
-			// sides can safely dial here: exactly one kx survives.
-			// A key-based gate here would be WRONG: it can make BOTH
-			// sides wait (each thinking it is the SERVER), deadlocking
-			// the data plane (observed: txcloud↔AMD — txcloud's key
-			// b142 > AMD's 7eb1 → txcloud waited; AMD peer-won →
-			// also waited → no kx ever, ping 100% loss).
+			// Previous "both sides dial" approach relied on
+			// first-punch-wins at the stream layer, but under
+			// simultaneous punch the timing window is too narrow
+			// and both sides drop their |out → no CLIENT → kx fails.
+			shouldDial := a.node.Identity().PublicKey < peerKey
+			if !shouldDial {
+				log.Printf("  HolePunch: %s is SERVER (our key > peer key), waiting for peer to dial", peerKey[:8])
+				return
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			if stream, err := a.node.DialUDPPeer(ctx, target); err == nil {
@@ -220,8 +221,9 @@ func (a *App) startHolePunch() {
 		for {
 			select {
 			case <-ticker.C:
-				seen := make(map[string]bool)
-				for peerKey := range a.node.PeerVirtualIPs() {
+				vips := a.node.PeerVirtualIPs()
+				seen := make(map[string]bool, len(vips))
+				for peerKey := range vips {
 					seen[peerKey] = true
 					a.triggerHolePunch(hp, peerKey)
 				}
