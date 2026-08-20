@@ -240,44 +240,25 @@ func (a *App) startHolePunch() {
 // triggerHolePunch fires a punch for a same-zone peer when we know its
 // advertised endpoints (from gossip meta). Zone-unknown peers are
 // still punched (hole failure is harmless — relay fallback covers it).
-func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {
-	if a.holepunch == nil {
+func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {	if a.holepunch == nil {
+		log.Printf("[holepunch] %s: trigger skipped — holepunch engine nil", peerKey[:8])
 		return
 	}
-	// Fail-closed zone gate: punch ONLY when both zones are known and
-	// equal. Punching sends raw (undisguised) UDP probes; a peer whose
-	// zone is still unknown might sit on the other side of the
-	// anti-DPI boundary, where undisguised probes are exactly what the
-	// Reality transport exists to avoid. Zone-unknown peers stay on
-	// Reality until META/gossip delivers their zone — the lazy scan
-	// retries every 30s, so the punch fires as soon as the zone is
-	// learned.
-	if a.node.PeerZone(peerKey) == "" || !a.node.SameZone(peerKey) {
+	// Fail-closed zone gate.
+	peerZone := a.node.PeerZone(peerKey)
+	myZone := a.node.LocalZone()
+	if peerZone == "" || !a.node.SameZone(peerKey) {
+		log.Printf("[holepunch] %s: trigger skipped — zone gate (my=%q peer=%q)", peerKey[:8], myZone, peerZone)
 		return
 	}
-	// Already have a live UDP hole to this peer (punched endpoint
-	// recorded)? Skip — a second simultaneous punch creates two kx
-	// streams (|in+|out) for one peer address whose replies cross
-	// (CLIENT msg2 eaten by the server stream → "Ed25519 signature
-	// verification failed"). First punch wins; the data plane
-	// switches to UDP via the learned endpoint.
-	//
-	// NOTE: we check holeEndpoints, NOT HasPeerSession — a relay
-	// session (smux over TCP via a shared node) does NOT count as a
-	// direct connection. Without this distinction, the lazy scan
-	// would skip punching any peer that has a relay session,
-	// permanently preventing the upgrade from relay to UDP direct.
 	if a.node.HasUDPHole(peerKey) {
 		return
 	}
 	var endpoints []string
-	// Meta-exchange learned endpoints (memberlist-independent —
-	// propagated via smux session meta, works when gossip is degraded).
 	if eps := a.node.PeerEndpoints(peerKey); len(eps) > 0 {
 		endpoints = eps
 	}
-	// Always trigger — with no endpoints the engine still coordinates
-	// over the mesh (0x504A) to discover the peer's mapped address.
+	log.Printf("[holepunch] %s: trigger fired (endpoints=%d)", peerKey[:8], len(endpoints))
 	hp.Trigger(peerKey, endpoints, holepunchNatType(""))
 }
 
