@@ -213,13 +213,14 @@ no relay candidates (no eligible relay-capable peers)
 
 **后期待办**：为 relay 候选健康度增加 metrics 出口（Prometheus/日志结构化），并在候选持续为 0 时输出 WARNING 级别日志。
 
-### 多跳中继未实现
+### 多跳中继（v1.7.3+ 已实现）
 
-当前 relay 路径仅支持 **单跳**（A → relay → B）。多跳中继（A → r1 → r2 → B）和全局路由表（Peer Center 风格的拓扑广播 + 最优路径选择）不在当前版本范围。
+多跳 relay 路径通过 **Dijkstra 最短路径算法**在全局延迟图上计算（v1.7.3）。普通节点上报 PeerLatency 到最近的共享节点，共享节点维护 LatencyGraph 并运行 PathServer（虚拟端口 0x5053）。relay dialer 在 fallback 前查询最优多跳路径。
 
-**影响**：在四节点拓扑中影响不大——单跳 relay 已足够覆盖所有跨 IP 族对。在更大规模部署中，如果不存在任何单个节点同时与 A 和 B 有 session，连接会失败。
-
-**后期待办**：实现全局 peer 拓扑表 + 多跳 relay 路径选择，参考 EasyTier 的 Peer Center 设计。
+**架构**：
+- 普通节点：`monitor/metrics.go` 收集 PeerLatency → 上报到最近共享节点
+- 共享节点：`mesh/path_server.go` LatencyGraph + Dijkstra + PruneStaleEdges (75s TTL)
+- relay dialer：`tryRelayFallback` 查询 PathServer 获取最优路径
 
 ### NAT 穿透超时后 relay fallback 不触发
 

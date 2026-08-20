@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v1.8.2** —— 打洞引擎加固（fd 泄漏修复、OutboundPort 并发覆盖修复、session 断连自动清理），UDP stream 泄漏修复，节点重启自动重连，多路径 relay 路由（Dijkstra），MESHDESK_DEBUG 日志修复，config 12 行，memberlist 退役。
+> **当前版本: v1.8.3** —— UDP 打洞修复（5 个根因：UDPConnFor fallback、double-SERVER 死锁、stale hole endpoint、meta replay、config zone），打洞引擎加固（fd 泄漏、OutboundPort 并发、session 断连清理），UDP stream 泄漏修复，节点重启自动重连，多路径 relay 路由（Dijkstra），config 12 行，memberlist 退役。
 
 ---
 
@@ -64,6 +64,7 @@ p2p:
         - '[2409:...]:52888'      # 公网 IPv6（可选）
 mesh:
     port: 52888
+    zone: cn                      # zone 标签 — 同 zone 节点打 UDP 洞，跨 zone 走 Reality
 reality:
     enabled: true
     listen_port: 52888
@@ -92,6 +93,7 @@ peers:
         tls_fingerprint: chrome
 mesh:
     port: 52888
+    zone: us                      # 本节点 zone
     virtual_ip: 10.100.0.3
 ```
 

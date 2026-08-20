@@ -1,5 +1,48 @@
 # Release Notes
 
+## v1.8.3 — 2026-08-20
+
+**UDP hole-punch restoration: 5 root-cause fixes.**
+
+After the v1.7.0 memberlist retirement, hole punching silently broke: coordination
+succeeded but the data plane never established. Five root causes found and fixed:
+
+### Bug fixes
+- **UDPConnFor single-socket fallback removed** (commit 1f85b8a): shared nodes (Mode B/C)
+  use a single `[::]` dual-stack socket. The strict family check failed because `[::]`'s
+  `To4()` is nil → returned nil for IPv4 peers → "no UDP socket available". Fixed: when
+  only one socket exists, fall back to it (it handles both families via V6ONLY=0).
+- **Double-SERVER deadlock**: when both sides punched simultaneously, `routeUDPPacket`'s
+  "peer won" logic dropped both sides' `|out` streams → no CLIENT → kx failed. Fixed:
+  key-based dial arbitration — the side with the smaller public key dials (CLIENT), the
+  other serves (SERVER).
+- **Stale hole endpoint**: `SetHoleEndpoint` was called on coordination success, but
+  never cleared when the subsequent `DialUDPPeer` (kx) failed → `HasUDPHole` returned
+  true forever → punch never retried. Fixed: `ClearHoleEndpoint` on dial failure + SERVER
+  timeout (15s).
+- **Meta exchange not replayed for early sessions**: sessions established between
+  `node.Start()` and `registerVirtualPortServices()` (inbound connections during startup)
+  never triggered `NotifyPeerJoined`/`Broadcast` because the meta exchanger wasn't
+  registered yet. Fixed: `registerVirtualPortServices` now replays meta to all existing
+  `SessionPeerKeys` after registration.
+- **Config peer zone missing**: `PeerZone` reads from config peer's `zone` field first;
+  without it, the zone gate blocked punches until meta propagation delivered the zone.
+  Config peers on all nodes now include `zone: cn` or `zone: us`.
+
+### Config changes (all nodes)
+- `p2p.enabled: true` + `advertise_endpoints` on shared nodes (aliyun, N1) — required
+  for MuxTransport creation (without it, `DialUDPPeer` fails with "no mux transport").
+- `zone: cn` on peer entries for shared nodes (aliyun, N1).
+- `zone: us` on self + `zone: cn` on shared-node peers for ordinary nodes (txcloud,
+  oracle-arm, oracle-amd).
+
+### Validation
+- go build/vet/test: 26 packages, all green
+- 5-node deployment: all coordination exchanges succeed, UDP holes open
+- aliyun↔N1, oracle-arm↔oracle-amd, oracle-amd↔txcloud: hole open ✅
+- Oracle Cloud security groups may still block large UDP datagrams (network-level issue,
+  not code bug)
+
 ## v1.8.2 — 2026-08-19
 
 **Hole-punch engine hardening: 7 bug fixes + 5 review fixes.**
