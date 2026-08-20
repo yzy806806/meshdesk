@@ -180,21 +180,26 @@ func (a *App) startHolePunch() {
 			return
 		}
 		go func() {
-			// Two-way punch arbitration: both sides may punch each
-			// other simultaneously. A deterministic gate prevents
-			// double-dial: the side with the SMALLER peer key dials
-			// (CLIENT), the other serves (SERVER). This avoids the
-			// race where both sides' |out streams arrive at each
-			// other simultaneously, both get dropped ("peer won"),
-			// and no kx survives (double-SERVER deadlock).
-			//
-			// Previous "both sides dial" approach relied on
-			// first-punch-wins at the stream layer, but under
-			// simultaneous punch the timing window is too narrow
-			// and both sides drop their |out → no CLIENT → kx fails.
+			// Key-based dial arbitration: smaller public key dials
+			// (CLIENT), the other serves (SERVER).
 			shouldDial := a.node.Identity().PublicKey < peerKey
 			if !shouldDial {
 				log.Printf("  HolePunch: %s is SERVER (our key > peer key), waiting for peer to dial", peerKey[:8])
+				// Wait for the CLIENT's kx to arrive. If it doesn't
+				// within 15s, clear the hole endpoint so lazy scan
+				// retries the punch on the next tick.
+				go func() {
+					time.Sleep(15 * time.Second)
+					if !a.node.HasUDPHole(peerKey) {
+						return // already established
+					}
+					// Check if a UDP session actually exists now.
+					// If not, clear the stale hole endpoint.
+					if !a.node.HasPeerSession(peerKey) {
+						a.node.ClearHoleEndpoint(peerKey)
+						log.Printf("  HolePunch: %s SERVER timed out — clearing stale hole endpoint", peerKey[:8])
+					}
+				}()
 				return
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -204,6 +209,12 @@ func (a *App) startHolePunch() {
 				log.Printf("  HolePunch: UDP multipath live to %s via %s", peerKey[:8], target)
 			} else {
 				log.Printf("  HolePunch: UDP dial over hole failed: %v", err)
+				// Clear the hole endpoint so lazy scan retries on
+				// the next tick — without this, HasUDPHole returns
+				// true forever and the punch never retries even though
+				// the UDP data plane was never established.
+				a.node.ClearHoleEndpoint(peerKey)
+				log.Printf("  HolePunch: %s clearing hole endpoint (dial failed)", peerKey[:8])
 			}
 		}()
 	}
