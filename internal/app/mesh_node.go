@@ -188,6 +188,18 @@ func (a *App) registerVirtualPortServices() {
 		// nodes never learn where to push metrics.
 		node.SetMetaBroadcaster(me.Broadcast)
 		log.Printf("  Meta:       session meta exchange active (virtual port 0x%x)", mesh.MetaVirtualPort)
+
+		// Replay meta for sessions established BEFORE the meta
+		// exchanger was registered (inbound sessions accepted by
+		// node.Start()'s accept loop between node.Start() and this
+		// point). Without this, early-arriving peers never receive
+		// our meta → their VIP/zone is not propagated →
+		// PeerVirtualIPs() is empty for these peers → lazy scan
+		// never triggers hole punches for them.
+		for _, peerKey := range node.SessionPeerKeys() {
+			me.NotifyPeerJoined(peerKey)
+		}
+		me.Broadcast()
 	} else {
 		log.Printf("Warning: meta exchange failed to start: %v", err)
 	}
