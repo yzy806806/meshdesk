@@ -1,6 +1,6 @@
 # MeshDesk Architecture
 
-**Version:** 2.1 (2026-08-19)
+**Version:** 2.2 (2026-08-20)
 
 ## Overview
 

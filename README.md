@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.8.2** — hole-punch engine hardening (fd leak fix, OutboundPort race fix, peer cleanup on session death), UDP stream leak fix, auto-reconnect for restarted peers, multi-path relay routing (Dijkstra), MESHDESK_DEBUG log fix, config 12 lines, memberlist retired.
+> **Current release: v1.8.3** — UDP hole-punch restoration (5 root-cause fixes: UDPConnFor fallback, double-SERVER deadlock, stale hole endpoint, meta replay, config zone), hole-punch engine hardening (fd leak, OutboundPort race, peer cleanup), UDP stream leak fix, auto-reconnect, multi-path relay routing (Dijkstra), config 12 lines, memberlist retired.
 
 ---
 
@@ -66,6 +66,7 @@ p2p:
         - '[2409:...]:52888'      # public IPv6 (optional)
 mesh:
     port: 52888
+    zone: cn                      # zone tag — same-zone peers punch UDP, cross-zone stays Reality
 reality:
     enabled: true
     listen_port: 52888
@@ -94,6 +95,7 @@ peers:
         tls_fingerprint: chrome
 mesh:
     port: 52888
+    zone: us                      # this node's zone
     virtual_ip: 10.100.0.3
 ```
 
