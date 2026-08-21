@@ -395,6 +395,25 @@ func (sc *udpStreamConn) handlePacket(data []byte) {
 
 	switch ftype {
 	case udpFrameTypeData:
+		// Reserved seq: punch-probe keepalive (RegisterPunchedStream's
+		// bidirectional flow-establishment probes). ACK it to keep the
+		// conntrack alive but do NOT buffer — the payload is not TUN
+		// data and would corrupt the framed-packet stream.
+		if seq == 0xFFFFFFFF {
+			sc.recvMu.Lock()
+			sc.ackCount++
+			needAck := sc.ackCount >= 2
+			var ackSeq uint32
+			if needAck {
+				sc.ackCount = 0
+				ackSeq = sc.ackPending
+			}
+			sc.recvMu.Unlock()
+			if needAck {
+				sc.sendAck(ackSeq)
+			}
+			return
+		}
 		plen := int(binary.BigEndian.Uint16(data[9:11]))
 		if plen > len(data)-udpFrameHeaderLen {
 			return
