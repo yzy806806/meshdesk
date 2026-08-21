@@ -186,17 +186,26 @@ func (a *App) startHolePunch() {
 			if !shouldDial {
 				log.Printf("  HolePunch: %s is SERVER (our key > peer key), waiting for peer to dial", peerKey[:8])
 				// Wait for the CLIENT's kx to arrive. If it doesn't
-				// within 15s, clear the hole endpoint unconditionally
-				// so lazy scan retries on the next tick. We CANNOT
-				// use HasPeerSession here — a relay smux session
-				// (TCP) may exist even though the UDP data plane
-				// never established, causing the hole endpoint to
-				// stay set forever (stale state bug).
+				// within 15s, the CLIENT's UDP kx likely failed (VCN
+				// packet filtering). Try TCP fallback: dial the peer's
+				// mesh port directly (conntrack from UDP probe may
+				// pass TCP SYNs too).
 				go func() {
 					time.Sleep(15 * time.Second)
 					if !a.node.HasUDPHole(peerKey) {
 						return // already cleared by CLIENT
 					}
+					// Try TCP fallback to peer's advertised endpoint.
+					if eps := a.node.PeerEndpoints(peerKey); len(eps) > 0 {
+						tcpCtx, tcpCancel := context.WithTimeout(context.Background(), 10*time.Second)
+						defer tcpCancel()
+						if stream, err := a.node.DialPeerByEndpoint(tcpCtx, eps[0]); err == nil {
+							stream.Close()
+							log.Printf("  HolePunch: %s SERVER TCP fallback live via %s", peerKey[:8], eps[0])
+							return // TCP path established, keep hole endpoint
+						}
+					}
+					// Both paths failed — clear for retry.
 					a.node.ClearHoleEndpoint(peerKey)
 					hp.ResetHoleState(peerKey)
 					log.Printf("  HolePunch: %s SERVER timed out — clearing stale hole endpoint", peerKey[:8])
@@ -210,13 +219,32 @@ func (a *App) startHolePunch() {
 				log.Printf("  HolePunch: UDP multipath live to %s via %s", peerKey[:8], target)
 			} else {
 				log.Printf("  HolePunch: UDP dial over hole failed: %v", err)
-				// Clear the hole endpoint so lazy scan retries on
-				// the next tick — without this, HasUDPHole returns
-				// true forever and the punch never retries even though
-				// the UDP data plane was never established.
+				// UDP kx failed (likely VCN packet-length filtering:
+				// small probes pass but large kx frames are dropped).
+				// Try a direct TCP mesh session to the peer's mesh port
+				// (52888) — the conntrack entry from the UDP probe may
+				// let TCP SYNs through too (stateful firewall passes
+				// RELATED/ESTABLISHED). This is EasyTier's tcp tunnel.
+				// Use the peer's advertised endpoint, not the punched
+				// endpoint (which has a random UDP port, no TCP listener).
+				if eps := a.node.PeerEndpoints(peerKey); len(eps) > 0 {
+					tcpTarget := eps[0]
+					// Strip port and use mesh port (52888) — PeerEndpoints
+					// may carry the TCP mesh port already.
+					tcpCtx, tcpCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer tcpCancel()
+					if stream, err := a.node.DialPeerByEndpoint(tcpCtx, tcpTarget); err == nil {
+						stream.Close()
+						log.Printf("  HolePunch: TCP fallback live to %s via %s", peerKey[:8], tcpTarget)
+						return // TCP path established, keep hole endpoint
+					} else {
+						log.Printf("  HolePunch: TCP fallback also failed: %v", err)
+					}
+				}
+				// Both UDP and TCP failed — clear for retry.
 				a.node.ClearHoleEndpoint(peerKey)
 				hp.ResetHoleState(peerKey)
-				log.Printf("  HolePunch: %s clearing hole endpoint (dial failed)", peerKey[:8])
+				log.Printf("  HolePunch: %s clearing hole endpoint (both UDP+TCP failed)", peerKey[:8])
 			}
 		}()
 	}
