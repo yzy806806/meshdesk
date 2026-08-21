@@ -186,19 +186,19 @@ func (a *App) startHolePunch() {
 			if !shouldDial {
 				log.Printf("  HolePunch: %s is SERVER (our key > peer key), waiting for peer to dial", peerKey[:8])
 				// Wait for the CLIENT's kx to arrive. If it doesn't
-				// within 15s, clear the hole endpoint so lazy scan
-				// retries the punch on the next tick.
+				// within 15s, clear the hole endpoint unconditionally
+				// so lazy scan retries on the next tick. We CANNOT
+				// use HasPeerSession here — a relay smux session
+				// (TCP) may exist even though the UDP data plane
+				// never established, causing the hole endpoint to
+				// stay set forever (stale state bug).
 				go func() {
 					time.Sleep(15 * time.Second)
 					if !a.node.HasUDPHole(peerKey) {
-						return // already established
+						return // already cleared by CLIENT
 					}
-					// Check if a UDP session actually exists now.
-					// If not, clear the stale hole endpoint.
-					if !a.node.HasPeerSession(peerKey) {
-						a.node.ClearHoleEndpoint(peerKey)
-						log.Printf("  HolePunch: %s SERVER timed out — clearing stale hole endpoint", peerKey[:8])
-					}
+					a.node.ClearHoleEndpoint(peerKey)
+					log.Printf("  HolePunch: %s SERVER timed out — clearing stale hole endpoint", peerKey[:8])
 				}()
 				return
 			}
