@@ -136,10 +136,8 @@ func (a *App) startHolePunch() {
 		a.triggerHolePunch(hp, peerKey)
 	})
 
-	// 4. Feed holes into the UDP multipath: record the punched
-	//    endpoint as a learned endpoint so getUDPStream's resolver
-	//    dials the hole (same-zone UDP data plane), then verify with
-	//    a quick DialUDPPeer.
+	//  4. Feed successful holes into the UDP data plane
+	//     (RegisterPunchedStream — EasyTier-style, no kx over UDP).
 	hp.OnHoleEstablished = func(peerKey, punchedEP, holeType string) {
 		// Data-plane target: the punched endpoint itself. The old
 		// code rebuilt the target as host(punchedEP)+peerObsPort —
@@ -153,20 +151,11 @@ func (a *App) startHolePunch() {
 		// rebuilt target pointed into the void.)
 		target := punchedEP
 		log.Printf("  HolePunch: data-plane target %s", target)
-		// Record the CONFIRMED hole endpoint in the dedicated hole
-		// map (NOT SetLearnedEndpoints — the meta exchange overwrites
-		// that with gossip endpoints carrying the TCP port, which is
-		// a dead UDP target once ordinary nodes use random UDP ports).
 		a.node.SetHoleEndpoint(peerKey, target)
-		// The TUN data plane may be stuck in UDP failure cooldown from
-		// a previous endpoint (e.g. unreachable v6). A successful hole
-		// means the endpoint CHANGED — reset the cooldown so the next
-		// TUN packet immediately re-attempts the UDP path instead of
-		// staying on relay for up to 10 minutes.
 		a.node.ResetPeerUDPCooldown(peerKey)
 		if holeType == "tcp" {
 			// TCP hole: dial a full mesh session over the punched
-			// TCP endpoint — the reliable data plane (EasyTier-style).
+			// TCP endpoint — the reliable data plane.
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				defer cancel()
@@ -179,73 +168,50 @@ func (a *App) startHolePunch() {
 			}()
 			return
 		}
+		// EasyTier-style UDP data plane: register the punched socket
+		// as a pre-authenticated ARQ stream. No key exchange over
+		// UDP — the coordination via smux already verified identity.
+		// This avoids the >60B kx packet filter on Oracle Cloud VCN.
 		go func() {
-			// Key-based dial arbitration: smaller public key dials
-			// (CLIENT), the other serves (SERVER).
-			shouldDial := a.node.Identity().PublicKey < peerKey
-			if !shouldDial {
-				log.Printf("  HolePunch: %s is SERVER (our key > peer key), waiting for peer to dial", peerKey[:8])
-				// Wait for the CLIENT's kx to arrive. If it doesn't
-				// within 15s, the CLIENT's UDP kx likely failed (VCN
-				// packet filtering). Try TCP fallback: dial the peer's
-				// mesh port directly (conntrack from UDP probe may
-				// pass TCP SYNs too).
-				go func() {
-					time.Sleep(15 * time.Second)
-					if !a.node.HasUDPHole(peerKey) {
-						return // already cleared by CLIENT
-					}
-					// Try TCP fallback to peer's advertised endpoint.
-					if eps := a.node.PeerEndpoints(peerKey); len(eps) > 0 {
-						tcpCtx, tcpCancel := context.WithTimeout(context.Background(), 10*time.Second)
-						defer tcpCancel()
-						if stream, err := a.node.DialPeerByEndpoint(tcpCtx, eps[0]); err == nil {
-							stream.Close()
-							log.Printf("  HolePunch: %s SERVER TCP fallback live via %s", peerKey[:8], eps[0])
-							return // TCP path established, keep hole endpoint
-						}
-					}
-					// Both paths failed — clear for retry.
-					a.node.ClearHoleEndpoint(peerKey)
-					hp.ResetHoleState(peerKey)
-					log.Printf("  HolePunch: %s SERVER timed out — clearing stale hole endpoint", peerKey[:8])
-				}()
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			if stream, err := a.node.DialUDPPeer(ctx, target); err == nil {
-				stream.Close()
-				log.Printf("  HolePunch: UDP multipath live to %s via %s", peerKey[:8], target)
-			} else {
-				log.Printf("  HolePunch: UDP dial over hole failed: %v", err)
-				// UDP kx failed (likely VCN packet-length filtering:
-				// small probes pass but large kx frames are dropped).
-				// Try a direct TCP mesh session to the peer's mesh port
-				// (52888) — the conntrack entry from the UDP probe may
-				// let TCP SYNs through too (stateful firewall passes
-				// RELATED/ESTABLISHED). This is EasyTier's tcp tunnel.
-				// Use the peer's advertised endpoint, not the punched
-				// endpoint (which has a random UDP port, no TCP listener).
-				if eps := a.node.PeerEndpoints(peerKey); len(eps) > 0 {
-					tcpTarget := eps[0]
-					// Strip port and use mesh port (52888) — PeerEndpoints
-					// may carry the TCP mesh port already.
-					tcpCtx, tcpCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer tcpCancel()
-					if stream, err := a.node.DialPeerByEndpoint(tcpCtx, tcpTarget); err == nil {
-						stream.Close()
-						log.Printf("  HolePunch: TCP fallback live to %s via %s", peerKey[:8], tcpTarget)
-						return // TCP path established, keep hole endpoint
-					} else {
-						log.Printf("  HolePunch: TCP fallback also failed: %v", err)
-					}
-				}
-				// Both UDP and TCP failed — clear for retry.
+			mt := a.node.MuxTransport()
+			if mt == nil {
+				log.Printf("  HolePunch: no mux transport, cannot register punched stream")
 				a.node.ClearHoleEndpoint(peerKey)
 				hp.ResetHoleState(peerKey)
-				log.Printf("  HolePunch: %s clearing hole endpoint (both UDP+TCP failed)", peerKey[:8])
+				return
 			}
+			udpAddr, err := net.ResolveUDPAddr("udp", target)
+			if err != nil {
+				log.Printf("  HolePunch: invalid target %s: %v", target, err)
+				a.node.ClearHoleEndpoint(peerKey)
+				hp.ResetHoleState(peerKey)
+				return
+			}
+			// Get the local UDP socket matching the peer's IP family.
+			local := mt.UDPConnFor(udpAddr.IP)
+			if local == nil {
+				log.Printf("  HolePunch: no UDP socket for %s, clearing", udpAddr.IP)
+				a.node.ClearHoleEndpoint(peerKey)
+				hp.ResetHoleState(peerKey)
+				return
+			}
+			// Register the punched socket as an ARQ stream. Both
+			// sides do this — the stream is keyed by remote address,
+			// so each side has its own stream for the same peer.
+			// The punchSocketPoller feeds inbound frames to the ARQ
+			// layer via routeUDPPacket.
+			sc := mt.UDPMesh().RegisterPunchedStream(local, udpAddr)
+			if sc == nil {
+				log.Printf("  HolePunch: failed to register punched stream to %s", target)
+				a.node.ClearHoleEndpoint(peerKey)
+				hp.ResetHoleState(peerKey)
+				return
+			}
+			log.Printf("  HolePunch: UDP punched stream registered to %s via %s", peerKey[:8], target)
+			// The stream stays alive as long as the punch socket
+			// receives data (ARQ keepalive via TUN traffic). If the
+			// peer goes silent, the 120s idle timeout (recvLoop)
+			// closes the stream and frees resources.
 		}()
 	}
 

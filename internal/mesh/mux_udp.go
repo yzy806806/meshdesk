@@ -289,42 +289,31 @@ func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 	if !exists {
 		sc, exists = m.streams[outKey]
 	}
+	// Also check the plain key (punched stream registered by
+	// RegisterPunchedStream — no |in/|out suffix).
+	if !exists {
+		sc, exists = m.streams[key]
+	}
 	tun, tunExists := m.tunStreams[key]
 	m.mu.Unlock()
 
 	// A DialUDPStream first frame (seq=0, payload=[0x4D marker])
-	// signals the PEER INITIATED a new mesh stream. Two-way punch
-	// makes both sides dial each other simultaneously — the peer's
-	// marker frame then lands on OUR |out stream (we also dialed).
-	// Two kx streams (|in + |out) for one peer address would cross:
-	// replies match |in first, so the CLIENT's msg2 gets eaten by the
-	// server stream and both kx fail with "Ed25519 signature
-	// verification failed" (observed peer=fc709e08...).
-	//
-	// Resolution (EasyTier-style first-punch-wins): when the peer's
-	// punch arrives while we have OUR OWN outbound stream pending,
-	// the peer's punch wins — tear down our |out (its DialUDPPeer
-	// returns an error and is harmless; OnHoleEstablished already
-	// recorded the hole) and serve the peer as the SERVER side via a
-	// fresh |in stream. Exactly one kx survives, no cross-talk.
+	// signals the PEER INITIATED a new mesh kx stream. This is only
+	// used by the legacy DialUDPPeer path (session_reconnect). The
+	// EasyTier-style punched stream path does not send 0x4D — data
+	// flows as ARQ frames directly on the registered stream.
 	isNewStream := len(data) >= udpFrameHeaderLen+1 &&
 		data[0] == udpFrameTypeData &&
 		binary.BigEndian.Uint32(data[1:5]) == 0 &&
 		data[udpFrameHeaderLen] == meshInternalMarker
 
 	if exists && !isNewStream {
-		// Established mesh stream, continuation frame: feed it.
+		// Established stream (punched or kx), continuation frame: feed it.
 		sc.handlePacket(data)
 		return true
 	}
-if isNewStream {
-		// Key-based arbitration (OnHoleEstablished) already determines
-		// who dials (CLIENT, smaller key) and who serves (SERVER).
-		// Do NOT drop the outbound stream here — the old "peer won"
-		// logic conflicted with key-based arbitration: when the CLIENT's
-		// marker arrived, the SERVER had no |out to drop (it never
-		// dialed), but the drop logic ran anyway, corrupting state.
-		// The peer-initiated stream is routed through the inbound path
+	if isNewStream {
+		// Legacy kx path: route through the mesh packet handler
 		// (creates the |in stream and strips the marker).
 		return m.routeMeshPacket(conn, addr, data, meshCh)
 	}
@@ -536,6 +525,51 @@ func (m *udpMeshManager) recordMeshCreateLocked(key string) {
 // delivered (each is a net.Conn carrying framed TUN packets).
 func (m *udpMeshManager) TunCh() <-chan net.Conn {
 	return m.tunCh
+}
+
+// RegisterPunchedStream creates a pre-authenticated ARQ stream over
+// a hole-punched UDP socket. Unlike DialUDPStream/DialTUNStream, no
+// key exchange or authentication handshake is sent — the hole punch
+// coordination already verified the peer's identity via the smux
+// session. The stream is registered under the peer's address so
+// inbound ARQ frames from that address are fed to it.
+//
+// This is the EasyTier-style data plane: the punched socket becomes
+// a transport directly, without a separate kx layer (which fails on
+// networks that filter UDP packets >60B, e.g. Oracle Cloud VCN).
+func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.UDPAddr) *udpStreamConn {
+	key := remote.String()
+
+	m.mu.Lock()
+	// Reuse existing stream if present (re-punch on same path).
+	if existing, ok := m.streams[key]; ok {
+		m.mu.Unlock()
+		return existing
+	}
+	sc := newUDPStreamConn(local, remote)
+	m.streams[key] = sc
+	m.mu.Unlock()
+
+	// Clean up when the stream closes.
+	go func(s *udpStreamConn, k string) {
+		<-s.done
+		m.mu.Lock()
+		if cur, ok := m.streams[k]; ok && cur == s {
+			delete(m.streams, k)
+		}
+		m.mu.Unlock()
+	}(sc, key)
+
+	return sc
+}
+
+// GetPunchedStream returns the ARQ stream for a peer's address, or
+// nil if none exists. Used by the TUN forwarder to route IP packets
+// over a punched UDP path instead of TCP relay.
+func (m *udpMeshManager) GetPunchedStream(addr string) *udpStreamConn {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.streams[addr]
 }
 
 // udpDialConfirmTimeout is how long DialTUNStream waits for the peer's

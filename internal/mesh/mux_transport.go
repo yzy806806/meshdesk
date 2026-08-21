@@ -358,6 +358,11 @@ func (t *MuxTransport) DialTUNUDP(remoteAddr string, authHeader []byte) (*udpStr
 	return t.udpMesh.DialTUNStream(local, udpAddr, authHeader)
 }
 
+// UDPMesh returns the UDP mesh manager (for punched stream registration).
+func (t *MuxTransport) UDPMesh() *udpMeshManager {
+	return t.udpMesh
+}
+
 // pickUDPSocket resolves the remote address and picks a local UDP
 // socket matching the remote family.
 func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPAddr, error) {
