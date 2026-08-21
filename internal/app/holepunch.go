@@ -198,6 +198,7 @@ func (a *App) startHolePunch() {
 						return // already cleared by CLIENT
 					}
 					a.node.ClearHoleEndpoint(peerKey)
+					hp.ResetHoleState(peerKey)
 					log.Printf("  HolePunch: %s SERVER timed out — clearing stale hole endpoint", peerKey[:8])
 				}()
 				return
@@ -214,6 +215,7 @@ func (a *App) startHolePunch() {
 				// true forever and the punch never retries even though
 				// the UDP data plane was never established.
 				a.node.ClearHoleEndpoint(peerKey)
+				hp.ResetHoleState(peerKey)
 				log.Printf("  HolePunch: %s clearing hole endpoint (dial failed)", peerKey[:8])
 			}
 		}()
