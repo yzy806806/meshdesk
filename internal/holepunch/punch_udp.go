@@ -715,29 +715,20 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 	// (goroutine above); a 50ms head-start lets its probes create the
 	// peer-side conntrack before DialUDPPeer's kx frames arrive.
 	if peerKey != "" && e.OnHoleEstablished != nil {
-		// our (this node's) mapped endpoint as seen by the initiator:
-		// the reply we built above (our) already carries the UDP data
-		// port (OutboundPort-resolved, lines 509-536). PublicPunchEP
-		// alone may be the TCP mesh port (52888) — the peer's kx/data
-		// egresses from our punch socket (the UDP data port), so the
-		// hole must be keyed by that, not the TCP port.
-		ourEP := our
-		if ourEP == "" {
-			ourEP = e.PublicPunchEP
+		// The data-plane target is the PEER's endpoint (peerEP), not
+		// our own — the CLIENT (smaller key) dials the peer's mapped
+		// address. Using our own endpoint here caused the CLIENT to
+		// dial itself (connection refused / kx EOF).
+		targetEP := peerEP
+		if targetEP == "" || targetEP == "0.0.0.0:0" || targetEP == "[::]:0" {
+			targetEP = "" // no valid peer endpoint — don't fire
 		}
-		if ourEP == "" {
-			ourEP = e.LocalEP
-		}
-		if ourEP != "" && ourEP != "0.0.0.0:0" && ourEP != "[::]:0" {
-			ep := ourEP
+		if targetEP != "" {
 			key := peerKey
-			// Give blindPunch (goroutine above) time to land its
-			// probes — the peer's conntrack entry must exist before
-			// DialUDPPeer's kx frames arrive, else they are dropped.
 			go func() {
 				time.Sleep(50 * time.Millisecond)
-				log.Printf("[holepunch] coordinator: responder hole to %s (our %s)", short(key), ep)
-				e.OnHoleEstablished(key, ep, "udp")
+				log.Printf("[holepunch] coordinator: responder hole to %s (peer %s)", short(key), targetEP)
+				e.OnHoleEstablished(key, targetEP, "udp")
 			}()
 		}
 	}
