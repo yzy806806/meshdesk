@@ -444,9 +444,21 @@ func (f *TunForwarder) tunReadLoop() {
 // stream's buffered writes still "succeed" (no immediate error), so
 // packets silently vanish on the dead session. TTL forces re-dial.
 func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
-	// Multipath D: UDP-preferred path first. The UDP ARQ stream is
-	// faster on lossy inter-cloud links (no TCP congestion-control
-	// collapse); fall back to TCP smux when UDP is unavailable.
+	// EasyTier-style: check for a punched UDP stream first.
+	// The hole punch coordination registered an ARQ stream over
+	// the punched socket — no kx needed, data flows directly.
+	if eps := f.cfg.MeshNode.PeerEndpoints(peerKey); len(eps) > 0 {
+		mt := f.cfg.MeshNode.MuxTransport()
+		if mt != nil {
+			for _, ep := range eps {
+				if sc := mt.UDPMesh().GetPunchedStream(ep); sc != nil {
+					return sc, nil
+				}
+			}
+		}
+	}
+
+	// Fall back to the legacy UDP path (disabled by default).
 	if conn, err := f.getUDPStream(peerKey); err == nil {
 		return conn, nil
 	}
