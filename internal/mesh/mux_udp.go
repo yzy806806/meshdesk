@@ -317,19 +317,14 @@ func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, da
 		sc.handlePacket(data)
 		return true
 	}
-	if isNewStream {
-		m.mu.Lock()
-		_, hasOut := m.streams[outKey]
-		if hasOut {
-			// Peer punched us while we were punching them: drop our
-			// outbound (client) stream so only the peer's kx runs.
-			delete(m.streams, outKey)
-		}
-		m.mu.Unlock()
-		if hasOut {
-			log.Printf("[udpmesh] two-way punch: peer won, dropping our |out for %s", key)
-		}
-		// Peer-initiated stream: route through the inbound path
+if isNewStream {
+		// Key-based arbitration (OnHoleEstablished) already determines
+		// who dials (CLIENT, smaller key) and who serves (SERVER).
+		// Do NOT drop the outbound stream here — the old "peer won"
+		// logic conflicted with key-based arbitration: when the CLIENT's
+		// marker arrived, the SERVER had no |out to drop (it never
+		// dialed), but the drop logic ran anyway, corrupting state.
+		// The peer-initiated stream is routed through the inbound path
 		// (creates the |in stream and strips the marker).
 		return m.routeMeshPacket(conn, addr, data, meshCh)
 	}
