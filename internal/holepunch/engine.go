@@ -314,6 +314,22 @@ func (e *Engine) Forget(peerKey string) {
 	e.mu.Unlock()
 }
 
+// ResetHoleState clears the session state for a peer so Trigger can
+// retry the punch. Called by the app layer when ClearHoleEndpoint
+// detects that the hole is stale (coordination succeeded but the UDP
+// data plane never established). Without this, the session stays in
+// stateHoleEstablished forever and Trigger returns immediately.
+func (e *Engine) ResetHoleState(peerKey string) {
+	e.mu.Lock()
+	delete(e.backoff, peerKey)
+	if s, ok := e.sessions[peerKey]; ok {
+		s.mu.Lock()
+		s.state = stateIdle
+		s.mu.Unlock()
+	}
+	e.mu.Unlock()
+}
+
 // Status returns a snapshot for diagnostics.
 func (e *Engine) Status() map[string]any {
 	e.mu.Lock()

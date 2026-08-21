@@ -2668,6 +2668,8 @@ func (n *MeshNode) SetHoleEndpoint(peerKey string, ep string) {
 // lazy scan to retry the punch on the next tick. Called when the
 // UDP dial over the hole fails — the hole was established (coordination
 // succeeded) but the data-plane session was not (kx failed).
+// Also resets the holepunch engine's session state so Trigger doesn't
+// skip it (stateHoleEstablished would cause an immediate return).
 func (n *MeshNode) ClearHoleEndpoint(peerKey string) {
 	n.sessionsMu.Lock()
 	delete(n.holeEndpoints, peerKey)
