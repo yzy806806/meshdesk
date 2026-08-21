@@ -537,8 +537,9 @@ func (m *udpMeshManager) TunCh() <-chan net.Conn {
 // This is the EasyTier-style data plane: the punched socket becomes
 // a transport directly, without a separate kx layer (which fails on
 // networks that filter UDP packets >60B, e.g. Oracle Cloud VCN).
-func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.UDPAddr) *udpStreamConn {
+func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.UDPAddr, peerID string, deliverTUN chan<- net.Conn) *udpStreamConn {
 	key := remote.String()
+	log.Printf("[udpmesh] RegisterPunchedStream: key=%s local=%s peer=%s", key, local.LocalAddr(), shortKey(peerID))
 
 	m.mu.Lock()
 	// Reuse existing stream if present (re-punch on same path).
@@ -549,6 +550,53 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 	sc := newUDPStreamConn(local, remote)
 	m.streams[key] = sc
 	m.mu.Unlock()
+
+	// Deliver the punched stream to the TUN forwarder's accept path —
+	// without this, inbound ARQ frames are fed to the ARQ layer but no
+	// goroutine reads the stream and writes packets into the TUN device
+	// (outbound works via getOutboundStream, inbound silently black-
+	// holes). Wrapped in connWithPeer so the anti-spoof check sees the
+	// verified peer identity from the hole-punch coordination.
+	if deliverTUN != nil && peerID != "" {
+		cw := &connWithPeer{Conn: sc, peerID: peerID}
+		select {
+		case deliverTUN <- cw:
+		default:
+			go func(c net.Conn) {
+				select {
+				case deliverTUN <- c:
+				case <-time.After(10 * time.Second):
+					log.Printf("[udpmesh] punched stream TUN delivery timeout for %s", shortKey(peerID))
+				}
+			}(cw)
+		}
+	}
+
+	// EasyTier-style simultaneous punch: fire a few small probes in
+	// BOTH directions immediately. Cloud-level firewalls (e.g. Oracle
+	// VCN) drop inbound UDP unless the VM itself recently sent a packet
+	// to that exact remote ip:port — both sides must send before any
+	// data can flow. Raw WriteToUDP (NOT s.Write) — the peer's ARQ
+	// layer would buffer the probe into the read queue, where the TUN
+	// forwarder's framed-packet reader chokes on it (invalid length).
+	go func(s *udpStreamConn) {
+		probe := make([]byte, udpFrameHeaderLen+2)
+		probe[0] = udpFrameTypeData
+		binary.BigEndian.PutUint32(probe[1:5], 0xFFFFFFFF) // seq=reserved: not a data seq
+		binary.BigEndian.PutUint32(probe[5:9], 0)
+		binary.BigEndian.PutUint16(probe[9:11], 2)
+		copy(probe[udpFrameHeaderLen:], []byte{0x50, 0x4A})
+		for i := 0; i < 5; i++ {
+			s.sendMu.Lock()
+			closedNow := s.closed
+			s.sendMu.Unlock()
+			if closedNow {
+				return
+			}
+			s.conn.WriteToUDP(probe, s.peer) // raw datagram, bypasses ARQ
+			time.Sleep(100 * time.Millisecond)
+		}
+	}(sc)
 
 	// Clean up when the stream closes.
 	go func(s *udpStreamConn, k string) {

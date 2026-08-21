@@ -445,17 +445,22 @@ func (f *TunForwarder) tunReadLoop() {
 // packets silently vanish on the dead session. TTL forces re-dial.
 func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
 	// EasyTier-style: check for a punched UDP stream first.
-	// The hole punch coordination registered an ARQ stream over
-	// the punched socket — no kx needed, data flows directly.
-	if eps := f.cfg.MeshNode.PeerEndpoints(peerKey); len(eps) > 0 {
+	eps := f.cfg.MeshNode.PeerEndpoints(peerKey)
+	if len(eps) > 0 {
 		mt := f.cfg.MeshNode.MuxTransport()
 		if mt != nil {
 			for _, ep := range eps {
 				if sc := mt.UDPMesh().GetPunchedStream(ep); sc != nil {
+					if debugEnabled {
+						log.Printf("[tun-forwarder] using punched UDP stream to %s via %s", shortKey(peerKey), ep)
+					}
 					return sc, nil
 				}
 			}
 		}
+	}
+	if debugEnabled && len(eps) > 0 {
+		log.Printf("[tun-forwarder] no punched stream for %s (endpoints=%v), falling back to relay", shortKey(peerKey), eps)
 	}
 
 	// Fall back to the legacy UDP path (disabled by default).

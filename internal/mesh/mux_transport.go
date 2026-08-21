@@ -363,6 +363,15 @@ func (t *MuxTransport) UDPMesh() *udpMeshManager {
 	return t.udpMesh
 }
 
+// TunCh returns the channel on which inbound TUN UDP streams are
+// delivered (consumed by the TUN forwarder's accept loop).
+func (t *MuxTransport) TunCh() chan net.Conn {
+	if t.udpMesh == nil {
+		return nil
+	}
+	return t.udpMesh.tunCh
+}
+
 // pickUDPSocket resolves the remote address and picks a local UDP
 // socket matching the remote family.
 func (t *MuxTransport) pickUDPSocket(remoteAddr string) (*net.UDPConn, *net.UDPAddr, error) {

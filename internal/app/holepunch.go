@@ -199,8 +199,10 @@ func (a *App) startHolePunch() {
 			// sides do this — the stream is keyed by remote address,
 			// so each side has its own stream for the same peer.
 			// The punchSocketPoller feeds inbound frames to the ARQ
-			// layer via routeUDPPacket.
-			sc := mt.UDPMesh().RegisterPunchedStream(local, udpAddr)
+			// layer via routeUDPPacket, and the stream is delivered
+			// to the TUN forwarder's accept path (connWithPeer) so
+			// inbound packets reach the TUN device.
+			sc := mt.UDPMesh().RegisterPunchedStream(local, udpAddr, peerKey, mt.TunCh())
 			if sc == nil {
 				log.Printf("  HolePunch: failed to register punched stream to %s", target)
 				a.node.ClearHoleEndpoint(peerKey)
@@ -230,6 +232,7 @@ func (a *App) startHolePunch() {
 			case <-ticker.C:
 				vips := a.node.PeerVirtualIPs()
 				seen := make(map[string]bool, len(vips))
+				log.Printf("[holepunch] lazy scan: PeerVirtualIPs=%d", len(vips))
 				for peerKey := range vips {
 					seen[peerKey] = true
 					a.triggerHolePunch(hp, peerKey)
@@ -261,6 +264,26 @@ func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {	if a.hole
 		return
 	}
 	if a.node.HasUDPHole(peerKey) {
+		// Hole endpoint exists — verify the punched stream is actually
+		// live. If RegisterPunchedStream failed or the stream died
+		// (idle timeout), the hole endpoint is stale: clear it so lazy
+		// scan retries on the next tick.
+		mt := a.node.MuxTransport()
+		if mt != nil {
+			eps := a.node.PeerEndpoints(peerKey)
+			found := false
+			for _, ep := range eps {
+				if sc := mt.UDPMesh().GetPunchedStream(ep); sc != nil {
+					found = true
+					break
+				}
+			}
+			if !found && len(eps) > 0 {
+				log.Printf("[holepunch] %s: HasUDPHole=true but no live stream — clearing stale", peerKey[:8])
+				a.node.ClearHoleEndpoint(peerKey)
+				hp.ResetHoleState(peerKey)
+			}
+		}
 		return
 	}
 	var endpoints []string
