@@ -61,29 +61,34 @@ EasyTier 当时 165B 包能过的原因待查：可能其 socket pair 的 VCN fl
 - punchpoller 日志只在 MESHDESK_DEBUG=1 输出
 - TestUDPStream_LargeTransfer 在 localhost 有 ~20% flaky 基线（UDP 丢包触发）
 
-## 深夜联调最终定论（2026-08-23 凌晨）
+## 深夜联调最终定论（2026-08-23 凌晨，五节点 EasyTier 对照）
 
 tcpdump 三重验证（txcloud出站/ARM入站/ARM routeUDPPacket日志）：
 
+### v4 打洞路径（meshdesk punched stream）
 1. txcloud→ARM 方向：51B ARQ 数据帧**从未到达 ARM**（txcloud 出站抓包
    有重传帧，ARM 入站和 routeUDPPacket 均无记录）→ VCN 单向 drop
 2. ARM→txcloud 方向：13B/11B keepalive 双向正常流动
-3. 降 payload 到 16B（27B 帧）依然不通 → 阈值极小或非纯大小问题
-4. EasyTier 能通的核心差异：**200ms 双向高频 ping-pong 从不间断**，
-   VCN flow 永远新鲜；且其 28B 帧 + 高频互发的组合恰好存活
+3. 降 payload 到 16B（27B 帧）依然不通 → v4 打洞路径对本项目不可用
 
-### 可能的突破方向
-A. 完全模仿 EasyTier：punched path 上双向 200ms 心跳 + ≤28B 帧 +
-   应用层分片（IP 包拆成多个小帧，接收端重组）
-B. 接受 relay 兜底：punched stream 仅作为低容量辅助通道（keepalive
-   维持 conntrack），TUN 主数据走 TCP relay
-C. 研究 EasyTier 源码中 UdpSocketArray 的端口预测策略（对 symmetric
-   NAT 的 port hopping），可能有额外的 flow 特性
+### EasyTier 基准数据全部推翻
+- iperf3/echo 测的 29-34Mbps 是**发送端假象**（send() 写内核缓冲即返回，
+  数据实际被路径丢弃）。bw_strict 校验模式揭穿：多数传输 ACK 超时。
+- EasyTier peer 表的 "p2p udp" 标签是隧道协商标记。10MB 传输期间
+  双端物理网卡只有几十个小包——**数据实际走 IPv6 直连或 TCP relay**
+- EasyTier 真正能通的原因：ARM 有公网 IPv6 且 easytier 监听 11010，
+  txcloud 直接通过 **IPv6 直连**（1412B 大包 tcpdump 确认到达 ARM）
 
-### 当前建议
-方案 B 最务实：meshdesk 的 TCP relay 在同路径实测 ~2-8Mbps（260ms RTT
-双跳），已经优于 punched path 的实际表现。把 punched stream 保留为
-"conntrack 预热 + 快速切换通道"，等方案 A 的分片实现后再启用为主数据面。
+### meshdesk 的正确出路：IPv6 直连优先
+txcloud↔ARM 都有公网 IPv6 且实测互通（v4+v6 TCP/UDP 全通）。
+- meta exchange 需要广播各节点的 IPv6 endpoint（advertise_endpoints）
+- TUN forwarder / session dialer 优先尝试 v6 直连，失败再打洞/relay
+- punched stream 保留为 v4-only 环境的兜底
+
+### 实施状态
+- ARM config 已加 v6 advertise_endpoints（2603:c020:...:52888）
+- meshdesk mux transport 已有 [::] v6 socket（随机端口，coordination 交换）
+- 待实现：v6 endpoint 的 session dial + TUN forwarder 直连优先级
 
 ## 下一步优先级
 1. 验证 ARM VCN UDP 包大小限制（分级 probe + tcpdump）
