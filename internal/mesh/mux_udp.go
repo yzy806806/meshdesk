@@ -623,7 +623,11 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 		binary.BigEndian.PutUint32(probe[5:9], 0)
 		binary.BigEndian.PutUint16(probe[9:11], 2)
 		copy(probe[udpFrameHeaderLen:], []byte{0x50, 0x4A})
-		ticker := time.NewTicker(20 * time.Second)
+		// 2s interval: cloud-firewall (VCN/security-group) UDP flow
+		// aging can be as short as a few seconds — EasyTier pings its
+		// punched paths every ~200ms for the same reason. A stale flow
+		// means every data frame is dropped until the next probe.
+		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
