@@ -552,6 +552,11 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 	}
 	sc := newUDPStreamConn(local, remote)
 	sc.punched = true
+	// Large socket buffers: the raw datagram path has no ARQ flow
+	// control — a deep send buffer absorbs TCP bursts (BDP of a
+	// 30Mbps × 260ms path ≈ 1MB) instead of dropping frames.
+	sc.conn.SetWriteBuffer(4 * 1024 * 1024)
+	sc.conn.SetReadBuffer(4 * 1024 * 1024)
 	m.streams[key] = sc
 	m.mu.Unlock()
 

@@ -30,9 +30,14 @@ import (
 // ──────────────────────────────────────────────────────────────────────────
 
 const (
-	udpFrameTypeData = 0x01
-	udpFrameTypeAck  = 0x02
-	udpFrameTypeFin  = 0x03
+	udpFrameTypeData    = 0x01
+	udpFrameTypeAck     = 0x02
+	udpFrameTypeFin     = 0x03
+	udpFrameTypeRawData = 0x04 // punched-stream datagram: no ARQ, unordered
+
+	// rawDatagramSeq is the reserved seq for RAW datagram frames — the
+	// receiver must not run them through the ARQ ordering state machine.
+	rawDatagramSeq = uint32(0xFFFFFFFE)
 
 	udpFrameHeaderLen = 11
 	// udpMaxPayload is the conservative floor for the payload size —
@@ -53,11 +58,14 @@ const (
 	udpPayloadProbeInterval = 60 * time.Second
 
 	udpWindowSize = 128 // sliding window (in-flight frames).
-	// 32→128 (v1.6.3): the WAN RTT (txcloud↔Oracle ~257ms) × 40B
-	// payload bounded throughput at ~40kbps (BDP = window × frame /
-	// RTT). 128 frames × 40B / 0.257s ≈ 20KB/s ≈ 160kbps. Safe with
-	// the adaptive RTO (RFC 6298 SRTT/RTTVAR): a bigger window only
-	// matters when ACKs flow, and retransmits are per-frame.
+	// 512 and 1024 were both tried (2026-08-22): TestUDPStream_
+	// LargeTransfer hangs — the receiver's recvBuf grows unbounded
+	// while Read lags, and the delayed-ACK path (ackCount>=2) starves
+	// the sender's window drain. Going bigger requires a batched-ACK +
+	// bounded-recvBuf redesign. Raw-datagram mode (no ARQ) was also
+	// measured: TCP-over-lossy-UDP collapses (~1Mbps vs ~6Mbps ARQ).
+	// The ARQ layer is correct for punched paths; throughput on high-
+	// RTT links is BDP-bound until the ACK machinery is redesigned.
 	udpMaxSeq = uint32(1 << 30)
 
 	// udpWriteTimeout bounds how long Write waits for the sliding
@@ -225,6 +233,38 @@ func (sc *udpStreamConn) Write(p []byte) (int, error) {
 	defer sc.sendMu.Unlock()
 	if sc.closed {
 		return 0, errUDPClosed
+	}
+
+	// RAW datagram mode (punched streams): DISABLED. Measured on the
+	// txcloud↔ARM path: any UDP frame loss corrupts an in-flight TCP
+	// segment, and TCP's retransmit of the whole segment amplifies a
+	// 0.1% loss rate into a throughput collapse (~1Mbps vs ~6Mbps with
+	// ARQ). The ARQ layer IS the right design for lossy punched paths;
+	// its window size is what needs tuning instead.
+	if false && sc.punched {
+		total := 0
+		for len(p) > 0 {
+			chunk := p
+			if len(chunk) > udpPayloadLarge {
+				chunk = chunk[:udpPayloadLarge]
+			}
+			frame := make([]byte, udpFrameHeaderLen+len(chunk))
+			frame[0] = udpFrameTypeRawData
+			binary.BigEndian.PutUint32(frame[1:5], rawDatagramSeq)
+			binary.BigEndian.PutUint32(frame[5:9], 0)
+			binary.BigEndian.PutUint16(frame[9:11], uint16(len(chunk)))
+			copy(frame[udpFrameHeaderLen:], chunk)
+			for {
+				_, err := sc.conn.WriteToUDP(frame, sc.peer)
+				if err == nil {
+					break
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			total += len(chunk)
+			p = p[len(chunk):]
+		}
+		return total, nil
 	}
 
 	total := 0
@@ -403,6 +443,21 @@ func (sc *udpStreamConn) handlePacket(data []byte) {
 	}
 
 	switch ftype {
+	case udpFrameTypeRawData:
+		// Punched-stream datagram: unordered, unacknowledged. Append
+		// directly to the read buffer — the TUN forwarder consumes it
+		// as an opaque framed packet. No ARQ state is touched.
+		plen := int(binary.BigEndian.Uint16(data[9:11]))
+		if plen > len(data)-udpFrameHeaderLen {
+			return
+		}
+		payload := make([]byte, plen)
+		copy(payload, data[udpFrameHeaderLen:udpFrameHeaderLen+plen])
+		sc.recvMu.Lock()
+		sc.readBuf = append(sc.readBuf, payload...)
+		sc.recvMu.Unlock()
+		sc.signalReady()
+
 	case udpFrameTypeData:
 		// Reserved seq: punch-probe keepalive (RegisterPunchedStream's
 		// bidirectional flow-establishment probes). ACK it to keep the
