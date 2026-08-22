@@ -486,8 +486,14 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 			peerEasySym = buf[5+epLen+4] == 1
 			peerInc = int(int8(buf[5+epLen+5]))
 			peerObs = int(binary.BigEndian.Uint16(buf[5+epLen+6:]))
-			if bodyLen > 5+epLen+12 {
-				peerKey = string(buf[5+epLen+12:])
+			// Key offset MUST match the sender's layout: the tail is
+			// tcpPort(2)+srcPort(2)+easySym(1)+inc(1)+obsPort(2) = 8
+			// bytes, so the key starts at 5+epLen+8. The old +12 skipped
+			// 4 chars of the key — the truncated identity then failed
+			// the TUN forwarder's anti-spoof check, black-holing all
+			// inbound punched-stream packets.
+			if bodyLen > 5+epLen+8 {
+				peerKey = string(buf[5+epLen+8:])
 			}
 		}
 	} else if bodyLen >= 12 {
@@ -504,8 +510,10 @@ func (e *Engine) HandleCoordinatorStream(conn net.Conn) {
 			peerEasySym = buf[4+epLen+4] == 1
 			peerInc = int(int8(buf[4+epLen+5]))
 			peerObs = int(binary.BigEndian.Uint16(buf[4+epLen+6:]))
-			if bodyLen > 4+epLen+12 {
-				peerKey = string(buf[4+epLen+12:])
+			// Key offset: tail is 8 bytes (see v1.6.8+ branch above) —
+			// the old +12 truncated 4 chars off the identity.
+			if bodyLen > 4+epLen+8 {
+				peerKey = string(buf[4+epLen+8:])
 			}
 		}
 	}

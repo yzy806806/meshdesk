@@ -542,7 +542,10 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 	log.Printf("[udpmesh] RegisterPunchedStream: key=%s local=%s peer=%s", key, local.LocalAddr(), shortKey(peerID))
 
 	m.mu.Lock()
-	// Reuse existing stream if present (re-punch on same path).
+	// Reuse existing stream if present (re-punch on same path). Do NOT
+	// re-deliver to the TUN forwarder — the original handleInboundStream
+	// goroutine is still reading it; a second reader would steal frames
+	// and its eventual Close would kill the shared ARQ stream.
 	if existing, ok := m.streams[key]; ok {
 		m.mu.Unlock()
 		return existing
