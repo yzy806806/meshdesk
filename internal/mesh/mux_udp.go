@@ -608,6 +608,9 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 	// 120s idle timeout from killing the stream during quiet periods.
 	// (recvLoop's idle timer only resets on ackRecv — reserved-seq
 	// frames don't reset it, so an explicit keepalive is required.)
+	// The stream self-terminates if NO inbound frames arrive for 3×
+	// the keepalive interval (60s) — the path is dead (peer NAT
+	// rebound), and staying registered would only black-hole traffic.
 	go func(s *udpStreamConn) {
 		probe := make([]byte, udpFrameHeaderLen+2)
 		probe[0] = udpFrameTypeData
@@ -622,6 +625,12 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 			case <-s.done:
 				return
 			case <-ticker.C:
+				if ts := s.lastInboundNs.Load(); ts > 0 && time.Since(time.Unix(0, ts)) > 60*time.Second {
+					log.Printf("[udpmesh] punched stream to %s: no inbound frames for %v — closing stale path",
+						s.peer, time.Since(time.Unix(0, ts)).Round(time.Second))
+					s.Close() // triggers cleanup goroutine → map delete
+					return
+				}
 				s.conn.WriteToUDP(probe, s.peer)
 			}
 		}
