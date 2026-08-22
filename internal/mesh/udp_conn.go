@@ -88,6 +88,10 @@ type udpStreamConn struct {
 	srttNs   atomic.Int64 // smoothed RTT, nanoseconds
 	rttvarNs atomic.Int64 // RTT variance (TCP rttvar), nanoseconds
 	closed   bool
+	// punched marks streams created by RegisterPunchedStream: they run
+	// their own keepalive and must not be killed by the recvLoop idle
+	// timeout (the probes don't reset it on the sending side).
+	punched bool
 
 	// Path MTU discovery: payloadSize starts conservative (udpMaxPayload)
 	// and probes upward. If a large frame is ACKed, payloadSize upgrades
@@ -620,14 +624,26 @@ func (sc *udpStreamConn) recvLoop() {
 	// retransmitLoop: a non-empty ackRecv means the peer is alive.
 	idleTimer := time.NewTimer(udpIdleTimeout)
 	defer idleTimer.Stop()
+	// punched streams keep themselves alive via explicit reserved-seq
+	// probes (RegisterPunchedStream's keepalive goroutine) and disable
+	// the idle timeout — the probes don't generate ackRecv on the
+	// SENDING side, so a quiet-but-healthy punched path would be killed
+	// by this timer even though the peer is reachable.
+	noIdle := sc.punched
 	for {
 		select {
 		case ack := <-sc.ackRecv:
 			sc.advanceBase(ack)
-			idleTimer.Reset(udpIdleTimeout)
+			if !noIdle {
+				idleTimer.Reset(udpIdleTimeout)
+			}
 		case <-sc.done:
 			return
 		case <-idleTimer.C:
+			if noIdle {
+				idleTimer.Reset(udpIdleTimeout)
+				continue
+			}
 			// No ACKs for a long period → peer is gone.
 			sc.Close()
 			return
