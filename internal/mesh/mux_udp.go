@@ -551,6 +551,7 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 		return existing
 	}
 	sc := newUDPStreamConn(local, remote)
+	sc.punched = true
 	m.streams[key] = sc
 	m.mu.Unlock()
 
@@ -598,6 +599,30 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 			}
 			s.conn.WriteToUDP(probe, s.peer) // raw datagram, bypasses ARQ
 			time.Sleep(100 * time.Millisecond)
+		}
+	}(sc)
+
+	// Keepalive: reserved-seq probes every 20s keep the punched path's
+	// conntrack entries alive on both sides AND prevent the ARQ layer's
+	// 120s idle timeout from killing the stream during quiet periods.
+	// (recvLoop's idle timer only resets on ackRecv — reserved-seq
+	// frames don't reset it, so an explicit keepalive is required.)
+	go func(s *udpStreamConn) {
+		probe := make([]byte, udpFrameHeaderLen+2)
+		probe[0] = udpFrameTypeData
+		binary.BigEndian.PutUint32(probe[1:5], 0xFFFFFFFF)
+		binary.BigEndian.PutUint32(probe[5:9], 0)
+		binary.BigEndian.PutUint16(probe[9:11], 2)
+		copy(probe[udpFrameHeaderLen:], []byte{0x50, 0x4A})
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.done:
+				return
+			case <-ticker.C:
+				s.conn.WriteToUDP(probe, s.peer)
+			}
 		}
 	}(sc)
 
