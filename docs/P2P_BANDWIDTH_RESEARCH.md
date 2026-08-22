@@ -33,12 +33,28 @@ EasyTier 全部 P2P 直连成功，证明 Oracle VCN 不开入站规则也能打
 - 根因：接收端 recvBuf 无限增长 + delayed-ACK(ackCount>=2) 饿死发送端窗口排空
 - 需要 batched-ACK + bounded-recvBuf 重设计后才能扩窗
 
-### ARM 路径带宽瓶颈定位（待验证）
-ARM 只有 0.75Mbps ≈ 128帧×40B/260ms 的理论上限 → **MTU probe 从未成功**
-→ 路径只跑 40B 小帧。疑似 ARM 的 Oracle VCN 限制 UDP payload ≤~200B。
-EasyTier 当时 165B 包能过但未测 >500B。
-**下一步**：从 ARM mux socket 分级发送 100-1500B 探测包 + tcpdump 定位阈值；
-若确认 VCN 限制，考虑分片（IP 层或应用层拆帧）。
+### ARM 路径带宽瓶颈（已定位，2026-08-22 深夜联调）
+tcpdump 双端抓包确凿证据：txcloud↔ARM punched stream 上只有 13B/11B/
+6B 的 keepalive probe 帧双向流动；**51B 的 TUN ARQ 数据帧一个都没出现**
+（txcloud 出站抓包 0 帧，ARM 入站抓包 0 帧）。
+
+结论：ARM 路径的 VCN 过滤 UDP 包大小，阈值在 13B～51B 之间（13B probe
+通过，51B 数据帧被 drop）。这与 v1.8.3 时代"kx msg2 (~160B) 被 drop"完全
+一致——不是 kx 特有问题，是路径对包大小的持续过滤。
+
+推论：MTU probe (1211B) 必然失败 → payloadSize 锁死 40B → 即使窗口扩大
+也无法提升吞吐（512×40B/0.26s ≈ 0.6Mbps）。**分片是唯一出路**：
+- 应用层分片：ARQ 帧拆成 ≤13B 的子帧（开销 116%，但可行）
+- 或确认真实阈值后按最大可行帧大小分片（若阈值是 32B，开销 44%）
+- IP 层分片不可行（VCN drop 发生在分片重组前）
+
+EasyTier 当时 165B 包能过的原因待查：可能其 socket pair 的 VCN flow
+状态不同，或有端口/协议特征差异。值得用 EasyTier 复现并抓包对比。
+
+**下一步实验**：
+1. 二分定位 ARM 路径的精确包大小阈值（从 meshdesk mux socket 发 14~50B）
+2. 若阈值 ≥40B：检查为何 51B 帧 drop 而 40B+11B=51B 应该等价……重新验证
+3. 分片实现：punched=true 时 Write 按 (阈值-11B) 切片，每片独立 seq 空间
 
 ### 其他发现
 - punched stream 与 relay 切换偶发抖动（getOutboundStream 每包重查 map）
