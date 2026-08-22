@@ -565,6 +565,7 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 		cw := &connWithPeer{Conn: sc, peerID: peerID}
 		select {
 		case deliverTUN <- cw:
+			log.Printf("[udpmesh] punched stream delivered to TUN forwarder (peer=%s)", shortKey(peerID))
 		default:
 			go func(c net.Conn) {
 				select {

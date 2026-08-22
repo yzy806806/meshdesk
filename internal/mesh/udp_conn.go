@@ -52,7 +52,11 @@ const (
 	// payload probe after a failure (the link may have improved).
 	udpPayloadProbeInterval = 60 * time.Second
 
-	udpWindowSize = 128 // sliding window (in-flight frames)
+	udpWindowSize = 1024 // sliding window (in-flight frames). 128 frames
+	// × 40B payload = 5KB effective window — at 260ms RTT that caps
+	// throughput at ~19KB/s, stalling TCP over the punched path.
+	// 1024 × 40B ≈ 40KB; with MTU-upgraded 1200B frames the window
+	// spans ~1.2MB, enough to fill a 30Mbps × 260ms BDP (~1MB).
 	// 32→128 (v1.6.3): the WAN RTT (txcloud↔Oracle ~257ms) × 40B
 	// payload bounded throughput at ~40kbps (BDP = window × frame /
 	// RTT). 128 frames × 40B / 0.257s ≈ 20KB/s ≈ 160kbps. Safe with
