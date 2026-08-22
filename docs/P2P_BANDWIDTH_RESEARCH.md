@@ -61,34 +61,41 @@ EasyTier 当时 165B 包能过的原因待查：可能其 socket pair 的 VCN fl
 - punchpoller 日志只在 MESHDESK_DEBUG=1 输出
 - TestUDPStream_LargeTransfer 在 localhost 有 ~20% flaky 基线（UDP 丢包触发）
 
-## 深夜联调最终定论（2026-08-23 凌晨，五节点 EasyTier 对照）
-
-tcpdump 三重验证（txcloud出站/ARM入站/ARM routeUDPPacket日志）：
-
-### v4 打洞路径（meshdesk punched stream）
-1. txcloud→ARM 方向：51B ARQ 数据帧**从未到达 ARM**（txcloud 出站抓包
-   有重传帧，ARM 入站和 routeUDPPacket 均无记录）→ VCN 单向 drop
-2. ARM→txcloud 方向：13B/11B keepalive 双向正常流动
-3. 降 payload 到 16B（27B 帧）依然不通 → v4 打洞路径对本项目不可用
+## 最终定论（2026-08-23，五节点 EasyTier 对照 + tcpdump 全流量分析）
 
 ### EasyTier 基准数据全部推翻
-- iperf3/echo 测的 29-34Mbps 是**发送端假象**（send() 写内核缓冲即返回，
-  数据实际被路径丢弃）。bw_strict 校验模式揭穿：多数传输 ACK 超时。
-- EasyTier peer 表的 "p2p udp" 标签是隧道协商标记。10MB 传输期间
-  双端物理网卡只有几十个小包——**数据实际走 IPv6 直连或 TCP relay**
-- EasyTier 真正能通的原因：ARM 有公网 IPv6 且 easytier 监听 11010，
-  txcloud 直接通过 **IPv6 直连**（1412B 大包 tcpdump 确认到达 ARM）
 
-### meshdesk 的正确出路：IPv6 直连优先
-txcloud↔ARM 都有公网 IPv6 且实测互通（v4+v6 TCP/UDP 全通）。
-- meta exchange 需要广播各节点的 IPv6 endpoint（advertise_endpoints）
-- TUN forwarder / session dialer 优先尝试 v6 直连，失败再打洞/relay
-- punched stream 保留为 v4-only 环境的兜底
+bw_strict（接收端确认字节数）揭穿：iperf3/echo 的"成功"是发送端假象
+（send() 写内核缓冲即返回）。EasyTier peer 表的 "p2p udp" 标签只是
+隧道协商结果。
+
+### 真相：EasyTier 走的是 ARM 公网 IPv6 直连入站
+
+tcpdump 全量抓包确认：16024 个 1412B UDP 大包从 txcloud v6 (2001:db8:...)
+直达 ARM v6 (2001:db8:...) 端口 11010。这不是打洞——ARM 有公网 IPv6
+且 easytier 监听 [::]:11010，txcloud 直接连过去。
+
+### meshdesk 的问题不是打洞失败
+
+meshdesk punched stream keepalive (13B) 双向通说明路径可达。
+问题：普通节点没有在固定端口监听 UDP，也没有 advertise IPv6 endpoint。
+txcloud 不知道 ARM 的 v6 地址，自然无法直连。
+
+### 正确修复方案（v2.0）
+
+1. **普通节点 mux transport 绑定固定 UDP 端口**（mesh port 52888）
+   - 当前 Mode A 用随机端口 → 对端无法直连
+   - 改为绑 [::]:52888 dual-stack（v4+v6 一个 socket）
+2. **advertise_endpoints 包含 [v6_addr]:52888**
+   - meta exchange 自动传播给全网
+3. **session dial / TUN forwarder 优先尝试 advertised endpoint 直连**
+   - v6 或 v4 直连成功 → 直接用（无需打洞）
+   - 失败 → 打洞 → 再失败 → relay
 
 ### 实施状态
-- ARM config 已加 v6 advertise_endpoints（2001:db8:...:52888）
-- meshdesk mux transport 已有 [::] v6 socket（随机端口，coordination 交换）
-- 待实现：v6 endpoint 的 session dial + TUN forwarder 直连优先级
+- ARM config 已加 v6 advertise_endpoints
+- tryReconnect 已支持遍历所有 endpoint 候选
+- 待实现：mux transport 固定端口绑定 + TUN forwarder endpoint 遍历
 
 ## 下一步优先级
 1. 验证 ARM VCN UDP 包大小限制（分级 probe + tcpdump）
