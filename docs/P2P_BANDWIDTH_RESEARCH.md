@@ -61,6 +61,30 @@ EasyTier 当时 165B 包能过的原因待查：可能其 socket pair 的 VCN fl
 - punchpoller 日志只在 MESHDESK_DEBUG=1 输出
 - TestUDPStream_LargeTransfer 在 localhost 有 ~20% flaky 基线（UDP 丢包触发）
 
+## 深夜联调最终定论（2026-08-23 凌晨）
+
+tcpdump 三重验证（txcloud出站/ARM入站/ARM routeUDPPacket日志）：
+
+1. txcloud→ARM 方向：51B ARQ 数据帧**从未到达 ARM**（txcloud 出站抓包
+   有重传帧，ARM 入站和 routeUDPPacket 均无记录）→ VCN 单向 drop
+2. ARM→txcloud 方向：13B/11B keepalive 双向正常流动
+3. 降 payload 到 16B（27B 帧）依然不通 → 阈值极小或非纯大小问题
+4. EasyTier 能通的核心差异：**200ms 双向高频 ping-pong 从不间断**，
+   VCN flow 永远新鲜；且其 28B 帧 + 高频互发的组合恰好存活
+
+### 可能的突破方向
+A. 完全模仿 EasyTier：punched path 上双向 200ms 心跳 + ≤28B 帧 +
+   应用层分片（IP 包拆成多个小帧，接收端重组）
+B. 接受 relay 兜底：punched stream 仅作为低容量辅助通道（keepalive
+   维持 conntrack），TUN 主数据走 TCP relay
+C. 研究 EasyTier 源码中 UdpSocketArray 的端口预测策略（对 symmetric
+   NAT 的 port hopping），可能有额外的 flow 特性
+
+### 当前建议
+方案 B 最务实：meshdesk 的 TCP relay 在同路径实测 ~2-8Mbps（260ms RTT
+双跳），已经优于 punched path 的实际表现。把 punched stream 保留为
+"conntrack 预热 + 快速切换通道"，等方案 A 的分片实现后再启用为主数据面。
+
 ## 下一步优先级
 1. 验证 ARM VCN UDP 包大小限制（分级 probe + tcpdump）
 2. 若有限制：punched stream 应用层分片（>200B 拆多帧，接收端重组）
