@@ -52,11 +52,7 @@ const (
 	// payload probe after a failure (the link may have improved).
 	udpPayloadProbeInterval = 60 * time.Second
 
-	udpWindowSize = 1024 // sliding window (in-flight frames). 128 frames
-	// × 40B payload = 5KB effective window — at 260ms RTT that caps
-	// throughput at ~19KB/s, stalling TCP over the punched path.
-	// 1024 × 40B ≈ 40KB; with MTU-upgraded 1200B frames the window
-	// spans ~1.2MB, enough to fill a 30Mbps × 260ms BDP (~1MB).
+	udpWindowSize = 128 // sliding window (in-flight frames).
 	// 32→128 (v1.6.3): the WAN RTT (txcloud↔Oracle ~257ms) × 40B
 	// payload bounded throughput at ~40kbps (BDP = window × frame /
 	// RTT). 128 frames × 40B / 0.257s ≈ 20KB/s ≈ 160kbps. Safe with
@@ -96,6 +92,10 @@ type udpStreamConn struct {
 	// their own keepalive and must not be killed by the recvLoop idle
 	// timeout (the probes don't reset it on the sending side).
 	punched bool
+	// lastInboundNs tracks the last received frame (atomic store/load,
+	// nanoseconds since epoch) for the keepalive goroutine's stale-path
+	// detection. Zero means no frame received yet.
+	lastInboundNs atomic.Int64
 
 	// Path MTU discovery: payloadSize starts conservative (udpMaxPayload)
 	// and probes upward. If a large frame is ACKed, payloadSize upgrades
@@ -394,6 +394,7 @@ func (sc *udpStreamConn) handlePacket(data []byte) {
 	if len(data) < udpFrameHeaderLen {
 		return
 	}
+	sc.lastInboundNs.Store(time.Now().UnixNano())
 	ftype := data[0]
 	seq := binary.BigEndian.Uint32(data[1:5])
 	ack := binary.BigEndian.Uint32(data[5:9])
