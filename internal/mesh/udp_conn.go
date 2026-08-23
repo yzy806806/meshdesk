@@ -493,8 +493,28 @@ func (sc *udpStreamConn) handlePacket(data []byte) {
 				sc.recvBuf[seq] = payload
 			}
 		}
-		if seqBefore(sc.ackPending, seq) {
-			sc.ackPending = seq
+		// Compute the cumulative ACK boundary. The ACK means "every
+		// frame from 0 through this seq is safely buffered" — NOT
+		// "delivered to the reader". Advertising a seq beyond a gap
+		// makes the sender drop those frames from its retransmit window
+		// while the gap frame never arrives → permanent stall.
+		//
+		// First, the just-received frame extends the boundary iff it is
+		// the immediate successor of ackPending (or equals it: dup of
+		// the highest already-acked frame). Then walk forward over any
+		// buffered frames that have become contiguous.
+		if seq == sc.ackPending || seq == (sc.ackPending+1)%udpMaxSeq {
+			if seqBefore(sc.ackPending, seq) {
+				sc.ackPending = seq
+			}
+		}
+		for {
+			next := (sc.ackPending + 1) % udpMaxSeq
+			if _, ok := sc.recvBuf[next]; ok {
+				sc.ackPending = next
+			} else {
+				break
+			}
 		}
 		sc.ackCount++
 		needAck := sc.ackCount >= 2
