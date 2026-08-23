@@ -1,5 +1,38 @@
 # Release Notes
 
+## v2.0.1 — 2026-08-23
+
+**PunchDataplane hardening — review fixes (H1/H2/M1/M2/M3).**
+
+Found in a full post-release code review of the v2.0 dataplane. No behavior
+change on healthy paths; all fixes are failure-path correctness.
+
+### Fixed
+- **H1 — dead-plane leak**: `healthCheckLoop` marked the path dead but never
+  removed the plane from `PunchDataplaneManager`. Dead planes accumulated,
+  degraded the feed callback's linear scan, and let inbound packets fall into
+  the legacy ARQ parser. Now removed both from the onDead callback and lazily
+  from `Get()`.
+- **H2 — nil tunWrite panic**: `TunWriteFunc()` returns nil before TUN setup;
+  the first inbound packet then panicked inside the feed callback and killed
+  the punch socket poller goroutine (process exit). Constructor now rejects a
+  nil writer up front; `Feed()` guards defensively.
+- **M1 — io.Writer contract**: `Write()` returned the wire size (payload only,
+  after stripping the length prefix) instead of bytes consumed from the caller's
+  buffer. Any caller checking for short writes would misjudge success.
+- **M2 — silent NAT-rebind drops**: the feed callback matched dataplanes by
+  exact remote addr string; after a peer NAT rebind (source port change) packets
+  were dropped without trace. Now rate-limited logging (≤1/min).
+- **M3 — dead ARQ streams reclaimed**: `GetPunchedStream` reported 60s-dead
+  streams as nil but left them in the map; now removes and closes under the
+  same lock (identity-checked).
+
+### Verification
+- `go build ./...`, `go vet ./...` clean.
+- `internal/app`, `internal/holepunch`: full pass. `internal/mesh`: pass except
+  the pre-existing flaky `TestUDPStream_LargeTransfer` (also fails at the v2.0.0
+  tag; environment-dependent, tracked separately).
+
 ## v2.0.0 — 2026-08-23
 
 **PunchDataplane: raw UDP data plane aligned with EasyTier/Tailscale.**

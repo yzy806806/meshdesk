@@ -230,3 +230,18 @@ relay stream 收到的包也注入 TUN。两条路并存，
 | `internal/mesh/mux_transport.go` | punchSocketPoller 路由所有包 |
 | `internal/app/mesh_node.go` | wireMeshNodeCallbacks 设置 feed callback |
 | `internal/mesh/node.go` | PunchDataplaneMgr/TunWriteFunc/ValidateSourceIPFunc |
+
+### v2.0.1 审查修复（2026-08-23）
+
+v2.0.0 发布后全量代码复审发现的失败路径缺陷，全部修复：
+
+| 级别 | 缺陷 | 修复 |
+|------|------|------|
+| H1 | dead 数据面永不从 Manager 移除 → 内存泄漏 + 入站包误入 ARQ 路径 | onDead 回调 + Get() 惰性删除双保险 |
+| H2 | TUN 未初始化时 TunWriteFunc() 返回 nil，首个入站包 panic 杀死 poller goroutine | 构造器拒绝 nil + Feed 防护 |
+| M1 | Write() 剥长度前缀后返回线缆字节数，违反 io.Writer 契约 | 返回 len(p) |
+| M2 | feed 按精确 addr 匹配，NAT rebind 后静默丢包 | ≤1/min 限频日志 |
+| M3 | GetPunchedStream 判死不回收 ARQ 流 | 同锁内身份校验后 delete+Close |
+
+另：L4 Start() 缩进修正。验证：build/vet 干净；app+holepunch 测试全过；
+mesh 包除既有 flaky（TestUDPStream_LargeTransfer，v2.0.0 tag 同样存在）外全过。
