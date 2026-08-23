@@ -26,12 +26,20 @@ change on healthy paths; all fixes are failure-path correctness.
 - **M3 — dead ARQ streams reclaimed**: `GetPunchedStream` reported 60s-dead
   streams as nil but left them in the map; now removes and closes under the
   same lock (identity-checked).
+- **H3 — cumulative ACK past a gap (root cause of the LargeTransfer flaky)**:
+  `handlePacket` advanced `ackPending` to the highest out-of-order seq seen.
+  Since ACKs are cumulative, an out-of-order high watermark made the sender
+  clear those frames from its retransmit window while the receiver was still
+  waiting for the frame below the gap → both sides stalled (~1/5 runs of
+  `TestUDPStream_LargeTransfer`, present since v2.0.0). `ackPending` now only
+  advances over contiguous buffered frames; frames beyond a gap stay in the
+  sender's window and are retransmitted.
 
 ### Verification
 - `go build ./...`, `go vet ./...` clean.
-- `internal/app`, `internal/holepunch`: full pass. `internal/mesh`: pass except
-  the pre-existing flaky `TestUDPStream_LargeTransfer` (also fails at the v2.0.0
-  tag; environment-dependent, tracked separately).
+- Full suites green: `internal/mesh`, `internal/app`, `internal/holepunch`.
+- Stress: `TestUDPStream_LargeTransfer` ×30 and `TestTUNUDPStream_AuthAndData`
+  ×10 pass; `-race` clean on both.
 
 ## v2.0.0 — 2026-08-23
 
