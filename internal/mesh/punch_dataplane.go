@@ -63,8 +63,7 @@ func NewPunchDataplane(conn *net.UDPConn, remote *net.UDPAddr, peerKey string,
 
 // Start launches the receive loop and keepalive goroutines.
 func (pd *PunchDataplane) Start() {
-	go pd.recvLoop()
-	go pd.keepaliveLoop()
+		go pd.keepaliveLoop()
 	go pd.healthCheckLoop()
 }
 
@@ -105,48 +104,6 @@ func (pd *PunchDataplane) IsAlive() bool {
 	return time.Since(time.Unix(0, ts)) < 15*time.Second
 }
 
-// recvLoop reads UDP datagrams from the punched socket and writes
-// them directly to the TUN device. Each datagram is a complete IP
-// packet (no framing/length-prefix — the sender wrote it raw).
-func (pd *PunchDataplane) recvLoop() {
-	buf := make([]byte, 65535)
-	for {
-		select {
-		case <-pd.done:
-			return
-		default:
-		}
-		n, _, err := pd.conn.ReadFromUDP(buf)
-		if err != nil {
-			if pd.closed.Load() {
-				return
-			}
-			// Transient error — keep trying.
-			continue
-		}
-		pd.lastRx.Store(time.Now().UnixNano())
-		pd.rxPackets.Add(1)
-
-		// Keepalive probes (2B) are not IP packets — update lastRx
-		// but don't attempt TUN write.
-		if isProbePacket(buf[:n]) {
-			continue
-		}
-
-		packet := make([]byte, n)
-		copy(packet, buf[:n])
-
-		// Anti-spoof: validate source IP matches the peer's VirtualIP.
-		if pd.validate != nil && !pd.validate(packet, pd.peerKey) {
-			continue
-		}
-
-		// Write directly to TUN device — no framing, no ARQ.
-		if _, err := pd.tunWrite(packet); err != nil {
-			log.Printf("[punch-dataplane] TUN write error: %v", err)
-		}
-	}
-}
 
 // keepaliveLoop sends a tiny probe every 2s to keep the NAT/conntrack
 // mapping alive on both sides. The probe is a 2-byte payload that
@@ -294,4 +251,50 @@ func (pd *PunchDataplane) SetWriteDeadline(t time.Time) error { return nil }
 // to the TUN device. This stub satisfies net.Conn.
 func (pd *PunchDataplane) Read(p []byte) (int, error) {
 	return 0, nil
+}
+
+// Feed processes an inbound datagram from the mux's routeUDPPacket.
+// This replaces the independent recvLoop (which competed with
+// punchSocketPoller for the same socket).
+func (pd *PunchDataplane) Feed(data []byte) {
+	pd.lastRx.Store(time.Now().UnixNano())
+	pd.rxPackets.Add(1)
+
+	// Keepalive probe — not an IP packet.
+	if isProbePacket(data) {
+		return
+	}
+
+	// Anti-spoof validation.
+	if pd.validate != nil && !pd.validate(data, pd.peerKey) {
+		return
+	}
+
+	// Write directly to TUN.
+	if _, err := pd.tunWrite(data); err != nil {
+		// TUN write error — non-fatal, keep going.
+	}
+}
+
+// RemoteAddr returns the peer's UDP address (exported).
+func (pd *PunchDataplane) RemoteUDPAddr() *net.UDPAddr {
+	return pd.remote
+}
+
+// Keys returns all peer keys with active dataplanes.
+func (m *PunchDataplaneManager) Keys() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	keys := make([]string, 0, len(m.planes))
+	for k := range m.planes {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// SetPunchDataplaneFeed sets the feed callback on the udpMeshManager.
+func (m *udpMeshManager) SetPunchDataplaneFeed(f func(*net.UDPAddr, []byte) bool) {
+	m.mu.Lock()
+	m.punchDataplaneFeed = f
+	m.mu.Unlock()
 }

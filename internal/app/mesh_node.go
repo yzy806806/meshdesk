@@ -187,6 +187,30 @@ func (a *App) registerVirtualPortServices() {
 		// peers that already exchanged meta — otherwise relay-attached
 		// nodes never learn where to push metrics.
 		node.SetMetaBroadcaster(me.Broadcast)
+
+		// Wire PunchDataplane feed: inbound UDP datagrams on punched
+		// sockets are routed through routeUDPPacket → feed callback
+		// → PunchDataplane.recvLoop. This avoids a competing reader
+		// on the same socket (punchSocketPoller owns the read loop).
+		mt := node.MuxTransport()
+		if mt != nil {
+			pdmgr := node.PunchDataplaneMgr()
+			mt.UDPMesh().SetPunchDataplaneFeed(func(addr *net.UDPAddr, data []byte) bool {
+				// Find the PunchDataplane for this remote address.
+				// The manager is keyed by peer public key, but the
+				// routeUDPPacket only knows the addr. We need to
+				// try all active dataplanes (there are usually ≤5).
+				for _, pk := range pdmgr.Keys() {
+					pd := pdmgr.Get(pk)
+					if pd != nil && pd.RemoteUDPAddr().String() == addr.String() {
+						pd.Feed(data)
+						return true
+					}
+				}
+				return false
+			})
+		}
+
 		log.Printf("  Meta:       session meta exchange active (virtual port 0x%x)", mesh.MetaVirtualPort)
 
 		// Replay meta for sessions established BEFORE the meta

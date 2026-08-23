@@ -77,6 +77,11 @@ type udpMeshManager struct {
 	// any authentication — a forger must not spawn unbounded
 	// 2-goroutine streams).
 	meshCreateGuard map[string]*tunAuthFailState
+	// punchDataplaneFeed is called for each inbound datagram on a
+	// punched socket. If it returns true, the packet was consumed
+	// by a PunchDataplane (raw data plane) and should not be
+	// processed by the ARQ/legacy path. Set by MeshNode.
+	punchDataplaneFeed func(addr *net.UDPAddr, data []byte) bool
 }
 
 func newUDPMeshManager() *udpMeshManager {
@@ -271,6 +276,14 @@ func (m *udpMeshManager) HasStream(addr *net.UDPAddr) bool {
 func (m *udpMeshManager) routeUDPPacket(conn *net.UDPConn, addr *net.UDPAddr, data []byte, meshCh chan net.Conn) bool {
 	if len(data) < 1 {
 		return false
+	}
+	// Raw PunchDataplane: if a feed callback is registered, try it
+	// first. Raw IP packets and keepalive probes go here; ARQ frames
+	// (11B header) fall through to the legacy path below.
+	if m.punchDataplaneFeed != nil {
+		if m.punchDataplaneFeed(addr, data) {
+			return true
+		}
 	}
 	key := addr.String()
 	// Inbound mesh streams are keyed |in (outbound DialUDPStream uses
