@@ -207,6 +207,7 @@ func (a *App) startHolePunch() {
 				func() {
 					// Path dead — degrade to relay and re-punch.
 					log.Printf("  HolePunch: raw dataplane to %s dead, degrading", peerKey[:8])
+					a.node.PunchDataplaneMgr().Remove(peerKey)
 					a.node.ClearHoleEndpoint(peerKey)
 					hp.ResetHoleState(peerKey)
 				},

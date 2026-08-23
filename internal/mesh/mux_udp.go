@@ -684,9 +684,15 @@ func (m *udpMeshManager) GetPunchedStream(addr string) *udpStreamConn {
 	// Liveness check: a punched stream that has received nothing for
 	// 60s is dead (the path's keepalive probes stopped arriving — the
 	// peer rebound, or the VCN started dropping frames). Returning it
-	// would black-hole TUN traffic; report nil so the forwarder falls
-	// back to the smux relay path instead.
+	// would black-hole TUN traffic; remove it so the forwarder falls
+	// back to the smux relay path and the dead stream is reclaimed.
 	if ts := sc.lastInboundNs.Load(); ts > 0 && time.Since(time.Unix(0, ts)) > 60*time.Second {
+		m.mu.Lock()
+		if cur, ok := m.streams[addr]; ok && cur == sc {
+			delete(m.streams, addr)
+			sc.Close()
+		}
+		m.mu.Unlock()
 		return nil
 	}
 	return sc

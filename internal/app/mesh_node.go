@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/yzy806806/meshdesk/internal/mesh"
@@ -194,21 +195,31 @@ func (a *App) registerVirtualPortServices() {
 		// on the same socket (punchSocketPoller owns the read loop).
 		mt := node.MuxTransport()
 		if mt != nil {
-			pdmgr := node.PunchDataplaneMgr()
-			mt.UDPMesh().SetPunchDataplaneFeed(func(addr *net.UDPAddr, data []byte) bool {
-				// Find the PunchDataplane for this remote address.
-				// The manager is keyed by peer public key, but the
-				// routeUDPPacket only knows the addr. We need to
-				// try all active dataplanes (there are usually ≤5).
-				for _, pk := range pdmgr.Keys() {
-					pd := pdmgr.Get(pk)
-					if pd != nil && pd.RemoteUDPAddr().String() == addr.String() {
-						pd.Feed(data)
-						return true
-					}
+		pdmgr := node.PunchDataplaneMgr()
+		var lastUnmatchedLog atomic.Int64
+		mt.UDPMesh().SetPunchDataplaneFeed(func(addr *net.UDPAddr, data []byte) bool {
+			// Find the PunchDataplane for this remote address.
+			// The manager is keyed by peer public key, but the
+			// routeUDPPacket only knows the addr. We need to
+			// try all active dataplanes (there are usually ≤5).
+			for _, pk := range pdmgr.Keys() {
+				pd := pdmgr.Get(pk)
+				if pd != nil && pd.RemoteUDPAddr().String() == addr.String() {
+					pd.Feed(data)
+					return true
 				}
-				return false
-			})
+			}
+			// No dataplane owns this address — likely a NAT
+			// rebinding (peer source port changed) or leftover
+			// ARQ traffic. Log at most once per minute so a
+			// chatty peer can't flood the log.
+			now := time.Now().UnixNano()
+			if last := lastUnmatchedLog.Load(); last == 0 || now-last > int64(time.Minute) {
+				lastUnmatchedLog.Store(now)
+				log.Printf("[punch-dataplane] no dataplane matches %s (NAT rebind? %dB dropped to legacy path)", addr, len(data))
+			}
+			return false
+		})
 		}
 
 		log.Printf("  Meta:       session meta exchange active (virtual port 0x%x)", mesh.MetaVirtualPort)

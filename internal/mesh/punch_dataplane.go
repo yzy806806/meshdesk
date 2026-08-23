@@ -48,6 +48,10 @@ func NewPunchDataplane(conn *net.UDPConn, remote *net.UDPAddr, peerKey string,
 	tunWrite func([]byte) (int, error), validate func([]byte, string) bool,
 	onDead func(),
 ) *PunchDataplane {
+	if tunWrite == nil {
+		panic("mesh: NewPunchDataplane requires a non-nil tunWrite; " +
+			"call MeshNode.TunWriteFunc() only after TUN setup succeeded")
+	}
 	pd := &PunchDataplane{
 		conn:     conn,
 		remote:   remote,
@@ -63,7 +67,7 @@ func NewPunchDataplane(conn *net.UDPConn, remote *net.UDPAddr, peerKey string,
 
 // Start launches the receive loop and keepalive goroutines.
 func (pd *PunchDataplane) Start() {
-		go pd.keepaliveLoop()
+	go pd.keepaliveLoop()
 	go pd.healthCheckLoop()
 }
 
@@ -87,12 +91,15 @@ func (pd *PunchDataplane) Write(p []byte) (int, error) {
 			data = p[4:]
 		}
 	}
-	n, err := pd.conn.WriteToUDP(data, pd.remote)
+	_, err := pd.conn.WriteToUDP(data, pd.remote)
 	if err != nil {
 		return 0, err
 	}
 	pd.txPackets.Add(1)
-	return n, nil
+	// io.Writer contract: report the number of bytes consumed from the
+	// caller's buffer (the full framed packet), not the wire size after
+	// the length prefix was stripped.
+	return len(p), nil
 }
 
 // Close shuts down the data plane. The socket is NOT closed (the
@@ -215,12 +222,17 @@ func (m *PunchDataplaneManager) Register(pd *PunchDataplane, peerKey string) {
 }
 
 // Get returns the active dataplane for a peer, or nil if none.
-// Returns nil if the dataplane is dead (stale path).
+// Returns nil if the dataplane is dead (stale path) — and lazily
+// removes it so dead planes don't accumulate in the map.
 func (m *PunchDataplaneManager) Get(peerKey string) *PunchDataplane {
 	m.mu.RLock()
 	pd := m.planes[peerKey]
 	m.mu.RUnlock()
-	if pd == nil || !pd.IsAlive() {
+	if pd == nil {
+		return nil
+	}
+	if !pd.IsAlive() {
+		m.Remove(peerKey)
 		return nil
 	}
 	return pd
@@ -283,7 +295,12 @@ func (pd *PunchDataplane) Feed(data []byte) {
 		return
 	}
 
-	// Write directly to TUN.
+	// Write directly to TUN. tunWrite is guaranteed non-nil by the
+	// constructor, but guard anyway: a panic here would kill the
+	// punchSocketPoller goroutine and take the whole process down.
+	if pd.tunWrite == nil {
+		return
+	}
 	if _, err := pd.tunWrite(data); err != nil {
 		// TUN write error — non-fatal, keep going.
 	}
