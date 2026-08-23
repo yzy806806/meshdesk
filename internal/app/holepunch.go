@@ -168,14 +168,16 @@ func (a *App) startHolePunch() {
 			}()
 			return
 		}
-		// EasyTier-style UDP data plane: register the punched socket
-		// as a pre-authenticated ARQ stream. No key exchange over
-		// UDP — the coordination via smux already verified identity.
-		// This avoids the >60B kx packet filter on Oracle Cloud VCN.
+		// EasyTier-style raw UDP data plane: the punched socket
+		// becomes a transport directly — no ARQ, no kx, no framing.
+		// TUN IP packets go out as raw UDP datagrams (up to ~1400B);
+		// reliability is delegated to inner TCP. The coordination via
+		// smux already verified the peer's identity, so the data plane
+		// is pre-authenticated.
 		go func() {
 			mt := a.node.MuxTransport()
 			if mt == nil {
-				log.Printf("  HolePunch: no mux transport, cannot register punched stream")
+				log.Printf("  HolePunch: no mux transport")
 				a.node.ClearHoleEndpoint(peerKey)
 				hp.ResetHoleState(peerKey)
 				return
@@ -195,25 +197,22 @@ func (a *App) startHolePunch() {
 				hp.ResetHoleState(peerKey)
 				return
 			}
-			// Register the punched socket as an ARQ stream. Both
-			// sides do this — the stream is keyed by remote address,
-			// so each side has its own stream for the same peer.
-			// The punchSocketPoller feeds inbound frames to the ARQ
-			// layer via routeUDPPacket, and the stream is delivered
-			// to the TUN forwarder's accept path (connWithPeer) so
-			// inbound packets reach the TUN device.
-			sc := mt.UDPMesh().RegisterPunchedStream(local, udpAddr, peerKey, mt.TunCh())
-			if sc == nil {
-				log.Printf("  HolePunch: failed to register punched stream to %s", target)
-				a.node.ClearHoleEndpoint(peerKey)
-				hp.ResetHoleState(peerKey)
-				return
-			}
-			log.Printf("  HolePunch: UDP punched stream registered to %s via %s", peerKey[:8], target)
-			// The stream stays alive as long as the punch socket
-			// receives data (ARQ keepalive via TUN traffic). If the
-			// peer goes silent, the 120s idle timeout (recvLoop)
-			// closes the stream and frees resources.
+			// Create a raw-UDP PunchDataplane. Both sides do this.
+			// The recv loop reads datagrams and writes them directly
+			// to the TUN device (with anti-spoof validation). The
+			// write path sends TUN IP packets as raw UDP datagrams.
+			pd := mesh.NewPunchDataplane(local, udpAddr, peerKey,
+				a.node.TunWriteFunc(),
+				a.node.ValidateSourceIPFunc(),
+				func() {
+					// Path dead — degrade to relay and re-punch.
+					log.Printf("  HolePunch: raw dataplane to %s dead, degrading", peerKey[:8])
+					a.node.ClearHoleEndpoint(peerKey)
+					hp.ResetHoleState(peerKey)
+				},
+			)
+			a.node.PunchDataplaneMgr().Register(pd, peerKey)
+			log.Printf("  HolePunch: raw dataplane registered to %s via %s", peerKey[:8], target)
 		}()
 	}
 

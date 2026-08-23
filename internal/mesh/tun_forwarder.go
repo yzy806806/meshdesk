@@ -443,16 +443,36 @@ func (f *TunForwarder) tunReadLoop() {
 // session may have reconnected (smux session replaced) while the old
 // stream's buffered writes still "succeed" (no immediate error), so
 // packets silently vanish on the dead session. TTL forces re-dial.
+// punchDataplaneEnabled reports whether punched UDP streams may serve
+// as the PRIMARY TUN data plane. Default OFF: on paths where a cloud
+// firewall filters mid-size UDP frames in one direction (measured on
+// txcloud→Oracle-ARM), the punched stream passes keepalives but drops
+// data frames — routing TUN traffic through it black-holes the flow
+// while looking healthy at the transport layer. Opt in per node with
+// MESHDESK_PUNCH_DATAPLANE=1 once the path is known good (e.g. after
+// application-layer sharding lands).
+func punchDataplaneEnabled() bool {
+	return os.Getenv("MESHDESK_PUNCH_DATAPLANE") == "1"
+}
+
 func (f *TunForwarder) getOutboundStream(peerKey string) (net.Conn, error) {
-	// EasyTier-style: check for a punched UDP stream first.
+	// EasyTier-style raw UDP: check for an active PunchDataplane first.
+	// If alive, use it — raw datagrams, no ARQ.
+	if pd := f.cfg.MeshNode.PunchDataplaneMgr().Get(peerKey); pd != nil {
+		if debugEnabled {
+			log.Printf("[tun-forwarder] using raw punch dataplane to %s", shortKey(peerKey))
+		}
+		return pd, nil
+	}
+	// Fall back to the legacy ARQ punched stream (if explicitly enabled).
 	eps := f.cfg.MeshNode.PeerEndpoints(peerKey)
-	if len(eps) > 0 {
+	if len(eps) > 0 && punchDataplaneEnabled() {
 		mt := f.cfg.MeshNode.MuxTransport()
 		if mt != nil {
 			for _, ep := range eps {
 				if sc := mt.UDPMesh().GetPunchedStream(ep); sc != nil {
 					if debugEnabled {
-						log.Printf("[tun-forwarder] using punched UDP stream to %s via %s", shortKey(peerKey), ep)
+						log.Printf("[tun-forwarder] using ARQ punched stream to %s via %s", shortKey(peerKey), ep)
 					}
 					return sc, nil
 				}
@@ -1053,4 +1073,15 @@ func shortKey(key string) string {
 // Currently always false to avoid noise; can be wired to a debug flag.
 func isDebugLogEnabled() bool {
 	return os.Getenv("MESHDESK_TUN_DEBUG") == "1"
+}
+
+// Device returns the TUN device for direct packet injection.
+func (f *TunForwarder) Device() *tun.Device {
+	return f.cfg.Device
+}
+
+// ValidateSourceIP checks that a packet's source IP matches the
+// peer's VirtualIP. Exported for use by PunchDataplane.
+func (f *TunForwarder) ValidateSourceIP(packet []byte, peerID string) bool {
+	return f.validateSourceIP(packet, peerID)
 }

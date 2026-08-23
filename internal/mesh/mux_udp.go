@@ -663,8 +663,20 @@ func (m *udpMeshManager) RegisterPunchedStream(local *net.UDPConn, remote *net.U
 // over a punched UDP path instead of TCP relay.
 func (m *udpMeshManager) GetPunchedStream(addr string) *udpStreamConn {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.streams[addr]
+	sc := m.streams[addr]
+	m.mu.Unlock()
+	if sc == nil {
+		return nil
+	}
+	// Liveness check: a punched stream that has received nothing for
+	// 60s is dead (the path's keepalive probes stopped arriving — the
+	// peer rebound, or the VCN started dropping frames). Returning it
+	// would black-hole TUN traffic; report nil so the forwarder falls
+	// back to the smux relay path instead.
+	if ts := sc.lastInboundNs.Load(); ts > 0 && time.Since(time.Unix(0, ts)) > 60*time.Second {
+		return nil
+	}
+	return sc
 }
 
 // udpDialConfirmTimeout is how long DialTUNStream waits for the peer's

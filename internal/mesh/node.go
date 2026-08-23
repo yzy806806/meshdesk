@@ -119,6 +119,11 @@ type MeshNode struct {
 	// is true and setupTUN() has succeeded.
 	tunIntegration *TUNIntegration
 
+	// punchDataplaneMgr manages raw-UDP PunchDataplane instances
+	// (one per peer with an active hole punch). Replaces the ARQ-based
+	// RegisterPunchedStream for the primary TUN data path.
+	punchDataplaneMgr *PunchDataplaneManager
+
 	// peerMetaProvider is a callback that returns known peer public keys
 	// → VirtualIP strings. Set by main.go to bridge the gossip layer
 	// with the TUN IPAM allocator, avoiding an import cycle.
@@ -2962,4 +2967,38 @@ func (n *MeshNode) UpdateLatencyGraph(sourceKey string, latency map[string]int, 
 	if n.latencyGraph != nil {
 		n.latencyGraph.UpdateFromReport(sourceKey, latency, zone)
 	}
+}
+
+// PunchDataplaneMgr returns the raw-UDP dataplane manager.
+// Initialized lazily on first access.
+func (n *MeshNode) PunchDataplaneMgr() *PunchDataplaneManager {
+	if n.punchDataplaneMgr == nil {
+		n.punchDataplaneMgr = NewPunchDataplaneManager()
+	}
+	return n.punchDataplaneMgr
+}
+
+// TunWriteFunc returns a function that writes raw IP packets to the
+// TUN device. Used by PunchDataplane to inject inbound packets.
+func (n *MeshNode) TunWriteFunc() func([]byte) (int, error) {
+	if n.tunIntegration == nil || n.tunIntegration.Forwarder == nil {
+		return nil
+	}
+	dev := n.tunIntegration.Forwarder.Device()
+	if dev == nil {
+		return nil
+	}
+	return func(p []byte) (int, error) {
+		return dev.File().Write(p)
+	}
+}
+
+// ValidateSourceIPFunc returns the TUN forwarder's anti-spoof
+// validation function. Used by PunchDataplane to validate inbound
+// packets before writing to TUN.
+func (n *MeshNode) ValidateSourceIPFunc() func([]byte, string) bool {
+	if n.tunIntegration == nil || n.tunIntegration.Forwarder == nil {
+		return nil
+	}
+	return n.tunIntegration.Forwarder.ValidateSourceIP
 }

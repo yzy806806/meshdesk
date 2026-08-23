@@ -182,23 +182,49 @@ func (n *MeshNode) reconnectLoop(
 }
 
 func (n *MeshNode) tryReconnect(ctx context.Context, peerIdentityHex, endpoint string, isClientSession bool) error {
-	// Prefer the peer's STABLE endpoint (config peers or routing table)
-	// over the passed-in address. The passed-in endpoint may be the
-	// remote source address of an inbound session — an ephemeral NAT
-	// port that is invalid once the connection drops (reconnect loop
-	// against a dead NAT mapping). resolvePeerEndpoint returns the
-	// advertised endpoint which stays valid across reconnects.
-	if stable := n.resolvePeerEndpoint(peerIdentityHex); stable != "" && stable != endpoint {
-		log.Printf("[mesh] reconnect: using stable endpoint %s for peer %s (was %s)",
-			stable, shortPeerID(peerIdentityHex), endpoint)
-		endpoint = stable
+	// Try EVERY known endpoint for the peer — meta-learned advertised
+	// endpoints (including IPv6 direct-connect targets) first, then
+	// punch-learned data-plane endpoints, then config/routing-table
+	// fallbacks. The first endpoint that yields a session wins; on a
+	// path where the v4 punched flow is filtered but IPv6 is open
+	// (e.g. txcloud↔Oracle-ARM), this ordering is what makes the
+	// session come up at all.
+	candidates := n.resolvePeerEndpointCandidates(peerIdentityHex)
+	if endpoint != "" {
+		found := false
+		for _, c := range candidates {
+			if c == endpoint {
+				found = true
+				break
+			}
+		}
+		if !found {
+			candidates = append([]string{endpoint}, candidates...)
+		}
 	}
-	if endpoint == "" {
-		endpoint = n.resolvePeerEndpoint(peerIdentityHex)
-	}
-	if endpoint == "" {
+	if len(candidates) == 0 {
 		return fmt.Errorf("no known endpoint for peer %s", shortPeerID(peerIdentityHex))
 	}
+
+	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for _, ep := range candidates {
+		if err := n.tryReconnectEndpoint(dialCtx, peerIdentityHex, ep); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			log.Printf("[mesh] reconnect: endpoint %s failed for peer %s: %v",
+				ep, shortPeerID(peerIdentityHex), err)
+		}
+	}
+	return lastErr
+}
+
+// tryReconnectEndpoint attempts a single endpoint: UDP hole kx if it is
+// the punched data-plane target, otherwise a TCP/reality mesh dial.
+func (n *MeshNode) tryReconnectEndpoint(ctx context.Context, peerIdentityHex, endpoint string) error {
 
 	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -295,37 +321,48 @@ func (n *MeshNode) cleanupDeadSession(peerIdentityHex string, deadSess *smux.Ses
 }
 
 func (n *MeshNode) resolvePeerEndpoint(peerIdentityHex string) string {
-	// 1. Punch-learned endpoints first: OnHoleEstablished sets the
-	//    CONFIRMED data-plane target (e.g. the v4 endpoint after a
-	//    successful hole) via SetLearnedEndpoints. This is the most
-	//    current, reachable address — the gossip resolver below may
-	//    return a stale/other-family endpoint (v6-first meta) that
-	//    the punch already proved unreachable.
-	if eps := n.PeerEndpoints(peerIdentityHex); len(eps) > 0 {
+	if eps := n.resolvePeerEndpointCandidates(peerIdentityHex); len(eps) > 0 {
 		return eps[0]
 	}
-	// 2. Gossip-advertised endpoint (stable, survives NAT remapping).
-	//    The routing table may hold the ephemeral source address of an
-	//    inbound session, which is invalid after the connection drops.
-	n.mu.RLock()
-	resolver := n.peerEndpointResolver
-	n.mu.RUnlock()
-	if resolver != nil {
-		if ep := resolver(peerIdentityHex); ep != "" {
-			return ep
-		}
-	}
-	n.peersMu.RLock()
-	defer n.peersMu.RUnlock()
-	for i := range n.cfg.Peers {
-		if n.cfg.Peers[i].PublicKey == peerIdentityHex {
-			return n.cfg.Peers[i].Endpoint
-		}
-	}
-	if entry, ok := n.routes.GetPeer(peerIdentityHex); ok && entry.Endpoint != "" {
-		return entry.Endpoint
-	}
 	return ""
+}
+
+// resolvePeerEndpointCandidates returns every known endpoint for a
+// peer, ordered by likelihood of connectivity: meta-learned advertised
+// endpoints first (stable, includes IPv6 direct-connect targets),
+// punch-learned data-plane targets second (confirmed reachable at
+// punch time, but the v4 path may be filtered afterwards), then
+// config/routing-table fallbacks. Callers should try each in turn.
+func (n *MeshNode) resolvePeerEndpointCandidates(peerIdentityHex string) []string {
+	var out []string
+	seen := make(map[string]bool)
+	add := func(eps []string) {
+		for _, ep := range eps {
+			if ep != "" && !seen[ep] {
+				seen[ep] = true
+				out = append(out, ep)
+			}
+		}
+	}
+	// 1. Meta-advertised endpoints (stable; includes IPv6).
+	// 2. Punch-learned data-plane endpoint.
+	n.sessionsMu.Lock()
+	add(append([]string(nil), n.learnedEndpoints[peerIdentityHex]...))
+	add(append([]string(nil), n.holeEndpoints[peerIdentityHex]...))
+	n.sessionsMu.Unlock()
+	// 3. Config peers.
+	n.peersMu.RLock()
+	for i := range n.cfg.Peers {
+		if n.cfg.Peers[i].PublicKey == peerIdentityHex && n.cfg.Peers[i].Endpoint != "" {
+			add([]string{n.cfg.Peers[i].Endpoint})
+		}
+	}
+	n.peersMu.RUnlock()
+	// 4. Routing table.
+	if entry, ok := n.routes.GetPeer(peerIdentityHex); ok && entry.Endpoint != "" {
+		add([]string{entry.Endpoint})
+	}
+	return out
 }
 
 func (n *MeshNode) removeReconnectTracker(peerIdentityHex string) {
