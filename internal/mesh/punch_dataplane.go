@@ -74,7 +74,20 @@ func (pd *PunchDataplane) Write(p []byte) (int, error) {
 	if pd.closed.Load() {
 		return 0, errUDPClosed
 	}
-	n, err := pd.conn.WriteToUDP(p, pd.remote)
+	// The TUN forwarder writes framed packets: [4B big-endian length]
+	// [IP packet]. For raw UDP mode we strip the length prefix and
+	// send only the IP packet — the receiver's Feed() expects raw
+	// IP packets (no framing).
+	data := p
+	if len(p) >= 4 {
+		// Verify it looks like a length-prefixed frame: the first
+		// 4 bytes should be a reasonable packet length.
+		framedLen := int(p[0])<<24 | int(p[1])<<16 | int(p[2])<<8 | int(p[3])
+		if framedLen > 0 && framedLen <= len(p)-4 && framedLen <= 1500 {
+			data = p[4:]
+		}
+	}
+	n, err := pd.conn.WriteToUDP(data, pd.remote)
 	if err != nil {
 		return 0, err
 	}

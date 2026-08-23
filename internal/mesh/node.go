@@ -351,6 +351,12 @@ func New(cfg *config.Config) (*MeshNode, error) {
 // cluster via configured seeds and establishes smux sessions by dialing
 // shared nodes using the mesh-internal path.
 func (n *MeshNode) Start() error {
+	// Initialize the punch dataplane manager early so that
+	// OnHoleEstablished and wireMeshNodeCallbacks share the
+	// same instance.
+	if n.punchDataplaneMgr == nil {
+		n.punchDataplaneMgr = NewPunchDataplaneManager()
+	}
 	if !n.cfg.Reality.Enabled {
 		// Ordinary node mode: no Reality TLS. Creates a plain TCP
 		// listener for mesh-internal smux sessions (0x4D marker byte)

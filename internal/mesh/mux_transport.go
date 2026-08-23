@@ -991,11 +991,11 @@ func (t *MuxTransport) punchSocketPoller() {
 					// infinite 6B ping-pong storm between the two
 					// peers' listeners (~400fps). Keepalive probes
 					// are one-way conntrack refreshers.
-					if n >= 6 && pkt[0] == 0x50 && pkt[1] == 0x4A {
-						continue
-					}
-					// Punch-socket datagrams are data-plane frames:
-					// route them into the UDP mesh manager directly.
+					// All punch-socket datagrams (including keepalive probes)
+					// go through routeUDPPacket. The feed callback handles
+					// probes (updates lastRx, skips TUN write) and data
+					// packets (anti-spoof + TUN write). ARQ frames fall
+					// through to the legacy stream path.
 					if ua, ok := addr.(*net.UDPAddr); ok && t.udpMesh != nil {
 						t.udpMesh.routeUDPPacket(c, ua, pkt, t.meshCh)
 					}
