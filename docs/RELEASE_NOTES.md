@@ -1,5 +1,48 @@
 # Release Notes
 
+## v2.0.0 — 2026-08-23
+
+**PunchDataplane: raw UDP data plane aligned with EasyTier/Tailscale.**
+
+Replaces the ARQ-based punched stream with a raw-UDP datagram data plane. TUN IP
+packets are sent as bare UDP datagrams (up to ~1400B) — no ARQ framing, no ACKs,
+no sliding window. Reliability is delegated to the inner transport (TCP retransmits
+its own segments; ICMP/DNS loss is tolerable). This is the EasyTier model.
+
+### Measured performance (4-node deployment, receiver-confirmed)
+
+| Path | meshdesk v2.0 | EasyTier baseline | Match |
+|------|---------------|-------------------|-------|
+| txcloud→AMD (Seoul, same region) | 31.7 Mbps / 3.2ms | 30.4 Mbps / 2.1ms | ✅ exceeds |
+| txcloud→ARM (Seoul→London, 260ms RTT) | 20.6 Mbps / 261ms | 20.7 Mbps / 260ms | ✅ matches |
+
+### New components
+- `PunchDataplane` (`internal/mesh/punch_dataplane.go`): raw UDP recv/send loop
+  with anti-spoof validation, 2s keepalive, 15s health-check auto-degrade to relay.
+- `PunchDataplaneManager`: per-peer lifecycle management (register/get/remove).
+- `Feed()` callback: mux's `routeUDPPacket` feeds inbound datagrams to the
+  active PunchDataplane (no competing socket readers).
+
+### Key design decisions
+- **No ARQ in the punched data plane** — the ARQ layer's 128-frame × 40B window
+  capped throughput at ~19KB/s on 260ms RTT paths (100× below capacity). Raw
+  datagrams let TCP handle reliability natively.
+- **Strip length prefix in Write()** — TUN forwarder writes framed packets
+  (4B length + IP), but raw UDP sends bare IP packets. PunchDataplane.Write
+  strips the 4B prefix automatically.
+- **Route keepalive probes through routeUDPPacket** — the old punchSocketPoller
+  discarded 0x50 0x4A probes, starving the health check. Now all punch-socket
+  datagrams go through routeUDPPacket → feed callback → Feed().
+
+### Previous fixes (v1.8.3 → v2.0.0, retained)
+- coordinator initiator key offset (+12→+8, truncation caused anti-spoof failure)
+- meta replay for early sessions
+- bidirectional probe + TUN delivery
+- ClearHoleEndpoint + ResetHoleState on stale paths
+- keepalive 2s (VCN flow aging)
+- tryReconnect endpoint candidate traversal (IPv6 direct-connect priority)
+
+
 ## v1.8.3 — 2026-08-20
 
 **UDP hole-punch restoration: 5 root-cause fixes.**

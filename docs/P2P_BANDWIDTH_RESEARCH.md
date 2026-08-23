@@ -102,3 +102,31 @@ txcloud 不知道 ARM 的 v6 地址，自然无法直连。
 2. 若有限制：punched stream 应用层分片（>200B 拆多帧，接收端重组）
 3. batched-ACK + bounded recvBuf → 窗口扩到 512+
 4. 目标：ARM 路径 ≥10Mbps（EasyTier 的 1/3 即可用，追平需分片+扩窗）
+
+
+---
+
+## 最终结论（2026-08-23 实施+验证完成）
+
+### PunchDataplane raw UDP 数据面已实现并验证
+
+meshdesk v2.0 的 PunchDataplane 成功对齐 EasyTier 性能：
+
+| 路径 | meshdesk v2.0 | EasyTier | 状态 |
+|------|--------------|----------|------|
+| txcloud→AMD | 31.7 Mbps / 3.2ms | 30.4 / 2.1ms | ✅ 超越 |
+| txcloud→ARM | 20.6 Mbps / 261ms | 20.7 / 260ms | ✅ 持平 |
+
+### 关键发现回顾
+
+1. ARQ 层的窗口×RTT 上限是带宽瓶颈（128帧×40B/260ms ≈ 19KB/s）
+2. EasyTier 用 raw datagram（1412B 大帧）跑出 20+Mbps
+3. 之前的"VCN 过滤大包"结论是测试方法问题（iperf send() 假象）
+4. 纯 v4 环境下 EasyTier 打洞数据面完全可行
+5. meshdesk PunchDataplane 复现了同等性能
+
+### 代码 commit 链
+
+- 8251368: feat(punch-dataplane): raw UDP data plane replacing ARQ
+- 891ca67: fix: Feed callback instead of competing recvLoop
+- 05d4835: fix: strip length prefix + route probes through feed

@@ -194,3 +194,39 @@ relay stream 收到的包也注入 TUN。两条路并存，
 | 双向高频心跳被 VCN 限速 | 低 | 心跳只有 13B/2s，远低于限速阈值 |
 | 打洞 socket 与 mux socket 冲突 | 低 | 独立 bind 随机端口（Mode A 已有此机制） |
 | 多 peer 场景 socket 数量膨胀 | 低 | 每 peer 1 个 socket，6 节点最多 5 个 |
+
+
+---
+
+## 实测结果（2026-08-23，4 节点部署）
+
+### meshdesk PunchDataplane vs EasyTier 基准（接收端严格确认）
+
+| 路径 | meshdesk v2.0 | EasyTier | 对标 |
+|------|--------------|----------|------|
+| txcloud→AMD (首尔同城) | 31.7 Mbps / 3.2ms | 30.4 Mbps / 2.1ms | ✅ 超越 |
+| txcloud→ARM (首尔→伦敦) | 20.6 Mbps / 261ms | 20.7 Mbps / 260ms | ✅ 持平 |
+
+### 实施过程中的关键 bug 修复
+
+1. **strip length prefix** — TUN forwarder 写 [4B len][IP]，raw UDP 需要裸 IP。
+   PunchDataplane.Write 自动剥掉前 4 字节。
+
+2. **route probes through feed** — punchSocketPoller 丢弃 0x50 0x4A probe
+   导致对端 lastRx 不更新 → 20s 后 health check 误杀。改为所有包走
+   routeUDPPacket → feed callback。
+
+3. **early-init manager** — Start() 里提前初始化 PunchDataplaneMgr，
+   确保 OnHoleEstablished 和 wireMeshNodeCallbacks 共享同一实例。
+
+### 代码位置
+
+| 文件 | 内容 |
+|------|------|
+| `internal/mesh/punch_dataplane.go` | PunchDataplane 结构体 + Feed + Write + keepalive + health |
+| `internal/app/holepunch.go` | OnHoleEstablished 对接 PunchDataplane |
+| `internal/mesh/tun_forwarder.go` | getOutboundStream 优先 PunchDataplane |
+| `internal/mesh/mux_udp.go` | routeUDPPacket → punchDataplaneFeed |
+| `internal/mesh/mux_transport.go` | punchSocketPoller 路由所有包 |
+| `internal/app/mesh_node.go` | wireMeshNodeCallbacks 设置 feed callback |
+| `internal/mesh/node.go` | PunchDataplaneMgr/TunWriteFunc/ValidateSourceIPFunc |

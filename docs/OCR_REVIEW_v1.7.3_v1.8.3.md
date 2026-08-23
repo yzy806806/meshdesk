@@ -41,3 +41,40 @@ No critical or high severity issues found. The changeset covers UDP hole-punch r
 - **File**: `internal/app/p2p.go`, `startP2P` goroutine
 - **Issue**: Uses `goto reconnect` to jump back to the outer `AddPeer` loop after detecting session loss. Go allows `goto` but it is uncommon. Logic is correct — the goto breaks out of the inner `select` loop and re-enters the outer `for` loop.
 - **Severity**: low (style) — functional, could be replaced with a labeled break for readability
+
+
+---
+
+## OCR Code Review — v2.0.0 (PunchDataplane)
+
+> Review date: 2026-08-23
+> Range: 8251368..05d4835 (3 commits, +479/-64 lines)
+
+### Findings
+
+**No critical or high issues found.**
+
+#### Medium
+
+**M1: PunchDataplane.Write strips 4B length prefix heuristically**
+- File: `punch_dataplane.go` Write()
+- The heuristic checks `framedLen > 0 && framedLen <= len(p)-4 && framedLen <= 1500`.
+  A malformed IP packet whose first 4 bytes happen to look like a valid length
+  would be incorrectly stripped. Risk: low (TUN packets always start with a
+  valid IP version nibble, not a length).
+
+**M2: punchDataplaneFeed iterates all dataplanes per packet**
+- File: `mesh_node.go` feed callback
+- O(N) scan over all active dataplanes for every inbound packet. With ≤5 peers
+  this is fine; at scale (100+ peers) an addr→peerKey index would be better.
+- Severity: low (current scale is 5 nodes).
+
+#### Low
+
+**L1: PunchDataplane.Read returns (0, nil) — satisfies net.Conn but unused**
+- Unused stub; harmless but could confuse callers if they ever call Read.
+- Severity: low (cosmetic)
+
+**L2: isProbePacket checks exactly 2 bytes — probe could be padded**
+- If a future implementation pads the probe, the check would fail.
+- Severity: low (current probes are always exactly 2 bytes)

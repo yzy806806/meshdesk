@@ -1,8 +1,27 @@
 # MeshDesk Architecture
 
-**Version:** 2.2 (2026-08-20)
+**Version:** 3.0 (2026-08-23)
 
 ## Overview
+
+### PunchDataplane (v2.0, 2026-08-23)
+
+The punched UDP data plane uses raw datagrams — no ARQ, no framing, no ACKs.
+TUN IP packets go out as bare UDP datagrams (up to ~1400B); inbound datagrams
+are anti-spoof validated and written directly to the TUN device. Reliability is
+delegated to the inner transport (TCP retransmits its own segments).
+
+Key parameters (aligned with Tailscale magicsock):
+- Keepalive: 2s (disco ping equivalent)
+- Health check: 15s no-RX → auto-degrade to relay
+- MTU: 1400 (TUN) → 1411B UDP payload (fits one Ethernet frame)
+
+Inbound routing: mux's `routeUDPPacket` → `punchDataplaneFeed` callback →
+`PunchDataplane.Feed()` (anti-spoof + TUN write). The mux's single read loop
+owns the socket; PunchDataplane does not compete for reads.
+
+Outbound routing: `getOutboundStream` checks PunchDataplane first (alive →
+raw path), then ARQ fallback (if enabled), then smux relay.
 
 MeshDesk is a single-binary decentralized server mesh network combining:
 - P2P mesh VPN with custom protocol stack

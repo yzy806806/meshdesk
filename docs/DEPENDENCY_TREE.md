@@ -1,6 +1,6 @@
 # MeshDesk Dependency Tree
 
-> Last updated: 2026-08-20 (v1.8.3). Covers external Go modules,
+> Last updated: 2026-08-23 (v2.0.0). Covers external Go modules,
 > internal package structure, and runtime (OS-level) dependencies.
 
 ---

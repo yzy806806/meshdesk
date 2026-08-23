@@ -4,7 +4,7 @@
 
 [中文文档](./README_CN.md) | [Release Notes](docs/RELEASE_NOTES.md) | [Dependency Tree](docs/DEPENDENCY_TREE.md)
 
-> **Current release: v1.8.3** — UDP hole-punch restoration (5 root-cause fixes: UDPConnFor fallback, double-SERVER deadlock, stale hole endpoint, meta replay, config zone), hole-punch engine hardening (fd leak, OutboundPort race, peer cleanup), UDP stream leak fix, auto-reconnect, multi-path relay routing (Dijkstra), config 12 lines, memberlist retired.
+> **Current release: v2.0.0** — PunchDataplane raw UDP data plane: TUN IP packets sent as bare UDP datagrams, no ARQ. Measured 31.7 Mbps (Seoul↔Seoul) and 20.6 Mbps (Seoul↔London) — matching/exceeding EasyTier. Health monitoring auto-degrades to relay on path failure. Zone-aware hole punching, Reality TLS, multi-path relay routing (Dijkstra), config 12 lines, memberlist retired. — UDP hole-punch restoration (5 root-cause fixes: UDPConnFor fallback, double-SERVER deadlock, stale hole endpoint, meta replay, config zone), hole-punch engine hardening (fd leak, OutboundPort race, peer cleanup), UDP stream leak fix, auto-reconnect, multi-path relay routing (Dijkstra), config 12 lines, memberlist retired.
 
 ---
 
