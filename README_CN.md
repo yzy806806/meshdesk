@@ -4,7 +4,7 @@
 
 [English](./README.md) | [发布记录](docs/RELEASE_NOTES.md) | [依赖树](docs/DEPENDENCY_TREE.md)
 
-> **当前版本: v2.0.1** —— PunchDataplane raw UDP 数据面：TUN IP 包作为裸 UDP 数据报发送，无 ARQ。实测 31.7 Mbps（首尔↔首尔）和 20.6 Mbps（首尔↔伦敦），对标 EasyTier。路径失效自动降级 relay。v2.0.1：失败路径加固（dead-plane 泄漏、nil tunWrite panic、Writer 契约、NAT rebind 日志）。Zone 感知打洞、Reality TLS、多路径 relay 路由（Dijkstra），config 12 行，memberlist 退役。 —— UDP 打洞修复（5 个根因：UDPConnFor fallback、double-SERVER 死锁、stale hole endpoint、meta replay、config zone），打洞引擎加固（fd 泄漏、OutboundPort 并发、session 断连清理），UDP stream 泄漏修复，节点重启自动重连，多路径 relay 路由（Dijkstra），config 12 行，memberlist 退役。
+> **当前版本: v2.0.2** —— PunchDataplane raw UDP 数据面：TUN IP 包作为裸 UDP 数据报发送，无 ARQ。实测 31.7 Mbps（首尔↔首尔）和 20.6 Mbps（首尔↔伦敦），对标 EasyTier。路径失效自动降级 relay。v2.0.1/v2.0.2：失败路径加固（dead-plane 泄漏、nil tunWrite panic、Writer 契约、NAT rebind 日志、stale-hole 误杀、探测帧损坏 fail-fast、锁卫生）。Zone 感知打洞、Reality TLS、多路径 relay 路由（Dijkstra），config 12 行，memberlist 退役。 —— UDP 打洞修复（5 个根因：UDPConnFor fallback、double-SERVER 死锁、stale hole endpoint、meta replay、config zone），打洞引擎加固（fd 泄漏、OutboundPort 并发、session 断连清理），UDP stream 泄漏修复，节点重启自动重连，多路径 relay 路由（Dijkstra），config 12 行，memberlist 退役。
 
 ---
 
