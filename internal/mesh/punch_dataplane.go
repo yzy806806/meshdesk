@@ -27,13 +27,16 @@ type PunchDataplane struct {
 	remote   *net.UDPAddr
 	peerKey  string
 	tunWrite func([]byte) (int, error) // TUN device File().Write
-	validate func([]byte, string) bool  // anti-spoof check
-	onDead   func()                     // path-death callback
+	validate func([]byte, string) bool // anti-spoof check
+	onDead   func()                    // path-death callback
 
 	// Stats
 	txPackets atomic.Uint64
 	rxPackets atomic.Uint64
 	lastRx    atomic.Int64 // unix nano of last received packet
+	// tunFailures counts consecutive TUN write errors — reaching the
+	// threshold self-closes the plane (wedged device → relay fallback).
+	tunFailures atomic.Int64
 
 	done   chan struct{}
 	close  sync.Once
@@ -124,7 +127,6 @@ func (pd *PunchDataplane) IsAlive() bool {
 	return time.Since(time.Unix(0, ts)) < 15*time.Second
 }
 
-
 // keepaliveLoop sends a tiny probe every 2s to keep the NAT/conntrack
 // mapping alive on both sides. The probe is a 2-byte payload that
 // the receiver's recvLoop will read and discard (it's not a valid IP
@@ -200,8 +202,8 @@ func PunchDataplaneKey(remote *net.UDPAddr) string {
 // peer public key. It replaces the ARQ-based RegisterPunchedStream
 // for the primary TUN data path.
 type PunchDataplaneManager struct {
-	mu       sync.RWMutex
-	planes   map[string]*PunchDataplane // peerKey → dataplane
+	mu     sync.RWMutex
+	planes map[string]*PunchDataplane // peerKey → dataplane
 }
 
 func NewPunchDataplaneManager() *PunchDataplaneManager {
@@ -215,9 +217,14 @@ func (m *PunchDataplaneManager) Register(pd *PunchDataplane, peerKey string) {
 	if old, ok := m.planes[peerKey]; ok {
 		old.Close()
 	}
+	// Start inside the lock: once the plane is visible to Get(), its
+	// keepalive and health loops must already be running — otherwise a
+	// concurrent Get() can return a plane whose NAT mapping is never
+	// refreshed (no keepalive) and whose death is never detected (no
+	// health loop).
+	pd.Start()
 	m.planes[peerKey] = pd
 	m.mu.Unlock()
-	pd.Start()
 	log.Printf("[punch-dataplane] registered raw dataplane for peer %s", peerKey[:min(len(peerKey), 8)])
 }
 
@@ -248,15 +255,6 @@ func (m *PunchDataplaneManager) Remove(peerKey string) {
 	m.mu.Unlock()
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// Ensure unused import doesn't break build
-
 // LocalAddr returns the local socket address.
 func (pd *PunchDataplane) LocalAddr() net.Addr { return pd.conn.LocalAddr() }
 
@@ -264,10 +262,10 @@ func (pd *PunchDataplane) LocalAddr() net.Addr { return pd.conn.LocalAddr() }
 func (pd *PunchDataplane) RemoteAddr() net.Addr { return pd.remote }
 
 // SetDeadline is a no-op (UDP is connectionless).
-func (pd *PunchDataplane) SetDeadline(t time.Time) error      { return nil }
+func (pd *PunchDataplane) SetDeadline(t time.Time) error { return nil }
 
 // SetReadDeadline is a no-op.
-func (pd *PunchDataplane) SetReadDeadline(t time.Time) error  { return nil }
+func (pd *PunchDataplane) SetReadDeadline(t time.Time) error { return nil }
 
 // SetWriteDeadline is a no-op.
 func (pd *PunchDataplane) SetWriteDeadline(t time.Time) error { return nil }
@@ -282,6 +280,13 @@ func (pd *PunchDataplane) Read(p []byte) (int, error) {
 // This replaces the independent recvLoop (which competed with
 // punchSocketPoller for the same socket).
 func (pd *PunchDataplane) Feed(data []byte) {
+	// A closed plane must not inject packets into the TUN: Close()
+	// may race with an in-flight feed callback (Get returned the
+	// plane, then the health loop removed it). Check before touching
+	// any state.
+	if pd.closed.Load() {
+		return
+	}
 	pd.lastRx.Store(time.Now().UnixNano())
 	pd.rxPackets.Add(1)
 
@@ -302,7 +307,18 @@ func (pd *PunchDataplane) Feed(data []byte) {
 		return
 	}
 	if _, err := pd.tunWrite(data); err != nil {
-		// TUN write error — non-fatal, keep going.
+		// TUN write error — normally transient (TUN buffer full).
+		// But N consecutive failures mean the device is wedged:
+		// self-close so the health-check/manager tear the plane
+		// down and traffic falls back to relay instead of
+		// black-holing in a write-fail loop.
+		pd.tunFailures.Add(1)
+		if pd.tunFailures.Load() >= 10 {
+			log.Printf("[punch-dataplane] %d consecutive TUN write failures — closing plane", pd.tunFailures.Load())
+			pd.Close()
+		}
+	} else {
+		pd.tunFailures.Store(0)
 	}
 }
 

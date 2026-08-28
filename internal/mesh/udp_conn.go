@@ -628,31 +628,26 @@ func (sc *udpStreamConn) retransmitLocked() {
 			// Path MTU discovery: if a probe frame times out, the
 			// large payload was dropped by the link. Downgrade to
 			// conservative framing — resend with the same seq so no
-			// new hole is created. If the receiver already advanced
-			// past this seq (probe was the first frame and the
-			// receiver saw it), this retransmit is dropped by ARQ
-			// dedup; the data loss is bounded to one frame and the
-			// upper layer's stream framing detects the gap (better
-			// than silently corrupting the stream).
+			// new hole is created.
 			if sc.probePending && len(f.data) > udpFrameHeaderLen+udpMaxPayload {
-				sc.probePending = false
-				log.Printf("[udpstream] path MTU probe failed: downgrading to %dB payload (%s)",
-					udpMaxPayload, sc.peer)
-				payload := f.data[udpFrameHeaderLen:]
-				if len(payload) > udpMaxPayload {
-					payload = payload[:udpMaxPayload]
-				}
-				frame := make([]byte, udpFrameHeaderLen+len(payload))
-				copy(frame, f.data[:udpFrameHeaderLen])
-				binary.BigEndian.PutUint16(frame[9:11], uint16(len(payload)))
-				copy(frame[udpFrameHeaderLen:], payload)
-				f.data = frame
+				// FAIL-FAST: sending a truncated 40B version of the
+				// probe frame with the same seq SILENTLY CORRUPTS the
+				// stream — the receiver buffers 40B for that seq while
+				// 1160B of the original payload is discarded, and the
+				// upper layer's framed-packet boundaries desync (the
+				// 4B length prefix now points past the frame). A
+				// truncated reassembly cannot be detected or repaired
+				// by smux. Closing the stream lets the TUN forwarder
+				// fall back to the TCP relay, which is strictly better
+				// than corrupting the data plane.
+				log.Printf("[udpstream] path MTU probe failed on %s — closing stream to avoid corrupting frame %d", sc.peer, seq)
+				sc.Close()
+				return
 			}
 			sc.conn.WriteToUDP(f.data, sc.peer)
 			f.sentAt = now
 			sc.inflight[seq] = f
 		}
-		_ = seq
 	}
 }
 

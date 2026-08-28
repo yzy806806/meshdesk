@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"log"
 	"net"
 	"testing"
 	"time"
@@ -54,15 +55,19 @@ func TestTUNUDPStream_AuthAndData(t *testing.T) {
 	})
 
 	// Pump B's socket into B's manager (routes TUN packets).
+	// NOTE: no t.Logf here — this goroutine can outlive the test
+	// (pump still blocked in ReadFromUDP when the test returns),
+	// and logging into a finished testing.common is a data race
+	// (-race catches it). Use the package log instead.
 	go func() {
 		buf := make([]byte, 4096)
 		for {
 			n, addr, err := sb.ReadFromUDP(buf)
 			if err != nil {
-				t.Logf("B pump exit: %v", err)
+				log.Printf("B pump exit: %v", err)
 				return
 			}
-			t.Logf("B pump: %d bytes from %s first=%02x", n, addr, buf[0])
+			log.Printf("B pump: %d bytes from %s first=%02x", n, addr, buf[0])
 			cp := make([]byte, n)
 			copy(cp, buf[:n])
 			mgrB.routeUDPPacket(sb, addr, cp, nil)

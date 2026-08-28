@@ -206,12 +206,13 @@ func (n *MeshNode) tryReconnect(ctx context.Context, peerIdentityHex, endpoint s
 		return fmt.Errorf("no known endpoint for peer %s", shortPeerID(peerIdentityHex))
 	}
 
-	dialCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
 	var lastErr error
 	for _, ep := range candidates {
-		if err := n.tryReconnectEndpoint(dialCtx, peerIdentityHex, ep); err == nil {
+		// Per-endpoint budget: a slow-failing first candidate must not
+		// consume the whole reconnect window and starve the others.
+		// tryReconnectEndpoint derives its own 30s from a fresh child
+		// of ctx — NOT from a shared deadline that expires once.
+		if err := n.tryReconnectEndpoint(ctx, peerIdentityHex, ep); err == nil {
 			return nil
 		} else {
 			lastErr = err
@@ -235,15 +236,22 @@ func (n *MeshNode) tryReconnectEndpoint(ctx context.Context, peerIdentityHex, en
 	// over the UDP data plane instead: DialUDPPeer runs the kx and
 	// registers the smux session over the punched hole.
 	if n.isHoleEndpoint(peerIdentityHex, endpoint) {
-		if conn, err := n.DialUDPPeer(dialCtx, endpoint); err == nil {
+		conn, err := n.DialUDPPeer(dialCtx, endpoint)
+		if err == nil {
 			conn.Close()
 			log.Printf("[mesh] reconnect via UDP hole to %s for peer %s", endpoint, shortPeerID(peerIdentityHex))
 			return nil
 		}
-		// UDP path failed (hole stale) — fall through to TCP dial as
-		// a last resort; the caller's backoff + the punch engine's
-		// next attempt will refresh the hole.
-		log.Printf("[mesh] reconnect UDP hole to %s failed for peer %s, falling back to TCP", endpoint, shortPeerID(peerIdentityHex))
+		// UDP path failed (hole stale). Do NOT fall through to a TCP
+		// dial against the same endpoint: a hole-punched endpoint
+		// carries a random UDP port on ordinary nodes, and nothing
+		// listens on TCP there — the dial would burn this endpoint's
+		// budget (and previously the shared reconnect budget) for a
+		// guaranteed failure. Return the UDP error so the caller tries
+		// the next candidate; the punch engine's next attempt will
+		// refresh the hole.
+		log.Printf("[mesh] reconnect UDP hole to %s failed for peer %s: %v", endpoint, shortPeerID(peerIdentityHex), err)
+		return fmt.Errorf("udp hole dial: %w", err)
 	}
 
 	stream, err := n.DialPeerByEndpoint(dialCtx, endpoint)

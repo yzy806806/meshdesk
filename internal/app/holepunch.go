@@ -201,8 +201,20 @@ func (a *App) startHolePunch() {
 			// The recv loop reads datagrams and writes them directly
 			// to the TUN device (with anti-spoof validation). The
 			// write path sends TUN IP packets as raw UDP datagrams.
+			// Guard TUN readiness: NewPunchDataplane panics on a nil
+			// writer, and a panic here (inside the punch goroutine)
+			// would take the whole process down. If the TUN device
+			// isn't up yet, skip the dataplane — the relay path and
+			// the lazy scan's next tick will recover.
+			tunWrite := a.node.TunWriteFunc()
+			if tunWrite == nil {
+				log.Printf("  HolePunch: TUN not ready, deferring dataplane for %s", peerKey[:8])
+				a.node.ClearHoleEndpoint(peerKey)
+				hp.ResetHoleState(peerKey)
+				return
+			}
 			pd := mesh.NewPunchDataplane(local, udpAddr, peerKey,
-				a.node.TunWriteFunc(),
+				tunWrite,
 				a.node.ValidateSourceIPFunc(),
 				func() {
 					// Path dead — degrade to relay and re-punch.
@@ -252,7 +264,8 @@ func (a *App) startHolePunch() {
 // triggerHolePunch fires a punch for a same-zone peer when we know its
 // advertised endpoints (from gossip meta). Zone-unknown peers are
 // still punched (hole failure is harmless — relay fallback covers it).
-func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {	if a.holepunch == nil {
+func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {
+	if a.holepunch == nil {
 		log.Printf("[holepunch] %s: trigger skipped — holepunch engine nil", peerKey[:8])
 		return
 	}
@@ -264,6 +277,14 @@ func (a *App) triggerHolePunch(hp *holepunch.Engine, peerKey string) {	if a.hole
 		return
 	}
 	if a.node.HasUDPHole(peerKey) {
+		// PunchDataplane is the v2.0 primary data plane — a live raw
+		// dataplane means the hole is healthy, no stale check needed.
+		// (GetPunchedStream below is the legacy ARQ path, which v2.0
+		// does NOT register; checking it alone would false-positive
+		// every 30s and destroy a healthy hole.)
+		if pd := a.node.PunchDataplaneMgr().Get(peerKey); pd != nil {
+			return
+		}
 		// Hole endpoint exists — verify the punched stream is actually
 		// live. If RegisterPunchedStream failed or the stream died
 		// (idle timeout), the hole endpoint is stale: clear it so lazy

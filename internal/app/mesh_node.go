@@ -189,12 +189,29 @@ func (a *App) registerVirtualPortServices() {
 		// nodes never learn where to push metrics.
 		node.SetMetaBroadcaster(me.Broadcast)
 
-		// Wire PunchDataplane feed: inbound UDP datagrams on punched
-		// sockets are routed through routeUDPPacket → feed callback
-		// → PunchDataplane.recvLoop. This avoids a competing reader
-		// on the same socket (punchSocketPoller owns the read loop).
-		mt := node.MuxTransport()
-		if mt != nil {
+		log.Printf("  Meta:       session meta exchange active (virtual port 0x%x)", mesh.MetaVirtualPort)
+
+		// Replay meta for sessions established BEFORE the meta
+		// exchanger was registered (inbound sessions accepted by
+		// node.Start()'s accept loop between node.Start() and this
+		// point). Without this, early-arriving peers never receive
+		// our meta → their VIP/zone is not propagated →
+		// PeerVirtualIPs() is empty for these peers → lazy scan
+		// never triggers hole punches for them.
+		for _, peerKey := range node.SessionPeerKeys() {
+			me.NotifyPeerJoined(peerKey)
+		}
+		me.Broadcast()
+	} else {
+		log.Printf("Warning: meta exchange failed to start: %v", err)
+	}
+
+	// Wire PunchDataplane feed: inbound UDP datagrams on punched
+	// sockets are routed through routeUDPPacket → feed callback
+	// → PunchDataplane.recvLoop. This avoids a competing reader
+	// on the same socket (punchSocketPoller owns the read loop).
+	mt := node.MuxTransport()
+	if mt != nil {
 		pdmgr := node.PunchDataplaneMgr()
 		var lastUnmatchedLog atomic.Int64
 		mt.UDPMesh().SetPunchDataplaneFeed(func(addr *net.UDPAddr, data []byte) bool {
@@ -220,23 +237,6 @@ func (a *App) registerVirtualPortServices() {
 			}
 			return false
 		})
-		}
-
-		log.Printf("  Meta:       session meta exchange active (virtual port 0x%x)", mesh.MetaVirtualPort)
-
-		// Replay meta for sessions established BEFORE the meta
-		// exchanger was registered (inbound sessions accepted by
-		// node.Start()'s accept loop between node.Start() and this
-		// point). Without this, early-arriving peers never receive
-		// our meta → their VIP/zone is not propagated →
-		// PeerVirtualIPs() is empty for these peers → lazy scan
-		// never triggers hole punches for them.
-		for _, peerKey := range node.SessionPeerKeys() {
-			me.NotifyPeerJoined(peerKey)
-		}
-		me.Broadcast()
-	} else {
-		log.Printf("Warning: meta exchange failed to start: %v", err)
 	}
 
 	// Cluster FileServer (T1.1) — restricted to file_transfer_paths.
@@ -254,7 +254,7 @@ func (a *App) registerVirtualPortServices() {
 	// SOCKS5 exit handler on virtual port 0x5350 (every node by default).
 	socks5Cfg := mesh.SOCKS5Config{
 		DialTimeout:       time.Duration(a.cfg.Proxy.SOCKS5.DialTimeoutSec) * time.Second,
-		IdleTimeout:      time.Duration(a.cfg.Proxy.SOCKS5.IdleTimeoutSec) * time.Second,
+		IdleTimeout:       time.Duration(a.cfg.Proxy.SOCKS5.IdleTimeoutSec) * time.Second,
 		AllowAllPorts:     a.cfg.Proxy.SOCKS5.AllowAllPorts,
 		DestinationFilter: a.cfg.Proxy.SOCKS5.DestinationFilter,
 		MaxConnections:    a.cfg.Proxy.SOCKS5.MaxConnections,

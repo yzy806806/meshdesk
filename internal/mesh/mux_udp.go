@@ -688,11 +688,18 @@ func (m *udpMeshManager) GetPunchedStream(addr string) *udpStreamConn {
 	// back to the smux relay path and the dead stream is reclaimed.
 	if ts := sc.lastInboundNs.Load(); ts > 0 && time.Since(time.Unix(0, ts)) > 60*time.Second {
 		m.mu.Lock()
+		var shouldClose bool
 		if cur, ok := m.streams[addr]; ok && cur == sc {
 			delete(m.streams, addr)
-			sc.Close()
+			shouldClose = true
 		}
 		m.mu.Unlock()
+		if shouldClose {
+			// Close outside the manager lock: Close() writes a FIN
+			// frame (blocking network I/O); holding m.mu during it
+			// would stall every routeUDPPacket on this manager.
+			sc.Close()
+		}
 		return nil
 	}
 	return sc
