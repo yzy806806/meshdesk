@@ -1,5 +1,58 @@
 # Release Notes
 
+## v2.0.2 — 2026-08-28
+
+**Dataplane review fixes — failure-path correctness (H1-H5, M1-M4, L1-L2).**
+
+Full-codebase review of the v2.0 dataplane. No behavior change on healthy
+paths; all fixes target silent failure modes found in production-adjacent
+code paths.
+
+### High
+- **H1 — healthy hole destroyed by stale check**: `triggerHolePunch` verified
+  hole liveness only against the legacy ARQ stream registry. PunchDataplane
+  never registers there, so the 30s lazy scan false-positived "no live
+  stream" and cleared healthy holes (holeEndpoints + punch engine reset).
+  A live raw dataplane now short-circuits the check.
+- **H2 — one-way dataplane black hole**: the inbound-feed wiring for
+  PunchDataplane was inside the meta-exchanger success branch; a meta startup
+  failure left inbound punched datagrams routed to the legacy ARQ parser and
+  dropped. Feed wiring is now unconditional (no dependency on meta).
+- **H3 — MTU probe failure corrupted the stream**: a timed-out 1200B probe
+  frame was retransmitted truncated to 40B under the same seq; the receiver
+  buffered the truncated payload and the framed-packet length boundaries
+  desynced downstream. Now fail-fast — close the stream, fall back to relay.
+- **H4 — manager lock held across network I/O**: `GetPunchedStream` called
+  `Close()` (writes a FIN frame) while holding the manager mutex, stalling
+  every routed datagram. Close moved outside the critical section.
+- **H5 — panic when TUN not ready**: `TunWriteFunc()` returns nil before TUN
+  setup; `OnHoleEstablished`'s goroutine panicked on nil in the constructor.
+  The call site now checks TUN readiness and defers to the next lazy scan.
+
+### Medium
+- **M1** — reconnect: shared 30s budget across all candidate endpoints let a
+  slow-failing first candidate starve the rest; per-endpoint budgets now.
+- **M2** — reconnect: UDP hole failure fell through to a guaranteed-failure
+  TCP dial on the same endpoint; now returns and advances candidates.
+- **M3** — manager: plane stored before `Start()`; concurrent `Get()` could
+  return a plane with no keepalive/health loops. Start moved inside lock.
+- **M4** — Feed() lacked a closed check; a plane closed concurrently could
+  still write into the TUN.
+
+### Low
+- **L1** — package-level `min()` shims removed (Go 1.21+ builtin).
+- **L2** — 10 consecutive TUN write failures self-close the dataplane
+  (wedged device → relay fallback instead of a black-hole loop).
+- **L5 (test infra)** — tun_udp_test.go pump goroutines logged via `t.Logf`
+  after possible test completion: a data race under `-race`. Switched to
+  the package logger.
+
+### Verification
+- `go build ./...`, `go vet ./...` clean; gofmt clean on all touched files.
+- Full suites green: mesh, app, holepunch, web.
+- Stress: `TestUDPStream_LargeTransfer` ×30 pass; `-race` clean across 3 runs
+  of the UDP/TUN stress set (previous runs raced in test-infra logging).
+
 ## v2.0.1 — 2026-08-23
 
 **PunchDataplane hardening — review fixes (H1/H2/M1/M2/M3).**
