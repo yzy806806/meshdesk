@@ -1,5 +1,18 @@
 # Release Notes
 
+## Unreleased — REALITY client hardening (handshake)
+
+- **Client SessionTicketsDisabled**: TLS 1.3 session-ticket resumption
+  replays a cached ClientHello without the REALITY SessionId injection;
+  now disabled client-side (xray parity).
+- **Client VerifyPeerCertificate**: rejects empty/garbage server chains
+  and leaves not covering the SNI (chain-trust verification stays off —
+  REALITY proxies the camouflage site's cert; SessionId auth remains
+  the real gate).
+- **Server shortId policy**: empty shortId now accepted only when the
+  configured shortId is empty (xray parity) — previously any client
+  knowing the SNI could pass the gate with sid="".
+
 ## v2.0.2 — 2026-08-28
 
 **Dataplane review fixes — failure-path correctness (H1-H5, M1-M4, L1-L2).**
