@@ -159,6 +159,17 @@ func (h *RealityHandshake) dialReality(ctx context.Context, addr string) (net.Co
 	utlsConfig := &utls.Config{
 		ServerName:         sni,
 		InsecureSkipVerify: true, // REALITY uses its own auth, not cert verification
+		// REALITY auth lives in the SessionId of the ClientHello.
+		// A TLS 1.3 session-ticket resumption replays a cached
+		// ClientHello without our SessionId injection — the server
+		// would fail REALITY auth (or worse, resumption would skip
+		// the auth path entirely). xray sets this on the client too.
+		SessionTicketsDisabled: true,
+		// Verify the server presented a plausible certificate chain
+		// for the SNI. InsecureSkipVerify stays on because REALITY
+		// proxies the real site's cert (hostname mismatch is normal),
+		// but VerifyPeerCertificate below still pins the chain.
+		VerifyPeerCertificate: verifyRealityServerCert(sni),
 	}
 	uConn := utls.UClient(rawConn, utlsConfig, helloID)
 
@@ -403,8 +414,13 @@ func (h *RealityHandshake) buildRealityConfig() (*realitypkg.Config, error) {
 		copy(sid[:], shortIDBytes)
 		cfg.ShortIds[sid] = true
 	}
-	// Always accept empty shortId (allows clients without shortId).
-	cfg.ShortIds[[8]byte{}] = true
+	// Match xray semantics: an empty shortId is accepted ONLY when the
+	// configured shortId is empty (i.e. the operator opted in). The
+	// previous unconditional empty-shortId acceptance let any client
+	// that knew the SNI pass the REALITY gate with sid="".
+	if h.cfg.RealityShortID == "" {
+		cfg.ShortIds[[8]byte{}] = true
+	}
 
 	// DialContext for forwarding non-authenticated traffic to dest.
 	cfg.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -609,6 +625,41 @@ func decodeHexKey(s string) ([]byte, error) {
 // ──────────────────────────────────────────────────────────────────────────────
 // Key generation utility (for setup/testing)
 // ──────────────────────────────────────────────────────────────────────────────
+
+// verifyRealityServerCert returns a VerifyPeerCertificate callback that
+// checks the server presented a non-empty certificate chain whose leaf is
+// a plausible certificate for the SNI (xray's VerifyPeerCertificate does
+// the same: full chain verification against the real DNS name is skipped
+// because REALITY proxies the target site's cert, but a bare / empty chain
+// or a self-signed impostor leaf is rejected). This raises the bar for an
+// active MITM pretending to be the REALITY server: it must possess a real
+// certificate chain for the camouflage site, which the camouflage site's
+// own TLS endpoint will happily present to anyone — so the real protection
+// remains the SessionId auth; this only weeds out lazy impostors that
+// present garbage certs.
+func verifyRealityServerCert(sni string) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		if len(rawCerts) == 0 {
+			return errors.New("reality: server presented no certificate")
+		}
+		leaf, err := x509.ParseCertificate(rawCerts[0])
+		if err != nil {
+			return fmt.Errorf("reality: parse server certificate: %w", err)
+		}
+		// The camouflage site's real certificate must look like a real
+		// end-entity cert: currently valid, with a DNS SAN covering the
+		// SNI (big CAs require SANs; a self-signed impostor rarely has
+		// a matching SAN for an SNI it does not own).
+		if time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
+			return fmt.Errorf("reality: server certificate not currently valid (%s..%s)",
+				leaf.NotBefore.Format(time.RFC3339), leaf.NotAfter.Format(time.RFC3339))
+		}
+		if err := leaf.VerifyHostname(sni); err != nil {
+			return fmt.Errorf("reality: server certificate does not cover SNI %q: %w", sni, err)
+		}
+		return nil
+	}
+}
 
 // GenerateRealityKeyPair generates a new X25519 key pair for Reality transport.
 // Returns (privateKeyHex, publicKeyHex, error).
