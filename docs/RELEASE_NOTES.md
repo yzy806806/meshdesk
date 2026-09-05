@@ -1,6 +1,8 @@
 # Release Notes
 
-## Unreleased — REALITY client hardening (handshake)
+## v2.0.3 — 2026-09-05
+
+**REALITY client hardening (handshake) — xray 26.7.28 parity.**
 
 - **Client SessionTicketsDisabled**: TLS 1.3 session-ticket resumption
   replays a cached ClientHello without the REALITY SessionId injection;
@@ -12,6 +14,9 @@
 - **Server shortId policy**: empty shortId now accepted only when the
   configured shortId is empty (xray parity) — previously any client
   knowing the SNI could pass the gate with sid="".
+
+Verified: handshake suite green (-race x2); mesh/app/holepunch/web
+full regression green; CI success.
 
 ## v2.0.2 — 2026-08-28
 
