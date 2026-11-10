@@ -160,7 +160,7 @@ internal/
 - `pion/stun/v3` added in v1.6.0 (STUN discovery) — the only new
   direct dep since v1.5.12; everything else is pre-existing.
 - `third_party/reality-patched` is a vendored copy of `XTLS/REALITY` pinned at
-  `4a26e87788f5` (2026-11-08), pulled in via a `replace` directive — Dependabot
+  `4a26e87788f5` (2026-11-08) (2026-11-08), pulled in via a `replace` directive — Dependabot
   cannot track it, so the pin has to be checked by hand against upstream.
 - CGO disabled for release builds (`CGO_ENABLED=0`); `-trimpath` +
   `-ldflags "-s -w"` — no runtime C library dependencies.

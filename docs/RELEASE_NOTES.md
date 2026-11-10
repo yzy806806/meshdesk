@@ -130,6 +130,16 @@ unaffected (built in CI).
 CI now reads `go-version-file: go.mod` instead of a hardcoded `1.25.0`, so the
 toolchain cannot silently drift behind go.mod again.
 
+### OCR pass findings (self-inflicted, fixed before release)
+
+- `go.mod` still named the **March** pseudo-version of `xtls/reality` while the
+  vendored tree was 4a26e877. The `replace` directive made the string inert, so
+  it built fine and rotted silently; corrected.
+- `verifyRealityServerCert`'s doc comment still described the X.509 fallback
+  that this branch deletes — a comment that would have taught the next reader
+  the wrong mechanism.
+- `HandshakeConfig.TLSFingerprint` now documents the MLKEM constraint.
+
 ### Repository hygiene
 
 - **`SECURITY.md` added** — private vulnerability reporting via GitHub
