@@ -26,18 +26,40 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
 
-// localCamouflageDest starts a TLS server that plays the role of the
-// camouflage site and returns its address.
+// sharedDest is one camouflage destination for the whole test binary.
+//
+// REALITY caches its post-handshake record probe under
+// "<dest> <sni> <alpn>", and an authenticated connection that has no cached
+// result sleeps 5s and retries. A destination per test therefore pays that
+// 5s every time; sharing one keeps the suite at a single occurrence and
+// stops it from being sensitive to CI load.
+var (
+	sharedDestOnce sync.Once
+	sharedDestAddr string
+	sharedDestErr  error
+)
+
 func localCamouflageDest(t *testing.T) string {
 	t.Helper()
+	sharedDestOnce.Do(func() { sharedDestAddr, sharedDestErr = startCamouflageDest() })
+	if sharedDestErr != nil {
+		t.Fatalf("start camouflage dest: %v", sharedDestErr)
+	}
+	return sharedDestAddr
+}
+
+// startCamouflageDest starts a TLS server that plays the role of the
+// camouflage site and returns its address.
+func startCamouflageDest() (string, error) {
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		t.Fatalf("dest key: %v", err)
+		return "", err
 	}
 	tmpl := x509.Certificate{
 		SerialNumber:          big.NewInt(2),
@@ -51,16 +73,17 @@ func localCamouflageDest(t *testing.T) string {
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
 	if err != nil {
-		t.Fatalf("dest cert: %v", err)
+		return "", err
 	}
 
 	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
 	})
 	if err != nil {
-		t.Fatalf("dest listen: %v", err)
+		return "", err
 	}
-	t.Cleanup(func() { ln.Close() })
+	// Lives for the whole test binary: shared across tests by design, and
+	// the process exit closes it.
 
 	go func() {
 		for {
@@ -68,16 +91,24 @@ func localCamouflageDest(t *testing.T) string {
 			if aerr != nil {
 				return
 			}
+			// Behave like a responsive HTTPS server and close promptly:
+			// REALITY's post-handshake record probe dials this destination
+			// and reads until EOF (bounded by a 10s internal deadline), and
+			// authenticated connections wait for that probe to finish. A
+			// destination that lingers turns every test into a 5–10s
+			// affair and makes the suite load-sensitive.
 			go func(c net.Conn) {
 				defer c.Close()
-				c.SetDeadline(time.Now().Add(5 * time.Second))
-				buf := make([]byte, 16)
-				_, _ = c.Read(buf)
+				if tc, ok := c.(*tls.Conn); ok {
+					_ = tc.Handshake()
+				}
+				c.SetDeadline(time.Now().Add(time.Second))
 				_, _ = c.Write([]byte("camouflage-dest"))
+				_, _ = io.Copy(io.Discard, c)
 			}(c)
 		}
 	}()
-	return ln.Addr().String()
+	return ln.Addr().String(), nil
 }
 
 // TestRealityAuthReachesPeer is the assertion the old TestClientServerHandshake
@@ -144,7 +175,8 @@ func TestRealityAuthReachesPeer(t *testing.T) {
 		defer a.conn.Close()
 
 		buf := make([]byte, len(payload))
-		a.conn.SetReadDeadline(time.Now().Add(8 * time.Second))
+		// Comfortably beyond the library's 10s post-handshake probe bound.
+		a.conn.SetReadDeadline(time.Now().Add(25 * time.Second))
 		n, rerr := io.ReadFull(a.conn, buf)
 		if rerr != nil {
 			t.Fatalf("server application received no data: the client's bytes went to the camouflage destination, "+
