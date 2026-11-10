@@ -78,6 +78,13 @@ type HandshakeConfig struct {
 
 	// TLSFingerprint is the uTLS ClientHello fingerprint to mimic.
 	// Default: "chrome".
+	//
+	// Only fingerprints that advertise the X25519MLKEM768 hybrid key share
+	// are usable against a REALITY server: xtls/reality rejects ClientHellos
+	// without it. With utls 1.8.2 that means "chrome" (HelloChrome_Auto,
+	// i.e. Chrome 133); "firefox", "safari", "edge", "ios" and "android"
+	// are refused by Connect with a ConfigError naming this field rather
+	// than failing opaquely mid-handshake.
 	TLSFingerprint string
 }
 

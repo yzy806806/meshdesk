@@ -54,6 +54,70 @@ Upstream `XTLS/REALITY` publishes **no** security advisories (empty advisory
 feed at time of writing), so this is tech debt retirement, not an incident
 response.
 
+### REALITY: two functional regressions caught while upgrading
+
+Neither was visible from a green test run. Both are fixed here, and the tests
+that let them hide have been tightened.
+
+**1. v2.0.3's client certificate check rejected every legitimate server.**
+
+v2.0.3 added a client-side `VerifyPeerCertificate` that required the peer's
+leaf certificate to be currently valid and to cover the SNI. That is wrong for
+REALITY: after a successful handshake the server does **not** present the
+camouflage site's certificate — it synthesises a throwaway one
+(`x509.Certificate{SerialNumber: &big.Int{}}`, i.e. empty validity, no SAN)
+signed with a key derived from the ephemeral ECDH. Every real peer was
+therefore rejected. The tag shipped but was never deployed, so the field never
+saw it.
+
+The check now does what xray does:
+
+    HMAC-SHA512(authKey, leaf.PublicKey) == leaf.Signature
+
+i.e. it cryptographically verifies that the peer knew `authKey`, which is
+strictly stronger than "the certificate looks plausible". Unlike xray there is
+**no** fallback to X.509 chain trust: xray tolerates the camouflage site's
+certificate because a failed proxy degrades gracefully for it, but for a mesh
+that is exactly the silent failure to avoid — traffic would go to the wrong
+host while the client believed it had reached its peer. The client now fails
+loudly instead.
+
+**2. The upgraded library requires X25519MLKEM768; the client sent X25519.**
+
+xtls/reality `8cdf7bf9` rejects ClientHellos without the MLKEM768 hybrid key
+share ("outdated / strange"). The client pinned `HelloChrome_120` precisely to
+**avoid** MLKEM, because the previous library could not complete a handshake
+with it — the constraint inverted with the upgrade. Left alone, every
+connection would have been proxied to the camouflage destination while
+reporting success.
+
+- `chrome` now maps to `HelloChrome_Auto` (Chrome 133), which sends the hybrid
+  share. Verified end-to-end: application data reaches the server-side
+  application again.
+- The other fingerprints cannot be fixed: utls 1.8.2 ships MLKEM only for
+  Chrome 131/133. `firefox` (120), `safari` (16.0), `edge` (85/106) and `ios`
+  (14) predate it, and `android` (OkHttp 11) has no TLS 1.3 key share at all.
+  Rather than let them fail confusingly mid-handshake, `Connect` now probes the
+  fingerprint's actual ClientHello once and returns a `ConfigError` naming
+  `TLSFingerprint`.
+
+**Tests that let this hide.** `TestClientServerHandshake` logged and returned
+on *every* failure path, so it passed whether or not authentication worked —
+and because REALITY proxies failed connections to the camouflage site, even a
+successful-looking handshake proved nothing. It is now strict, uses a local
+camouflage destination instead of `www.apple.com`, and new tests assert the
+property that actually matters:
+
+- `TestRealityAuthReachesPeer` — the server-side application must receive the
+  client's bytes. Auth failure shows up as data going to the camouflage
+  destination instead.
+- `TestRealityRejectsCamouflageCertificate` — with a mismatched key the client
+  must refuse the destination's perfectly valid certificate.
+- `TestFingerprintCapability` — the MLKEM capability map above, plus the
+  config-error path.
+
+All three are hermetic (local TLS destination, no outbound network).
+
 ### Build requirement: Go 1.25 → 1.27
 
 Go 1.25 reached end of life on **2026-08-19** — it stopped receiving stdlib

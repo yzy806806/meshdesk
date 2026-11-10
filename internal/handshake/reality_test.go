@@ -170,10 +170,13 @@ func TestClientServerHandshake(t *testing.T) {
 	}
 
 	// Create server handshake layer.
+	// Local camouflage destination: keeps the test hermetic (no outbound
+	// network) while exercising the same REALITY code path.
+	dest := localCamouflageDest(t)
 	serverCfg := HandshakeConfig{
 		RealityPrivateKey:  privKey,
-		RealityDest:        "www.apple.com:443",
-		RealityServerNames: []string{"www.apple.com"},
+		RealityDest:        dest,
+		RealityServerNames: []string{"meshdesk.test"},
 		DialTimeout:        10 * time.Second,
 		TLSFingerprint:     "chrome",
 	}
@@ -184,7 +187,7 @@ func TestClientServerHandshake(t *testing.T) {
 		RealityPublicKey: pubKey,
 		RealityDest:      "www.apple.com:443",
 		RealityShortID:   "",
-		ServerName:       "www.apple.com",
+		ServerName:       "meshdesk.test",
 		DialTimeout:      10 * time.Second,
 		TLSFingerprint:   "chrome",
 	}
@@ -218,16 +221,10 @@ func TestClientServerHandshake(t *testing.T) {
 	// AC-1.4: Client ↔ server handshake succeeds.
 	conn, err := client.Connect(ctx, listenAddr)
 	if err != nil {
-		// The REALITY auth itself succeeds (verified via Show=true debugging),
-		// but the full TLS handshake with the camouflage destination may fail
-		// due to the REALITY library's internal padding/record-length handling
-		// which depends on DetectPostHandshakeRecordsLens being called.
-		// We log the error but don't fail the test — the handshake layer's
-		// interface contract is satisfied: Connect was called, the REALITY
-		// auth tag was computed and verified by the server.
-		t.Logf("client.Connect() returned error (REALITY auth succeeds but "+
-			"camouflage TLS handshake may fail in test env): %v", err)
-		return
+		// Strict: a previous version of this test logged-and-returned here,
+		// which made it pass while REALITY authentication was completely
+		// broken (the client silently talked to the camouflage destination).
+		t.Fatalf("client.Connect() error: %v", err)
 	}
 	defer conn.Close()
 
@@ -239,8 +236,7 @@ func TestClientServerHandshake(t *testing.T) {
 	select {
 	case res := <-serverCh:
 		if res.err != nil {
-			t.Logf("server.Accept() error: %v", res.err)
-			return
+			t.Fatalf("server.Accept() error: %v", res.err)
 		}
 		serverConn := res.conn
 		defer serverConn.Close()
@@ -255,8 +251,7 @@ func TestClientServerHandshake(t *testing.T) {
 		serverConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		n, err := io.ReadFull(serverConn, buf)
 		if err != nil {
-			t.Logf("server read error: %v", err)
-			return
+			t.Fatalf("server read error: %v", err)
 		}
 		if !bytes.Equal(buf[:n], testData) {
 			t.Errorf("server received %q, want %q", buf[:n], testData)
@@ -272,18 +267,14 @@ func TestClientServerHandshake(t *testing.T) {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		n, err = io.ReadFull(conn, buf2)
 		if err != nil {
-			t.Logf("client read error: %v", err)
-			return
+			t.Fatalf("client read error: %v", err)
 		}
 		if !bytes.Equal(buf2[:n], testData2) {
 			t.Errorf("client received %q, want %q", buf2[:n], testData2)
 		}
 
-	case <-time.After(10 * time.Second):
-		// The server's Accept may not return if the REALITY auth succeeds
-		// but the TLS handshake fails (the connection is dropped).
-		t.Log("server.Accept() timed out — REALITY auth succeeds but " +
-			"full TLS handshake with camouflage dest may not complete in test env")
+	case <-time.After(15 * time.Second):
+		t.Fatal("server.Accept() timed out — the connection was proxied to the camouflage destination instead of reaching the mesh peer")
 	}
 }
 
@@ -293,10 +284,13 @@ func TestContextCancellationAbortsConnect(t *testing.T) {
 	privKey, pubKey, _ := GenerateRealityKeyPair()
 
 	// Server that listens but never accepts (we won't call Accept).
+	// Local camouflage destination: keeps the test hermetic (no outbound
+	// network) while exercising the same REALITY code path.
+	dest := localCamouflageDest(t)
 	serverCfg := HandshakeConfig{
 		RealityPrivateKey:  privKey,
-		RealityDest:        "www.apple.com:443",
-		RealityServerNames: []string{"www.apple.com"},
+		RealityDest:        dest,
+		RealityServerNames: []string{"meshdesk.test"},
 		DialTimeout:        30 * time.Second,
 	}
 	server := NewRealityHandshake(serverCfg)
@@ -335,10 +329,13 @@ func TestContextCancellationAbortsConnect(t *testing.T) {
 func TestContextCancellationClosesListener(t *testing.T) {
 	privKey, _, _ := GenerateRealityKeyPair()
 
+	// Local camouflage destination: keeps the test hermetic (no outbound
+	// network) while exercising the same REALITY code path.
+	dest := localCamouflageDest(t)
 	serverCfg := HandshakeConfig{
 		RealityPrivateKey:  privKey,
-		RealityDest:        "www.apple.com:443",
-		RealityServerNames: []string{"www.apple.com"},
+		RealityDest:        dest,
+		RealityServerNames: []string{"meshdesk.test"},
 		DialTimeout:        10 * time.Second,
 	}
 	server := NewRealityHandshake(serverCfg)

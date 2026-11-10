@@ -30,9 +30,12 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/binary"
@@ -74,6 +77,11 @@ type RealityHandshake struct {
 	// listeners tracks active listeners for graceful shutdown.
 	mu        sync.Mutex
 	listeners map[*realityListener]struct{}
+
+	// fpCheck guards the one-shot "does this uTLS fingerprint advertise
+	// X25519MLKEM768" probe, which xtls/reality >= 8cdf7bf9 requires.
+	fpOnce sync.Once
+	fpErr  error
 }
 
 // NewRealityHandshake creates a new RealityHandshake with the given config.
@@ -113,11 +121,61 @@ func (h *RealityHandshake) Connect(ctx context.Context, addr string) (net.Conn, 
 			&ConfigError{Field: "RealityPublicKey", Reason: "required for reality client-side"}, false)
 	}
 
+	// Refuse fingerprints that cannot advertise X25519MLKEM768 before
+	// dialling: the REALITY server rejects such ClientHellos, and the
+	// resulting mid-handshake error would point at the wrong thing.
+	if err := h.ensureFingerprintUsable(); err != nil {
+		return nil, NewHandshakeError("connect", addr, err, false)
+	}
+
 	conn, err := h.dialReality(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
 	return conn, nil
+}
+
+// ensureFingerprintUsable verifies once that the configured uTLS fingerprint
+// advertises the X25519MLKEM768 hybrid key share.
+//
+// xtls/reality >= 8cdf7bf9 rejects any ClientHello without it ("outdated /
+// strange"), so a fingerprint that only sends plain X25519 cannot complete
+// REALITY auth at all. Detecting that here — by building a ClientHello and
+// inspecting the key shares — turns a confusing mid-handshake "peer is not
+// the expected REALITY server" into an actionable config error. utls 1.8.2
+// ships MLKEM only for Chrome 131+/Auto; Firefox 120, Safari 16, Edge 85/106
+// and iOS 14 predate it.
+func (h *RealityHandshake) ensureFingerprintUsable() error {
+	h.fpOnce.Do(func() {
+		id := fingerprintToHelloID(h.cfg.TLSFingerprint)
+		ok, err := fingerprintAdvertisesMLKEM(id)
+		switch {
+		case err != nil:
+			h.fpErr = &ConfigError{Field: "TLSFingerprint", Reason: fmt.Sprintf("cannot build ClientHello for fingerprint %q: %v", h.cfg.TLSFingerprint, err)}
+		case !ok:
+			h.fpErr = &ConfigError{Field: "TLSFingerprint", Reason: fmt.Sprintf(
+				"fingerprint %q (%s %s) does not advertise X25519MLKEM768, which the REALITY server side now requires; use \"chrome\" (utls HelloChrome_Auto/131/133)",
+				h.cfg.TLSFingerprint, id.Client, id.Version)}
+		}
+	})
+	return h.fpErr
+}
+
+// fingerprintAdvertisesMLKEM builds the ClientHello for the given fingerprint
+// over an in-memory pipe and reports whether it carries a hybrid key share.
+func fingerprintAdvertisesMLKEM(id utls.ClientHelloID) (bool, error) {
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	u := utls.UClient(c1, &utls.Config{ServerName: "probe.invalid", InsecureSkipVerify: true}, id)
+	if err := u.BuildHandshakeState(); err != nil {
+		return false, err
+	}
+	hs := &u.HandshakeState
+	if hs.State13.KeyShareKeys == nil {
+		return false, nil
+	}
+	return hs.State13.KeyShareKeys.MlkemEcdhe != nil, nil
 }
 
 // dialReality performs the TCP dial + uTLS REALITY client handshake.
@@ -165,11 +223,6 @@ func (h *RealityHandshake) dialReality(ctx context.Context, addr string) (net.Co
 		// would fail REALITY auth (or worse, resumption would skip
 		// the auth path entirely). xray sets this on the client too.
 		SessionTicketsDisabled: true,
-		// Verify the server presented a plausible certificate chain
-		// for the SNI. InsecureSkipVerify stays on because REALITY
-		// proxies the real site's cert (hostname mismatch is normal),
-		// but VerifyPeerCertificate below still pins the chain.
-		VerifyPeerCertificate: verifyRealityServerCert(sni),
 	}
 	uConn := utls.UClient(rawConn, utlsConfig, helloID)
 
@@ -227,6 +280,11 @@ func (h *RealityHandshake) dialReality(ctx context.Context, addr string) (net.Co
 		return nil, NewHandshakeError("connect", addr,
 			fmt.Errorf("HKDF derive auth key: %w", err), false)
 	}
+
+	// Now that AuthKey exists we can authenticate the server's ephemeral
+	// certificate: HMAC-SHA512(authKey, leafPub) must equal the leaf
+	// signature. Set before HandshakeContext so it runs on the ServerHello.
+	utlsConfig.VerifyPeerCertificate = verifyRealityServerCert(authKey, sni)
 
 	// AES-GCM seal: seal SessionId[:16] with nonce=Random[20:] and
 	// AAD=the ORIGINAL raw ClientHello (sessionId NOT zeroed).
@@ -633,18 +691,26 @@ func decodeHexKey(s string) ([]byte, error) {
 // Key generation utility (for setup/testing)
 // ──────────────────────────────────────────────────────────────────────────────
 
-// verifyRealityServerCert returns a VerifyPeerCertificate callback that
-// checks the server presented a non-empty certificate chain whose leaf is
-// a plausible certificate for the SNI (xray's VerifyPeerCertificate does
-// the same: full chain verification against the real DNS name is skipped
-// because REALITY proxies the target site's cert, but a bare / empty chain
-// or a self-signed impostor leaf is rejected). This raises the bar for an
-// active MITM pretending to be the REALITY server: it must possess a real
-// certificate chain for the camouflage site, which the camouflage site's
-// own TLS endpoint will happily present to anyone — so the real protection
-// remains the SessionId auth; this only weeds out lazy impostors that
-// present garbage certs.
-func verifyRealityServerCert(sni string) func([][]byte, [][]*x509.Certificate) error {
+// verifyRealityServerCert verifies the REALITY server's ephemeral
+// certificate the way xray does, not the way a normal TLS client would.
+//
+// After a successful REALITY handshake the server does NOT present the
+// camouflage site's certificate. It synthesises a throwaway one with empty
+// validity dates and no SAN, signed with a key derived from the ephemeral
+// ECDH — so any check based on NotBefore/NotAfter, hostname SANs or a CA
+// chain rejects every legitimate server. The real check is:
+//
+//	HMAC-SHA512(authKey, leaf.PublicKey) == leaf.Signature
+//
+// which proves the peer knew authKey, i.e. it holds the private key matching
+// the pinned RealityPublicKey. This is strictly stronger than "the certificate
+// looks plausible": it authenticates the server cryptographically.
+//
+// A leaf that is not the REALITY-generated one (no ed25519 key, or a
+// signature that does not match) means we are talking to the real camouflage
+// site rather than to a mesh peer — that path falls back to normal X.509
+// verification against the system roots, mirroring xray.
+func verifyRealityServerCert(authKey []byte, serverName string) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
 			return errors.New("reality: server presented no certificate")
@@ -653,18 +719,24 @@ func verifyRealityServerCert(sni string) func([][]byte, [][]*x509.Certificate) e
 		if err != nil {
 			return fmt.Errorf("reality: parse server certificate: %w", err)
 		}
-		// The camouflage site's real certificate must look like a real
-		// end-entity cert: currently valid, with a DNS SAN covering the
-		// SNI (big CAs require SANs; a self-signed impostor rarely has
-		// a matching SAN for an SNI it does not own).
-		if time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
-			return fmt.Errorf("reality: server certificate not currently valid (%s..%s)",
-				leaf.NotBefore.Format(time.RFC3339), leaf.NotAfter.Format(time.RFC3339))
+
+		// REALITY-generated certificate: signature over the ephemeral
+		// ed25519 public key, keyed by authKey.
+		if pub, ok := leaf.PublicKey.(ed25519.PublicKey); ok && len(authKey) > 0 {
+			h := hmac.New(sha512.New, authKey)
+			h.Write(pub)
+			if hmac.Equal(h.Sum(nil), leaf.Signature) {
+				return nil
+			}
 		}
-		if err := leaf.VerifyHostname(sni); err != nil {
-			return fmt.Errorf("reality: server certificate does not cover SNI %q: %w", sni, err)
-		}
-		return nil
+
+		// Deliberately NO fallback to X.509 trust here. When REALITY auth
+		// fails the library silently proxies the connection to the
+		// camouflage destination, and a client that then verified that
+		// site's real certificate would believe it had reached its peer
+		// while all its traffic went to the wrong host. For a mesh the
+		// only acceptable outcome is a loud failure.
+		return fmt.Errorf("reality: peer %q is not the expected REALITY server (certificate signature is not the authKey HMAC) — authentication failed or the connection was proxied to the camouflage destination", serverName)
 	}
 }
 
@@ -684,10 +756,13 @@ func GenerateRealityKeyPair() (string, string, error) {
 func fingerprintToHelloID(fp string) utls.ClientHelloID {
 	switch strings.ToLower(fp) {
 	case "", "chrome":
-		// Use Chrome 120 (not Auto) to avoid X25519MLKEM768 which
-		// causes REALITY TLS handshake failures with the xtls/reality
-		// library's internal TLS implementation.
-		return utls.HelloChrome_120
+		// Must advertise X25519MLKEM768: xtls/reality >= 8cdf7bf9 rejects
+		// any ClientHello without it (upstream calls those "outdated /
+		// strange"). HelloChrome_120 would be rejected — an older pin
+		// avoided MLKEM because the *previous* library could not complete
+		// the handshake with it; that constraint is gone, and this one is
+		// its inverse.
+		return utls.HelloChrome_Auto
 	case "firefox":
 		return utls.HelloFirefox_Auto
 	case "safari":
@@ -699,6 +774,6 @@ func fingerprintToHelloID(fp string) utls.ClientHelloID {
 	case "android":
 		return utls.HelloAndroid_11_OkHttp
 	default:
-		return utls.HelloChrome_120
+		return utls.HelloChrome_Auto
 	}
 }
