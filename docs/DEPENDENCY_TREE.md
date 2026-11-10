@@ -153,8 +153,14 @@ internal/
 
 ## 4. Versioned dependency facts
 
-- Go toolchain: **1.25** (`go 1.25.0` in go.mod)
+- Go toolchain: **1.27** (`go 1.27.0` in go.mod). CI reads the version from
+  go.mod (`go-version-file`) instead of hardcoding it, so this cannot drift
+  again. 1.25 went EOL 2026-08-19; the bumped REALITY library requires 1.27
+  because it synced to the Go 1.27 stdlib.
 - `pion/stun/v3` added in v1.6.0 (STUN discovery) — the only new
   direct dep since v1.5.12; everything else is pre-existing.
+- `third_party/reality-patched` is a vendored copy of `XTLS/REALITY` pinned at
+  `4a26e87788f5` (2026-11-08), pulled in via a `replace` directive — Dependabot
+  cannot track it, so the pin has to be checked by hand against upstream.
 - CGO disabled for release builds (`CGO_ENABLED=0`); `-trimpath` +
   `-ldflags "-s -w"` — no runtime C library dependencies.

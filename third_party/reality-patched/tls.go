@@ -27,13 +27,15 @@ package reality
 // https://www.imperialviolet.org/2013/02/04/luckythirteen.html.
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/hkdf"
+	"crypto/mldsa"
 	"crypto/mlkem"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -52,10 +54,9 @@ import (
 
 	"github.com/juju/ratelimit"
 	"github.com/pires/go-proxyproto"
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/hkdf"
 )
 
+// [REALITY] SECTION: Reality server
 type CloseWriteConn interface {
 	net.Conn
 	CloseWrite() error
@@ -137,7 +138,7 @@ func NewRatelimitedConn(conn net.Conn, limit *LimitFallback) net.Conn {
 }
 
 var (
-	size  = 8192
+	size  = 17 * 1024
 	empty = make([]byte, size)
 	types = [7]string{
 		"Server Hello",
@@ -161,6 +162,9 @@ func Value(vals ...byte) (value int) {
 // if you don't use REALITY's listener, e.g., Xray-core's RAW transport.
 func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 	remoteAddr := conn.RemoteAddr().String()
+	if config.Show {
+		fmt.Printf("REALITY remoteAddr: %v\n", remoteAddr)
+	}
 
 	target, err := config.DialContext(ctx, config.Type, config.Dest)
 	if err != nil {
@@ -203,41 +207,52 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 
 	go func() {
 		for {
-			if config.Show {
-				fmt.Printf("REALITY debug: goroutine1 trying mutex.Lock at %v\n", time.Now().Format("15:04:05.000"))
-			}
 			mutex.Lock()
-			if config.Show {
-				fmt.Printf("REALITY debug: goroutine1 got mutex, reading client hello at %v\n", time.Now().Format("15:04:05.000"))
-			}
 			hs.clientHello, _, err = hs.c.readClientHello(context.Background()) // TODO: Change some rules in this function.
 			if copying || err != nil || hs.c.vers != VersionTLS13 || !config.ServerNames[hs.clientHello.serverName] {
 				break
 			}
-			var peerPub []byte
+			var peerPub, peerPub2 []byte
 			for _, keyShare := range hs.clientHello.keyShares {
-				if keyShare.group == X25519 && len(keyShare.data) == 32 {
-					peerPub = keyShare.data
-					break
+				if keyShare.group == X25519MLKEM768 && len(keyShare.data) == mlkem.EncapsulationKeySize768+32 {
+					if peerPub2 != nil {
+						peerPub2 = nil // ensure fail
+						break          // ensure once
+					}
+					peerPub2 = keyShare.data[mlkem.EncapsulationKeySize768:]
+					continue // fast continue
 				}
+				if keyShare.group == X25519 && len(keyShare.data) == 32 {
+					if peerPub != nil {
+						peerPub2 = nil // ensure fail
+						break          // ensure once
+					}
+					peerPub = keyShare.data
+					break // ensure order
+				}
+			}
+			if peerPub2 == nil {
+				break // reject outdated/strange Client Hello that doesn't have X25519MLKEM768 before optional X25519
 			}
 			if peerPub == nil {
-				for _, keyShare := range hs.clientHello.keyShares {
-					if keyShare.group == X25519MLKEM768 && len(keyShare.data) == mlkem.EncapsulationKeySize768+32 {
-						peerPub = keyShare.data[mlkem.EncapsulationKeySize768:]
-						break
-					}
-				}
+				peerPub = peerPub2 // secondary choice: X25519 in X25519MLKEM768
 			}
-			for peerPub != nil {
-				if hs.c.AuthKey, err = curve25519.X25519(config.PrivateKey, peerPub); err != nil {
+			for peerPub != nil && config.PrivateKey != nil {
+				peerKey, err := ecdh.X25519().NewPublicKey(peerPub)
+				if err != nil {
 					break
 				}
-				if _, err = hkdf.New(sha256.New, hs.c.AuthKey, hs.clientHello.random[:20], []byte("REALITY")).Read(hs.c.AuthKey); err != nil {
+				if hs.c.AuthKey, err = config.PrivateKey.ECDH(peerKey); err != nil {
+					break
+				}
+				if hs.c.AuthKey, err = hkdf.Key(sha256.New, hs.c.AuthKey, hs.clientHello.random[:20], "REALITY", 32); err != nil {
 					break
 				}
 				block, _ := aes.NewCipher(hs.c.AuthKey)
 				aead, _ := cipher.NewGCM(block)
+				if config.Show {
+					fmt.Printf("REALITY remoteAddr: %v\ths.c.AuthKey[:16]: %v\tAEAD: %T\n", remoteAddr, hs.c.AuthKey[:16], aead)
+				}
 				ciphertext := make([]byte, 32)
 				plainText := make([]byte, 32)
 				copy(ciphertext, hs.clientHello.sessionId)
@@ -249,6 +264,11 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				copy(hs.c.ClientVer[:], plainText)
 				hs.c.ClientTime = time.Unix(int64(binary.BigEndian.Uint32(plainText[4:])), 0)
 				copy(hs.c.ClientShortId[:], plainText[8:])
+				if config.Show {
+					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientVer: %v\n", remoteAddr, hs.c.ClientVer)
+					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientTime: %v\n", remoteAddr, hs.c.ClientTime)
+					fmt.Printf("REALITY remoteAddr: %v\ths.c.ClientShortId: %v\n", remoteAddr, hs.c.ClientShortId)
+				}
 				if (config.MinClientVer == nil || Value(hs.c.ClientVer[:]...) >= Value(config.MinClientVer...)) &&
 					(config.MaxClientVer == nil || Value(hs.c.ClientVer[:]...) <= Value(config.MaxClientVer...)) &&
 					(config.MaxTimeDiff == 0 || time.Since(hs.c.ClientTime).Abs() <= config.MaxTimeDiff) &&
@@ -257,10 +277,16 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				}
 				break
 			}
+			if config.Show {
+				fmt.Printf("REALITY remoteAddr: %v\ths.c.conn == conn: %v\n", remoteAddr, hs.c.conn == conn)
+			}
 			break
 		}
 		mutex.Unlock()
 		if hs.c.conn != conn {
+			if config.Show && hs.clientHello != nil {
+				fmt.Printf("REALITY remoteAddr: %v\tforwarded SNI: %v\n", remoteAddr, hs.clientHello.serverName)
+			}
 			_, err := io.Copy(target, NewRatelimitedConn(underlying, &config.LimitFallbackUpload))
 			// close target writer when received FIN (err==nil)
 			if err == nil {
@@ -301,7 +327,7 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 			if len(s2cSaved) > size {
 				break
 			}
-			for i := range types {
+			for i, t := range types {
 				if hs.c.out.handshakeLen[i] != 0 {
 					continue
 				}
@@ -317,19 +343,18 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 					}
 					handshakeLen = recordHeaderLen + Value(s2cSaved[3:5]...)
 				}
+				if config.Show {
+					fmt.Printf("REALITY remoteAddr: %v\tlen(s2cSaved): %v\t%v: %v\n", remoteAddr, len(s2cSaved), t, handshakeLen)
+				}
 				if handshakeLen > size { // too long
 					break f
 				}
 				if i == 1 && handshakeLen > 0 && handshakeLen != 6 {
 					break f
 				}
-				if i == 2 {
-					// TLS 1.3 encrypts EncryptedExtensions/Certificate/Finished
-					// as ApplicationData records — there are no more plaintext
-					// handshake records to collect. The ServerHello + CCS +
-					// first encrypted record are sufficient template; break
-					// so hs.handshake() can drive the rest.
+				if i == 2 && handshakeLen > 512 {
 					hs.c.out.handshakeLen[i] = handshakeLen
+					hs.c.out.handshakeBuf = buf[:0]
 					break
 				}
 				if i == 6 && handshakeLen > 0 {
@@ -354,7 +379,11 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				s2cSaved = s2cSaved[handshakeLen:]
 				handshakeLen = 0
 			}
+			start := time.Now()
 			err = hs.handshake()
+			if config.Show {
+				fmt.Printf("REALITY remoteAddr: %v\ths.handshake() err: %v\n", remoteAddr, err)
+			}
 			if err != nil {
 				break
 			}
@@ -362,49 +391,57 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 				if handshakeLen-len(s2cSaved) > 0 {
 					io.ReadFull(target, buf[:handshakeLen-len(s2cSaved)])
 				}
-				if _, err := target.Read(buf); !hs.c.isHandshakeComplete.Load() {
+				if n, err := target.Read(buf); !hs.c.isHandshakeComplete.Load() {
 					if err != nil {
 						conn.Close()
+					}
+					if config.Show {
+						fmt.Printf("REALITY remoteAddr: %v\ttime.Since(start): %v\tn: %v\terr: %v\n", remoteAddr, time.Since(start), n, err)
 					}
 				}
 			}()
 			err = hs.readClientFinished()
+			if config.Show {
+				fmt.Printf("REALITY remoteAddr: %v\ths.readClientFinished() err: %v\n", remoteAddr, err)
+			}
 			if err != nil {
 				break
 			}
-			hs.c.isHandshakeComplete.Store(true)
-			key := config.Dest + " " + hs.clientHello.serverName
-			if len(hs.clientHello.alpnProtocols) == 0 {
-				key += " 0"
-			} else if hs.clientHello.alpnProtocols[0] == "h2" {
-				key += " 2"
-			} else {
-				key += " 1"
-			}
-			// Post-handshake records and MaxCSSMsgCount are optional REALITY
-			// fingerprinting features. Try once without blocking; if the async
-			// detection hasn't finished yet, skip — do NOT sleep here, as that
-			// delays the handshake completion signal to the client and causes
-			// the mesh session key exchange to fail with EOF.
-			if val, ok := GlobalPostHandshakeRecordsLens.Load(key); ok {
-				if postHandshakeRecordsLens, ok := val.([]int); ok {
-					for _, length := range postHandshakeRecordsLens {
-						plainText := make([]byte, length-16)
-						plainText[0] = 23
-						plainText[1] = 3
-						plainText[2] = 3
-						plainText[3] = byte((length - 5) >> 8)
-						plainText[4] = byte((length - 5))
-						plainText[5] = 23
-						postHandshakeRecord := hs.c.out.cipher.(aead).Seal(plainText[:5], hs.c.out.seq[:], plainText[5:], plainText[:5])
-						hs.c.out.incSeq()
-						hs.c.write(postHandshakeRecord)
+			for {
+				key := config.Dest + " " + hs.clientHello.serverName
+				if len(hs.clientHello.alpnProtocols) == 0 {
+					key += " 0"
+				} else if hs.clientHello.alpnProtocols[0] == "h2" {
+					key += " 2"
+				} else {
+					key += " 1"
+				}
+				if val, ok := GlobalPostHandshakeRecordsLens.Load(key); ok {
+					if postHandshakeRecordsLens, ok := val.([]int); ok {
+						for _, length := range postHandshakeRecordsLens {
+							plainText := make([]byte, length-16)
+							plainText[0] = 23
+							plainText[1] = 3
+							plainText[2] = 3
+							plainText[3] = byte((length - 5) >> 8)
+							plainText[4] = byte((length - 5))
+							plainText[5] = 23
+							postHandshakeRecord := hs.c.out.cipher.(aead).Seal(plainText[:5], hs.c.out.seq[:], plainText[5:], plainText[:5])
+							hs.c.out.incSeq()
+							hs.c.write(postHandshakeRecord)
+							if config.Show {
+								fmt.Printf("REALITY remoteAddr: %v\tlen(postHandshakeRecord): %v\n", remoteAddr, len(postHandshakeRecord))
+							}
+						}
+						break
 					}
 				}
+				time.Sleep(5 * time.Second)
+				if maxUseless, ok := GlobalMaxCSSMsgCount.Load(key); ok {
+					hs.c.MaxUselessRecords = maxUseless.(int)
+				}
 			}
-			if maxUseless, ok := GlobalMaxCSSMsgCount.Load(key); ok {
-				hs.c.MaxUselessRecords = maxUseless.(int)
-			}
+			hs.c.isHandshakeComplete.Store(true)
 			break
 		}
 		mutex.Unlock()
@@ -462,6 +499,8 @@ func Server(ctx context.Context, conn net.Conn, config *Config) (*Conn, error) {
 	*/
 }
 
+// [REALITY] SECTION END
+
 // Client returns a new TLS client side connection
 // using conn as the underlying transport.
 // The config cannot be nil: users must set either ServerName or
@@ -480,8 +519,9 @@ func Client(conn net.Conn, config *Config) *Conn {
 type listener struct {
 	net.Listener
 	config *Config
-	conns  chan net.Conn
-	err    error
+	// [REALITY] SECTION: listener
+	conns chan net.Conn
+	err   error
 }
 
 // Accept waits for and returns the next incoming TLS connection.
@@ -532,6 +572,8 @@ func NewListener(inner net.Listener, config *Config) net.Listener {
 	return l
 }
 
+// [REALITY] SECTION END
+
 // Listen creates a TLS listener accepting connections on the
 // given network address using net.Listen.
 // The configuration config must be non-nil and must include
@@ -550,6 +592,8 @@ func Listen(network, laddr string, config *Config) (net.Listener, error) {
 }
 
 type timeoutError struct{}
+
+var _ error = timeoutError{}
 
 func (timeoutError) Error() string   { return "tls: DialWithDialer timed out" }
 func (timeoutError) Timeout() bool   { return true }
@@ -678,10 +722,6 @@ func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Con
 // files. The files must contain PEM encoded data. The certificate file may
 // contain intermediate certificates following the leaf certificate to form a
 // certificate chain. On successful return, Certificate.Leaf will be populated.
-//
-// Before Go 1.23 Certificate.Leaf was left nil, and the parsed certificate was
-// discarded. This behavior can be re-enabled by setting "x509keypairleaf=0"
-// in the GODEBUG environment variable.
 func LoadX509KeyPair(certFile, keyFile string) (Certificate, error) {
 	certPEMBlock, err := os.ReadFile(certFile)
 	if err != nil {
@@ -696,10 +736,6 @@ func LoadX509KeyPair(certFile, keyFile string) (Certificate, error) {
 
 // X509KeyPair parses a public/private key pair from a pair of
 // PEM encoded data. On successful return, Certificate.Leaf will be populated.
-//
-// Before Go 1.23 Certificate.Leaf was left nil, and the parsed certificate was
-// discarded. This behavior can be re-enabled by setting "x509keypairleaf=0"
-// in the GODEBUG environment variable.
 func X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error) {
 	fail := func(err error) (Certificate, error) { return Certificate{}, err }
 
@@ -753,7 +789,6 @@ func X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error) {
 	if err != nil {
 		return fail(err)
 	}
-
 	cert.Leaf = x509Cert
 
 	cert.PrivateKey, err = parsePrivateKey(keyDERBlock.Bytes)
@@ -767,7 +802,7 @@ func X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error) {
 		if !ok {
 			return fail(errors.New("tls: private key type does not match public key type"))
 		}
-		if pub.N.Cmp(priv.N) != 0 {
+		if !priv.PublicKey.Equal(pub) {
 			return fail(errors.New("tls: private key does not match public key"))
 		}
 	case *ecdsa.PublicKey:
@@ -775,7 +810,7 @@ func X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error) {
 		if !ok {
 			return fail(errors.New("tls: private key type does not match public key type"))
 		}
-		if pub.X.Cmp(priv.X) != 0 || pub.Y.Cmp(priv.Y) != 0 {
+		if !priv.PublicKey.Equal(pub) {
 			return fail(errors.New("tls: private key does not match public key"))
 		}
 	case ed25519.PublicKey:
@@ -783,7 +818,15 @@ func X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error) {
 		if !ok {
 			return fail(errors.New("tls: private key type does not match public key type"))
 		}
-		if !bytes.Equal(priv.Public().(ed25519.PublicKey), pub) {
+		if !priv.Public().(ed25519.PublicKey).Equal(pub) {
+			return fail(errors.New("tls: private key does not match public key"))
+		}
+	case *mldsa.PublicKey:
+		priv, ok := cert.PrivateKey.(*mldsa.PrivateKey)
+		if !ok {
+			return fail(errors.New("tls: private key type does not match public key type"))
+		}
+		if !priv.PublicKey().Equal(pub) {
 			return fail(errors.New("tls: private key does not match public key"))
 		}
 	default:
@@ -797,20 +840,21 @@ func X509KeyPair(certPEMBlock, keyPEMBlock []byte) (Certificate, error) {
 // PKCS #1 private keys by default, while OpenSSL 1.0.0 generates PKCS #8 keys.
 // OpenSSL ecparam generates SEC1 EC private keys for ECDSA. We try all three.
 func parsePrivateKey(der []byte) (crypto.PrivateKey, error) {
-	if key, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+	key, err := x509.ParsePKCS8PrivateKey(der)
+	pkcs8Err := err // Return the PKCS#8 error if all parsing attempts fail.
+	if err != nil {
+		key, err = x509.ParsePKCS1PrivateKey(der)
+	}
+	if err != nil {
+		key, err = x509.ParseECPrivateKey(der)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("tls: failed to parse private key: %w", pkcs8Err)
+	}
+	switch key := key.(type) {
+	case *rsa.PrivateKey, *ecdsa.PrivateKey, ed25519.PrivateKey, *mldsa.PrivateKey:
 		return key, nil
+	default:
+		return nil, errors.New("tls: found unknown private key type in PKCS#8 wrapping")
 	}
-	if key, err := x509.ParsePKCS8PrivateKey(der); err == nil {
-		switch key := key.(type) {
-		case *rsa.PrivateKey, *ecdsa.PrivateKey, ed25519.PrivateKey:
-			return key, nil
-		default:
-			return nil, errors.New("tls: found unknown private key type in PKCS#8 wrapping")
-		}
-	}
-	if key, err := x509.ParseECPrivateKey(der); err == nil {
-		return key, nil
-	}
-
-	return nil, errors.New("tls: failed to parse private key")
 }

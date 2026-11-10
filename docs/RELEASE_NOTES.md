@@ -1,5 +1,96 @@
 # Release Notes
 
+## v2.1.0 — 2026-11-10
+
+**Dependency & toolchain security release.**
+
+A dependency audit found four reachable CVEs in the compiled binary, an
+end-of-life toolchain, and a REALITY library seven months behind upstream.
+No meshdesk API or protocol change; the build requirement changes.
+
+### Reachable vulnerabilities fixed
+
+| Module | Was | Now | Advisory |
+|---|---|---|---|
+| `golang.org/x/crypto` | 0.54.0 | 0.58.0 | GO-2026-6303 (source-address not enforced, fixed 0.55.0); GO-2026-6354 / GO-2026-6355 (deadlocked-channel DoS, fixed 0.56.0) |
+| `github.com/klauspost/compress` | 1.17.4 | 1.20.4 | GO-2026-6865 (panic on two-block frames, fixed 1.20.2) |
+
+Both were reachable, not theoretical:
+
+- the three `x/crypto/ssh` issues sit on the path `internal/webssh` uses to
+  dial managed hosts — a hostile SSH server can trigger them;
+- the `compress` panic is in the zstd decoder that **uTLS** calls while
+  decompressing a compressed TLS certificate. `u_handshake_client.go` passes
+  server-supplied bytes to `zstd.NewReader` with no "was this algorithm
+  negotiated" guard in front of it, so a malicious REALITY server could crash
+  the client.
+
+Audited and confirmed **not** reachable, so not bumped for security reasons:
+the remaining `golang.org/x/net` advisories are all in `html`/`http2`, while
+the binary links only `ipv4`/`ipv6`/`bpf`; the last `x/crypto` advisory is
+`openpgp`, which meshdesk never imports.
+
+### Vendored REALITY library: 9234c772 → 4a26e877 (9 upstream commits)
+
+`third_party/reality-patched` was pinned to 2026-03-22. Pulled forward to
+2026-11-08:
+
+- `e1986a4d` — fix panic / goroutine leak / race in
+  `DetectPostHandshakeRecordsLens` background probe (the server-side
+  anti-probing path every inbound connection passes through);
+- `4bb46b2a` — bound probe handshakes with a deadline (previously unlimited:
+  a prober could hold connections open);
+- `4836aa02` — detect post-handshake records for **empty SNI** (without it an
+  active prober can fingerprint the REALITY endpoint);
+- `393f8de3` — REALITY target TLS record buffer raised to 17 KiB (camouflage
+  fidelity on large records);
+- `8cdf7bf9` — reject out-dated ClientHellos lacking an X25519 key share;
+- `14cefac9` / `83f62178` — drop `circl`; `Config.PrivateKey` becomes
+  `*ecdh.PrivateKey` (meshdesk parses the hex key eagerly, so a malformed key
+  now fails with a clear error instead of inside the handshake);
+- `4a26e877` — the library now depends on the `XTLS/utls` fork.
+
+Upstream `XTLS/REALITY` publishes **no** security advisories (empty advisory
+feed at time of writing), so this is tech debt retirement, not an incident
+response.
+
+### Build requirement: Go 1.25 → 1.27
+
+Go 1.25 reached end of life on **2026-08-19** — it stopped receiving stdlib
+security fixes. The bumped REALITY library also requires 1.27 (it syncs to the
+1.27 stdlib), so the two changes go together.
+
+Anyone building from source needs Go **1.27+**. Release binaries are
+unaffected (built in CI).
+
+CI now reads `go-version-file: go.mod` instead of a hardcoded `1.25.0`, so the
+toolchain cannot silently drift behind go.mod again.
+
+### Repository hygiene
+
+- **`SECURITY.md` added** — private vulnerability reporting via GitHub
+  advisories, plus an explicit in-scope / out-of-scope list and a pointer to
+  `THREAT_MODEL.md` (several "missing" protections there are deliberate).
+- **Dependabot vulnerability alerts enabled** (they were off — nobody was
+  being notified about anything) and `.github/dependabot.yml` added: weekly
+  grouped `gomod` bumps, monthly grouped `github-actions` bumps.
+- **Stale `package-lock.json` removed.** `package.json` declares no
+  dependencies, yet the lockfile still carried `puppeteer` and its transitive
+  `zod 3.25.76` — flagged high by Dependabot for a dependency graph that does
+  not exist in this Go project. Nothing referenced it.
+- `docs/DEPENDENCY_TREE.md` updated: toolchain 1.27, REALITY pin recorded
+  (Dependabot cannot track a `replace` to a local path).
+
+### Verification
+
+- `go build ./...`, `go vet ./...` clean; no new gofmt violations (the 18
+  pre-existing ones are untouched).
+- Full suite green on Go 1.27: all 25 packages.
+- REALITY suite green including `TestClientServerHandshake`, i.e. a real
+  client↔server handshake against the upgraded library.
+- Dependency re-audit after the bump: 0 reachable advisories in x/crypto
+  (remaining `openpgp` is unimported) and 0 in klauspost/compress.
+
 ## v2.0.3 — 2026-09-05
 
 **REALITY client hardening (handshake) — xray 26.7.28 parity.**

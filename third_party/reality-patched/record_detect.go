@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/pires/go-proxyproto"
-	utls "github.com/refraction-networking/utls"
+	utls "github.com/xtls/utls"
 )
+
+// Reality specifc file, used for target detection
 
 var GlobalPostHandshakeRecordsLens sync.Map
 var GlobalMaxCSSMsgCount sync.Map
@@ -34,11 +36,15 @@ func DetectPostHandshakeRecordsLens(config *Config) {
 					if err != nil {
 						return
 					}
+					defer target.Close()
 					if config.Xver == 1 || config.Xver == 2 {
 						if _, err = proxyproto.HeaderProxyFromAddrs(config.Xver, target.LocalAddr(), target.RemoteAddr()).WriteTo(target); err != nil {
 							return
 						}
 					}
+					// Bound the probe: a target that accepts TCP but never answers would otherwise leave the
+					// key at false forever, and Server() keeps authenticated connections waiting on it.
+					target.SetDeadline(time.Now().Add(10 * time.Second))
 					detectConn := &PostHandshakeRecordDetectConn{
 						Conn: target,
 						Key:  key,
@@ -55,8 +61,9 @@ func DetectPostHandshakeRecordsLens(config *Config) {
 						nextProtos = nil
 					}
 					uConn := utls.UClient(detectConn, &utls.Config{
-						ServerName: sni, // needs new loopvar behaviour
-						NextProtos: nextProtos,
+						ServerName:         sni,       // needs new loopvar behaviour
+						InsecureSkipVerify: sni == "", // uTLS refuses an empty ServerName otherwise
+						NextProtos:         nextProtos,
 					}, fingerprint)
 					if err = uConn.Handshake(); err != nil {
 						return
@@ -68,6 +75,7 @@ func DetectPostHandshakeRecordsLens(config *Config) {
 					if err != nil {
 						return
 					}
+					defer target.Close()
 					if config.Xver == 1 || config.Xver == 2 {
 						if _, err = proxyproto.HeaderProxyFromAddrs(config.Xver, target.LocalAddr(), target.RemoteAddr()).WriteTo(target); err != nil {
 							return
@@ -84,13 +92,15 @@ func DetectPostHandshakeRecordsLens(config *Config) {
 					if alpn == 0 {
 						nextProtos = nil
 					}
+					target.SetDeadline(time.Now().Add(10 * time.Second))
 					conn := &CCSDetectConn{
 						Conn: target,
 						Key:  key,
 					}
 					uConn := utls.UClient(conn, &utls.Config{
-						ServerName: sni, // needs new loopvar behaviour
-						NextProtos: nextProtos,
+						ServerName:         sni,       // needs new loopvar behaviour
+						InsecureSkipVerify: sni == "", // uTLS refuses an empty ServerName otherwise
+						NextProtos:         nextProtos,
 					}, fingerprint)
 					if err = uConn.Handshake(); err != nil {
 						return
@@ -124,6 +134,10 @@ func (c *PostHandshakeRecordDetectConn) Read(b []byte) (n int, err error) {
 	for {
 		if len(data) >= 5 && bytes.Equal(data[:3], []byte{23, 3, 3}) {
 			length := int(binary.BigEndian.Uint16(data[3:5])) + 5
+			// illegal dada
+			if length > len(data) {
+				break
+			}
 			postHandshakeRecordsLens = append(postHandshakeRecordsLens, length)
 			data = data[length:]
 		} else {
@@ -148,7 +162,7 @@ func (c *CCSDetectConn) Write(b []byte) (n int, err error) {
 			defer hasAlert.Store(true)
 			buf := make([]byte, 512)
 			for {
-				_, err = c.Conn.Read(buf)
+				_, err := c.Conn.Read(buf)
 				if err != nil {
 					return
 				}

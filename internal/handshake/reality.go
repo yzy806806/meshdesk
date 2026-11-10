@@ -380,6 +380,13 @@ func (h *RealityHandshake) buildRealityConfig() (*realitypkg.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid RealityPrivateKey: %w", err)
 	}
+	// reality >= 83f6217 takes a parsed *ecdh.PrivateKey instead of raw
+	// bytes (upstream #40). Parse eagerly so a malformed hex key fails
+	// here with a clear message rather than inside the handshake.
+	privKey, err := ecdh.X25519().NewPrivateKey(privKeyBytes)
+	if err != nil {
+		return nil, fmt.Errorf("invalid RealityPrivateKey: %w", err)
+	}
 
 	cfg := &realitypkg.Config{
 		Show:                   false,
@@ -387,7 +394,7 @@ func (h *RealityHandshake) buildRealityConfig() (*realitypkg.Config, error) {
 		Dest:                   h.cfg.RealityDest,
 		Xver:                   0,
 		ServerNames:            make(map[string]bool),
-		PrivateKey:             privKeyBytes,
+		PrivateKey:             privKey,
 		ShortIds:               make(map[[8]byte]bool),
 		SessionTicketsDisabled: true,
 	}

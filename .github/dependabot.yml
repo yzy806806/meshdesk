@@ -1,0 +1,45 @@
+# Dependabot configuration
+#
+# Goal: be told when a pinned dependency becomes vulnerable or drifts too far
+# behind, without drowning in PRs. Vulnerability alerts are the primary signal
+# — that is why version-update PRs are weekly and grouped by ecosystem rather
+# than one PR per module.
+#
+# Note: vulnerability *alerts* (security tab) are a repository setting, not
+# controlled by this file. This file controls version-update PRs.
+
+version: 2
+
+updates:
+  # Go modules — the pinned versions live in go.mod. Grouped so one PR per
+  # week carries the routine patch bumps; a security-relevant bump will still
+  # open its own PR because Dependabot security updates are separate.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
+    groups:
+      go-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps"
+
+  # The vendored REALITY library under third_party/ is NOT covered by gomod
+  # updates (it is a `replace` directive to a local path). Watch the upstream
+  # repo by hand — see THREAT_MODEL.md / README for the pinned sha.
+
+  # GitHub Actions — keeps the workflow `uses:` pins current, which is what
+  # silently rots first in a repository that goes quiet.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "ci"
