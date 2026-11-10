@@ -9,7 +9,7 @@ require (
 	github.com/pion/stun/v3 v3.1.6
 	github.com/refraction-networking/utls v1.8.2
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	github.com/xtls/reality v0.0.0-20260322125925-9234c772ba8f
+	github.com/xtls/reality v0.0.0-20261108102217-4a26e87788f5
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	gopkg.in/yaml.v3 v3.0.1

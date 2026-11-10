@@ -706,10 +706,12 @@ func decodeHexKey(s string) ([]byte, error) {
 // the pinned RealityPublicKey. This is strictly stronger than "the certificate
 // looks plausible": it authenticates the server cryptographically.
 //
-// A leaf that is not the REALITY-generated one (no ed25519 key, or a
-// signature that does not match) means we are talking to the real camouflage
-// site rather than to a mesh peer — that path falls back to normal X.509
-// verification against the system roots, mirroring xray.
+// A leaf that is neither ed25519 nor HMAC-matching is rejected outright.
+// xray instead falls back to X.509 verification at this point, which is
+// right for a proxy: a failed REALITY auth degrades to talking to the
+// camouflage site. For a mesh that degradation is a silent
+// misroute — every byte reaches the wrong host while the client reports
+// success — so the fallback is deliberately absent here.
 func verifyRealityServerCert(authKey []byte, serverName string) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
